@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a change or addition
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        SAGE extends at the **middleware layer** without touching protocol code.
+        Most new behavior is a small middleware plus a feature flag — see
+        `CLAUDE.md → Adding a Middleware Module` and `ARCHITECTURE.md` before
+        filing, in case the seam already exists.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that SAGE doesn't let you do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What would you like it to do? If it's a new middleware or QoS plugin, say where in the chain it would sit.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Config-only? An existing flag? A QoS extension interface?

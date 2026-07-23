@@ -1,0 +1,52 @@
+# The second PATH config shape SAGE supports: services and defaults nested
+# under gateway_config.unified_services instead of sitting on gateway_config
+# directly. GatewayConfig.AllServices / EffectiveDefaults / EffectiveMiddlewareChain
+# read both, so both need a fixture — a format that parses into fields nothing
+# reads would look exactly like a format that works.
+#
+# Only the keys that differ from path_config.yaml are set; the exhaustiveness
+# check treats the two files as one corpus.
+
+full_node_config:
+  rpc_url: "https://fullnode.invalid/rpc"
+  grpc_config:
+    host_port: "fullnode.invalid:443"
+
+gateway_config:
+  gateway_mode: "centralized"
+
+  unified_services:
+    middleware_chain:
+      - timeout
+      - parse
+      - send_relay
+
+    latency_profiles:
+      unified_fast:
+        fast_threshold: 60ms
+        normal_threshold: 220ms
+        slow_threshold: 520ms
+        penalty_threshold: 1020ms
+        severe_threshold: 3020ms
+        fast_bonus: 4
+        slow_penalty: 3
+        very_slow_penalty: 2
+
+    defaults:
+      retry_config:
+        max_retries: 5
+      timeout_config:
+        relay_timeout: 17s
+      reputation_config:
+        enabled: true
+        storage_type: "memory"
+
+    services:
+      - id: unified-eth
+        type: evm
+        rpc_types: ["json_rpc"]
+        sync_allowance: 25
+      - id: unified-osmosis
+        type: cosmos
+        rpc_types: ["json_rpc", "rest", "comet_bft"]
+        chain_id: "osmosis-1"

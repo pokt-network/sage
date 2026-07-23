@@ -1,0 +1,29 @@
+# Benchmark config: full middleware chain against the in-process mock
+# protocol backend. No fullnode, no Redis, no suppliers.
+#
+#   make sage_build && ./bin/sagegw -config bench/mock-config.yaml
+#   ./bench/run.sh
+protocol:
+  type: mock
+  mock:
+    endpoint_count: 10
+    # Simulated supplier latency. 0 measures pure gateway overhead;
+    # set to e.g. 50ms to measure scheduling behavior under realistic RTT.
+    latency: 0s
+
+router_config:
+  port: 3069
+
+logger_config:
+  level: warn # don't measure log I/O
+
+metrics_config:
+  pprof_addr: "localhost:6060"
+
+gateway_config:
+  gateway_mode: centralized
+  services:
+    - id: eth
+      type: evm
+      sync_allowance: 5
+      rpc_types: [json_rpc]

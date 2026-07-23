@@ -1,0 +1,267 @@
+# A PATH-format config that sets EVERY field SAGE parses.
+#
+# This is the fixture behind config/compat_test.go. It is deliberately
+# exhaustive rather than realistic: TestConfigFixtureIsExhaustive walks the
+# config structs by reflection and fails if any yaml tag is missing from this
+# file, so a field added to config/ without a value here is caught immediately.
+#
+# Every value is distinctive (odd numbers, unusual durations) so that a field
+# wired to the wrong struct member shows up as a mismatch instead of coinciding
+# with a default or a neighbouring field.
+#
+# It carries no real credentials: the keys below are obvious placeholders.
+
+redis_config:
+  address: "redis.invalid:6379"
+  password: "fixture-password"
+  db: 7
+  pool_size: 42
+  dial_timeout: 6s
+  read_timeout: 4s
+  write_timeout: 3s
+
+router_config:
+  port: 3069
+  read_timeout: 31s
+  write_timeout: 32s
+  idle_timeout: 121s
+  websocket_message_buffer_size: 8192
+  trusted_proxies:
+    - "10.0.0.0/8"
+    - "192.168.0.0/16"
+
+logger_config:
+  level: "warn"
+
+metrics_config:
+  prometheus_addr: ":9099"
+  pprof_addr: "localhost:6060"
+
+admin_config:
+  addr: "localhost:9095"
+
+concurrency_config:
+  max_concurrent_relays: 8000
+  max_batch_payloads: 4000
+
+full_node_config:
+  rpc_url: "https://fullnode.invalid/rpc"
+  grpc_config:
+    host_port: "fullnode.invalid:443"
+    insecure: true
+  lazy_mode: true
+  session_rollover_blocks: 12
+  cache_config:
+    session_ttl: 90s
+
+feature_flags:
+  retry: true
+  hedge: false
+  shadow_mode: false
+
+websocket_config:
+  frame_observation_sample_rate: 0.02
+  close_observation_sample_rate: 0.75
+  max_concurrent_connections: 4096
+
+protocol:
+  type: "shannon"
+  grpc_mode: "web"
+  mock:
+    endpoint_count: 17
+    latency: 45ms
+    response_body: '{"jsonrpc":"2.0","id":1,"result":"0xfixture"}'
+
+gateway_config:
+  gateway_mode: "centralized"
+  gateway_address: "pokt1fixturegatewayaddress00000000000000000"
+  gateway_private_key_hex: "0000000000000000000000000000000000000000000000000000000000000001"
+  owned_apps_private_keys_hex:
+    - "0000000000000000000000000000000000000000000000000000000000000002"
+    - "0000000000000000000000000000000000000000000000000000000000000003"
+
+  middleware_chain:
+    - timeout
+    - parse
+    - retry
+    - select_endpoint
+    - send_relay
+
+  reputation_config:
+    enabled: true
+    storage_type: "redis"
+    key_granularity: "per-supplier"
+    initial_score: 100
+    min_threshold: 5
+    recovery_timeout: 7m
+    tiered_selection:
+      enabled: true
+      tier1_threshold: 85
+      tier2_threshold: 35
+      probation:
+        enabled: true
+        threshold: 45
+        traffic_percent: 25
+        recovery_multiplier: 4.5
+    signal_impacts:
+      success: 2
+      minor_error: -2
+      major_error: -4
+      critical_error: -16
+      fatal_error: -26
+      recovery_success: 14
+      slow_response: -3
+      very_slow_response: -5
+
+  retry_config:
+    enabled: true
+    max_retries: 3
+    max_retry_latency: 900ms
+    retry_on_5xx: true
+    retry_on_timeout: true
+    retry_on_connection: true
+    connect_timeout: 250ms
+    hedge_delay: 300ms
+    max_latency: 2s
+
+  active_health_checks:
+    enabled: true
+    local:
+      - service_id: eth
+        enabled: true
+        checks:
+          - name: eth_blockNumber
+            type: json_rpc
+            method: POST
+            path: /
+            body: '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'
+            expected_status_code: 200
+            timeout: 5s
+            reputation_signal: minor_error
+
+  observation_pipeline:
+    enabled: true
+    sample_rate: 0.25
+    worker_count: 8
+    queue_size: 20000
+
+  latency_profiles:
+    fast:
+      fast_threshold: 55ms
+      normal_threshold: 210ms
+      slow_threshold: 510ms
+      penalty_threshold: 1010ms
+      severe_threshold: 3010ms
+      fast_bonus: 3
+      slow_penalty: 2
+      very_slow_penalty: 1
+    medium:
+      fast_threshold: 105ms
+      normal_threshold: 505ms
+      slow_threshold: 1005ms
+      penalty_threshold: 2005ms
+      severe_threshold: 5005ms
+      fast_bonus: 2
+      slow_penalty: 1
+      very_slow_penalty: 1
+    slow:
+      fast_threshold: 505ms
+      normal_threshold: 1505ms
+      slow_threshold: 3005ms
+      penalty_threshold: 6005ms
+      severe_threshold: 12005ms
+      fast_bonus: 1
+      slow_penalty: 1
+      very_slow_penalty: 2
+
+  defaults:
+    retry_config:
+      enabled: true
+      max_retries: 2
+      max_retry_latency: 800ms
+      retry_on_5xx: true
+      retry_on_timeout: true
+      retry_on_connection: true
+      connect_timeout: 200ms
+      hedge_delay: 400ms
+      max_latency: 3s
+    timeout_config:
+      relay_timeout: 15s
+    reputation_config:
+      enabled: true
+      storage_type: "memory"
+      key_granularity: "per-endpoint"
+      initial_score: 90
+      min_threshold: 10
+      recovery_timeout: 8m
+      tiered_selection:
+        enabled: true
+        tier1_threshold: 80
+        tier2_threshold: 30
+        probation:
+          enabled: true
+          threshold: 50
+          traffic_percent: 30
+          recovery_multiplier: 5.0
+      signal_impacts:
+        success: 1
+        minor_error: -3
+        major_error: -10
+        critical_error: -25
+        fatal_error: -50
+        recovery_success: 15
+        slow_response: -1
+        very_slow_response: -2
+
+  # One service per QoS type, so every plugin's config shape is exercised.
+  services:
+    - id: eth
+      type: evm
+      rpc_types: ["json_rpc", "websocket"]
+      sync_allowance: 25
+      latency_profile: "fast"
+      chain_id: "0x1"
+      timeout_config:
+        relay_timeout: 12s
+      retry_config:
+        enabled: true
+        max_retries: 4
+        max_retry_latency: 700ms
+        retry_on_5xx: true
+        retry_on_timeout: true
+        retry_on_connection: false
+        connect_timeout: 150ms
+        hedge_delay: 250ms
+        max_latency: 4s
+      external_block_sources:
+        - url: "https://eth-rpc.invalid"
+          type: "evm"
+          method: "eth_blockNumber"
+          path: "/"
+          interval: 20s
+          timeout: 6s
+          grace_period: 45s
+
+    - id: poly
+      type: evm
+      rpc_types: ["json_rpc", "websocket"]
+      sync_allowance: 150
+      latency_profile: "medium"
+
+    - id: solana
+      type: solana
+      rpc_types: ["json_rpc"]
+      sync_allowance: 1500
+      latency_profile: "fast"
+
+    - id: akash
+      type: cosmos
+      rpc_types: ["json_rpc", "rest", "comet_bft"]
+      sync_allowance: 30
+      latency_profile: "medium"
+      chain_id: "akashnet-2"
+
+    - id: near
+      type: generic
+      rpc_types: ["json_rpc"]
+      latency_profile: "slow"

@@ -1,0 +1,448 @@
+package evm
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/tidwall/gjson"
+
+	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/qos"
+)
+
+// evmEndpoint holds per-endpoint state observed from health checks and relays.
+type evmEndpoint struct {
+	BlockNumber    uint64
+	ChainID        string
+	IsArchival     bool
+	ArchivalExpiry time.Time
+}
+
+// archivalTTL is how long an archival determination is considered valid.
+const archivalTTL = 24 * time.Hour
+
+// coalescableMethods are read-only EVM methods safe for request coalescing.
+var coalescableMethods = map[string]bool{
+	"eth_blockNumber":           true,
+	"eth_chainId":               true,
+	"eth_gasPrice":              true,
+	"eth_maxPriorityFeePerGas":  true,
+	"eth_feeHistory":            true,
+	"eth_getBalance":            true,
+	"eth_getCode":               true,
+	"eth_getBlockByNumber":      true,
+	"eth_getBlockByHash":        true,
+	"eth_getTransactionByHash":  true,
+	"eth_getTransactionReceipt": true,
+	"eth_getTransactionCount":   true,
+	"eth_getLogs":               true,
+	"eth_getStorageAt":          true,
+	"net_version":               true,
+	"web3_clientVersion":        true,
+}
+
+// Plugin is the EVM QoS plugin. It implements:
+//   - qos.Plugin
+//   - qos.BlockHeightTracker
+//   - qos.BlockHeightParser
+//   - qos.ArchivalDetector
+//   - qos.HealthChecker
+//   - qos.DataExtractor
+//   - qos.CoalescenceClassifier
+//   - qos.CachePolicy
+//   - qos.ResponseFormatValidator
+//   - qos.LifecycleHooks
+type Plugin struct {
+	logger          *slog.Logger
+	store           *qos.EndpointStore[evmEndpoint]
+	consensus       *qos.BlockConsensus
+	syncAllowance   uint64
+	expectedChainID string
+}
+
+// Config carries the per-service settings an EVM plugin needs.
+//
+// A plugin is built once per service (see cmd/sagegw/wire.go), so this struct
+// is where per-chain customization lands. The split it encodes: how to run a
+// check stays in code — calling eth_chainId and parsing the result is an EVM
+// fact, identical for every EVM service — while the values a check asserts are
+// per-chain data and come from config. Adding a knob here should not mean
+// teaching config how to describe a request.
+//
+// Zero values are sensible defaults, per the config conventions in CLAUDE.md.
+type Config struct {
+	// SyncAllowance is how many blocks behind the perceived chain head an
+	// endpoint may fall and still serve traffic.
+	SyncAllowance uint64
+
+	// ExpectedChainID is the hex chain ID this service must serve, as
+	// eth_chainId reports it (e.g. "0x1" for Ethereum mainnet). Empty disables
+	// the assertion.
+	ExpectedChainID string
+}
+
+// Validate reports whether the config is usable, and is called at wire time so
+// a bad value fails startup rather than every health check at 3am: a chain ID
+// that can never match would eject every endpoint of the service.
+//
+// The hex rule lives here rather than in config because it is an EVM fact.
+// Other chains identify themselves differently — CometBFT reports names like
+// "cosmoshub-4" — so config carries chain_id opaquely and each plugin holds
+// its own chain to account.
+func (c Config) Validate() error {
+	if c.ExpectedChainID == "" {
+		return nil
+	}
+	if _, err := parseHexUint64(c.ExpectedChainID); err != nil {
+		return fmt.Errorf("expected_chain_id: %w", err)
+	}
+	return nil
+}
+
+// NewPlugin creates an EVM QoS plugin for a single service.
+func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Plugin{
+		logger:          logger,
+		store:           qos.NewEndpointStore[evmEndpoint](logger),
+		consensus:       qos.NewBlockConsensus(logger, cfg.SyncAllowance),
+		syncAllowance:   cfg.SyncAllowance,
+		expectedChainID: cfg.ExpectedChainID,
+	}
+}
+
+// --- qos.Plugin ---
+
+// ParseRequest validates the request body and extracts one Payload per JSON-RPC call.
+func (p *Plugin) ParseRequest(_ context.Context, _ *http.Request, body []byte, rpcType domain.RPCType) ([]domain.Payload, error) {
+	return parseRequest(body, rpcType)
+}
+
+// SelectEndpoints filters the candidate list by block height and archival capability.
+//
+// Three degradation tiers (via qos.Select):
+//   - Tier 1: block height within syncAllowance
+//   - Tier 2: block height within 2×syncAllowance
+//   - Tier 3: no block height filter (archival filter still applied if needed)
+func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []domain.Payload) (domain.EndpointAddrList, error) {
+	if len(endpoints) == 0 {
+		return nil, nil
+	}
+
+	perceived := p.consensus.PerceivedBlock()
+	needsArchival := p.IsArchivalRequest(payloads)
+
+	getHeight := func(addr domain.EndpointAddr) (uint64, bool) {
+		ep, ok := p.store.Get(addr)
+		if !ok || ep.BlockNumber == 0 {
+			return 0, false
+		}
+		return ep.BlockNumber, true
+	}
+
+	archivalFilter := func(addr domain.EndpointAddr) error {
+		if !needsArchival {
+			return nil
+		}
+		ep, ok := p.store.Get(addr)
+		if !ok {
+			// Unknown — let through for eventual consistency.
+			return nil
+		}
+		if !ep.IsArchival || (!ep.ArchivalExpiry.IsZero() && time.Now().After(ep.ArchivalExpiry)) {
+			return &domain.RelayError{
+				Kind:      domain.ErrCapability,
+				Message:   "endpoint does not support archival data",
+				Retryable: true,
+			}
+		}
+		return nil
+	}
+
+	var minHeight, relaxedMin uint64
+	if perceived > 0 && p.syncAllowance > 0 {
+		if perceived > p.syncAllowance {
+			minHeight = perceived - p.syncAllowance
+		}
+		relaxed := p.syncAllowance * 2
+		if perceived > relaxed {
+			relaxedMin = perceived - relaxed
+		}
+	}
+
+	blockFilter := qos.BlockHeightFilter(getHeight, minHeight)
+	relaxedBlockFilter := qos.BlockHeightFilter(getHeight, relaxedMin)
+
+	filters := []qos.FilterFunc{blockFilter, archivalFilter}
+	relaxedFilters := []qos.FilterFunc{relaxedBlockFilter, archivalFilter}
+	nonBlockFilters := []qos.FilterFunc{archivalFilter}
+
+	ranker := qos.LeastStaleFallback(getHeight, perceived)
+	result := qos.Select(endpoints, filters, relaxedFilters, nonBlockFilters, ranker)
+
+	if result.Degraded {
+		p.logger.Warn("endpoint selection degraded",
+			"tier", result.Tier,
+			"selected", len(result.Endpoints),
+			"total", len(endpoints),
+			"perceived_block", perceived,
+			"needs_archival", needsArchival,
+		)
+	}
+
+	return result.Endpoints, nil
+}
+
+// --- qos.BlockHeightTracker ---
+
+// UpdateBlockHeight records a new block height observation from an endpoint.
+func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) {
+	p.store.Update(endpoint, func(ep *evmEndpoint) {
+		ep.BlockNumber = height
+	})
+	p.consensus.AddObservation(endpoint, height)
+}
+
+// PerceivedBlockHeight returns the current consensus block height.
+func (p *Plugin) PerceivedBlockHeight() uint64 {
+	return p.consensus.PerceivedBlock()
+}
+
+// StartSync is a no-op for EVM; block heights are updated via health checks.
+func (p *Plugin) StartSync(ctx context.Context) {}
+
+// --- qos.BlockHeightParser ---
+
+// ParseBlockHeight extracts a block number from an eth_blockNumber response.
+func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
+	return extractBlockNumber(response)
+}
+
+// --- qos.ArchivalDetector ---
+
+// IsArchivalRequest returns true if any payload in the batch requests archival state.
+func (p *Plugin) IsArchivalRequest(payloads []domain.Payload) bool {
+	for _, payload := range payloads {
+		params := gjson.GetBytes(payload.Bytes(), "params").Raw
+		if isArchivalRequest(payload.Method(), json.RawMessage(params)) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsArchivalEndpoint returns true if the endpoint is known to support archival data.
+func (p *Plugin) IsArchivalEndpoint(endpoint domain.EndpointAddr) bool {
+	ep, ok := p.store.Get(endpoint)
+	if !ok {
+		return false
+	}
+	if !ep.IsArchival {
+		return false
+	}
+	if !ep.ArchivalExpiry.IsZero() && time.Now().After(ep.ArchivalExpiry) {
+		return false
+	}
+	return true
+}
+
+// --- qos.HealthChecker ---
+
+// HealthChecks returns the standard EVM health check payloads for an endpoint.
+func (p *Plugin) HealthChecks(endpoint domain.EndpointAddr) []qos.HealthCheck {
+	blockNumberBody := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+	chainIDBody := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":2}`)
+
+	return []qos.HealthCheck{
+		{
+			Name:    "eth_blockNumber",
+			Payload: domain.NewPayload(blockNumberBody, domain.RPCTypeJSONRPC, "eth_blockNumber"),
+		},
+		{
+			Name:    "eth_chainId",
+			Payload: domain.NewPayload(chainIDBody, domain.RPCTypeJSONRPC, "eth_chainId"),
+		},
+	}
+}
+
+// --- qos.DataExtractor ---
+
+// ExtractData parses health check responses for block number and chain ID.
+func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []byte) (*qos.ExtractedData, error) {
+	method := gjson.GetBytes(request, "method").String()
+
+	switch method {
+	case "eth_blockNumber":
+		height, err := extractBlockNumber(response)
+		if err != nil {
+			return nil, fmt.Errorf("eth_blockNumber: %w", err)
+		}
+		p.store.Update(endpoint, func(ep *evmEndpoint) {
+			ep.BlockNumber = height
+		})
+		p.consensus.AddObservation(endpoint, height)
+		return &qos.ExtractedData{BlockHeight: &height}, nil
+
+	case "eth_chainId":
+		chainID, err := extractChainID(response)
+		if err != nil {
+			return nil, fmt.Errorf("eth_chainId: %w", err)
+		}
+		// Record what the endpoint actually reported before asserting, so a
+		// mismatch is visible in endpoint state and not only in the error.
+		p.store.Update(endpoint, func(ep *evmEndpoint) {
+			ep.ChainID = chainID
+		})
+		if err := p.assertChainID(endpoint, chainID); err != nil {
+			return nil, err
+		}
+		return &qos.ExtractedData{ChainID: &chainID}, nil
+	}
+
+	return nil, nil
+}
+
+// assertChainID checks a reported chain ID against the service's configured
+// chain_id, and reports qos.ErrWrongChain when they disagree.
+//
+// The comparison is numeric, not textual. "0x531", "0x0531" and "0X531" are all
+// Sei, and endpoints are inconsistent about padding and case; a string compare
+// would eject honest endpoints for formatting. Parsing both sides also avoids
+// the substring trap — matching "0x1" inside a response would accept "0x1388".
+func (p *Plugin) assertChainID(endpoint domain.EndpointAddr, reported string) error {
+	if p.expectedChainID == "" {
+		return nil
+	}
+
+	want, err := parseHexUint64(p.expectedChainID)
+	if err != nil {
+		// config.validateChainID rejects this at load, so a running gateway
+		// cannot reach here. If it somehow does, decline to assert rather than
+		// eject every endpoint of the service over our own bad config.
+		p.logger.Warn("evm: configured chain_id is unparseable, skipping assertion",
+			"expected_chain_id", p.expectedChainID,
+			"error", err,
+		)
+		return nil
+	}
+
+	got, err := parseHexUint64(reported)
+	if err != nil {
+		return fmt.Errorf("eth_chainId: %w", err)
+	}
+
+	if got != want {
+		p.logger.Warn("evm: endpoint reported unexpected chain id",
+			"endpoint", endpoint,
+			"expected_chain_id", p.expectedChainID,
+			"reported_chain_id", reported,
+		)
+		return fmt.Errorf("%w: want %s, got %s", qos.ErrWrongChain, p.expectedChainID, reported)
+	}
+	return nil
+}
+
+// --- qos.CoalescenceClassifier ---
+
+// IsCoalescable returns true for read-only EVM methods that are safe to coalesce.
+func (p *Plugin) IsCoalescable(method string) bool {
+	return coalescableMethods[method]
+}
+
+// --- qos.CachePolicy ---
+
+// CacheTTL returns how long a response for the given method may be cached.
+//
+// Rules:
+//   - eth_getTransactionReceipt: 5 min (confirmed transaction, immutable)
+//   - eth_getBlockByNumber with a hex block param: 10 min (historical block, immutable)
+//   - eth_blockNumber: 0 (always fresh)
+//   - state-mutating or unknown methods: 0
+func (p *Plugin) CacheTTL(method string, params []byte, response []byte) time.Duration {
+	switch method {
+	case "eth_getTransactionReceipt":
+		return 5 * time.Minute
+
+	case "eth_getBlockByNumber":
+		// Only cache if referencing a specific (historical) block, not "latest" etc.
+		result := gjson.ParseBytes(params)
+		if result.IsArray() {
+			arr := result.Array()
+			if len(arr) > 0 && arr[0].Type == gjson.String {
+				blockParam := arr[0].String()
+				if !archivalBlockTags[blockParam] {
+					if _, err := parseHexUint64(blockParam); err == nil {
+						return 10 * time.Minute
+					}
+				}
+			}
+		}
+		return 0
+
+	case "eth_blockNumber":
+		return 0
+
+	case "eth_sendRawTransaction",
+		"eth_sendTransaction",
+		"eth_signTransaction",
+		"eth_sign",
+		"personal_sign":
+		return 0
+	}
+
+	return 0
+}
+
+// --- qos.ResponseFormatValidator ---
+
+// ValidateResponseFormat checks that the result field matches the expected type for the method.
+func (p *Plugin) ValidateResponseFormat(method string, result json.RawMessage) error {
+	switch method {
+	case "eth_blockNumber", "eth_chainId", "eth_gasPrice", "eth_maxPriorityFeePerGas":
+		return validateHexString(method, result)
+	}
+	return nil
+}
+
+// validateHexString returns an error if result is not a JSON string containing a hex value.
+func validateHexString(method string, result json.RawMessage) error {
+	parsed := gjson.ParseBytes(result)
+	if parsed.Type != gjson.String {
+		return fmt.Errorf("%s: expected hex string result, got %s", method, parsed.Type)
+	}
+	s := parsed.String()
+	if _, err := parseHexUint64(s); err != nil {
+		return fmt.Errorf("%s: result is not valid hex: %w", method, err)
+	}
+	return nil
+}
+
+// --- qos.LifecycleHooks ---
+
+// OnSessionChange touches known endpoints and sweeps those that have left the session.
+func (p *Plugin) OnSessionChange(serviceID domain.ServiceID, added, removed domain.EndpointAddrList) {
+	p.store.Touch(added)
+	for _, addr := range removed {
+		p.logger.Debug("endpoint removed from session",
+			"service", serviceID,
+			"endpoint", addr,
+		)
+	}
+}
+
+// OnEndpointDiscovered initialises a zero-valued store entry for a newly seen endpoint.
+func (p *Plugin) OnEndpointDiscovered(serviceID domain.ServiceID, endpoint domain.EndpointAddr) {
+	p.store.Update(endpoint, func(_ *evmEndpoint) {})
+	p.logger.Debug("endpoint discovered", "service", serviceID, "endpoint", endpoint)
+}
+
+// OnEndpointEvicted logs the eviction; the store entry is kept until SweepStale removes it.
+func (p *Plugin) OnEndpointEvicted(serviceID domain.ServiceID, endpoint domain.EndpointAddr) {
+	p.logger.Debug("endpoint evicted", "service", serviceID, "endpoint", endpoint)
+}

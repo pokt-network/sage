@@ -1,0 +1,219 @@
+// Package solana provides the Solana QoS plugin for SAGE.
+//
+// It implements block height tracking via getEpochInfo health checks and
+// filters session endpoints that are too far behind the perceived chain tip.
+package solana
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+
+	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/qos"
+)
+
+// solanaEndpoint holds per-endpoint state for a Solana session endpoint.
+type solanaEndpoint struct {
+	BlockHeight uint64
+	Slot        uint64
+}
+
+// Plugin is the Solana QoS plugin.
+type Plugin struct {
+	logger        *slog.Logger
+	syncAllowance uint64
+
+	store     *qos.EndpointStore[solanaEndpoint]
+	consensus *qos.BlockConsensus
+}
+
+// NewPlugin creates a Solana Plugin. syncAllowance is the maximum number of
+// blocks behind the perceived chain tip that an endpoint is allowed to be.
+func NewPlugin(logger *slog.Logger, syncAllowance uint64) *Plugin {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Plugin{
+		logger:        logger,
+		syncAllowance: syncAllowance,
+		store:         qos.NewEndpointStore[solanaEndpoint](logger),
+		consensus:     qos.NewBlockConsensus(logger, syncAllowance),
+	}
+}
+
+// --- qos.Plugin --- //
+
+// ParseRequest validates the request body and extracts a single JSON-RPC payload.
+func (p *Plugin) ParseRequest(_ context.Context, _ *http.Request, body []byte, _ domain.RPCType) ([]domain.Payload, error) {
+	payload, err := parseRequest(body)
+	if err != nil {
+		return nil, &domain.RelayError{
+			Kind:      domain.ErrValidation,
+			Message:   err.Error(),
+			Retryable: false,
+		}
+	}
+	return []domain.Payload{payload}, nil
+}
+
+// SelectEndpoints filters session endpoints by block height.
+func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.Payload) (domain.EndpointAddrList, error) {
+	perceived := p.consensus.PerceivedBlock()
+
+	getHeight := func(addr domain.EndpointAddr) (uint64, bool) {
+		data, ok := p.store.Get(addr)
+		if !ok {
+			return 0, false
+		}
+		return data.BlockHeight, true
+	}
+
+	var minHeight uint64
+	if perceived > p.syncAllowance {
+		minHeight = perceived - p.syncAllowance
+	}
+
+	blockFilter := qos.BlockHeightFilter(getHeight, minHeight)
+
+	// Build relaxed filter at 2x sync allowance.
+	var relaxedMin uint64
+	if perceived > p.syncAllowance*2 {
+		relaxedMin = perceived - p.syncAllowance*2
+	}
+	relaxedFilter := qos.BlockHeightFilter(getHeight, relaxedMin)
+
+	result := qos.Select(
+		endpoints,
+		[]qos.FilterFunc{blockFilter},
+		[]qos.FilterFunc{relaxedFilter},
+		nil, // tier 3: return all (no other filters)
+		qos.LeastStaleFallback(getHeight, perceived),
+	)
+
+	return result.Endpoints, nil
+}
+
+// --- qos.BlockHeightTracker --- //
+
+// UpdateBlockHeight records a block height observation from an endpoint.
+func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) {
+	p.store.Update(endpoint, func(ep *solanaEndpoint) {
+		ep.BlockHeight = height
+	})
+	p.consensus.AddObservation(endpoint, height)
+}
+
+// PerceivedBlockHeight returns the current consensus block height.
+func (p *Plugin) PerceivedBlockHeight() uint64 {
+	return p.consensus.PerceivedBlock()
+}
+
+// StartSync is a no-op for Solana; health checks drive updates externally.
+func (p *Plugin) StartSync(_ context.Context) {}
+
+// --- qos.BlockHeightParser --- //
+
+// ParseBlockHeight extracts a block height from a Solana JSON-RPC response.
+// It handles getEpochInfo responses (result.blockHeight or result.absoluteSlot).
+func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
+	return extractBlockHeightFromResponse(response)
+}
+
+// --- qos.HealthChecker --- //
+
+// HealthChecks returns the health check payloads for the given endpoint.
+// Solana health checks: getEpochInfo (for block height) and getHealth.
+func (p *Plugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck {
+	return []qos.HealthCheck{
+		{
+			Name:    "getEpochInfo",
+			Payload: epochInfoPayload(),
+		},
+		{
+			Name:    "getHealth",
+			Payload: getHealthPayload(),
+		},
+	}
+}
+
+// --- qos.DataExtractor --- //
+
+// ExtractData parses structured data from a Solana relay response.
+// It extracts the block height from getEpochInfo responses.
+func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []byte) (*qos.ExtractedData, error) {
+	height, err := extractBlockHeightFromResponse(response)
+	if err != nil {
+		// Not every response carries a block height — not an error worth surfacing.
+		return &qos.ExtractedData{}, nil
+	}
+
+	_, err = qos.ValidateBlockHeight(height, p.consensus.PerceivedBlock(), p.syncAllowance)
+	if err != nil {
+		return nil, fmt.Errorf("solana: invalid block height from endpoint %s: %w", endpoint, err)
+	}
+
+	return &qos.ExtractedData{BlockHeight: &height}, nil
+}
+
+// --- qos.CoalescenceClassifier --- //
+
+// IsCoalescable returns true for read-only methods that are safe to de-duplicate.
+// Write methods (sendTransaction, simulateTransaction) must never be coalesced.
+func (p *Plugin) IsCoalescable(method string) bool {
+	return coalescableMethods[method]
+}
+
+// --- qos.LifecycleHooks --- //
+
+// OnSessionChange sweeps stale endpoints that were removed from the session.
+func (p *Plugin) OnSessionChange(_ domain.ServiceID, _, removed domain.EndpointAddrList) {
+	for _, addr := range removed {
+		// Evict removed endpoints so stale data doesn't pollute consensus.
+		p.store.Update(addr, func(ep *solanaEndpoint) {
+			ep.BlockHeight = 0
+			ep.Slot = 0
+		})
+	}
+}
+
+// OnEndpointDiscovered is called when a new endpoint enters a session.
+func (p *Plugin) OnEndpointDiscovered(_ domain.ServiceID, _ domain.EndpointAddr) {}
+
+// OnEndpointEvicted is called when an endpoint is permanently evicted.
+func (p *Plugin) OnEndpointEvicted(_ domain.ServiceID, _ domain.EndpointAddr) {}
+
+// --- payload helpers --- //
+
+func epochInfoPayload() domain.Payload {
+	body, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getEpochInfo",
+		"params":  []any{},
+	})
+	return domain.NewPayload(body, domain.RPCTypeJSONRPC, "getEpochInfo")
+}
+
+func getHealthPayload() domain.Payload {
+	body, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getHealth",
+		"params":  []any{},
+	})
+	return domain.NewPayload(body, domain.RPCTypeJSONRPC, "getHealth")
+}
+
+// Compile-time interface assertions.
+var (
+	_ qos.Plugin                = (*Plugin)(nil)
+	_ qos.BlockHeightTracker    = (*Plugin)(nil)
+	_ qos.BlockHeightParser     = (*Plugin)(nil)
+	_ qos.HealthChecker         = (*Plugin)(nil)
+	_ qos.DataExtractor         = (*Plugin)(nil)
+	_ qos.CoalescenceClassifier = (*Plugin)(nil)
+	_ qos.LifecycleHooks        = (*Plugin)(nil)
+)

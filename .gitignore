@@ -1,0 +1,32 @@
+# Build artifacts
+/sagegw
+bin/
+vendor/
+
+# Test & coverage
+*.test
+*.out
+*.prof
+coverage.html
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets & local config
+.env
+.env.*
+*.local.yaml
+*.local.yml
+config.local.*
+
+# Logs
+*.log
+bench/results/
+local/

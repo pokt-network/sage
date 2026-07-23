@@ -1,0 +1,202 @@
+package middleware
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/pokt-network/sage/config"
+	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/relay"
+)
+
+func hedgeCfg(delay time.Duration) func(domain.ServiceID) config.RetryConfig {
+	return func(_ domain.ServiceID) config.RetryConfig {
+		return config.RetryConfig{HedgeDelay: delay}
+	}
+}
+
+func TestHedge_PrimaryWinsBeforeDelay(t *testing.T) {
+	// Primary completes instantly — hedge should never be launched.
+	var calls int32
+	fast := relay.HandlerFunc(func(ctx *relay.Context) error {
+		atomic.AddInt32(&calls, 1)
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	mw := Hedge(newFlags("hedge"), hedgeCfg(50*time.Millisecond))
+	h := mw(fast)
+
+	ctx := baseContext()
+	start := time.Now()
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	// Should return well before the hedge delay.
+	if elapsed := time.Since(start); elapsed >= 40*time.Millisecond {
+		t.Errorf("expected fast return, took %v", elapsed)
+	}
+	if ctx.Response == nil {
+		t.Error("expected response to be set")
+	}
+}
+
+func TestHedge_HedgeWinsAfterDelay(t *testing.T) {
+	// Primary is slow (100ms), hedge fires at 20ms and completes quickly.
+	var callCount int32
+
+	slow := relay.HandlerFunc(func(ctx *relay.Context) error {
+		n := atomic.AddInt32(&callCount, 1)
+		if n == 1 {
+			// Primary: slow
+			time.Sleep(100 * time.Millisecond)
+		}
+		// Hedge (n==2): fast
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	mw := Hedge(newFlags("hedge"), hedgeCfg(20*time.Millisecond))
+	h := mw(slow)
+
+	ctx := baseContext()
+	start := time.Now()
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatalf("expected hedge to win, got %v", err)
+	}
+
+	elapsed := time.Since(start)
+	// Should complete well before the primary's 100ms.
+	if elapsed >= 80*time.Millisecond {
+		t.Errorf("expected hedge to win quickly, took %v", elapsed)
+	}
+	if atomic.LoadInt32(&callCount) < 2 {
+		t.Error("expected both primary and hedge to have been called")
+	}
+}
+
+func TestHedge_BothFail_ReturnsPrimaryError(t *testing.T) {
+	primaryErr := retryableErr("primary failed")
+	hedgeErr := retryableErr("hedge failed")
+
+	var callCount int32
+	handler := relay.HandlerFunc(func(ctx *relay.Context) error {
+		n := atomic.AddInt32(&callCount, 1)
+		if n == 1 {
+			// Primary: fail after a short pause
+			time.Sleep(5 * time.Millisecond)
+			return primaryErr
+		}
+		// Hedge: fail immediately
+		return hedgeErr
+	})
+
+	mw := Hedge(newFlags("hedge"), hedgeCfg(2*time.Millisecond))
+	h := mw(handler)
+
+	ctx := baseContext()
+	err := h.HandleRelay(ctx)
+	if err == nil {
+		t.Fatal("expected error when both arms fail")
+	}
+	if err != primaryErr {
+		t.Errorf("expected primary error %v, got %v", primaryErr, err)
+	}
+}
+
+// TestHedge_LoserContextDetachedFromCaller verifies that the losing arm runs on
+// a context detached from the caller's request context: cancelling the caller
+// after the winner returns must NOT cancel the loser's in-flight (signed) relay.
+// Without detachment the loser would be torn down (TCP RST to the supplier).
+func TestHedge_LoserContextDetachedFromCaller(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	var loserCtx context.Context
+	release := make(chan struct{})
+	var n int32
+
+	handler := relay.HandlerFunc(func(ctx *relay.Context) error {
+		if atomic.AddInt32(&n, 1) == 1 {
+			// Primary = loser: capture its context, then block until released.
+			mu.Lock()
+			loserCtx = ctx.Ctx
+			mu.Unlock()
+			<-release
+			ctx.Response = &domain.Response{HTTPStatusCode: 200}
+			return nil
+		}
+		// Hedge = winner: succeed immediately.
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	mw := Hedge(newFlags("hedge"), hedgeCfg(10*time.Millisecond))
+	h := mw(handler)
+
+	ctx := baseContext()
+	ctx.Ctx = parent
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatalf("expected hedge to win, got %v", err)
+	}
+
+	// Caller's request ends — cancel the parent context.
+	cancel()
+	time.Sleep(20 * time.Millisecond) // allow any (erroneous) propagation
+
+	mu.Lock()
+	lc := loserCtx
+	mu.Unlock()
+	if lc == nil {
+		t.Fatal("primary (loser) arm never ran")
+	}
+	if lc.Err() != nil {
+		t.Fatalf("loser context was cancelled by caller (got %v) — drain not applied", lc.Err())
+	}
+	close(release) // let the loser finish cleanly
+}
+
+func TestHedge_FlagDisabled_PassesThrough(t *testing.T) {
+	var calls int32
+	handler := relay.HandlerFunc(func(ctx *relay.Context) error {
+		atomic.AddInt32(&calls, 1)
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	mw := Hedge(newFlags( /* no "hedge" flag */ ), hedgeCfg(5*time.Millisecond))
+	h := mw(handler)
+
+	ctx := baseContext()
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Errorf("expected exactly 1 call with flag disabled, got %d", calls)
+	}
+}
+
+func TestHedge_HedgeDelayZero_PassesThrough(t *testing.T) {
+	var calls int32
+	handler := relay.HandlerFunc(func(ctx *relay.Context) error {
+		atomic.AddInt32(&calls, 1)
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	mw := Hedge(newFlags("hedge"), hedgeCfg(0))
+	h := mw(handler)
+
+	ctx := baseContext()
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Errorf("expected exactly 1 call when HedgeDelay==0, got %d", calls)
+	}
+}

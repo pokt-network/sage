@@ -1,0 +1,63 @@
+name: Bug report
+description: Something isn't working as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not paste private keys, `local/` contents, or
+        anything from a config that contains a key.** If the issue involves key
+        exposure, unauthorized relaying, or reconfiguring the gateway, report it
+        privately instead — see [SECURITY.md](../blob/main/SECURITY.md).
+
+        Before filing: `ARCHITECTURE.md` explains most non-obvious behavior, and
+        many surprises turn out to be the network or the config, not a bug — an
+        unstaked service, a wrong `Target-Service-Id`, or a config key that landed
+        in `cfg.Ignored` and warned at startup.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The `version` field logged at startup, or `git describe`
+      placeholder: v0.0.0 (commit …)
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: RPC type / transport
+      options:
+        - json_rpc
+        - rest
+        - comet_bft
+        - websocket
+        - grpc
+        - other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got. Include the exact error text and any relevant log lines — with keys redacted.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (keys redacted)
+      description: The section involved. Replace any private key with its length only.
+      render: yaml
+  - type: input
+    id: network
+    attributes:
+      label: Network & service
+      placeholder: "beta / pnf-pocket-beta"
+  - type: dropdown
+    id: redis
+    attributes:
+      label: Running with Redis?
+      options:
+        - "no (local-only)"
+        - "yes (shared state)"
+        - "not sure"

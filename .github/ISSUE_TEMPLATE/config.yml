@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/pokt-network/sage/security/advisories/new
+    about: Report privately — never in a public issue. See SECURITY.md.
+  - name: Question / usage help
+    url: https://github.com/pokt-network/sage/discussions
+    about: For "how do I…" questions. Read README.md and ARCHITECTURE.md first.
