@@ -66,8 +66,8 @@ func newSupplierKey() supplierKey {
 }
 
 // signedRelayResponse builds the wire bytes of a RelayResponse signed by key.
-func signedRelayResponse(t *testing.T, key supplierKey, payload []byte) []byte {
-	t.Helper()
+func signedRelayResponse(tb testing.TB, key supplierKey, payload []byte) []byte {
+	tb.Helper()
 
 	appAddr := sdktypes.AccAddress(secp256k1.GenPrivKey().PubKey().Address()).String()
 	resp := &servicetypes.RelayResponse{
@@ -85,17 +85,17 @@ func signedRelayResponse(t *testing.T, key supplierKey, payload []byte) []byte {
 
 	hash, err := resp.GetSignableBytesHash()
 	if err != nil {
-		t.Fatalf("signable hash: %v", err)
+		tb.Fatalf("signable hash: %v", err)
 	}
 	sig, err := key.priv.Sign(hash[:])
 	if err != nil {
-		t.Fatalf("sign: %v", err)
+		tb.Fatalf("sign: %v", err)
 	}
 	resp.Meta.SupplierOperatorSignature = sig
 
 	bz, err := resp.Marshal()
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		tb.Fatalf("marshal: %v", err)
 	}
 	return bz
 }
