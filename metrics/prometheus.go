@@ -84,6 +84,12 @@ type Recorder struct {
 	endpointScore         *prometheus.GaugeVec
 	degradedTotal         *prometheus.CounterVec
 	circuitBreaks         *prometheus.CounterVec
+	supplierBlacklists    *prometheus.CounterVec
+	relayMinerErrors      *prometheus.CounterVec
+
+	// codespaces bounds the relay miner error codespace label, which is a
+	// string chosen by the supplier's relay miner.
+	codespaces *boundedLabel
 }
 
 // NewRecorder creates a Recorder and registers all metrics with
@@ -182,6 +188,23 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "domain"},
 		),
+		supplierBlacklists: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "supplier_blacklists_total",
+				Help:      "Total supplier blacklist events from relay response validation, by service and reason.",
+			},
+			[]string{"service_id", "reason"},
+		),
+		relayMinerErrors: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "relay_miner_errors_total",
+				Help:      "Total relay responses carrying a RelayMinerError, by service and miner error codespace.",
+			},
+			[]string{"service_id", "codespace"},
+		),
+		codespaces: newBoundedLabel(maxCodespaceLabels),
 	}
 
 	prometheus.MustRegister(
@@ -195,6 +218,8 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.endpointScore,
 		r.degradedTotal,
 		r.circuitBreaks,
+		r.supplierBlacklists,
+		r.relayMinerErrors,
 	)
 
 	return r
@@ -255,6 +280,22 @@ func (r *Recorder) RecordDegraded(serviceID domain.ServiceID, tier string) {
 // RecordCircuitBreak increments the circuit break counter for a domain.
 func (r *Recorder) RecordCircuitBreak(serviceID domain.ServiceID, domain string) {
 	r.circuitBreaks.WithLabelValues(r.serviceLabel(serviceID), sanitizeLabel(domain)).Inc()
+}
+
+// RecordSupplierBlacklist increments the supplier blacklist counter.
+//
+// reason comes from a closed set defined in protocol/shannon, not from the
+// network, so it needs no bounding.
+func (r *Recorder) RecordSupplierBlacklist(serviceID domain.ServiceID, reason string) {
+	r.supplierBlacklists.WithLabelValues(r.serviceLabel(serviceID), reason).Inc()
+}
+
+// RecordRelayMinerError increments the counter of relay responses that carried
+// an error report from the supplier's relay miner.
+//
+// codespace is written by that miner, so it is bounded here — see boundedLabel.
+func (r *Recorder) RecordRelayMinerError(serviceID domain.ServiceID, codespace string) {
+	r.relayMinerErrors.WithLabelValues(r.serviceLabel(serviceID), r.codespaces.value(codespace)).Inc()
 }
 
 // ServeHTTP returns a standard Prometheus HTTP handler suitable for mounting

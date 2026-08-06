@@ -62,8 +62,11 @@ type Protocol struct {
 	appCache   sync.Map // appAddr (string) → *apptypes.Application
 	httpClient *http.Client
 	// grpc carries gRPC relays, which cannot ride the HTTP path.
-	grpc   *grpcRelayTransport
-	logger *slog.Logger
+	grpc *grpcRelayTransport
+	// metrics records supplier-attributable events (blacklists, relay miner
+	// errors). Never nil — see SetMetrics.
+	metrics supplierMetrics
+	logger  *slog.Logger
 }
 
 // New constructs a Protocol from the given configuration.
@@ -107,6 +110,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 		ownedApps:   ownedApps,
 		httpClient:  httpClient,
 		grpc:        newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
+		metrics:     noopSupplierMetrics{},
 		logger:      logger.With("component", "shannon_protocol"),
 	}, nil
 }
@@ -264,20 +268,17 @@ func (p *Protocol) SendRelay(
 		}
 	}
 
-	// Validate the relay response signature.
+	// Verify the supplier's signature over the response. See
+	// FullNode.ValidateRelayResponse: the key is the one belonging to the
+	// supplier we selected, which is what makes these bytes attributable.
 	relayResp, err := p.fullNode.ValidateRelayResponse(ep.Supplier(), respBz)
+
+	// Read the miner's error report first — it survives a validation failure,
+	// and branching on err would discard it.
+	p.trackRelayMinerError(serviceID, endpointAddr, ep.Supplier(), relayResp)
+
 	if err != nil {
-		p.logger.Error("SendRelay: relay response validation failed",
-			"component", "shannon",
-			"service_id", serviceID,
-			"endpoint_addr", endpointAddr,
-			"supplier_addr", ep.Supplier(),
-			"error", err,
-			"http_status", httpStatus,
-		)
-		// Blacklist the supplier for validation failures to protect domain reputation.
-		p.bl.BlacklistSupplier(serviceID, ep.Supplier())
-		return nil, domain.NewRelayError(domain.ErrProtocol, "relay response validation failed", err, true)
+		return nil, p.handleValidationFailure(serviceID, endpointAddr, ep.Supplier(), err, "http_status", httpStatus)
 	}
 
 	// Deserialize the relay response payload into an HTTP response.

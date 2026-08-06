@@ -244,6 +244,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	recorder := metrics.NewRecorder(serviceIDsFrom(cfg))
 	app.Metrics = recorder
 
+	// Supplier blacklists and relay miner errors are recorded by the protocol
+	// itself: both are decided inside response validation, below the middleware
+	// chain that carries the recorder.
+	if app.Protocol != nil {
+		app.Protocol.SetMetrics(recorder)
+	}
+
 	// The reputation pool-collapse guard serves a below-threshold endpoint when
 	// no endpoint clears the floor. That keeps the service up, which is the
 	// point — but it must not be silent, or a pool that has degraded to

@@ -233,6 +233,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		r.deps.Protocol,
 		session.Header,
 		ep.Supplier(),
+		ep.Addr(),
 		app,
 		func(payload []byte, frameErr error, latency time.Duration) {
 			select {

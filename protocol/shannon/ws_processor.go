@@ -36,6 +36,7 @@ type wsMessageProcessor struct {
 	ctx           context.Context
 	sessionHeader *sessiontypes.SessionHeader
 	supplierAddr  string
+	endpointAddr  domain.EndpointAddr
 	app           *apptypes.Application
 
 	// sessionActive gates ProcessClientMessage. Flipped to false by the
@@ -55,6 +56,7 @@ func newWSMessageProcessor(
 	protocol *Protocol,
 	sessionHeader *sessiontypes.SessionHeader,
 	supplierAddr string,
+	endpointAddr domain.EndpointAddr,
 	app *apptypes.Application,
 	onEndpointFrame frameCallback,
 ) *wsMessageProcessor {
@@ -63,6 +65,7 @@ func newWSMessageProcessor(
 		ctx:             ctx,
 		sessionHeader:   sessionHeader,
 		supplierAddr:    supplierAddr,
+		endpointAddr:    endpointAddr,
 		app:             app,
 		onEndpointFrame: onEndpointFrame,
 	}
@@ -117,18 +120,28 @@ func (p *wsMessageProcessor) ProcessClientMessage(data []byte) ([]byte, error) {
 // RelayResponse.Payload (see poktroll websockets/bridge.go line ~363), so
 // no HTTP envelope decoding is needed or permitted here.
 //
-// Validation failure blacklists the supplier (same policy as the HTTP path)
-// and returns an error; the bridge treats that as terminal and shuts down.
+// Validation failure goes through the same policy as the HTTP path
+// (Protocol.handleValidationFailure: blacklist only what the supplier is
+// answerable for) and returns an error; the bridge treats that as terminal and
+// shuts down.
 func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error) {
 	start := time.Now()
+	serviceID := domain.ServiceID(p.sessionHeader.ServiceId)
 
 	relayResp, err := p.protocol.fullNode.ValidateRelayResponse(p.supplierAddr, data)
+
+	// Read the miner's error report before branching on err — see
+	// Protocol.trackRelayMinerError.
+	p.protocol.trackRelayMinerError(serviceID, p.endpointAddr, p.supplierAddr, relayResp)
+
 	if err != nil {
-		p.protocol.bl.BlacklistSupplier(domain.ServiceID(p.sessionHeader.ServiceId), p.supplierAddr)
+		validationErr := p.protocol.handleValidationFailure(
+			serviceID, p.endpointAddr, p.supplierAddr, err, "transport", "websocket",
+		)
 		if p.onEndpointFrame != nil {
-			p.onEndpointFrame(nil, err, time.Since(start))
+			p.onEndpointFrame(nil, validationErr, time.Since(start))
 		}
-		return nil, fmt.Errorf("ws ProcessEndpointMessage: validate: %w", err)
+		return nil, fmt.Errorf("ws ProcessEndpointMessage: validate: %w", validationErr)
 	}
 
 	latency := time.Since(start)

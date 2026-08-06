@@ -27,7 +27,12 @@ type FullNode struct {
 	accountClient *sdk.AccountClient
 	appClient     *sdk.ApplicationClient
 	sharedClient  *sdk.SharedClient
-	logger        *slog.Logger
+	// pubKeys serves supplier public keys for response verification from
+	// memory. The account client behind it queries the full node on every
+	// call, and verification runs on every relay response and every WebSocket
+	// frame — see pubkeycache.go.
+	pubKeys *pubKeyCache
+	logger  *slog.Logger
 }
 
 // NewFullNode constructs a FullNode from the provided configuration.
@@ -66,6 +71,7 @@ func NewFullNode(cfg config.FullNodeConfig, logger *slog.Logger) (*FullNode, err
 		accountClient: accountClient,
 		appClient:     appClient,
 		sharedClient:  sharedClient,
+		pubKeys:       newPubKeyCache(accountClient, logger),
 		logger:        logger,
 	}, nil
 }
@@ -110,13 +116,42 @@ func (fn *FullNode) GetSharedParams(ctx context.Context) (*sharedtypes.Params, e
 }
 
 // ValidateRelayResponse validates the raw relay response bytes and verifies the supplier's signature.
+//
+// The signature is checked against the public key of the supplier address the
+// caller passes in — the endpoint we selected and sent to — not against any
+// address the response claims for itself. So a successful return means these
+// bytes came from that supplier, and a response signed by anyone else fails
+// here.
+//
+// Keys come from an in-process cache (pubkeycache.go), which is what keeps this
+// off the full node on the hot path. A failure that the key could explain is
+// retried once against a freshly fetched key: the cached answer may be the "no
+// key onchain" one taken before the supplier's first transaction. That retry is
+// rate-limited per supplier, so a supplier signing badly cannot turn every relay
+// into two account queries. On a failed retry the original error is returned —
+// it is the one that describes the response.
 func (fn *FullNode) ValidateRelayResponse(supplierAddr string, responseBz []byte) (*servicetypes.RelayResponse, error) {
-	return sdk.ValidateRelayResponse(
-		context.Background(),
-		sdk.SupplierAddress(supplierAddr),
-		responseBz,
-		fn.accountClient,
+	ctx := context.Background()
+
+	resp, err := sdk.ValidateRelayResponse(ctx, sdk.SupplierAddress(supplierAddr), responseBz, fn.pubKeys)
+	if err == nil || !isPubKeyRelatedError(err) {
+		return resp, err
+	}
+	if !fn.pubKeys.allowRefetch(supplierAddr) {
+		return resp, err
+	}
+
+	fn.pubKeys.invalidate(supplierAddr)
+	retryResp, retryErr := sdk.ValidateRelayResponse(ctx, sdk.SupplierAddress(supplierAddr), responseBz, fn.pubKeys)
+	if retryErr != nil {
+		return resp, err
+	}
+
+	fn.logger.Info("ValidateRelayResponse: signature verified after public key refetch",
+		"supplier_addr", supplierAddr,
+		"original_error", err,
 	)
+	return retryResp, nil
 }
 
 // AccountClient returns the account client, used for relay request signing.

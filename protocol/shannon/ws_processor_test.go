@@ -3,12 +3,14 @@ package shannon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	apptypes "github.com/pokt-network/poktroll/x/application/types"
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
+	sdk "github.com/pokt-network/shannon-sdk"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -46,6 +48,7 @@ func buildProcessorFixture() (*Protocol, *wsMessageProcessor, *countingSigner, *
 		p,
 		header,
 		"pokt1supplier",
+		"endpoint-1",
 		&apptypes.Application{Address: "pokt1app"},
 		nil,
 	)
@@ -99,7 +102,7 @@ func TestWSProcessor_ProcessEndpointMessage_InvokesCallback(t *testing.T) {
 	proc := newWSMessageProcessor(
 		context.Background(), p,
 		&sessiontypes.SessionHeader{ServiceId: "eth", SessionEndBlockHeight: 200},
-		"pokt1supplier", &apptypes.Application{Address: "pokt1app"}, cb,
+		"pokt1supplier", "endpoint-1", &apptypes.Application{Address: "pokt1app"}, cb,
 	)
 
 	out, err := proc.ProcessEndpointMessage([]byte(`inbound-wire-bytes`))
@@ -121,7 +124,11 @@ func TestWSProcessor_ProcessEndpointMessage_InvokesCallback(t *testing.T) {
 }
 
 func TestWSProcessor_ProcessEndpointMessage_ValidationFailure_Blacklists(t *testing.T) {
-	fn := &mockRelayFullNode{validateErr: errors.New("bad signature")}
+	// A signature failure is the supplier's: it signed with a key that is not
+	// the one its onchain address publishes.
+	fn := &mockRelayFullNode{
+		validateErr: fmt.Errorf("%w: bad signature", sdk.ErrRelayResponseValidationSignatureError),
+	}
 	p := &Protocol{
 		fullNode: fn, signer: &countingSigner{}, bl: newBlacklist(),
 		logger: newTestLogger(),
@@ -131,7 +138,7 @@ func TestWSProcessor_ProcessEndpointMessage_ValidationFailure_Blacklists(t *test
 	proc := newWSMessageProcessor(
 		context.Background(), p,
 		&sessiontypes.SessionHeader{ServiceId: "eth", SessionEndBlockHeight: 200},
-		"pokt1bad", &apptypes.Application{Address: "pokt1app"},
+		"pokt1bad", "endpoint-1", &apptypes.Application{Address: "pokt1app"},
 		func(_ []byte, err error, _ time.Duration) { gotErr = err },
 	)
 
