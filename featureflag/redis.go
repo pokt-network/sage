@@ -66,6 +66,13 @@ func NewRedisStore(client RedisClient, overrides map[string]bool, opts ...RedisS
 	return s
 }
 
+// IsEnabled resolves a flag in precedence order: the per-service key in Redis,
+// the global key in Redis, the config overrides, then compiled DefaultFlags.
+//
+// Reads go through the local cache, which caches misses and Redis errors as
+// well as hits — so an unreachable Redis degrades to defaults for one cache
+// TTL rather than putting a round trip on every relay. A nil client is the same
+// path, permanently. Redis is optional here as everywhere on the hot path.
 func (s *RedisStore) IsEnabled(ctx context.Context, flag string, serviceID domain.ServiceID) bool {
 	// Try per-service override first.
 	if serviceID != "" {
@@ -86,14 +93,26 @@ func (s *RedisStore) IsEnabled(ctx context.Context, flag string, serviceID domai
 	return DefaultFlags[flag]
 }
 
+// Set changes a flag globally across every instance sharing this Redis. The
+// local cache is updated first, so the calling instance sees the change even if
+// the write fails; peers pick it up within their own cache TTL.
 func (s *RedisStore) Set(ctx context.Context, flag string, enabled bool) error {
 	return s.set(ctx, globalKey(flag), enabled)
 }
 
+// SetForService overrides a flag for one service, taking precedence over the
+// global key for that service only.
 func (s *RedisStore) SetForService(ctx context.Context, flag string, serviceID domain.ServiceID, enabled bool) error {
 	return s.set(ctx, serviceKey(flag, serviceID), enabled)
 }
 
+// GetAll returns the effective state of every known flag, layering the Redis
+// keys onto the config overrides and DefaultFlags.
+//
+// Unlike IsEnabled this bypasses the cache and scans Redis, so it reflects
+// what peers have set right now — it is an admin read, not a hot path. On a
+// scan error it returns the defaults it has along with the error rather than
+// nothing, so the caller can still show something useful.
 func (s *RedisStore) GetAll(ctx context.Context) (map[string]FlagState, error) {
 	result := make(map[string]FlagState)
 
@@ -143,6 +162,9 @@ func (s *RedisStore) GetAll(ctx context.Context) (map[string]FlagState, error) {
 	return result, nil
 }
 
+// Delete removes a flag key so it falls back to the config override or the
+// compiled default. An empty serviceID targets the global key; a set one
+// targets that service's override.
 func (s *RedisStore) Delete(ctx context.Context, flag string, serviceID domain.ServiceID) error {
 	var key string
 	if serviceID != "" {

@@ -7,9 +7,21 @@ import "time"
 //   - gateway_config.services (production)
 //   - gateway_config.unified_services.services (newer format)
 type GatewayConfig struct {
-	GatewayMode          string   `yaml:"gateway_mode"`
-	GatewayAddress       string   `yaml:"gateway_address"`
-	GatewayPrivateKeyHex string   `yaml:"gateway_private_key_hex"`
+	// GatewayMode names PATH's delegation mode ("centralized", "delegated",
+	// "permissionless"). Required when the Shannon backend is in use — startup
+	// fails without it — but the *value* is not acted on: SAGE derives how to
+	// sign from the keys it was given rather than from a declared mode.
+	GatewayMode string `yaml:"gateway_mode"`
+	// GatewayAddress is the gateway's own bech32 Shannon address, sent with
+	// each relay so the supplier can verify the delegation.
+	GatewayAddress string `yaml:"gateway_address"`
+	// GatewayPrivateKeyHex is the hex-encoded key the gateway signs relays
+	// with. **A secret** — it is why pprof defaults to off, since a heap dump
+	// contains it.
+	GatewayPrivateKeyHex string `yaml:"gateway_private_key_hex"`
+	// OwnedAppsPrivateKeys are hex-encoded application keys the gateway relays
+	// on behalf of. Each staked application funds the relays sent under it.
+	// **Secrets**, same as above.
 	OwnedAppsPrivateKeys []string `yaml:"owned_apps_private_keys_hex"`
 
 	Reputation ReputationConfig `yaml:"reputation_config"`
@@ -98,16 +110,34 @@ type UnifiedServicesConfig struct {
 	Defaults        ServiceDefaults           `yaml:"defaults"`
 	Services        []ServiceConfig           `yaml:"services"`
 	LatencyProfiles map[string]LatencyProfile `yaml:"latency_profiles"`
-	MiddlewareChain []string                  `yaml:"middleware_chain"`
+	// MiddlewareChain is the older location for the chain order. The
+	// gateway-level gateway_config.middleware_chain wins when both are set;
+	// this is read so a config written against the earlier layout keeps
+	// working. See GatewayConfig.MiddlewareChain for what the values mean.
+	MiddlewareChain []string `yaml:"middleware_chain"`
 }
 
 // ServiceConfig defines a single service.
 type ServiceConfig struct {
-	ID             string   `yaml:"id"`
-	Type           string   `yaml:"type"`
-	RPCTypes       []string `yaml:"rpc_types"`
-	SyncAllowance  uint64   `yaml:"sync_allowance"`
-	LatencyProfile string   `yaml:"latency_profile"`
+	// ID is the service identifier clients name in the Target-Service-Id
+	// header, and the key everything per-service is looked up by.
+	ID string `yaml:"id"`
+	// Type selects the QoS plugin: "evm", "cosmos", "solana", or anything else
+	// for the passthrough plugin, which relays and scores but understands
+	// nothing about the payload.
+	Type string `yaml:"type"`
+	// RPCTypes lists the protocols this service is expected to serve
+	// ("json_rpc", "rest", "comet_bft", "websocket", "grpc"). Read by the
+	// Cosmos plugin, which fronts several protocols on one service.
+	RPCTypes []string `yaml:"rpc_types"`
+	// SyncAllowance is how many blocks behind the perceived chain head an
+	// endpoint may fall and still be selected. Zero means the plugin's own
+	// default. Too tight and a healthy pool empties on every block; too loose
+	// and clients read stale state.
+	SyncAllowance uint64 `yaml:"sync_allowance"`
+	// LatencyProfile is parsed and not implemented. It names an entry in
+	// gateway_config.latency_profiles, which is itself not wired.
+	LatencyProfile string `yaml:"latency_profile"`
 
 	// ChainID is the chain identifier this service is expected to serve, as the
 	// chain itself reports it. When set, health checks assert the endpoint
@@ -151,20 +181,48 @@ type ServiceDefaults struct {
 
 // TimeoutConfig controls relay timeouts.
 type TimeoutConfig struct {
+	// RelayTimeout bounds a single relay attempt to one endpoint — not the
+	// whole client request, which may span several attempts under retry and
+	// hedge.
 	RelayTimeout time.Duration `yaml:"relay_timeout"`
 }
 
 // RetryConfig controls retry behavior. Zero values = disabled.
 type RetryConfig struct {
-	Enabled           bool          `yaml:"enabled"`
-	MaxRetries        int           `yaml:"max_retries"`
-	MaxRetryLatency   time.Duration `yaml:"max_retry_latency"`
-	RetryOn5xx        bool          `yaml:"retry_on_5xx"`
-	RetryOnTimeout    bool          `yaml:"retry_on_timeout"`
-	RetryOnConnection bool          `yaml:"retry_on_connection"`
-	ConnectTimeout    time.Duration `yaml:"connect_timeout"`
-	HedgeDelay        time.Duration `yaml:"hedge_delay"`
-	MaxLatency        time.Duration `yaml:"max_latency"`
+	// Enabled is not read on its own — retries are on when MaxRetries > 0, so
+	// the count is the switch. See IsEnabled.
+	Enabled bool `yaml:"enabled"`
+	// MaxRetries is how many further endpoints a failed relay may be tried on.
+	// Zero disables retry. Each attempt re-selects, so a retry rotates away
+	// from the endpoint that failed rather than asking it again.
+	//
+	// Retrying never escalates to a circuit break on its own; those are
+	// independent decisions. See the heuristic package.
+	MaxRetries int `yaml:"max_retries"`
+	// MaxRetryLatency is parsed and not implemented. Bound total time with
+	// timeout_config.relay_timeout per attempt instead.
+	MaxRetryLatency time.Duration `yaml:"max_retry_latency"`
+	// RetryOn5xx retries when an endpoint answers 5xx.
+	RetryOn5xx bool `yaml:"retry_on_5xx"`
+	// RetryOnTimeout is parsed and not implemented. Whether a failure is
+	// retryable is decided by heuristic analysis of the response, not by
+	// per-cause switches.
+	RetryOnTimeout bool `yaml:"retry_on_timeout"`
+	// RetryOnConnection is parsed and not implemented. See RetryOnTimeout.
+	RetryOnConnection bool `yaml:"retry_on_connection"`
+	// ConnectTimeout is parsed and not implemented.
+	ConnectTimeout time.Duration `yaml:"connect_timeout"`
+	// HedgeDelay is how long to wait before racing a second endpoint against
+	// an in-flight relay. Zero disables hedging.
+	//
+	// This is the tail-latency control: set it near the service's p95 so the
+	// hedge fires only for requests already running long, and costs a
+	// duplicate relay only on those. Set it too low and every request is sent
+	// twice.
+	HedgeDelay time.Duration `yaml:"hedge_delay"`
+	// MaxLatency is the threshold above which a response is treated as slow
+	// and penalised in reputation.
+	MaxLatency time.Duration `yaml:"max_latency"`
 }
 
 // IsEnabled returns true if retries are configured.
@@ -175,34 +233,73 @@ func (c RetryConfig) HedgeEnabled() bool { return c.HedgeDelay > 0 }
 
 // ExternalBlockSource defines an external RPC endpoint for ground-truth block heights.
 type ExternalBlockSource struct {
-	URL         string        `yaml:"url"`
-	Type        string        `yaml:"type"`
-	Method      string        `yaml:"method"`
-	Path        string        `yaml:"path"`
-	Interval    time.Duration `yaml:"interval"`
-	Timeout     time.Duration `yaml:"timeout"`
+	// URL is the external RPC endpoint to poll. It is trusted as ground truth,
+	// so it should be a node you control, not one of the suppliers being
+	// measured — the point is an opinion from outside the pool.
+	URL string `yaml:"url"`
+	// Type is the RPC type to poll it as ("json_rpc", "rest", "comet_bft").
+	Type string `yaml:"type"`
+	// Method is the JSON-RPC method to call, e.g. "eth_blockNumber".
+	Method string `yaml:"method"`
+	// Path is the request path, for REST and CometBFT sources.
+	Path string `yaml:"path"`
+	// Interval is how often to poll. Keep it well below the chain's block time
+	// or the reference height is itself stale.
+	Interval time.Duration `yaml:"interval"`
+	// Timeout bounds a single poll.
+	Timeout time.Duration `yaml:"timeout"`
+	// GracePeriod is parsed and not implemented; the block-consensus package
+	// applies its own.
 	GracePeriod time.Duration `yaml:"grace_period"`
 }
 
 // LatencyProfile defines per-chain latency thresholds for reputation scoring.
+// The whole latency_profiles block is parsed and not implemented — no field
+// below is read. Latency is scored against retry_config.max_latency instead.
+// The struct exists so a PATH config carrying the block still loads.
 type LatencyProfile struct {
-	FastThreshold    time.Duration `yaml:"fast_threshold"`
-	NormalThreshold  time.Duration `yaml:"normal_threshold"`
-	SlowThreshold    time.Duration `yaml:"slow_threshold"`
+	// FastThreshold is the latency below which a response counts as fast.
+	FastThreshold time.Duration `yaml:"fast_threshold"`
+	// NormalThreshold is the upper bound of expected latency.
+	NormalThreshold time.Duration `yaml:"normal_threshold"`
+	// SlowThreshold is the latency above which a response counts as slow.
+	SlowThreshold time.Duration `yaml:"slow_threshold"`
+	// PenaltyThreshold is the latency above which a penalty would apply.
 	PenaltyThreshold time.Duration `yaml:"penalty_threshold"`
-	SevereThreshold  time.Duration `yaml:"severe_threshold"`
-	FastBonus        int           `yaml:"fast_bonus"`
-	SlowPenalty      int           `yaml:"slow_penalty"`
-	VerySlowPenalty  int           `yaml:"very_slow_penalty"`
+	// SevereThreshold is the latency above which a larger penalty would apply.
+	SevereThreshold time.Duration `yaml:"severe_threshold"`
+	// FastBonus is the score increase a fast response would earn.
+	FastBonus int `yaml:"fast_bonus"`
+	// SlowPenalty is the score decrease a slow response would incur.
+	SlowPenalty int `yaml:"slow_penalty"`
+	// VerySlowPenalty is the score decrease a very slow response would incur.
+	VerySlowPenalty int `yaml:"very_slow_penalty"`
 }
 
 // ReputationConfig controls the reputation system.
 type ReputationConfig struct {
-	Enabled         bool          `yaml:"enabled"`
-	StorageType     string        `yaml:"storage_type"`
-	KeyGranularity  string        `yaml:"key_granularity"`
-	InitialScore    int           `yaml:"initial_score"`
-	MinThreshold    int           `yaml:"min_threshold"`
+	// Enabled is not read; reputation always runs. Endpoint scoring is how
+	// selection works, so there is no meaningful gateway with it switched off.
+	Enabled bool `yaml:"enabled"`
+	// StorageType is parsed and not implemented. Storage follows redis_config:
+	// Redis when an address is set, in-memory otherwise.
+	StorageType string `yaml:"storage_type"`
+	// KeyGranularity selects what a score is attached to: "per-url" (default),
+	// "per-endpoint", "per-domain" or "per-supplier". See reputation/key.go for
+	// why per-URL is the default.
+	//
+	// An unrecognised value is a startup error rather than a fallback to the
+	// default — silently changing what scores attach to is not something an
+	// operator could detect until an incident.
+	KeyGranularity string `yaml:"key_granularity"`
+	// InitialScore is the score a newly seen endpoint starts at. Default: 100.
+	InitialScore int `yaml:"initial_score"`
+	// MinThreshold is parsed and not implemented; the selector uses its own
+	// built-in thresholds. See tiered_selection.
+	MinThreshold int `yaml:"min_threshold"`
+	// RecoveryTimeout is parsed and not implemented. SAGE has no cooldown
+	// mechanism — reputation is a continuous score, and recovery happens
+	// through probation traffic rather than by waiting out a timer.
 	RecoveryTimeout time.Duration `yaml:"recovery_timeout"`
 
 	// MaxOperatorShare bounds the fraction of a service's endpoint selections
@@ -232,30 +329,59 @@ type ReputationConfig struct {
 }
 
 // TieredSelectionConfig controls endpoint tiering.
+//
+// Parsed and not implemented. The selector is always built from
+// reputation.DefaultSelectorConfig(), so none of these thresholds are consulted
+// — change them in reputation/selector.go, or wire this block through, but do
+// not expect setting them here to do anything today.
 type TieredSelectionConfig struct {
-	Enabled        bool            `yaml:"enabled"`
-	Tier1Threshold int             `yaml:"tier1_threshold"`
+	// Enabled would turn tiering on. Tiering is always on.
+	Enabled bool `yaml:"enabled"`
+	// Tier1Threshold is the minimum score for the best tier. The value in
+	// effect is reputation.DefaultSelectorConfig().Tier1Threshold.
+	Tier1Threshold int `yaml:"tier1_threshold"`
+	// Tier2Threshold is the minimum score for the second tier. The value in
+	// effect is reputation.DefaultSelectorConfig().Tier2Threshold.
 	Tier2Threshold int             `yaml:"tier2_threshold"`
 	Probation      ProbationConfig `yaml:"probation"`
 }
 
 // ProbationConfig controls probation routing for recovering endpoints.
+//
+// Parsed and not implemented, for the same reason as TieredSelectionConfig.
 type ProbationConfig struct {
-	Enabled            bool    `yaml:"enabled"`
-	Threshold          int     `yaml:"threshold"`
-	TrafficPercent     int     `yaml:"traffic_percent"`
+	// Enabled would turn probation routing on. Probation always runs.
+	Enabled bool `yaml:"enabled"`
+	// Threshold is the score below which an endpoint counts as on probation.
+	Threshold int `yaml:"threshold"`
+	// TrafficPercent is the share of requests a probation endpoint is
+	// prepended to, so a recovering endpoint can earn its way back.
+	TrafficPercent int `yaml:"traffic_percent"`
+	// RecoveryMultiplier would scale how fast a probation endpoint recovers.
 	RecoveryMultiplier float64 `yaml:"recovery_multiplier"`
 }
 
 // SignalImpactsConfig defines how each signal type affects reputation.
+//
+// Parsed and not implemented — no field here is read. Score deltas per signal
+// live in the reputation package.
 type SignalImpactsConfig struct {
-	Success          int `yaml:"success"`
-	MinorError       int `yaml:"minor_error"`
-	MajorError       int `yaml:"major_error"`
-	CriticalError    int `yaml:"critical_error"`
-	FatalError       int `yaml:"fatal_error"`
-	RecoverySuccess  int `yaml:"recovery_success"`
-	SlowResponse     int `yaml:"slow_response"`
+	// Success is the score change for a successful relay.
+	Success int `yaml:"success"`
+	// MinorError is the score change for a minor, recoverable error.
+	MinorError int `yaml:"minor_error"`
+	// MajorError is the score change for an error affecting reliability.
+	MajorError int `yaml:"major_error"`
+	// CriticalError is the score change for a severe error.
+	CriticalError int `yaml:"critical_error"`
+	// FatalError is the score change for an error warranting immediate
+	// removal from selection.
+	FatalError int `yaml:"fatal_error"`
+	// RecoverySuccess is the score change when a failing endpoint recovers.
+	RecoverySuccess int `yaml:"recovery_success"`
+	// SlowResponse is the score change for a response over the latency bound.
+	SlowResponse int `yaml:"slow_response"`
+	// VerySlowResponse is the score change for a response far over it.
 	VerySlowResponse int `yaml:"very_slow_response"`
 }
 
@@ -268,6 +394,9 @@ type SignalImpactsConfig struct {
 // startup via Config.Ignored instead of parsing into a field that does nothing.
 // If remote rules are wanted later, add them as a live feature then.
 type HealthCheckConfig struct {
+	// Enabled turns active health checking on. Checks probe endpoints on a
+	// schedule rather than waiting for client traffic to reveal a problem, and
+	// are what keep block height and chain ID tracking current.
 	Enabled bool `yaml:"enabled"`
 
 	// DisableBackendURLDedup turns off per-backend deduplication, restoring one
@@ -300,6 +429,7 @@ type HealthCheckConfig struct {
 // executor runs one global loop, and declaring the field would parse a value
 // SAGE never honours. It is reported at startup instead.
 type ServiceHealthChecks struct {
+	// ServiceID is the service these checks apply to.
 	ServiceID string `yaml:"service_id"`
 	// Enabled must be set for the checks to run, mirroring the PATH configs
 	// this parses — they spell out `enabled: true` on every block. A block with
@@ -312,10 +442,14 @@ type ServiceHealthChecks struct {
 // HealthCheck is a single configured request to send to every endpoint of a
 // service.
 type HealthCheck struct {
-	Name   string `yaml:"name"`
+	// Name identifies the check in logs and metrics.
+	Name string `yaml:"name"`
+	// Method is the HTTP method, or the JSON-RPC method for a json_rpc check.
 	Method string `yaml:"method"`
-	Path   string `yaml:"path"`
-	Body   string `yaml:"body"`
+	// Path is the request path, for REST and CometBFT checks.
+	Path string `yaml:"path"`
+	// Body is the raw request body, typically a JSON-RPC envelope.
+	Body string `yaml:"body"`
 	// Type names the RPC type to relay as ("json_rpc", "rest", "comet_bft").
 	// Empty means json_rpc, which is what the overwhelming majority of checks
 	// are.
@@ -326,8 +460,10 @@ type HealthCheck struct {
 	ExpectedStatusCode int `yaml:"expected_status_code"`
 	// ReputationSignal names the penalty on failure: "minor_error" (default),
 	// "major_error", "critical_error".
-	ReputationSignal string        `yaml:"reputation_signal"`
-	Timeout          time.Duration `yaml:"timeout"`
+	ReputationSignal string `yaml:"reputation_signal"`
+	// Timeout bounds this check. It should be tighter than a relay timeout —
+	// a check is meant to notice a slow endpoint, not to wait one out.
+	Timeout time.Duration `yaml:"timeout"`
 }
 
 // IsDeclaredButOff reports a block that defines checks and never runs them —
@@ -338,10 +474,19 @@ func (s ServiceHealthChecks) IsDeclaredButOff() bool {
 
 // ObservationPipelineConfig controls async observation processing.
 type ObservationPipelineConfig struct {
-	Enabled     bool    `yaml:"enabled"`
-	SampleRate  float64 `yaml:"sample_rate"`
-	WorkerCount int     `yaml:"worker_count"`
-	QueueSize   int     `yaml:"queue_size"`
+	// Enabled turns on async observation processing.
+	Enabled bool `yaml:"enabled"`
+	// SampleRate is the fraction of relays observed, 0.0 to 1.0. Health checks
+	// are observed regardless — they are low-volume and deliberate, while relay
+	// traffic is the hot path and deep parsing of all of it would cost more
+	// than it reveals.
+	SampleRate float64 `yaml:"sample_rate"`
+	// WorkerCount is how many goroutines drain the observation queue.
+	WorkerCount int `yaml:"worker_count"`
+	// QueueSize is the queue depth. When it fills, observations are dropped
+	// rather than blocking: the pipeline is best-effort by design, and must
+	// never apply back-pressure to relays.
+	QueueSize int `yaml:"queue_size"`
 }
 
 // GetServiceConfig returns the config for a specific service ID, or nil.

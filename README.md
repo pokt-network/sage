@@ -60,7 +60,8 @@ listens on three separate ports, by design:
 | `9090` (`metrics_config.prometheus_addr`) | Prometheus (`/metrics`) | scrape-only |
 
 `pprof` (`metrics_config.pprof_addr`) is **off** unless set — it hands out heap
-dumps, which hold signing keys.
+dumps, which hold signing keys. Deployment, degraded modes and a runbook are in
+[`docs/operations.md`](docs/operations.md).
 
 ## How it works
 
@@ -96,17 +97,20 @@ circuit-breaker state are shared across instances; without it, SAGE runs
 local-only.
 
 `ARCHITECTURE.md` is the source of truth for the design and the reasoning
-behind it.
+behind it. The reference docs — every config key, route and metric — are in
+[`docs/`](docs/), generated from the source so they cannot drift.
 
 ## Extending it
 
 SAGE is meant to be extended at the middleware layer without touching the
 protocol code. Register a named middleware in `cmd/sagegw.Build`, name it in
 `gateway_config.middleware_chain`, and it runs. The step-by-step recipe — file,
-name, registration, feature flag, config, test — is in **`CLAUDE.md` → Adding a
-Middleware Module**, along with the conventions worth knowing before you start
-(the shallow `Context.Clone`, the single-source feature-flag list, reading
-`ctx.ClientIP` for per-client state).
+name, registration, feature flag, config, test — is in
+**[`docs/middleware.md`](docs/middleware.md)**, along with the conventions worth
+knowing before you start (the shallow `Context.Clone`, the single-source
+feature-flag list, reading `ctx.ClientIP` for per-client state).
+
+Adding a chain instead? **[`docs/qos-plugins.md`](docs/qos-plugins.md)**.
 
 ## Development
 
@@ -115,6 +119,7 @@ make test_unit          # go test ./... -short -count=1 -race   (canonical)
 make test_all           # drop -short; slower/integration-flavored tests
 make go_lint            # golangci-lint
 make test_cover         # coverage report
+make docs               # regenerate docs/ from source
 ```
 
 Single test: `go test ./relay/middleware/ -run TestRetry -race -count=1 -v`

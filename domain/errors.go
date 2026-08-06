@@ -7,6 +7,9 @@ import "fmt"
 // instead of string matching.
 type ErrorKind int
 
+// The error kinds a relay attempt can fail with. Retry, circuit-breaking, and
+// reputation branch on these rather than on message text, so rewording an
+// error never silently changes routing.
 const (
 	ErrTransport  ErrorKind = iota // network/timeout/dial
 	ErrProtocol                    // Shannon signing/verification

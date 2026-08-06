@@ -37,6 +37,8 @@ const (
 // MessageSource identifies which side of the bridge a message originates from.
 type MessageSource int
 
+// The two ends of a bridge. A message's source decides which way it is
+// forwarded and how a close is propagated to the other side.
 const (
 	SourceClient   MessageSource = iota
 	SourceEndpoint MessageSource = iota

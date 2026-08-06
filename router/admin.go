@@ -66,6 +66,12 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 
 // --- Feature flag handlers ---
 
+// handleListFlags returns the effective state of every known feature flag.
+//
+// The response is a JSON object keyed by flag name, each value carrying
+// `enabled` (the global setting) and any per-service overrides. Every flag in
+// featureflag.DefaultFlags appears, whether or not anyone has set it — the
+// point is to show what exists, not only what has been touched.
 func (a *AdminAPI) handleListFlags(w http.ResponseWriter, req *http.Request) {
 	flags, err := a.flags.GetAll(req.Context())
 	if err != nil {
@@ -76,6 +82,14 @@ func (a *AdminAPI) handleListFlags(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, flags)
 }
 
+// handleSetFlag toggles a feature flag globally.
+//
+// Body: `{"enabled": true}`. With Redis configured the change is shared with
+// every other gateway instance, which picks it up within its flag cache TTL;
+// without Redis it applies to this instance only.
+//
+// A per-service override still wins over the global value — clear it with
+// DELETE semantics via the flag store, not by setting the global.
 func (a *AdminAPI) handleSetFlag(w http.ResponseWriter, req *http.Request) {
 	flag := req.PathValue("flag")
 	if flag == "" {
@@ -100,6 +114,11 @@ func (a *AdminAPI) handleSetFlag(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"flag": flag, "enabled": body.Enabled})
 }
 
+// handleSetFlagForService toggles a feature flag for one service only.
+//
+// Body: `{"enabled": true}`. This is the narrower switch and takes precedence
+// over the global setting for that service. Use it to roll a behaviour out to
+// one chain before turning it on everywhere.
 func (a *AdminAPI) handleSetFlagForService(w http.ResponseWriter, req *http.Request) {
 	flag := req.PathValue("flag")
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
@@ -131,6 +150,12 @@ func (a *AdminAPI) handleSetFlagForService(w http.ResponseWriter, req *http.Requ
 
 // --- Reputation handlers ---
 
+// handleGetReputation returns every reputation score for a service.
+//
+// The response is a JSON object of score keys to numeric scores. **Keys are
+// reputation keys at the configured granularity — per backend URL by default —
+// not endpoint addresses.** Several staked suppliers routinely front one URL
+// and share its score, so there is often no single endpoint a key belongs to.
 func (a *AdminAPI) handleGetReputation(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
 	if serviceID == "" {
@@ -150,6 +175,14 @@ func (a *AdminAPI) handleGetReputation(w http.ResponseWriter, req *http.Request)
 	writeJSON(w, http.StatusOK, scores)
 }
 
+// handleResetReputation returns one endpoint to the initial score.
+//
+// The reset spans every RPC type: scores are kept per (identity, RPC type), but
+// an operator resetting an endpoint means the endpoint, not whichever protocol
+// they happened to name.
+//
+// Reach for this when an endpoint was penalised for something since fixed and
+// you do not want to wait for probation traffic to rehabilitate it.
 func (a *AdminAPI) handleResetReputation(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
 	endpoint := domain.EndpointAddr(req.PathValue("endpoint"))
@@ -173,6 +206,13 @@ func (a *AdminAPI) handleResetReputation(w http.ResponseWriter, req *http.Reques
 
 // --- Timeline handlers ---
 
+// handleGetTimeline returns the recent reputation events for every endpoint of
+// a service, newest last.
+//
+// This is the "why is this endpoint not getting traffic" endpoint: each event
+// carries the signal, the reason code, and the score before and after. The
+// timeline is a bounded in-memory ring per endpoint, so it answers for recent
+// history, not for all time — and it is per instance, not shared through Redis.
 func (a *AdminAPI) handleGetTimeline(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
 	if serviceID == "" {
@@ -187,6 +227,9 @@ func (a *AdminAPI) handleGetTimeline(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, events)
 }
 
+// handleGetTimelineEndpoint returns the reputation events for a single
+// endpoint. The endpoint is the trailing path segment and may contain slashes,
+// since an endpoint address embeds a URL.
 func (a *AdminAPI) handleGetTimelineEndpoint(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
 	endpoint := req.PathValue("endpoint")
@@ -205,6 +248,12 @@ func (a *AdminAPI) handleGetTimelineEndpoint(w http.ResponseWriter, req *http.Re
 
 // --- Circuit breaker handlers ---
 
+// handleClearCircuitBreaker releases every circuit-broken domain for a service
+// and reports how many were cleared.
+//
+// It clears the break itself. Escalation history deliberately survives, so a
+// domain let back in and immediately failing again is still treated as a repeat
+// offender rather than a first offence.
 func (a *AdminAPI) handleClearCircuitBreaker(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
 	if serviceID == "" {
@@ -220,6 +269,13 @@ func (a *AdminAPI) handleClearCircuitBreaker(w http.ResponseWriter, req *http.Re
 	})
 }
 
+// handleGetCircuitBreaker returns the domains currently circuit-broken for a
+// service, keyed by domain, each with the reason and when the break expires.
+//
+// An empty object means nothing is broken. Breaks expire lazily, so a domain
+// listed here whose expiry has passed is not actually locked out — the same
+// state is exported as the sage_circuit_breaker_state metric, computed at
+// scrape time.
 func (a *AdminAPI) handleGetCircuitBreaker(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
 	if serviceID == "" {
@@ -236,6 +292,12 @@ func (a *AdminAPI) handleGetCircuitBreaker(w http.ResponseWriter, req *http.Requ
 
 // --- Config handler ---
 
+// handleGetConfig returns the gateway's effective runtime configuration:
+// resolved feature flags, registered services and their QoS plugins.
+//
+// It reports what the process is actually running, which is not the same as the
+// YAML on disk — defaults have been applied, and flags may have been changed
+// through this API since startup.
 func (a *AdminAPI) handleGetConfig(w http.ResponseWriter, req *http.Request) {
 	flags, err := a.flags.GetAll(req.Context())
 	if err != nil {

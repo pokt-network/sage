@@ -64,6 +64,10 @@ func NewHTTPResponseWriter(w http.ResponseWriter) *HTTPResponseWriter {
 	}
 }
 
+// SetHeader stages a response header, replacing any previous value for the
+// same key. Headers are buffered rather than written through, so a middleware
+// that sets one on a losing hedge arm cannot leak it onto the winner's
+// response. After Write the response is committed and this is a no-op.
 func (w *HTTPResponseWriter) SetHeader(key, value string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -79,6 +83,8 @@ func (w *HTTPResponseWriter) SetHeader(key, value string) {
 	w.headers = append(w.headers, headerKV{key: key, value: value})
 }
 
+// SetStatusCode stages the response status, defaulting to 200. Ignored once
+// the response has been written.
 func (w *HTTPResponseWriter) SetStatusCode(code int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -105,6 +111,11 @@ func (w *HTTPResponseWriter) Write(body []byte) error {
 	return err
 }
 
+// SetShadow suppresses the response body. A shadowed relay still runs the full
+// chain and is still sent to the supplier — it is scored, observed and metered
+// like any other — but the client is never written to. That is what makes
+// shadow mode useful for dark-launching a supplier or measuring backend
+// latency in production: the traffic is real, the exposure is not.
 func (w *HTTPResponseWriter) SetShadow(shadow bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

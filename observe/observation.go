@@ -11,6 +11,9 @@ import (
 // ObservationSource indicates where an observation originated.
 type ObservationSource string
 
+// Where an observation came from. The two are sampled at different rates —
+// relays at a fraction, health checks at every one — because health checks are
+// low-volume and deliberate, while relay traffic is the hot path.
 const (
 	SourceRelay       ObservationSource = "relay"
 	SourceHealthCheck ObservationSource = "health_check"

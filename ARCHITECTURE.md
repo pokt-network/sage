@@ -299,34 +299,23 @@ When multiple clients send identical requests concurrently (e.g., `eth_blockNumb
 
 ---
 
-## Admin API
+## HTTP surface
 
-```
-GET  /admin/flags                              — all feature flags
-PUT  /admin/flags/{flag}                       — toggle globally
-PUT  /admin/flags/{flag}/{serviceId}           — toggle per-service
-GET  /admin/reputation/{serviceId}             — all endpoint scores
-POST /admin/reputation/reset/{serviceId}/{ep}  — reset score
-GET  /admin/timeline/{serviceId}               — endpoint event history
-GET  /admin/timeline/{serviceId}/{endpoint}    — single endpoint timeline
-POST /admin/circuit-breaker/clear/{serviceId}  — clear circuit breaker state
-GET  /admin/circuit-breaker/{serviceId}        — view broken domains
-GET  /admin/config                             — effective running config
-```
+The full route list — relay, health, readiness and the admin API — is generated
+from the router's own mux registrations into
+[`docs/admin-api.md`](docs/admin-api.md). It is not repeated here, because a
+hand-copied route table is a route table that eventually lies.
 
----
+Two properties of that surface are architectural rather than incidental, and
+belong here:
 
-## Operational Endpoints
+**Three listeners, not one.** Relays, the admin API and Prometheus each get
+their own port. The admin API is unauthenticated — turning on `shadow_mode`
+alone stops the gateway answering anything — so it defaults to loopback. It
+used to share the relay port, which meant only network topology stood between
+the internet and a control plane. See [`docs/operations.md`](docs/operations.md).
 
-```
-GET  /health            — gateway health (200 OK / 503 Unavailable)
-GET  /ready/{service}   — per-service readiness
-GET  /ready             — all services readiness
-POST /v1                — relay endpoint (requires Target-Service-Id header)
-GET  /v1/{path...}      — REST/CometBFT relay (also handles WebSocket upgrade)
-```
-
-The `/v1` mount point is the gateway's, not the service's: the router strips it
+**The `/v1` mount point is the gateway's, not the service's.** The router strips it
 before the chain runs. JSON-RPC does not care, but a REST, CometBFT or gRPC
 request is *addressed* by its path, and relaying `/v1/status` rather than
 `/status` is a 404 at the supplier's backend. The path (query string included),
@@ -393,7 +382,30 @@ the trailer frame it requires appended, a native caller does not.
 
 ## Configuration
 
-SAGE parses the **same YAML config file** used by PATH. Internal representation uses value types (no pointer fields — zero values are sensible defaults). Config is validated at load time; unknown fields in critical sections produce errors.
+SAGE parses the **same YAML config file** used by PATH, unmodified. Every key is
+listed in [`docs/configuration.md`](docs/configuration.md), generated from the
+config structs. Three design rules explain the shape of it:
+
+**Value types, never pointers.** No `*bool`, no `*int`, so "unset" and "zero"
+are the same state — and each zero value is chosen so the unconfigured state is
+the safe one. `pprof_addr: ""` means pprof is off, not `:6060` on every
+interface. Optional-by-pointer would mean a nil check at every read and a
+default expressed nowhere in particular.
+
+**Lenient, but never silent.** An unknown key is not an error — SAGE has to load
+a PATH config describing features it does not have. It is collected into
+`Config.Ignored` and warned about individually at startup. The failure this
+guards against is a key that reads as configuration and does nothing.
+
+**Chain semantics belong to the QoS plugin.** Config carries per-service values
+opaquely; the plugin owns their format and comparison, validated at wire time.
+EVM chain IDs are hex compared numerically, CometBFT's are names compared
+exactly, and neither rule generalizes — so neither belongs in `config/`.
+
+Note that the guard has a hole the generated reference now documents: a key with
+a *declared* field parses without warning even when nothing reads it. Roughly a
+third of the surface is in that state, inherited from PATH. See the "Parsed but
+not implemented" section of the configuration reference.
 
 ---
 
@@ -448,6 +460,9 @@ sage/
   websockets/          — generic bidirectional bridge (rotation-ready)
   metrics/             — Prometheus metrics
   router/              — HTTP routing + admin API
+  internal/docgen/     — generators for docs/ (build-time only, not in the binary)
+  cmd/docgen/          — `make docs` entry point
+  docs/                — generated reference + hand-written operator guides
   e2e/                 — end-to-end tests (works against SAGE and PATH)
 ```
 
@@ -457,23 +472,30 @@ sage/
 
 ```bash
 make sage_build      # Build binary to bin/sagegw
-make test_unit       # Run 596 unit tests with race detector
-make e2e_test        # Run 13 E2E tests (requires SAGE_URL)
+make test_unit       # Unit tests, short, with race detector
+make e2e_test        # E2E suite (requires a running gateway at SAGE_URL)
 make go_lint         # Run linters
+make docs            # Regenerate the reference docs under docs/
 make docker_build    # Build Docker image
 ```
 
 ---
 
-## Stats
+## Reference documentation
 
-| Metric | PATH | SAGE |
-|---|---|---|
-| Source lines | ~43,000 | 14,372 |
-| Unit tests | ~200 | 596 |
-| Packages | ~10 | 25 |
-| God objects | 2 (2,935 + 1,809 lines) | 0 |
-| Duplicated retry logic | 3 copies | 1 |
-| Duplicated endpoint stores | 3 copies | 1 (generic) |
-| Runtime feature toggles | 0 | 14 |
-| Config pointer fields (*bool) | ~40 | 0 |
+Anything countable is generated from source rather than written here, because
+this file previously carried a hand-maintained stats table that drifted several
+thousand lines away from the truth while still reading as authoritative. The
+generators live in `internal/docgen`, run via `make docs`, and are verified by a
+golden test — so a config key added without documenting it fails CI.
+
+| Document | Generated from |
+|---|---|
+| [`docs/configuration.md`](docs/configuration.md) | the config structs in `config/` |
+| [`docs/metrics.md`](docs/metrics.md) | the collectors in `metrics/` |
+| [`docs/admin-api.md`](docs/admin-api.md) | the mux registrations in `router/` |
+
+The configuration reference also flags every key that parses into a field
+nothing reads — inherited PATH keys that look live and are not.
+
+This file keeps what a generator cannot produce: the reasoning.

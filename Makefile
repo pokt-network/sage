@@ -62,6 +62,18 @@ go_lint: ## Run golangci-lint
 	golangci-lint run --timeout 5m
 
 ##########################
+### Docs                ###
+##########################
+
+.PHONY: docs
+docs: ## Regenerate the reference docs under docs/ from source
+	go run ./cmd/docgen -root .
+
+.PHONY: docs_check
+docs_check: ## Fail if any generated doc is out of date (used by CI)
+	go run ./cmd/docgen -root . -check
+
+##########################
 ### Docker              ###
 ##########################
 

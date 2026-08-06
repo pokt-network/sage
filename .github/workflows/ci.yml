@@ -35,6 +35,30 @@ jobs:
       - name: Test (race)
         run: make test_unit
 
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The reference docs are generated from the config structs, the metrics
+      # collectors and the router's mux. This fails the build when they drift —
+      # which is the point of generating them rather than maintaining them by
+      # hand. Fix with `make docs`.
+      - name: Generated docs are current
+        run: make docs_check
+
+      # Covers the properties the golden file alone cannot: every yaml key
+      # reaches the reference, and every key has a description.
+      - name: Docs tests
+        run: go test ./internal/docgen/ -count=1
+
   lint:
     name: lint
     runs-on: ubuntu-latest

@@ -1,9 +1,29 @@
 version: "2"
 linters:
+  enable:
+    - revive
+  settings:
+    revive:
+      rules:
+        # Every package must carry a package comment, and every exported symbol
+        # a doc comment starting with its own name. Doc drift is a CI failure,
+        # not a matter of taste — see docs/ for the prose layer this backs.
+        - name: package-comments
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+    staticcheck:
+      checks:
+        - all
+        # ST1000 is revive's package-comments; ST1020-22 are revive's exported.
+        # Enabled there instead, so a symbol is reported once, not twice.
+        - -ST1000
+        - -ST1020
+        - -ST1021
+        - -ST1022
   exclusions:
     generated: lax
     presets:
-      - comments
       - common-false-positives
       - legacy
       - std-error-handling
@@ -11,6 +31,12 @@ linters:
       - third_party$
       - builtin$
       - examples$
+    rules:
+      # Test files document themselves by name; a doc comment on every
+      # TestFoo/mockBar is noise that trains people to ignore the linter.
+      - path: _test\.go
+        linters:
+          - revive
 formatters:
   exclusions:
     generated: lax

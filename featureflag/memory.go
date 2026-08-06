@@ -27,6 +27,10 @@ func NewMemoryStore(defaults map[string]bool) *MemoryStore {
 	}
 }
 
+// IsEnabled resolves a flag in precedence order: per-service override, then
+// the global setting, then the compiled DefaultFlags. A flag absent from
+// DefaultFlags resolves to false — which is how a flag someone forgot to add
+// there silently never runs.
 func (s *MemoryStore) IsEnabled(_ context.Context, flag string, serviceID domain.ServiceID) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -47,6 +51,8 @@ func (s *MemoryStore) IsEnabled(_ context.Context, flag string, serviceID domain
 	return DefaultFlags[flag]
 }
 
+// Set changes a flag globally. Per-service overrides still win over it; use
+// Delete to clear those.
 func (s *MemoryStore) Set(_ context.Context, flag string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -54,6 +60,8 @@ func (s *MemoryStore) Set(_ context.Context, flag string, enabled bool) error {
 	return nil
 }
 
+// SetForService overrides a flag for one service, taking precedence over the
+// global setting for that service only.
 func (s *MemoryStore) SetForService(_ context.Context, flag string, serviceID domain.ServiceID, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -64,6 +72,10 @@ func (s *MemoryStore) SetForService(_ context.Context, flag string, serviceID do
 	return nil
 }
 
+// GetAll returns the effective state of every known flag, layering global and
+// per-service overrides onto DefaultFlags. Every flag in DefaultFlags appears,
+// set or not, so the admin API can list what exists rather than only what
+// somebody has touched.
 func (s *MemoryStore) GetAll(_ context.Context) (map[string]FlagState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -97,6 +109,10 @@ func (s *MemoryStore) GetAll(_ context.Context) (map[string]FlagState, error) {
 	return result, nil
 }
 
+// Delete clears a setting so the flag falls back to the next level down. With
+// a serviceID it removes only that service's override; with an empty serviceID
+// it removes the global setting and every service override, returning the flag
+// to its compiled default.
 func (s *MemoryStore) Delete(_ context.Context, flag string, serviceID domain.ServiceID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

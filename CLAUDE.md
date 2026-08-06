@@ -55,38 +55,40 @@ It is a flat struct of typed fields; there is no generic `values` bag, so carryi
 
 ## Adding a Middleware Module
 
-A middleware is one file in `relay/middleware/` that wraps `next.HandleRelay(ctx)` with a single concern. This is the seam for extending the gateway without touching protocol code. To add one — say a `rate_limit` — the steps, in order:
+The full step-by-step recipe lives in **[`docs/middleware.md`](docs/middleware.md)** —
+file, name, registration, feature flag, config, test — along with the traps
+(shallow `Clone`, unregistered names getting no ordering protection, a flag
+missing from `DefaultFlags` silently never running). Follow it rather than
+reconstructing the steps here; that document and this file must not drift into
+two versions of the same instructions.
 
-1. **The file.** `relay/middleware/ratelimit.go`. The constructor returns `relay.Middleware` and captures its dependencies in the closure (look at any existing middleware for the shape). If it should be runtime-toggleable, gate it on a flag — bail to `next` when off:
-   ```go
-   func RateLimit(flags featureflag.FlagStore, /* deps */) relay.Middleware {
-       return func(next relay.Handler) relay.Handler {
-           return relay.HandlerFunc(func(ctx *relay.Context) error {
-               if flags == nil || !flags.IsEnabled(ctx.Ctx, featureflag.FlagRateLimit, ctx.ServiceID) {
-                   return next.HandleRelay(ctx)
-               }
-               // reject over-limit here; otherwise fall through
-               return next.HandleRelay(ctx)
-           })
-       }
-   }
-   ```
+Adding a chain instead of a middleware: **[`docs/qos-plugins.md`](docs/qos-plugins.md)**.
 
-2. **The name.** Add a `MW…` constant to `relay/chain_order.go` and place it in `DefaultChainOrder()` where you want it to run (first = outermost). If order is load-bearing — must run before or after another middleware — add a `mustPrecede` rule in the same file. An unrecognised name is allowed *anywhere* and gets **no** ordering protection, so a rule is the only thing that enforces "before X".
+Two things worth repeating because they are easy to get wrong from memory:
 
-3. **Register it** in `cmd/sagegw.Build` (`wire.go`), next to the others:
-   ```go
-   mwReg.Register(relay.MWRateLimit, func() relay.Middleware { return middleware.RateLimit(flags, /* … */) })
-   ```
-   A registered name not in the chain warns at startup; a chain name not registered is a startup error listing what *is* registered. A `Build` test fails if a `DefaultChainOrder` name isn't registered — that's the drift guard.
+- Per-client state comes from **`ctx.ClientIP`** (set by the `client_ip`
+  middleware, trusted-proxy aware), not `HTTPRequest.RemoteAddr`, which behind a
+  proxy is the proxy.
+- A request's service comes from the `Target-Service-Id` header, resolved by
+  `Parse` **and re-read in `router.go`** for the WebSocket path. Keep those two
+  in sync if you touch service resolution.
 
-4. **The flag** (if you added one). Add its name to `featureflag.DefaultFlags` with a default, and an exported `Flag…` constant next to it — **same file**, `featureflag/defaults.go`. That is the only place; config picks it up as a `map[string]bool` override automatically, and unset means "use the default". A name absent from `DefaultFlags` resolves to `false`, so a flag you forgot to add there silently never runs.
+## Documentation
 
-5. **Config** (if the module needs settings). Add fields to the relevant config struct with yaml tags, value types, safe zero value (see conventions). A field SAGE parses but never reads is reported via `cfg.Ignored` at startup — wire it through or it warns.
+Anything countable is generated; only reasoning is written by hand.
 
-6. **Test** next to the file, `ratelimit_test.go`; canonical run is `-short -race`.
-
-Per-client state? Read **`ctx.ClientIP`** (set by the `client_ip` middleware, trusted-proxy aware) rather than `HTTPRequest.RemoteAddr`, which behind a proxy is the proxy. **Redis is optional** — fail open when it's nil; never hard-require it on the hot path. A request's service comes from the `Target-Service-Id` header, resolved by `Parse` (and re-read in `router.go` for the WebSocket path — keep those two in sync if you touch service resolution).
+- `internal/docgen` generates `docs/configuration.md`, `docs/metrics.md` and
+  `docs/admin-api.md` from the config structs, the metrics collectors and the
+  router's mux. Run `make docs` after touching any of those three.
+- A golden test in `internal/docgen` fails if the committed files are stale, and
+  another fails if a config key has no doc comment. So: **a new config field
+  needs a doc comment**, and the reference updates itself.
+- `revive`'s `exported` and `package-comments` rules are on. Every package needs
+  a package comment and every exported symbol a doc comment starting with its
+  own name. Test files are exempt.
+- Do not hand-write counts (test totals, line counts, route lists) into
+  markdown. That is what the stale stats table in `ARCHITECTURE.md` was, and it
+  drifted by thousands of lines while still looking authoritative.
 
 ## Tests
 

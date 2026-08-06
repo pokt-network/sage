@@ -83,6 +83,28 @@ Integration and e2e runs need a live environment and their build tags —
 running gateway at `SAGE_URL`). The e2e suite is written to run against **both
 SAGE and PATH** — keep it protocol-agnostic.
 
+## Documentation
+
+Anything countable is generated; only reasoning is hand-written.
+
+- `make docs` regenerates [`docs/configuration.md`](docs/configuration.md),
+  [`docs/metrics.md`](docs/metrics.md) and
+  [`docs/admin-api.md`](docs/admin-api.md) from the config structs, the metrics
+  collectors and the router's mux. Run it after touching any of the three; a
+  golden test fails the build if the committed files are stale.
+- **A new config field needs a doc comment.** A separate test fails if any key
+  reaches the reference undescribed.
+- Every package needs a package comment and every exported symbol a doc comment
+  — `revive`'s `package-comments` and `exported` rules are enabled. Test files
+  are exempt.
+- Do not hand-write counts into markdown. `ARCHITECTURE.md` used to carry a
+  stats table that drifted several thousand lines from the truth while still
+  reading as authoritative.
+
+The extension guides are [`docs/middleware.md`](docs/middleware.md) and
+[`docs/qos-plugins.md`](docs/qos-plugins.md); operator-facing material is
+[`docs/operations.md`](docs/operations.md).
+
 ## Testing expectations
 
 - **Race-clean.** `-race` is on in `make test_unit`; keep it green. A `Clone`

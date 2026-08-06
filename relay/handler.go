@@ -9,6 +9,7 @@ type Handler interface {
 // HandlerFunc adapts a function to the Handler interface.
 type HandlerFunc func(ctx *Context) error
 
+// HandleRelay calls f, making a plain function usable wherever a Handler is.
 func (f HandlerFunc) HandleRelay(ctx *Context) error { return f(ctx) }
 
 // Middleware wraps a Handler to add behavior before/after.

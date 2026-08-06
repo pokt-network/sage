@@ -37,6 +37,9 @@ func NewChannelPublisher(bufSize int) *ChannelPublisher {
 	}
 }
 
+// Publish enqueues an observation, dropping it with an error when the buffer
+// is full rather than blocking. The observation pipeline is best-effort and
+// sampled; a slow consumer must never back-pressure onto the relay path.
 func (p *ChannelPublisher) Publish(_ context.Context, obs Observation) error {
 	// Check closed first (non-blocking).
 	select {
@@ -53,10 +56,17 @@ func (p *ChannelPublisher) Publish(_ context.Context, obs Observation) error {
 	}
 }
 
+// Subscribe returns the shared buffered channel. Every subscriber reads from
+// the same channel, so observations are distributed among consumers rather
+// than broadcast to all of them.
 func (p *ChannelPublisher) Subscribe(_ context.Context) (<-chan Observation, error) {
 	return p.ch, nil
 }
 
+// Close stops further publishing. It is idempotent, and deliberately does not
+// close the observation channel: subscribers may still be draining what is
+// already buffered, and closing under them would be a send on a closed channel
+// for any publisher racing the shutdown.
 func (p *ChannelPublisher) Close() error {
 	p.once.Do(func() { close(p.closed) })
 	return nil
@@ -74,6 +84,10 @@ func NewRedisPublisher(client redis.Cmdable) *RedisPublisher {
 	return &RedisPublisher{client: client}
 }
 
+// Publish broadcasts an observation to every instance subscribed to the shared
+// channel. Note that RequestBody and ResponseBody do not survive the trip —
+// they are json:"-" on Observation, since shipping full relay bodies over
+// pub/sub would dwarf the observation itself.
 func (p *RedisPublisher) Publish(ctx context.Context, obs Observation) error {
 	data, err := json.Marshal(obs)
 	if err != nil {
@@ -82,6 +96,13 @@ func (p *RedisPublisher) Publish(ctx context.Context, obs Observation) error {
 	return p.client.Publish(ctx, redisChannel, data).Err()
 }
 
+// Subscribe returns a channel fed by Redis pub/sub, unmarshalling as it goes.
+// Undecodable messages and sends to a full channel are both dropped silently:
+// a subscriber that cannot keep up should lose observations, not stall the
+// pub/sub reader for everyone else.
+//
+// The client must support Subscribe, which redis.Cmdable does not expose —
+// hence the type assertion, and the error when it fails.
 func (p *RedisPublisher) Subscribe(ctx context.Context) (<-chan Observation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -117,6 +138,9 @@ func (p *RedisPublisher) Subscribe(ctx context.Context) (<-chan Observation, err
 	return ch, nil
 }
 
+// Close tears down the pub/sub subscription, which ends the reader goroutine
+// and closes the channel handed to the subscriber. It is a no-op if Subscribe
+// was never called.
 func (p *RedisPublisher) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

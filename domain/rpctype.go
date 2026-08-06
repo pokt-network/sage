@@ -3,6 +3,10 @@ package domain
 // RPCType identifies the RPC protocol of a request.
 type RPCType string
 
+// The RPC protocols a request can arrive over. SAGE is told which one it is
+// handling — by config and by the request's shape — rather than sniffing it
+// from the payload, and the value is immutable through the middleware chain
+// once Parse has set it.
 const (
 	RPCTypeJSONRPC   RPCType = "json_rpc"
 	RPCTypeREST      RPCType = "rest"

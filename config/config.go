@@ -7,17 +7,21 @@ import "time"
 
 // Config is the root configuration for SAGE.
 type Config struct {
-	Redis        RedisConfig       `yaml:"redis_config"`
-	Router       RouterConfig      `yaml:"router_config"`
-	Logger       LoggerConfig      `yaml:"logger_config"`
-	Metrics      MetricsConfig     `yaml:"metrics_config"`
-	Admin        AdminConfig       `yaml:"admin_config"`
-	Concurrency  ConcurrencyConfig `yaml:"concurrency_config"`
-	FullNode     FullNodeConfig    `yaml:"full_node_config"`
-	Gateway      GatewayConfig     `yaml:"gateway_config"`
-	FeatureFlags FeatureFlags      `yaml:"feature_flags"`
-	WebSocket    WebSocketConfig   `yaml:"websocket_config"`
-	Protocol     ProtocolConfig    `yaml:"protocol"`
+	Redis       RedisConfig       `yaml:"redis_config"`
+	Router      RouterConfig      `yaml:"router_config"`
+	Logger      LoggerConfig      `yaml:"logger_config"`
+	Metrics     MetricsConfig     `yaml:"metrics_config"`
+	Admin       AdminConfig       `yaml:"admin_config"`
+	Concurrency ConcurrencyConfig `yaml:"concurrency_config"`
+	FullNode    FullNodeConfig    `yaml:"full_node_config"`
+	Gateway     GatewayConfig     `yaml:"gateway_config"`
+	// FeatureFlags carries only the flags an operator set. Anything absent
+	// falls back to featureflag.DefaultFlags, so this is an override map and
+	// not a list of the flags that exist. Admin API changes take precedence
+	// over it at runtime.
+	FeatureFlags FeatureFlags    `yaml:"feature_flags"`
+	WebSocket    WebSocketConfig `yaml:"websocket_config"`
+	Protocol     ProtocolConfig  `yaml:"protocol"`
 
 	// Ignored lists config keys that were present in the YAML and that SAGE
 	// does not implement. They are not an error — SAGE is a restructured fork
@@ -88,23 +92,49 @@ type WebSocketConfig struct {
 }
 
 // RedisConfig configures the Redis connection.
+//
+// Redis is optional everywhere in SAGE. With it, reputation scores, feature
+// flags and circuit-breaker state are shared across gateway instances; without
+// it each instance keeps its own, which is a smaller pool of experience but a
+// working gateway. Nothing on the relay path may hard-require it.
 type RedisConfig struct {
-	Address      string        `yaml:"address"`
-	Password     string        `yaml:"password"`
-	DB           int           `yaml:"db"`
-	PoolSize     int           `yaml:"pool_size"`
-	DialTimeout  time.Duration `yaml:"dial_timeout"`
-	ReadTimeout  time.Duration `yaml:"read_timeout"`
+	// Address is the Redis host:port. **Empty disables Redis entirely** — the
+	// gateway runs local-only rather than failing to start.
+	Address string `yaml:"address"`
+	// Password authenticates to Redis. Empty means no AUTH.
+	Password string `yaml:"password"`
+	// DB is the Redis logical database number. Default: 0.
+	DB int `yaml:"db"`
+	// PoolSize caps pooled connections to Redis. Default: 10.
+	PoolSize int `yaml:"pool_size"`
+	// DialTimeout bounds establishing a Redis connection. Default: 5s.
+	DialTimeout time.Duration `yaml:"dial_timeout"`
+	// ReadTimeout bounds a single Redis read. Zero takes the client default.
+	ReadTimeout time.Duration `yaml:"read_timeout"`
+	// WriteTimeout bounds a single Redis write. Zero takes the client default.
 	WriteTimeout time.Duration `yaml:"write_timeout"`
 }
 
 // RouterConfig controls the HTTP server.
 type RouterConfig struct {
-	Port                       int           `yaml:"port"`
-	ReadTimeout                time.Duration `yaml:"read_timeout"`
-	WriteTimeout               time.Duration `yaml:"write_timeout"`
-	IdleTimeout                time.Duration `yaml:"idle_timeout"`
-	WebsocketMessageBufferSize int           `yaml:"websocket_message_buffer_size"`
+	// Port is the public relay listener, serving /v1 plus the health and
+	// readiness endpoints. Default: 3069. The admin API and Prometheus listen
+	// elsewhere on purpose — see AdminConfig and MetricsConfig.
+	Port int `yaml:"port"`
+	// ReadTimeout bounds reading a request. Default: 30s.
+	ReadTimeout time.Duration `yaml:"read_timeout"`
+	// WriteTimeout bounds writing a response. Default: 30s.
+	//
+	// It does not apply to an upgraded WebSocket connection, which is
+	// long-lived by definition; WS deadlines live in the websockets package.
+	WriteTimeout time.Duration `yaml:"write_timeout"`
+	// IdleTimeout bounds how long a keep-alive connection may sit unused.
+	// Default: 120s.
+	IdleTimeout time.Duration `yaml:"idle_timeout"`
+	// WebsocketMessageBufferSize is parsed and not implemented. WebSocket
+	// buffering is fixed in the websockets package; the field exists so a PATH
+	// config carrying the key still loads.
+	WebsocketMessageBufferSize int `yaml:"websocket_message_buffer_size"`
 
 	// TrustedProxies lists the CIDR ranges of proxies in front of the gateway
 	// (haproxy, a load balancer, a CDN). X-Forwarded-For is believed only when a
@@ -121,13 +151,24 @@ type RouterConfig struct {
 
 // LoggerConfig controls logging.
 type LoggerConfig struct {
+	// Level is the minimum level logged: "debug", "info", "warn" or "error".
+	// Default: "info".
 	Level string `yaml:"level"`
 }
 
-// MetricsConfig controls Prometheus and pprof servers.
+// MetricsConfig controls the Prometheus and pprof listeners.
 type MetricsConfig struct {
+	// PrometheusAddr is where /metrics is served. Default: ":9090". Its own
+	// listener, so scrape access never implies relay or admin access.
 	PrometheusAddr string `yaml:"prometheus_addr"`
-	PprofAddr      string `yaml:"pprof_addr"`
+	// PprofAddr is where /debug/pprof is served. **Empty means off, and is the
+	// default.**
+	//
+	// Deliberately not defaulted to an address. A heap dump contains whatever
+	// is in memory, and this process holds gateway and application signing
+	// keys — so an unconfigured gateway must not be serving one. Turning it on
+	// is a thing an operator types on purpose, ideally bound to loopback.
+	PprofAddr string `yaml:"pprof_addr"`
 }
 
 // DefaultAdminAddr is where the admin API listens when admin_config.addr is
@@ -172,21 +213,37 @@ type ConcurrencyConfig struct {
 
 // FullNodeConfig configures the Shannon blockchain full node connection.
 type FullNodeConfig struct {
-	RPCURL                string      `yaml:"rpc_url"`
-	GRPCConfig            GRPCConfig  `yaml:"grpc_config"`
-	LazyMode              bool        `yaml:"lazy_mode"`
+	// RPCURL is the CometBFT RPC endpoint of the Shannon full node, used for
+	// block height and chain queries.
+	RPCURL     string     `yaml:"rpc_url"`
+	GRPCConfig GRPCConfig `yaml:"grpc_config"`
+	// LazyMode is parsed and not implemented. In PATH it selects between
+	// caching and per-request session lookups.
+	LazyMode bool `yaml:"lazy_mode"`
+	// SessionRolloverBlocks is parsed and not implemented. SAGE handles session
+	// rollover in protocol/shannon rather than from a configured block count.
 	SessionRolloverBlocks int         `yaml:"session_rollover_blocks"`
 	CacheConfig           CacheConfig `yaml:"cache_config"`
 }
 
-// GRPCConfig configures gRPC connection to the full node.
+// GRPCConfig configures the gRPC connection to the full node.
+//
+// This is the connection SAGE uses to read chain state — sessions, apps,
+// suppliers. It is not the transport for relays to suppliers; see
+// ProtocolConfig.GRPCMode for that.
 type GRPCConfig struct {
+	// HostPort is the full node's gRPC endpoint, as host:port.
 	HostPort string `yaml:"host_port"`
-	Insecure bool   `yaml:"insecure"`
+	// Insecure disables TLS on the full node gRPC connection. Appropriate for
+	// a node on localhost or a trusted network, not across the internet.
+	Insecure bool `yaml:"insecure"`
 }
 
 // CacheConfig controls session caching.
 type CacheConfig struct {
+	// SessionTTL is parsed and not implemented. Session lifetime in SAGE
+	// follows the protocol's own session boundaries rather than a wall-clock
+	// TTL, so there is nothing for this to tune.
 	SessionTTL time.Duration `yaml:"session_ttl"`
 }
 
