@@ -3,6 +3,7 @@ package middleware
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -209,21 +210,72 @@ func isWebSocketUpgrade(req *http.Request) bool {
 // JSON-RPC requests are well under 1 KiB; anything past 1 MiB is pathological.
 const maxBodyBytes = 1 << 20 // 1 MiB
 
+// readDeclaredLength reads a body whose length Content-Length already states,
+// into a buffer sized to exactly that. Returns nil — not an error — when the
+// header offers nothing usable, meaning the caller should read until EOF
+// instead.
+//
+// It exists because bytes.Buffer.ReadFrom insists on bytes.MinRead (512) bytes
+// of headroom before every read. A JSON-RPC request is an order of magnitude
+// smaller than that, so the padding, not the body, was the allocation — on
+// every relay.
+//
+// Content-Length is a claim, not a guarantee. net/http stops a server request
+// body at the declared length, but this is reachable with any *http.Request, so
+// a short body is returned at its real length and a long one is read to the end
+// rather than silently truncated.
+func readDeclaredLength(contentLength int64, r io.Reader) ([]byte, error) {
+	if contentLength <= 0 || contentLength > maxBodyBytes {
+		return nil, nil
+	}
+
+	data := make([]byte, contentLength)
+	read, err := io.ReadFull(r, data)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, err
+	}
+	data = data[:read]
+
+	// One byte past the promise. Stack-allocated, so the common answer — there
+	// is nothing more — costs nothing.
+	var probe [1]byte
+	switch n, err := r.Read(probe[:]); {
+	case n > 0:
+		// The body is longer than it claimed. Hand the already-read prefix back
+		// to the buffer path so the size limit still applies to the whole thing.
+		rest, restErr := io.ReadAll(r)
+		if restErr != nil {
+			return nil, restErr
+		}
+		return append(append(data, probe[0]), rest...), nil
+	case err != nil && !errors.Is(err, io.EOF):
+		return nil, err
+	}
+
+	return data, nil
+}
+
 // readBody reads the full request body (bounded by maxBodyBytes) and replaces
-// the Body so it can be read again by downstream handlers. The buffer is
-// presized from Content-Length when known, avoiding io.ReadAll's growth chain.
+// the Body so it can be read again by downstream handlers.
 func readBody(req *http.Request) ([]byte, error) {
 	if req.Body == nil || req.Body == http.NoBody {
 		return nil, nil
 	}
-	var buf bytes.Buffer
-	if n := req.ContentLength; n > 0 && n <= maxBodyBytes {
-		buf.Grow(int(n) + bytes.MinRead)
-	}
-	if _, err := buf.ReadFrom(io.LimitReader(req.Body, maxBodyBytes+1)); err != nil {
+	// One byte past the limit, so a body that is exactly at the cap is told
+	// apart from one that exceeds it.
+	limited := io.LimitReader(req.Body, maxBodyBytes+1)
+
+	data, err := readDeclaredLength(req.ContentLength, limited)
+	if err != nil {
 		return nil, err
 	}
-	data := buf.Bytes()
+	if data == nil {
+		var buf bytes.Buffer
+		if _, err := buf.ReadFrom(limited); err != nil {
+			return nil, err
+		}
+		data = buf.Bytes()
+	}
 	if len(data) > maxBodyBytes {
 		return nil, fmt.Errorf("request body exceeds %d bytes", maxBodyBytes)
 	}
