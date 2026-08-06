@@ -1,8 +1,10 @@
 package middleware
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"log/slog"
 
 	"github.com/pokt-network/sage/relay"
 )
@@ -33,7 +35,7 @@ func RequestID() relay.Middleware {
 			}
 
 			ctx.RequestID = id
-			ctx.Logger = ctx.Logger.With("request_id", id)
+			ctx.Logger = withRequestID(ctx.Logger, id)
 
 			err := next.HandleRelay(ctx)
 
@@ -45,6 +47,52 @@ func RequestID() relay.Middleware {
 			return err
 		})
 	}
+}
+
+// withRequestID returns a logger that stamps request_id on every record.
+//
+// slog.Logger.With would do the same, but it pre-formats the attribute into a
+// clone of the handler's buffer immediately — work paid on every relay, whether
+// or not a single line is ever emitted at the configured level. On a gateway
+// that logs at warn in production, that is the common case. requestIDHandler
+// defers the attribute to Handle, which only runs for records that survive the
+// level check.
+func withRequestID(logger *slog.Logger, id string) *slog.Logger {
+	if logger == nil {
+		return nil
+	}
+	return slog.New(&requestIDHandler{Handler: logger.Handler(), id: id})
+}
+
+// requestIDHandler adds request_id to each record as it is handled.
+type requestIDHandler struct {
+	slog.Handler
+	id string
+}
+
+func (h *requestIDHandler) Handle(ctx context.Context, r slog.Record) error {
+	r.AddAttrs(slog.String("request_id", h.id))
+	return h.Handler.Handle(ctx, r)
+}
+
+// WithAttrs and WithGroup must rewrap: the embedded handler's versions return
+// the inner handler, which would drop the request ID from that point on.
+func (h *requestIDHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &requestIDHandler{Handler: h.Handler.WithAttrs(attrs), id: h.id}
+}
+
+func (h *requestIDHandler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
+	// Deferring past an open group would nest the ID inside it — records would
+	// carry inner.request_id instead of request_id, which is not what
+	// slog.Logger.With does and not what log searches expect. Materialize it
+	// here, at the ungrouped level, and stop deferring. Nothing on the relay
+	// hot path opens a group, so the eager cost is not paid per relay.
+	return h.Handler.
+		WithAttrs([]slog.Attr{slog.String("request_id", h.id)}).
+		WithGroup(name)
 }
 
 // generateRequestID produces a cryptographically random 32-character hex string.

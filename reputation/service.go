@@ -123,7 +123,7 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	for i := range s.shards {
 		s.shards[i].cache = make(map[domain.ServiceID]map[string]float64)
 	}
-	s.key = keyFnFor(cfg.KeyGranularity)
+	s.key = memoize(keyFnFor(cfg.KeyGranularity))
 	s.selector = NewTieredSelector(DefaultSelectorConfig(), s.scoreForSelector)
 	return s
 }

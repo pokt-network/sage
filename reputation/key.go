@@ -1,6 +1,9 @@
 package reputation
 
 import (
+	"sync"
+	"sync/atomic"
+
 	"github.com/pokt-network/sage/domain"
 )
 
@@ -69,6 +72,55 @@ func keyFnFor(granularity string) KeyFn {
 	}
 	return func(ep domain.EndpointAddr, rpcType domain.RPCType) string {
 		return base(ep) + "|" + string(rpcType)
+	}
+}
+
+// maxKeyCacheEntries bounds the memo below. Live keys are (endpoints in the
+// current sessions × RPC types), which is orders of magnitude smaller; the cap
+// only exists because entries are never removed one by one.
+const maxKeyCacheEntries = 100_000
+
+// keyCacheKey is the memo's lookup key: exactly the arguments of a KeyFn.
+type keyCacheKey struct {
+	addr    domain.EndpointAddr
+	rpcType domain.RPCType
+}
+
+// memoize wraps a KeyFn so each (endpoint, RPC type) pair is formatted once.
+//
+// The extractors underneath are all substring slicing and allocate nothing —
+// the only allocation is the final concatenation, and it is paid per *candidate
+// endpoint per relay*, since selection scores the whole pool on every request.
+// A key is a pure function of its inputs, so the answer is reusable for as long
+// as the endpoint exists.
+//
+// Entries are never evicted individually: an endpoint that has left the current
+// session may be back in the next one, and liveness tracking would cost more
+// than the concatenation it saves. Instead the whole memo is dropped once it
+// passes maxKeyCacheEntries, which costs one re-format per key still in use.
+func memoize(fn KeyFn) KeyFn {
+	var (
+		cache   atomic.Pointer[sync.Map]
+		entries atomic.Int64
+	)
+	cache.Store(&sync.Map{})
+
+	return func(ep domain.EndpointAddr, rpcType domain.RPCType) string {
+		k := keyCacheKey{addr: ep, rpcType: rpcType}
+
+		m := cache.Load()
+		if cached, ok := m.Load(k); ok {
+			return cached.(string)
+		}
+
+		key := fn(ep, rpcType)
+		if _, loaded := m.LoadOrStore(k, key); !loaded && entries.Add(1) > maxKeyCacheEntries {
+			// Racing writers may all see the threshold crossed; each swaps in a
+			// fresh map, which is harmless — the loser's map is simply dropped.
+			cache.Store(&sync.Map{})
+			entries.Store(0)
+		}
+		return key
 	}
 }
 

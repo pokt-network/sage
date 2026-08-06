@@ -1,9 +1,13 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/pokt-network/sage/domain"
@@ -134,4 +138,113 @@ func TestRequestID_GeneratesUniqueIDs(t *testing.T) {
 		}
 		seen[ctx.RequestID] = true
 	}
+}
+
+// decodeLogLines parses newline-delimited JSON log records.
+func decodeLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("decode %q: %v", line, err)
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+func TestWithRequestID_StampsEveryRecord(t *testing.T) {
+	var buf bytes.Buffer
+	logger := withRequestID(slog.New(slog.NewJSONHandler(&buf, nil)), "req-1")
+
+	logger.Info("first")
+	logger.Error("second")
+
+	records := decodeLogLines(t, &buf)
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
+	}
+	for i, rec := range records {
+		if rec["request_id"] != "req-1" {
+			t.Errorf("record %d request_id = %v, want req-1", i, rec["request_id"])
+		}
+	}
+}
+
+// A middleware further down the chain may add its own attributes or a group.
+// Neither may drop the request ID.
+func TestWithRequestID_SurvivesWithAttrsAndGroup(t *testing.T) {
+	var buf bytes.Buffer
+	base := withRequestID(slog.New(slog.NewJSONHandler(&buf, nil)), "req-2")
+
+	base.With("service_id", "eth").Info("attrs")
+	base.WithGroup("inner").Info("group", "k", "v")
+
+	records := decodeLogLines(t, &buf)
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
+	}
+	if records[0]["request_id"] != "req-2" || records[0]["service_id"] != "eth" {
+		t.Errorf("With() record lost an attribute: %v", records[0])
+	}
+	if records[1]["request_id"] != "req-2" {
+		t.Errorf("WithGroup() record lost the request ID: %v", records[1])
+	}
+	// The group must still apply to attributes added after it.
+	inner, ok := records[1]["inner"].(map[string]any)
+	if !ok || inner["k"] != "v" {
+		t.Errorf("WithGroup() did not group later attributes: %v", records[1])
+	}
+}
+
+func TestWithRequestID_RespectsLevel(t *testing.T) {
+	var buf bytes.Buffer
+	logger := withRequestID(
+		slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		"req-3",
+	)
+
+	logger.Info("dropped")
+	if buf.Len() != 0 {
+		t.Errorf("below-threshold record was emitted: %s", buf.String())
+	}
+
+	logger.Warn("kept")
+	if records := decodeLogLines(t, &buf); len(records) != 1 || records[0]["request_id"] != "req-3" {
+		t.Errorf("warn record = %v", records)
+	}
+}
+
+func TestWithRequestID_NilLogger(t *testing.T) {
+	if got := withRequestID(nil, "req-4"); got != nil {
+		t.Errorf("want nil logger passed through, got %v", got)
+	}
+}
+
+// loggerSink keeps the benchmark results alive: without an escaping use the
+// compiler elides the allocation being measured and reports a fictional 0 B/op.
+var loggerSink *slog.Logger
+
+// BenchmarkRequestIDLogger measures the per-relay cost of attaching the ID at a
+// production log level, where nothing is emitted.
+func BenchmarkRequestIDLogger(b *testing.B) {
+	base := slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	b.Run("slog_with", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			loggerSink = base.With("request_id", "0123456789abcdef0123456789abcdef")
+		}
+	})
+	b.Run("wrapped_handler", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			loggerSink = withRequestID(base, "0123456789abcdef0123456789abcdef")
+		}
+	})
 }
