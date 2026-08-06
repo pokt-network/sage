@@ -155,7 +155,7 @@ func TestShannon_Integration_SendRelay(t *testing.T) {
 	}
 
 	// Build the relay signer from the gateway private key.
-	signer, err := newRelaySigner(fn.AccountClient(), cfg.Gateway.GatewayPrivateKeyHex)
+	signer, err := newRelaySigner(fn.pubKeys, cfg.Gateway.GatewayPrivateKeyHex, newTestLogger())
 	if err != nil {
 		t.Fatalf("newRelaySigner: %v", err)
 	}

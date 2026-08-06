@@ -89,7 +89,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 
 	sm := newSessionManager(fullNode, configuredServices, logger)
 
-	signer, err := newRelaySigner(fullNode.AccountClient(), cfg.Gateway.GatewayPrivateKeyHex, logger)
+	signer, err := newRelaySigner(fullNode.pubKeys, cfg.Gateway.GatewayPrivateKeyHex, logger)
 	if err != nil {
 		return nil, fmt.Errorf("shannon.New: failed to create relay signer: %w", err)
 	}

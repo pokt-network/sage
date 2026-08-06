@@ -27,10 +27,15 @@ type ringCacheKey struct {
 // SignerContext cache hits within a session, since ring composition only
 // changes at session boundaries (when delegations may change).
 type relaySigner struct {
-	sdkSigner     *sdk.Signer
-	accountClient *sdk.AccountClient
-	ringCache     sync.Map // map[ringCacheKey]*ring.Ring
-	logger        *slog.Logger
+	sdkSigner *sdk.Signer
+	// pubKeys serves the ring members' public keys. It is the same cache the
+	// response path verifies against (see pubkeycache.go), and it is the layer
+	// below ringCache: a ring is discarded every session because its
+	// *composition* may change, but the keys of the addresses in it cannot, so
+	// refetching them at every rollover is pure waste.
+	pubKeys   *pubKeyCache
+	ringCache sync.Map // map[ringCacheKey]*ring.Ring
+	logger    *slog.Logger
 
 	// highestSessionEnd is the newest session end height observed. Used to
 	// detect session rollover and evict stale per-session cache entries.
@@ -41,15 +46,15 @@ type relaySigner struct {
 }
 
 // newRelaySigner creates a relaySigner from a private key hex string.
-func newRelaySigner(accountClient *sdk.AccountClient, privateKeyHex string, logger *slog.Logger) (*relaySigner, error) {
+func newRelaySigner(pubKeys *pubKeyCache, privateKeyHex string, logger *slog.Logger) (*relaySigner, error) {
 	sdkSigner, err := sdk.NewSignerFromHex(privateKeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("newRelaySigner: failed to create SDK signer: %w", err)
 	}
 	return &relaySigner{
-		sdkSigner:     sdkSigner,
-		accountClient: accountClient,
-		logger:        logger.With("component", "signer"),
+		sdkSigner: sdkSigner,
+		pubKeys:   pubKeys,
+		logger:    logger.With("component", "signer"),
 	}, nil
 }
 
@@ -140,24 +145,60 @@ func (rs *relaySigner) getOrCreateRing(ctx context.Context, app *apptypes.Applic
 		ringAddresses = append(ringAddresses, gatewayAddresses...)
 	}
 
-	// Fetch public keys for all ring addresses.
+	// Fetch public keys for all ring addresses. Served from memory after the
+	// first time each address is seen — which is what stops a session rollover
+	// from re-querying the full node for keys that cannot have changed.
 	pubKeys := make([]cryptotypes.PubKey, 0, len(ringAddresses))
 	for _, addr := range ringAddresses {
-		pubKey, err := rs.accountClient.GetPubKeyFromAddress(ctx, addr)
+		pubKey, err := rs.pubKeys.GetPubKeyFromAddress(ctx, addr)
 		if err != nil {
 			return nil, fmt.Errorf("getOrCreateRing: failed to get pubkey for %s: %w", addr, err)
+		}
+		if pubKey == nil {
+			// No key onchain for a ring member. In practice this cannot happen
+			// — both the app and its delegated gateways must have staked, and
+			// staking is a signed transaction — so treat it as a stale cached
+			// answer rather than a fact, and drop it. Without this the negative
+			// answer would stand for nilPubKeyTTL and every relay for this app
+			// would fail signing for that whole window. Gated by allowRefetch so
+			// a genuinely keyless address costs one query per interval, not one
+			// per relay.
+			rs.invalidateRingKeys(addr)
+			return nil, fmt.Errorf("getOrCreateRing: no onchain public key for ring address %s", addr)
 		}
 		pubKeys = append(pubKeys, pubKey)
 	}
 
 	newRing, err := rings.GetRingFromPubKeys(pubKeys)
 	if err != nil {
+		// The keys would not form a ring. Same reasoning as above: assume one
+		// of them is stale rather than serving the failure from cache forever.
+		rs.invalidateRingKeys(ringAddresses...)
 		return nil, fmt.Errorf("getOrCreateRing: failed to create ring: %w", err)
 	}
 
 	// Use LoadOrStore to handle concurrent construction: only the winner's ring is kept.
 	actual, _ := rs.ringCache.LoadOrStore(key, newRing)
 	return actual.(*ring.Ring), nil
+}
+
+// invalidateRingKeys drops cached answers for addresses that could not produce
+// a usable ring, so the next attempt re-asks the full node.
+//
+// Rate-limited per address by the cache's own refetch gate: a ring failure is
+// hit once per relay, and re-querying on each of them would replace a cheap
+// cached answer with a full-node query per request — the exact cost the cache
+// exists to remove, arriving at the worst possible moment.
+func (rs *relaySigner) invalidateRingKeys(addresses ...string) {
+	for _, addr := range addresses {
+		if rs.pubKeys.allowRefetch(addr) {
+			rs.pubKeys.invalidate(addr)
+			rs.logger.Warn("dropped cached public key after a failed ring build",
+				"component", "shannon",
+				"address", addr,
+			)
+		}
+	}
 }
 
 // evictStaleRingsOnRollover bounds the per-session caches. Both rs.ringCache and
