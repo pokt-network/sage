@@ -145,12 +145,9 @@ func (a *AdminAPI) handleGetReputation(w http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	// Convert keys to strings for JSON marshalling.
-	out := make(map[string]float64, len(scores))
-	for ep, score := range scores {
-		out[string(ep)] = score
-	}
-	writeJSON(w, http.StatusOK, out)
+	// Keys are reputation keys at the configured granularity (per-URL by
+	// default), not necessarily endpoint addresses.
+	writeJSON(w, http.StatusOK, scores)
 }
 
 func (a *AdminAPI) handleResetReputation(w http.ResponseWriter, req *http.Request) {

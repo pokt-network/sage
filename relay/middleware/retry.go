@@ -29,6 +29,14 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			// Allocated lazily — the no-retry success path (the overwhelming
 			// majority) never needs it.
 			var triedEndpoints map[domain.EndpointAddr]bool
+			var triedOperators map[string]bool
+			// The candidate pool as it stood after the first attempt, before any
+			// per-attempt narrowing. Retries are derived from THIS rather than
+			// from the previous attempt's list: operator preference narrows the
+			// pool for one attempt only, and compounding those narrowings across
+			// attempts would strand later retries with nothing to pick from.
+			var pool domain.EndpointAddrList
+			operatorAware := flags.IsEnabled(ctx.Ctx, featureflag.FlagOperatorAwareSelection, ctx.ServiceID)
 			start := time.Now()
 
 			var lastErr error
@@ -39,13 +47,29 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					// Exclude the endpoint we just tried.
 					if triedEndpoints == nil {
 						triedEndpoints = make(map[domain.EndpointAddr]bool, maxAttempts)
+						triedOperators = make(map[string]bool, maxAttempts)
+						pool = ctx.Endpoints
 					}
 					triedEndpoints[ctx.Endpoint] = true
+					triedOperators[ctx.Endpoint.Operator()] = true
 
-					ctx.Endpoints = ctx.Endpoints.Exclude(triedEndpoints)
-					if len(ctx.Endpoints) == 0 {
+					available := pool.Exclude(triedEndpoints)
+					if len(available) == 0 {
 						break
 					}
+
+					// Prefer an operator we have not already failed against. A
+					// retry exists to reach different infrastructure, and one
+					// operator's hostnames are one operator's infrastructure —
+					// avoiding only the failed endpoint can land the retry on
+					// the same rack behind the same outage. This is a
+					// preference, not a filter: ExcludeOperators returns the
+					// list untouched when every remaining candidate belongs to
+					// an operator we have tried.
+					if operatorAware {
+						available = available.ExcludeOperators(triedOperators)
+					}
+					ctx.Endpoints = available
 
 					// Clear selected endpoint to force re-selection by inner chain.
 					ctx.Endpoint = ""

@@ -88,29 +88,29 @@ type signalRecord struct {
 	signal    reputation.Signal
 }
 
-func (s *stubRepService) RecordSignal(_ context.Context, svcID domain.ServiceID, ep domain.EndpointAddr, sig reputation.Signal) error {
+func (s *stubRepService) RecordSignal(_ context.Context, svcID domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType, sig reputation.Signal) error {
 	s.mu.Lock()
 	s.signals = append(s.signals, signalRecord{svcID, ep, sig})
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *stubRepService) GetScore(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr) (float64, error) {
+func (s *stubRepService) GetScore(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType) (float64, error) {
 	return 100, nil
 }
 
-func (s *stubRepService) GetScores(_ context.Context, _ domain.ServiceID) (map[domain.EndpointAddr]float64, error) {
+func (s *stubRepService) GetScores(_ context.Context, _ domain.ServiceID) (map[string]float64, error) {
 	return nil, nil
 }
 
-func (s *stubRepService) SelectBest(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList) domain.EndpointAddr {
+func (s *stubRepService) SelectBest(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ domain.RPCType) domain.EndpointAddr {
 	if len(eps) == 0 {
 		return ""
 	}
 	return eps[0]
 }
 
-func (s *stubRepService) SelectSpread(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
+func (s *stubRepService) SelectSpread(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ domain.RPCType, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
 	if len(eps) == 0 {
 		return ""
 	}
@@ -391,5 +391,185 @@ func TestCheckSignal_Grading(t *testing.T) {
 				t.Errorf("reason %q should name the check", sig.Reason)
 			}
 		})
+	}
+}
+
+// --- backend-URL deduplication --- //
+
+// heightPlugin implements HealthChecker, DataExtractor and BlockHeightTracker
+// so the fan-out of a backend-derived height can be observed.
+type heightPlugin struct {
+	checkOnlyPlugin
+	height uint64
+
+	mu      sync.Mutex
+	updates map[domain.EndpointAddr]uint64
+}
+
+func (p *heightPlugin) ExtractData(_ domain.EndpointAddr, _, _ []byte) (*qos.ExtractedData, error) {
+	h := p.height
+	return &qos.ExtractedData{BlockHeight: &h}, nil
+}
+
+func (p *heightPlugin) UpdateBlockHeight(ep domain.EndpointAddr, height uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.updates == nil {
+		p.updates = map[domain.EndpointAddr]uint64{}
+	}
+	p.updates[ep] = height
+}
+
+func (p *heightPlugin) PerceivedBlockHeight() uint64 { return p.height }
+
+func (p *heightPlugin) StartSync(_ context.Context) {}
+
+// sharedBackendEndpoints: three registrations in front of one backend, plus one
+// in front of another. Four suppliers, two machines.
+func sharedBackendEndpoints() domain.EndpointAddrList {
+	return domain.EndpointAddrList{
+		"supplierA-https://node1.example.com",
+		"supplierB-https://node1.example.com",
+		"supplierC-https://node1.example.com",
+		"supplierD-https://node2.example.com",
+	}
+}
+
+func dedupTestFixture(t *testing.T) (*Executor, *stubRelayer, *stubRepService, *heightPlugin) {
+	t.Helper()
+	relayer := &stubRelayer{
+		response: &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`)},
+	}
+	payload := domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	plugin := &heightPlugin{
+		checkOnlyPlugin: checkOnlyPlugin{checks: []qos.HealthCheck{{Name: "eth_blockNumber", Payload: payload}}},
+		height:          1234,
+	}
+	reg := qos.NewRegistry()
+	if err := reg.Register("eth", plugin); err != nil {
+		t.Fatal(err)
+	}
+	rep := &stubRepService{}
+	exe := newTestExecutor(
+		relayer,
+		&stubEndpointProvider{endpoints: sharedBackendEndpoints()},
+		&stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}}},
+		reg,
+		rep,
+	)
+	return exe, relayer, rep, plugin
+}
+
+// One relay per backend, not per registration: probing the same machine through
+// three suppliers asks it the same question three times.
+func TestRunOnce_DedupsRelaysByBackendURL(t *testing.T) {
+	exe, relayer, _, _ := dedupTestFixture(t)
+
+	exe.runOnce(context.Background())
+	exe.wg.Wait()
+
+	relayer.mu.Lock()
+	defer relayer.mu.Unlock()
+	if len(relayer.calls) != 2 {
+		t.Fatalf("expected 2 relays (one per backend), got %d: %v", len(relayer.calls), relayer.calls)
+	}
+	seen := map[string]bool{}
+	for _, c := range relayer.calls {
+		url, err := c.endpoint.URL()
+		if err != nil {
+			t.Fatalf("unparseable endpoint %q", c.endpoint)
+		}
+		if seen[url] {
+			t.Errorf("backend %q was probed twice in one cycle", url)
+		}
+		seen[url] = true
+	}
+}
+
+// The height belongs to the backend. Without fan-out the un-probed siblings
+// would look permanently height-less and drop out of selection.
+func TestRunOnce_FansBackendResultsToSiblings(t *testing.T) {
+	exe, _, rep, plugin := dedupTestFixture(t)
+
+	exe.runOnce(context.Background())
+	exe.wg.Wait()
+
+	plugin.mu.Lock()
+	updates := len(plugin.updates)
+	for _, ep := range sharedBackendEndpoints() {
+		if plugin.updates[ep] != 1234 {
+			t.Errorf("endpoint %q height = %d, want 1234", ep, plugin.updates[ep])
+		}
+	}
+	plugin.mu.Unlock()
+	if updates != 4 {
+		t.Errorf("expected all 4 endpoints to receive a height, got %d", updates)
+	}
+
+	rep.mu.Lock()
+	defer rep.mu.Unlock()
+	if len(rep.signals) != 4 {
+		t.Errorf("expected 4 reputation signals (one per registration), got %d", len(rep.signals))
+	}
+}
+
+// Rotation matters: a relay spends the probing supplier's per-session
+// allowance, and a registration that is never probed is never observed to be
+// individually broken.
+func TestRunOnce_RotatesTheProbingSupplier(t *testing.T) {
+	exe, relayer, _, _ := dedupTestFixture(t)
+
+	probed := map[domain.EndpointAddr]bool{}
+	for i := 0; i < 3; i++ {
+		exe.runOnce(context.Background())
+		exe.wg.Wait()
+	}
+
+	relayer.mu.Lock()
+	defer relayer.mu.Unlock()
+	for _, c := range relayer.calls {
+		probed[c.endpoint] = true
+	}
+	for _, ep := range []domain.EndpointAddr{
+		"supplierA-https://node1.example.com",
+		"supplierB-https://node1.example.com",
+		"supplierC-https://node1.example.com",
+	} {
+		if !probed[ep] {
+			t.Errorf("supplier %q was never probed across 3 cycles", ep)
+		}
+	}
+}
+
+// A transport failure can be the probing registration rather than the backend,
+// and there is no response to tell them apart — so it penalizes only the
+// endpoint that failed.
+func TestRunOnce_RelayErrorPenalizesOnlyTheProbedEndpoint(t *testing.T) {
+	exe, relayer, rep, _ := dedupTestFixture(t)
+	relayer.response = nil
+	relayer.err = errors.New("transport failure")
+
+	exe.runOnce(context.Background())
+	exe.wg.Wait()
+
+	rep.mu.Lock()
+	defer rep.mu.Unlock()
+	if len(rep.signals) != 2 {
+		t.Fatalf("expected 1 signal per probed endpoint (2 backends), got %d", len(rep.signals))
+	}
+}
+
+// Disabling the dedup restores one relay per registration.
+func TestRunOnce_DedupCanBeDisabled(t *testing.T) {
+	exe, relayer, _, _ := dedupTestFixture(t)
+	exe.SetBackendURLDedup(false)
+
+	exe.runOnce(context.Background())
+	exe.wg.Wait()
+
+	relayer.mu.Lock()
+	defer relayer.mu.Unlock()
+	if len(relayer.calls) != 4 {
+		t.Errorf("expected 4 relays with dedup off, got %d", len(relayer.calls))
 	}
 }

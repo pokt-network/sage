@@ -200,3 +200,83 @@ func TestHedge_HedgeDelayZero_PassesThrough(t *testing.T) {
 		t.Errorf("expected exactly 1 call when HedgeDelay==0, got %d", calls)
 	}
 }
+
+// A hedge is a second, independent attempt. Two hostnames run by the same
+// provider are not independent, so the hedge arm should prefer a different
+// operator, not merely a different endpoint.
+func TestHedge_PrefersADifferentOperator(t *testing.T) {
+	var mu sync.Mutex
+	var picked []domain.EndpointAddr
+
+	// Stands in for the inner chain's SelectEndpoint: pick, then publish the
+	// pick so Hedge can read it without racing the field.
+	slow := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ep := ctx.Endpoints[0]
+		ctx.Endpoint = ep
+		if ctx.SelectedEndpoint != nil {
+			ctx.SelectedEndpoint.Store(&ep)
+		}
+		mu.Lock()
+		picked = append(picked, ep)
+		mu.Unlock()
+		time.Sleep(60 * time.Millisecond)
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	h := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond))(slow)
+
+	ctx := baseContext()
+	ctx.Endpoints = multiOperatorEndpoints()
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(picked) != 2 {
+		t.Fatalf("expected primary + hedge, got %d picks: %v", len(picked), picked)
+	}
+	if picked[0].Operator() == picked[1].Operator() {
+		t.Errorf("hedge landed on the primary's operator %q: %v", picked[0].Operator(), picked)
+	}
+}
+
+// With only one operator available the hedge still runs — on a different
+// endpoint, as before. The preference must never cost us the hedge.
+func TestHedge_SingleOperatorPoolStillHedges(t *testing.T) {
+	var mu sync.Mutex
+	var picked []domain.EndpointAddr
+
+	// Stands in for the inner chain's SelectEndpoint: pick, then publish the
+	// pick so Hedge can read it without racing the field.
+	slow := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ep := ctx.Endpoints[0]
+		ctx.Endpoint = ep
+		if ctx.SelectedEndpoint != nil {
+			ctx.SelectedEndpoint.Store(&ep)
+		}
+		mu.Lock()
+		picked = append(picked, ep)
+		mu.Unlock()
+		time.Sleep(60 * time.Millisecond)
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	h := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond))(slow)
+
+	ctx := baseContext() // one operator, three hostnames
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(picked) != 2 {
+		t.Fatalf("expected primary + hedge, got %d picks: %v", len(picked), picked)
+	}
+	if picked[0] == picked[1] {
+		t.Errorf("hedge reused the primary's endpoint: %v", picked)
+	}
+}

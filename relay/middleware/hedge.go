@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
@@ -45,6 +46,11 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			// relay completes, so nothing leaks — the relay itself is
 			// independently bounded by the protocol's HTTP client timeout.
 			primaryCtx := ctx.Clone()
+			// Give the primary arm a slot to publish its endpoint into. Reading
+			// primaryCtx.Endpoint from this goroutine instead is a data race:
+			// the arm's SelectEndpoint writes that field concurrently, and
+			// nothing orders the write against the read below.
+			primaryCtx.SelectedEndpoint = new(atomic.Pointer[domain.EndpointAddr])
 			primaryDetached, primaryCancel := context.WithCancel(context.WithoutCancel(ctx.Ctx))
 			primaryCtx.Ctx = primaryDetached
 			go func() {
@@ -69,13 +75,29 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 
 			// Build a clone for the hedge with a different endpoint excluded.
 			hedgeCtx := ctx.Clone()
-			// Exclude the primary's current endpoint so the hedge picks a different one.
-			if primaryCtx.Endpoint != "" {
+			// Exclude the primary's current endpoint so the hedge picks a
+			// different one, and prefer a different OPERATOR: the point of a
+			// hedge is a second, independent path to an answer, and two
+			// hostnames run by the same provider are not independent. The
+			// operator step is a preference — ExcludeOperators leaves the list
+			// alone when the primary's operator is the only one left — so a
+			// single-operator pool still hedges exactly as before.
+			//
+			// A nil slot means the primary had not selected yet when the delay
+			// elapsed; there is nothing to steer away from, so the hedge simply
+			// picks from the full list as it would have anyway.
+			if primary := primaryCtx.SelectedEndpoint.Load(); primary != nil && *primary != "" {
 				hedgeCtx.Endpoints = hedgeCtx.Endpoints.Exclude(
-					map[domain.EndpointAddr]bool{primaryCtx.Endpoint: true},
+					map[domain.EndpointAddr]bool{*primary: true},
 				)
+				if flags.IsEnabled(ctx.Ctx, featureflag.FlagOperatorAwareSelection, ctx.ServiceID) {
+					hedgeCtx.Endpoints = hedgeCtx.Endpoints.ExcludeOperators(
+						map[string]bool{primary.Operator(): true},
+					)
+				}
 			}
 			// Force endpoint re-selection for the hedge.
+			hedgeCtx.SelectedEndpoint = new(atomic.Pointer[domain.EndpointAddr])
 			hedgeCtx.Endpoint = ""
 			hedgeCtx.Response = nil
 			hedgeCtx.Err = nil

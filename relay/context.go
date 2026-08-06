@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"sync/atomic"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/heuristic"
@@ -38,6 +39,23 @@ type Context struct {
 	// Set by SelectEndpoint middleware
 	Endpoint  domain.EndpointAddr
 	Endpoints domain.EndpointAddrList
+
+	// SelectedEndpoint, when non-nil, receives a copy of Endpoint as soon as
+	// SelectEndpoint picks one. It exists for the single case where another
+	// goroutine must learn an in-flight relay's endpoint before that relay
+	// finishes: Hedge waits out the hedge delay and then needs the primary
+	// arm's endpoint to steer the hedge arm elsewhere.
+	//
+	// Reading Endpoint directly for that is a data race — the primary arm
+	// writes it from its own goroutine, and no channel or lock orders that
+	// write against the waiter's read. The race is real rather than theoretical:
+	// the two goroutines genuinely run at once by construction, and a torn
+	// string header is a crash, not a stale value.
+	//
+	// Nil for every relay that is not being hedged, which is nearly all of
+	// them. Hedge allocates one per arm, so the shallow Clone() cannot alias
+	// two arms onto the same slot.
+	SelectedEndpoint *atomic.Pointer[domain.EndpointAddr]
 
 	// Set by SendRelay middleware
 	Response *domain.Response

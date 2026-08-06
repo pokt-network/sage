@@ -132,9 +132,22 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	if cfg.Gateway.Reputation.InitialScore > 0 {
 		initialScore = float64(cfg.Gateway.Reputation.InitialScore)
 	}
+	// A misspelled granularity must not fall through to the default: it would
+	// silently change what scores are attached to, and nothing downstream could
+	// tell the difference until an incident.
+	keyGranularity := cfg.Gateway.Reputation.KeyGranularity
+	if !reputation.ValidKeyGranularity(keyGranularity) {
+		return nil, fmt.Errorf(
+			"reputation_config.key_granularity %q is not recognised (want one of: %s, %s, %s, %s)",
+			keyGranularity,
+			reputation.KeyPerURL, reputation.KeyPerEndpoint,
+			reputation.KeyPerDomain, reputation.KeyPerSupplier,
+		)
+	}
 	repSvc := reputation.NewService(repStorage, timeline, reputation.ServiceConfig{
-		InitialScore: initialScore,
-		MaxScore:     100,
+		InitialScore:   initialScore,
+		MaxScore:       100,
+		KeyGranularity: keyGranularity,
 	})
 	repSvc.Start()
 	app.RepSvc = repSvc
@@ -230,6 +243,27 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// 10. Metrics recorder
 	recorder := metrics.NewRecorder(serviceIDsFrom(cfg))
 	app.Metrics = recorder
+
+	// The reputation pool-collapse guard serves a below-threshold endpoint when
+	// no endpoint clears the floor. That keeps the service up, which is the
+	// point — but it must not be silent, or a pool that has degraded to
+	// "everything is bad" looks identical to a healthy one.
+	repSvc.SetCollapseHook(func(serviceID domain.ServiceID) {
+		recorder.RecordDegraded(serviceID, "reputation_pool_collapse")
+	})
+
+	// Per-operator concentration cap. Gated per relay so an operator can turn
+	// it off at runtime — globally or for one service — without a deploy.
+	repSvc.SetOperatorCap(
+		reputation.OperatorCapConfig{
+			MaxShare:            cfg.Gateway.Reputation.MaxOperatorShare,
+			TwoOperatorMaxShare: cfg.Gateway.Reputation.MaxOperatorShareTwoOperators,
+			DisplacementCeiling: cfg.Gateway.Reputation.OperatorDisplacementCeiling,
+		},
+		func(ctx context.Context, serviceID domain.ServiceID) bool {
+			return flags.IsEnabled(ctx, featureflag.FlagOperatorAwareSelection, serviceID)
+		},
+	)
 
 	// 11. Per-service config functions
 	retryFn := func(serviceID domain.ServiceID) config.RetryConfig {
@@ -351,6 +385,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		logger.Warn("health check config: " + warning)
 	}
 	healthExe.SetConfiguredChecks(configuredChecks)
+	healthExe.SetBackendURLDedup(!cfg.Gateway.HealthChecks.DisableBackendURLDedup)
 
 	healthExe.Start(ctx)
 	app.HealthExe = healthExe

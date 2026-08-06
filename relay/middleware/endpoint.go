@@ -44,7 +44,16 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 			}
 
 			// Select the best endpoint by reputation.
-			ctx.Endpoint = repSvc.SelectBest(ctx.Ctx, ctx.ServiceID, candidates)
+			ctx.Endpoint = repSvc.SelectBest(ctx.Ctx, ctx.ServiceID, candidates, ctx.RPCType)
+
+			// Publish the choice for any goroutine watching this relay from
+			// outside it — today only Hedge, which needs the primary arm's
+			// endpoint while that arm is still running. Nil for every
+			// unhedged relay, which is nearly all of them.
+			if ctx.SelectedEndpoint != nil {
+				ep := ctx.Endpoint
+				ctx.SelectedEndpoint.Store(&ep)
+			}
 
 			return next.HandleRelay(ctx)
 		})

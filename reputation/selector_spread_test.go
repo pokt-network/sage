@@ -64,10 +64,10 @@ func TestSelectSpread_CascadesToLowerTier(t *testing.T) {
 	// One critical error (-25) → score 75 → T2.
 	eps := domain.EndpointAddrList{"ep1", "ep2"}
 	for _, ep := range eps {
-		_ = svc.RecordSignal(ctx, svcID, ep, NewCriticalErrorSignal("x", 0))
+		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("x", 0))
 	}
 
-	pick := svc.SelectSpread(ctx, svcID, eps, nil)
+	pick := svc.SelectSpread(ctx, svcID, eps, domain.RPCTypeJSONRPC, nil)
 	if pick == "" {
 		t.Fatal("expected non-empty pick from T2 cascade")
 	}
@@ -76,7 +76,7 @@ func TestSelectSpread_CascadesToLowerTier(t *testing.T) {
 func TestSelectSpread_EmptyEndpoints(t *testing.T) {
 	svc, _ := newTestService()
 	defer svc.Stop()
-	if got := svc.SelectSpread(context.Background(), "eth", nil, nil); got != "" {
+	if got := svc.SelectSpread(context.Background(), "eth", nil, domain.RPCTypeJSONRPC, nil); got != "" {
 		t.Errorf("expected empty for nil endpoints, got %q", got)
 	}
 }

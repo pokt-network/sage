@@ -49,6 +49,8 @@ Go toolchain: `go 1.26.1` (see `go.mod`).
 
 `relay.Context` (see `relay/context.go`) is the per-request state passed through the chain. Each field is set by **exactly one** middleware and read by others — keep that discipline when adding fields.
 
+One field exists purely because of that discipline: `SelectedEndpoint` is an `*atomic.Pointer[domain.EndpointAddr]` that `SelectEndpoint` publishes its pick into, and it is non-nil only on hedge arms. Hedge waits out the hedge delay and then needs the primary arm's endpoint to steer the hedge elsewhere — reading `ctx.Endpoint` for that is a data race, because the arm writes it from its own goroutine with nothing ordering the write against the read. Hedge allocates a fresh slot per arm so the shallow `Clone()` cannot alias two arms onto one.
+
 It is a flat struct of typed fields; there is no generic `values` bag, so carrying new state means adding a field. Before you do: **`Clone()` is a shallow copy**. Hedge racers and batch sub-relays each run on a clone, so any pointer, slice, or map field is *shared* between them — a field that looks per-request is per-request-tree, and writing to it from a sub-relay is a data race the `-race` suite will only catch if a test actually fans out. Scalars are safe; anything else needs an atomic (see `Degraded` merging in `middleware/batch.go`) or must be treated as read-only.
 
 ## Adding a Middleware Module

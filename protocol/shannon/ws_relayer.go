@@ -171,7 +171,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		return errors.New("ws open: no endpoints for rpc type websocket")
 	}
 	load := r.snapshotLoad()
-	endpointAddr := r.deps.Reputation.SelectSpread(ctx, serviceID, endpoints, load)
+	endpointAddr := r.deps.Reputation.SelectSpread(ctx, serviceID, endpoints, domain.RPCTypeWebSocket, load)
 	if endpointAddr == "" {
 		logger.Warn("ws open: selection returned empty")
 		http.Error(w, "no viable websocket endpoint", http.StatusBadGateway)
@@ -260,7 +260,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		// no supplier penalty) or the endpoint dial failed (supplier
 		// advertised WS but isn't actually serving it — MAJOR error).
 		if errors.Is(err, websockets.ErrBridgeEndpointUnavailable) {
-			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr,
+			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket,
 				reputation.NewMajorErrorSignal("ws_endpoint_unavailable:"+err.Error(), 0))
 		}
 		logger.Error("ws open: start bridge", "err", err)
@@ -388,7 +388,7 @@ func (r *WSRelayer) handleEndpointFrame(
 	// signature rejected), treat as a major supplier error without running
 	// heuristic on the raw bytes.
 	if frameErr != nil {
-		_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr,
+		_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket,
 			reputation.NewMajorErrorSignal("ws_validate_err:"+frameErr.Error(), latency))
 		r.submitObservation(serviceID, endpointAddr, payload, latency, frameErr, true)
 		return
@@ -396,7 +396,7 @@ func (r *WSRelayer) handleEndpointFrame(
 
 	res := heuristic.AnalyzeFrame(payload, domain.RPCTypeWebSocket, "")
 	sig := frameSeverityToSignal(res, latency)
-	_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, sig)
+	_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket, sig)
 
 	// Always submit if heuristic penalized; otherwise sample.
 	forced := res.ShouldPenalize

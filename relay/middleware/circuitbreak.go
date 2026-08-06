@@ -16,11 +16,13 @@ type CircuitBreakRecorder interface {
 
 // CircuitBreak returns a middleware that:
 //  1. Pre-relay: filters out endpoints whose domain is currently circuit-broken.
-//  2. Post-relay: if ctx.HeuristicResult.ShouldCircuitBreak==true, marks the
-//     endpoint's domain as broken.
+//  2. Post-relay: reports the attempt's outcome to the breaker — a
+//     ShouldCircuitBreak result as a failure, a clean relay as a success.
 //
 // IMPORTANT: ShouldRetry alone does NOT trigger circuit-breaking. Only
-// ShouldCircuitBreak causes a domain to be marked broken.
+// ShouldCircuitBreak causes a domain to be marked broken — and even then only
+// if the domain's recent failure RATE clears the breaker's gate. One bad relay
+// must never remove a hostname (and everything behind it) from the pool.
 //
 // If the "circuit_breaker" feature flag is disabled, the middleware passes
 // through to the inner handler without wrapping.
@@ -69,16 +71,35 @@ func CircuitBreak(
 
 			err := next.HandleRelay(ctx)
 
-			// Post-relay: check heuristic result for circuit-break signal.
-			if ctx.HeuristicResult != nil && ctx.HeuristicResult.ShouldCircuitBreak && ctx.Endpoint != "" {
-				reason := ctx.HeuristicResult.Reason
-				if reason == "" {
-					reason = "heuristic_circuit_break"
-				}
+			// Post-relay: feed the breaker's failure-rate gate.
+			//
+			// Both outcomes matter. The failure is only a candidate — the
+			// breaker decides whether the domain's recent RATE justifies
+			// removing it — and the success is the denominator that makes that
+			// rate meaningful. Reporting only failures would mean every failure
+			// reads as a 100% failure rate, which is the first-error behavior
+			// the gate exists to replace.
+			//
+			// This middleware sits inside Retry/Hedge, so it runs once per
+			// attempt and ctx.Endpoint is that attempt's endpoint.
+			//
+			// A relay that failed without asking for a circuit break counts as
+			// neither: it is a failure the breaker has no opinion on (a 429, a
+			// client error), and folding it into either side of the ratio would
+			// distort a signal that is specifically about a host being broken.
+			if ctx.Endpoint != "" {
 				brokenDomain := ctx.Endpoint.Domain()
-				breaker.MarkBroken(serviceID, brokenDomain, reason)
-				if breakRecorder != nil {
-					breakRecorder.RecordCircuitBreak(ctx.ServiceID, brokenDomain)
+				switch {
+				case ctx.HeuristicResult != nil && ctx.HeuristicResult.ShouldCircuitBreak:
+					reason := ctx.HeuristicResult.Reason
+					if reason == "" {
+						reason = "heuristic_circuit_break"
+					}
+					if breaker.MarkBroken(serviceID, brokenDomain, reason) && breakRecorder != nil {
+						breakRecorder.RecordCircuitBreak(ctx.ServiceID, brokenDomain)
+					}
+				case err == nil:
+					breaker.RecordSuccess(serviceID, brokenDomain)
 				}
 			}
 

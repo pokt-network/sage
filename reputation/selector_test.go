@@ -8,7 +8,7 @@ import (
 )
 
 func fixedScoreFn(scores map[domain.EndpointAddr]float64) ScoreFn {
-	return func(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr) (float64, bool) {
+	return func(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType) (float64, bool) {
 		v, ok := scores[ep]
 		return v, ok
 	}
@@ -25,7 +25,7 @@ func TestTieredSelector_Tier1(t *testing.T) {
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 
 	endpoints := domain.EndpointAddrList{"ep1", "ep2", "ep3"}
-	result := sel.Select(context.Background(), "eth", endpoints)
+	result := sel.Select(context.Background(), "eth", endpoints, domain.RPCTypeJSONRPC)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result))
@@ -45,7 +45,7 @@ func TestTieredSelector_CascadeToTier2(t *testing.T) {
 	cfg.ProbationPct = 0
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 
-	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"ep1", "ep2"})
+	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"ep1", "ep2"}, domain.RPCTypeJSONRPC)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result))
 	}
@@ -62,7 +62,7 @@ func TestTieredSelector_CascadeToTier3(t *testing.T) {
 	cfg.ProbationPct = 0
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 
-	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"ep1"})
+	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"ep1"}, domain.RPCTypeJSONRPC)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(result))
 	}
@@ -71,16 +71,75 @@ func TestTieredSelector_CascadeToTier3(t *testing.T) {
 	}
 }
 
+// Sub-threshold endpoints are filtered out whenever anything better exists.
 func TestTieredSelector_FilteredOut(t *testing.T) {
 	scores := map[domain.EndpointAddr]float64{
-		"ep1": 5, // Below minThreshold (10).
+		"bad":     5, // Below minThreshold (10).
+		"healthy": 90,
+	}
+	cfg := DefaultSelectorConfig()
+	cfg.ProbationPct = 0
+	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
+
+	for i := 0; i < 50; i++ {
+		result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"bad", "healthy"}, domain.RPCTypeJSONRPC)
+		if len(result) != 1 || result[0] != "healthy" {
+			t.Fatalf("expected [healthy], got %v", result)
+		}
+	}
+}
+
+// Pool collapse: every endpoint below the floor must still yield the least-bad
+// one. Returning nothing would be a total outage caused by reputation alone.
+func TestTieredSelector_PoolCollapseServesLeastBad(t *testing.T) {
+	scores := map[domain.EndpointAddr]float64{
+		"worst":    1,
+		"bad":      5,
+		"leastBad": 9, // Still below minThreshold (10).
 	}
 	cfg := DefaultSelectorConfig()
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 
-	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"ep1"})
-	if result != nil {
-		t.Errorf("expected nil for filtered-out endpoints, got %v", result)
+	var collapsed int
+	sel.SetCollapseHook(func(domain.ServiceID) { collapsed++ })
+
+	eps := domain.EndpointAddrList{"worst", "bad", "leastBad"}
+	for i := 0; i < 50; i++ {
+		result := sel.Select(context.Background(), "eth", eps, domain.RPCTypeJSONRPC)
+		if len(result) != 1 || result[0] != "leastBad" {
+			t.Fatalf("expected [leastBad], got %v", result)
+		}
+	}
+	if collapsed != 50 {
+		t.Errorf("expected collapse hook to fire on every selection, got %d", collapsed)
+	}
+}
+
+// Ties at the least-bad score are spread over, not pinned to the first one.
+func TestTieredSelector_PoolCollapseSpreadsTies(t *testing.T) {
+	scores := map[domain.EndpointAddr]float64{"a": 5, "b": 5, "c": 5}
+	sel := NewTieredSelector(DefaultSelectorConfig(), fixedScoreFn(scores))
+
+	seen := map[domain.EndpointAddr]bool{}
+	for i := 0; i < 200; i++ {
+		result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"a", "b", "c"}, domain.RPCTypeJSONRPC)
+		if len(result) != 1 {
+			t.Fatalf("expected 1 result, got %v", result)
+		}
+		seen[result[0]] = true
+	}
+	if len(seen) != 3 {
+		t.Errorf("expected all 3 tied endpoints to be selected over 200 draws, got %v", seen)
+	}
+}
+
+func TestTieredSelector_TopTierCandidates_PoolCollapse(t *testing.T) {
+	scores := map[domain.EndpointAddr]float64{"a": 5, "b": 5, "c": 1}
+	sel := NewTieredSelector(DefaultSelectorConfig(), fixedScoreFn(scores))
+
+	got := sel.TopTierCandidates(context.Background(), "eth", domain.EndpointAddrList{"a", "b", "c"}, domain.RPCTypeJSONRPC)
+	if len(got) != 2 || !got.Contains("a") || !got.Contains("b") {
+		t.Errorf("expected the two least-bad endpoints [a b], got %v", got)
 	}
 }
 
@@ -93,7 +152,7 @@ func TestTieredSelector_ProbationPrepend(t *testing.T) {
 	cfg.ProbationPct = 100 // Always include probation for test determinism.
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 
-	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"healthy", "probe"})
+	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"healthy", "probe"}, domain.RPCTypeJSONRPC)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 results (probation + healthy), got %d: %v", len(result), result)
@@ -115,7 +174,7 @@ func TestTieredSelector_ProbationDoesNotReplace(t *testing.T) {
 	cfg.ProbationPct = 100
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 
-	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"healthy", "probe"})
+	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"healthy", "probe"}, domain.RPCTypeJSONRPC)
 
 	// The healthy endpoint must always be present (probation prepends, not replaces).
 	found := false
@@ -137,7 +196,7 @@ func TestTieredSelector_AllProbation(t *testing.T) {
 	cfg := DefaultSelectorConfig()
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 
-	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"ep1", "ep2"})
+	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"ep1", "ep2"}, domain.RPCTypeJSONRPC)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 result when all in probation, got %d", len(result))
 	}
@@ -147,7 +206,7 @@ func TestTieredSelector_Empty(t *testing.T) {
 	cfg := DefaultSelectorConfig()
 	sel := NewTieredSelector(cfg, fixedScoreFn(nil))
 
-	result := sel.Select(context.Background(), "eth", nil)
+	result := sel.Select(context.Background(), "eth", nil, domain.RPCTypeJSONRPC)
 	if result != nil {
 		t.Errorf("expected nil for empty endpoints, got %v", result)
 	}
@@ -160,7 +219,7 @@ func TestTieredSelector_UnknownEndpointGoesToTier3(t *testing.T) {
 	cfg.ProbationPct = 0
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 
-	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"ep_unknown"})
+	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"ep_unknown"}, domain.RPCTypeJSONRPC)
 	if len(result) != 1 || result[0] != "ep_unknown" {
 		t.Errorf("expected unknown endpoint in tier 3, got %v", result)
 	}

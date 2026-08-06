@@ -19,3 +19,16 @@ const (
 
 	RPCTypeUnknown RPCType = "unknown"
 )
+
+// AllRPCTypes returns every RPC type a request can carry, excluding Unknown.
+// Used where a caller must act on an endpoint across every protocol it serves
+// — e.g. resetting an endpoint's reputation, which is scored per RPC type.
+func AllRPCTypes() []RPCType {
+	return []RPCType{
+		RPCTypeJSONRPC,
+		RPCTypeREST,
+		RPCTypeCometBFT,
+		RPCTypeWebSocket,
+		RPCTypeGRPC,
+	}
+}

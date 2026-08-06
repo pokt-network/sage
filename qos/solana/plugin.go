@@ -117,7 +117,8 @@ func (p *Plugin) StartSync(_ context.Context) {}
 // --- qos.BlockHeightParser --- //
 
 // ParseBlockHeight extracts a block height from a Solana JSON-RPC response.
-// It handles getEpochInfo responses (result.blockHeight or result.absoluteSlot).
+// It handles getEpochInfo responses (result.blockHeight only — see
+// extractBlockHeightFromResponse for why absoluteSlot is not accepted).
 func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
 	return extractBlockHeightFromResponse(response)
 }

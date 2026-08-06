@@ -110,19 +110,19 @@ type mockRepService struct {
 
 var _ reputation.Service = (*mockRepService)(nil)
 
-func (m *mockRepService) RecordSignal(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ reputation.Signal) error {
+func (m *mockRepService) RecordSignal(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType, _ reputation.Signal) error {
 	return nil
 }
 
-func (m *mockRepService) GetScore(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr) (float64, error) {
+func (m *mockRepService) GetScore(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType) (float64, error) {
 	return 100, nil
 }
 
-func (m *mockRepService) GetScores(_ context.Context, _ domain.ServiceID) (map[domain.EndpointAddr]float64, error) {
+func (m *mockRepService) GetScores(_ context.Context, _ domain.ServiceID) (map[string]float64, error) {
 	return nil, nil
 }
 
-func (m *mockRepService) SelectBest(_ context.Context, _ domain.ServiceID, endpoints domain.EndpointAddrList) domain.EndpointAddr {
+func (m *mockRepService) SelectBest(_ context.Context, _ domain.ServiceID, endpoints domain.EndpointAddrList, _ domain.RPCType) domain.EndpointAddr {
 	if m.bestEndpoint != "" {
 		return m.bestEndpoint
 	}
@@ -132,7 +132,7 @@ func (m *mockRepService) SelectBest(_ context.Context, _ domain.ServiceID, endpo
 	return ""
 }
 
-func (m *mockRepService) SelectSpread(_ context.Context, _ domain.ServiceID, endpoints domain.EndpointAddrList, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
+func (m *mockRepService) SelectSpread(_ context.Context, _ domain.ServiceID, endpoints domain.EndpointAddrList, _ domain.RPCType, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
 	if len(endpoints) > 0 {
 		return endpoints[0]
 	}

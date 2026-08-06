@@ -196,3 +196,107 @@ func (t *trackingMockHandler) HandleRelay(ctx *relay.Context) error {
 	}
 	return err
 }
+
+// multiOperatorEndpoints returns a pool spanning two operators: two endpoints
+// behind alpha.net and one behind beta.net. Note that the default testEndpoints
+// pool is nodeA/nodeB/nodeC.example.com — three domains but ONE operator, which
+// is exactly the shape operator-awareness has to leave untouched.
+func multiOperatorEndpoints() domain.EndpointAddrList {
+	return domain.EndpointAddrList{
+		"supplier1-https://a1.alpha.net",
+		"supplier2-https://a2.alpha.net",
+		"supplier3-https://b1.beta.net",
+	}
+}
+
+// firstEndpointHandler always picks the head of the candidate list and fails,
+// so the test observes exactly which pool Retry handed each attempt.
+func firstEndpointHandler(seen *[]domain.EndpointAddr) relay.Handler {
+	return relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = ctx.Endpoints[0]
+		*seen = append(*seen, ctx.Endpoint)
+		return retryableErr("boom")
+	})
+}
+
+// A retry exists to reach different infrastructure. Avoiding only the failed
+// endpoint can put the retry on another hostname of the same operator — same
+// rack, same upstream, same outage.
+func TestRetry_PrefersADifferentOperator(t *testing.T) {
+	var seen []domain.EndpointAddr
+	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(2, 0))(firstEndpointHandler(&seen))
+
+	ctx := baseContext()
+	ctx.Endpoints = multiOperatorEndpoints()
+	_ = h.HandleRelay(ctx)
+
+	if len(seen) != 3 {
+		t.Fatalf("expected 3 attempts, got %d: %v", len(seen), seen)
+	}
+	if seen[1].Operator() == seen[0].Operator() {
+		t.Errorf("retry stayed on operator %q: %v", seen[0].Operator(), seen)
+	}
+	// The third attempt has no untried operator left, so it falls back to the
+	// remaining endpoint rather than giving up — and it must still be one the
+	// earlier attempts did not use.
+	if seen[2] == seen[0] || seen[2] == seen[1] {
+		t.Errorf("third attempt reused an already-tried endpoint: %v", seen)
+	}
+}
+
+// Operator preference narrows one attempt's pool, not the pool itself. If the
+// narrowing compounded, the last attempt would find nothing left to try.
+func TestRetry_OperatorPreferenceDoesNotStrandLaterAttempts(t *testing.T) {
+	var seen []domain.EndpointAddr
+	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(2, 0))(firstEndpointHandler(&seen))
+
+	ctx := baseContext()
+	ctx.Endpoints = multiOperatorEndpoints()
+	_ = h.HandleRelay(ctx)
+
+	distinct := map[domain.EndpointAddr]bool{}
+	for _, ep := range seen {
+		distinct[ep] = true
+	}
+	if len(distinct) != 3 {
+		t.Errorf("expected all 3 endpoints to be tried, got %v", seen)
+	}
+}
+
+// Flag off restores per-endpoint-only exclusion.
+func TestRetry_OperatorAwarenessIsFlagGated(t *testing.T) {
+	var seen []domain.EndpointAddr
+	h := Retry(newFlags("retry"), retryCfg(2, 0))(firstEndpointHandler(&seen))
+
+	ctx := baseContext()
+	ctx.Endpoints = multiOperatorEndpoints()
+	_ = h.HandleRelay(ctx)
+
+	if len(seen) != 3 {
+		t.Fatalf("expected 3 attempts, got %d: %v", len(seen), seen)
+	}
+	if seen[1].Operator() != seen[0].Operator() {
+		t.Errorf("with the flag off, retry should take the next endpoint in order: %v", seen)
+	}
+}
+
+// A single-operator pool must retry exactly as it always did: the preference is
+// a preference, and having nowhere else to go is not a reason to stop.
+func TestRetry_SingleOperatorPoolStillRetries(t *testing.T) {
+	var seen []domain.EndpointAddr
+	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(2, 0))(firstEndpointHandler(&seen))
+
+	ctx := baseContext() // testEndpoints: three hostnames, one operator
+	_ = h.HandleRelay(ctx)
+
+	if len(seen) != 3 {
+		t.Fatalf("expected 3 attempts on a single-operator pool, got %d: %v", len(seen), seen)
+	}
+	distinct := map[domain.EndpointAddr]bool{}
+	for _, ep := range seen {
+		distinct[ep] = true
+	}
+	if len(distinct) != 3 {
+		t.Errorf("each attempt should use a different endpoint: %v", seen)
+	}
+}

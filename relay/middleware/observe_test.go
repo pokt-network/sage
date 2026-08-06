@@ -22,7 +22,7 @@ type trackingRepService struct {
 	called bool
 }
 
-func (s *trackingRepService) RecordSignal(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, sig reputation.Signal) error {
+func (s *trackingRepService) RecordSignal(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType, sig reputation.Signal) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.last = sig
@@ -30,22 +30,22 @@ func (s *trackingRepService) RecordSignal(_ context.Context, _ domain.ServiceID,
 	return nil
 }
 
-func (s *trackingRepService) GetScore(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr) (float64, error) {
+func (s *trackingRepService) GetScore(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType) (float64, error) {
 	return 100, nil
 }
 
-func (s *trackingRepService) GetScores(_ context.Context, _ domain.ServiceID) (map[domain.EndpointAddr]float64, error) {
+func (s *trackingRepService) GetScores(_ context.Context, _ domain.ServiceID) (map[string]float64, error) {
 	return nil, nil
 }
 
-func (s *trackingRepService) SelectBest(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList) domain.EndpointAddr {
+func (s *trackingRepService) SelectBest(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ domain.RPCType) domain.EndpointAddr {
 	if len(eps) > 0 {
 		return eps[0]
 	}
 	return ""
 }
 
-func (s *trackingRepService) SelectSpread(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
+func (s *trackingRepService) SelectSpread(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ domain.RPCType, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
 	if len(eps) > 0 {
 		return eps[0]
 	}

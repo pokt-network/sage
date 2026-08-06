@@ -32,7 +32,7 @@ type spyRepSvc struct {
 	}
 }
 
-func (s *spyRepSvc) RecordSignal(_ context.Context, svcID domain.ServiceID, ep domain.EndpointAddr, sig reputation.Signal) error {
+func (s *spyRepSvc) RecordSignal(_ context.Context, svcID domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType, sig reputation.Signal) error {
 	s.calls = append(s.calls, struct {
 		serviceID domain.ServiceID
 		endpoint  domain.EndpointAddr
@@ -40,19 +40,19 @@ func (s *spyRepSvc) RecordSignal(_ context.Context, svcID domain.ServiceID, ep d
 	}{svcID, ep, sig})
 	return nil
 }
-func (s *spyRepSvc) GetScore(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr) (float64, error) {
+func (s *spyRepSvc) GetScore(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType) (float64, error) {
 	return 100, nil
 }
-func (s *spyRepSvc) GetScores(_ context.Context, _ domain.ServiceID) (map[domain.EndpointAddr]float64, error) {
+func (s *spyRepSvc) GetScores(_ context.Context, _ domain.ServiceID) (map[string]float64, error) {
 	return nil, nil
 }
-func (s *spyRepSvc) SelectBest(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList) domain.EndpointAddr {
+func (s *spyRepSvc) SelectBest(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ domain.RPCType) domain.EndpointAddr {
 	if len(eps) == 0 {
 		return ""
 	}
 	return eps[0]
 }
-func (s *spyRepSvc) SelectSpread(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
+func (s *spyRepSvc) SelectSpread(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ domain.RPCType, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
 	if len(eps) == 0 {
 		return ""
 	}

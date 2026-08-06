@@ -23,14 +23,20 @@ func parseRequest(body []byte) (domain.Payload, error) {
 	return domain.NewPayload(body, domain.RPCTypeJSONRPC, method.String()), nil
 }
 
-// extractBlockHeightFromResponse tries to extract a block height from a Solana
-// JSON-RPC response. It checks two locations in order:
-//  1. result.blockHeight  — returned by getEpochInfo
-//  2. result.absoluteSlot — also returned by getEpochInfo; used as fallback
+// extractBlockHeightFromResponse extracts a block height from a Solana
+// JSON-RPC response. The only accepted source is result.blockHeight, as
+// returned by getEpochInfo — a plain JSON number, not a hex string.
 //
-// Both values are plain JSON numbers (not hex strings).
+// result.absoluteSlot is deliberately NOT a fallback. A slot is not a block
+// height: Solana skips slots, so absoluteSlot runs ahead of blockHeight by the
+// number of skipped slots (tens of millions on mainnet). Mixing the two into
+// one perceived-height consensus makes every endpoint reporting blockHeight
+// look catastrophically behind the ones reporting absoluteSlot, and the
+// sync-allowance check then ejects whichever group is in the minority. An
+// endpoint that cannot report blockHeight contributes no height observation
+// at all, which is the safe outcome — ExtractData already treats a missing
+// height as "this response carries no height", not as an error.
 func extractBlockHeightFromResponse(response []byte) (uint64, error) {
-	// Try result.blockHeight first.
 	bh := gjson.GetBytes(response, "result.blockHeight")
 	if bh.Exists() && bh.Type == gjson.Number {
 		v := bh.Uint()
@@ -39,16 +45,7 @@ func extractBlockHeightFromResponse(response []byte) (uint64, error) {
 		}
 	}
 
-	// Fall back to result.absoluteSlot.
-	slot := gjson.GetBytes(response, "result.absoluteSlot")
-	if slot.Exists() && slot.Type == gjson.Number {
-		v := slot.Uint()
-		if v > 0 {
-			return v, nil
-		}
-	}
-
-	return 0, fmt.Errorf("solana: no blockHeight or absoluteSlot in response")
+	return 0, fmt.Errorf("solana: no blockHeight in response")
 }
 
 // coalescableMethods is the set of read-only Solana methods that are safe

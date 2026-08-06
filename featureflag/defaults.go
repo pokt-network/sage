@@ -19,6 +19,12 @@ const (
 	FlagDebugLog            = "debug_log"
 	FlagShadowMode          = "shadow_mode"
 	FlagWebsocketRelays     = "websocket_relays"
+	// FlagOperatorAwareSelection gates every place endpoint selection reasons
+	// about operator identity (eTLD+1) rather than individual endpoints: the
+	// per-operator concentration cap, and the retry/hedge preference for
+	// reaching a different operator than the attempt that just failed. Off
+	// restores per-endpoint-only behavior.
+	FlagOperatorAwareSelection = "operator_aware_selection"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -45,6 +51,8 @@ var DefaultFlags = map[string]bool{
 	FlagDebugLog:            false,
 	FlagShadowMode:          false,
 	FlagWebsocketRelays:     true,
+
+	FlagOperatorAwareSelection: true,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

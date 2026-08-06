@@ -78,17 +78,16 @@ func TestParseBlockHeight_BlockHeightField(t *testing.T) {
 	}
 }
 
-func TestParseBlockHeight_AbsoluteSlotFallback(t *testing.T) {
+// A slot is not a block height — absoluteSlot runs ahead of blockHeight by the
+// number of skipped slots, so accepting it as a height poisons the perceived
+// height that every other endpoint is compared against.
+func TestParseBlockHeight_AbsoluteSlotIsNotAHeight(t *testing.T) {
 	p := solana.NewPlugin(nil, 10)
 	// blockHeight missing, only absoluteSlot present
 	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":{"absoluteSlot":99999}}`)
 
-	h, err := p.ParseBlockHeight(resp)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if h != 99999 {
-		t.Errorf("expected 99999, got %d", h)
+	if _, err := p.ParseBlockHeight(resp); err == nil {
+		t.Fatal("expected error when only absoluteSlot is present, got nil")
 	}
 }
 

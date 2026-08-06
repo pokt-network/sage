@@ -25,7 +25,7 @@ func TestService_RecordSignal_UpdatesCache(t *testing.T) {
 	ep := domain.EndpointAddr("supplier1-https://example.com")
 
 	// Initial score should be 100 (default).
-	score, err := svc.GetScore(ctx, svcID, ep)
+	score, err := svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,12 +34,12 @@ func TestService_RecordSignal_UpdatesCache(t *testing.T) {
 	}
 
 	// Record a major error (-10).
-	err = svc.RecordSignal(ctx, svcID, ep, NewMajorErrorSignal("timeout", 5*time.Second))
+	err = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewMajorErrorSignal("timeout", 5*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	score, _ = svc.GetScore(ctx, svcID, ep)
+	score, _ = svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
 	if score != 90 {
 		t.Errorf("score after major error = %f, want 90", score)
 	}
@@ -55,10 +55,10 @@ func TestService_ScoreClamping(t *testing.T) {
 
 	// Drive score below 0 with fatal errors.
 	for range 5 {
-		_ = svc.RecordSignal(ctx, svcID, ep, NewFatalErrorSignal("crash", 0))
+		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewFatalErrorSignal("crash", 0))
 	}
 
-	score, _ := svc.GetScore(ctx, svcID, ep)
+	score, _ := svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
 	if score != 0 {
 		t.Errorf("score should be clamped to 0, got %f", score)
 	}
@@ -66,10 +66,10 @@ func TestService_ScoreClamping(t *testing.T) {
 	// Reset and drive above max with successes.
 	_ = svc.ResetScore(ctx, svcID, ep)
 	for range 10 {
-		_ = svc.RecordSignal(ctx, svcID, ep, NewSuccessSignal("ok", time.Millisecond))
+		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", time.Millisecond))
 	}
 
-	score, _ = svc.GetScore(ctx, svcID, ep)
+	score, _ = svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
 	if score != 100 {
 		t.Errorf("score should be clamped to 100, got %f", score)
 	}
@@ -82,12 +82,12 @@ func TestService_AsyncWriteToStorage(t *testing.T) {
 	svcID := domain.ServiceID("eth")
 	ep := domain.EndpointAddr("ep1")
 
-	_ = svc.RecordSignal(ctx, svcID, ep, NewMinorErrorSignal("retry", 0))
+	_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewMinorErrorSignal("retry", 0))
 
 	// Stop flushes pending writes.
 	svc.Stop()
 
-	key := scoreKey(svcID, ep)
+	key := scoreKey(svcID, svc.key(ep, domain.RPCTypeJSONRPC))
 	score, err := store.GetScore(ctx, key)
 	if err != nil {
 		t.Fatalf("expected score in storage after Stop, got error: %v", err)
@@ -104,8 +104,8 @@ func TestService_GetScores(t *testing.T) {
 	ctx := context.Background()
 	svcID := domain.ServiceID("eth")
 
-	_ = svc.RecordSignal(ctx, svcID, domain.EndpointAddr("ep1"), NewSuccessSignal("ok", 0))
-	_ = svc.RecordSignal(ctx, svcID, domain.EndpointAddr("ep2"), NewMajorErrorSignal("fail", 0))
+	_ = svc.RecordSignal(ctx, svcID, domain.EndpointAddr("ep1"), domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0))
+	_ = svc.RecordSignal(ctx, svcID, domain.EndpointAddr("ep2"), domain.RPCTypeJSONRPC, NewMajorErrorSignal("fail", 0))
 
 	scores, err := svc.GetScores(ctx, svcID)
 	if err != nil {
@@ -128,9 +128,9 @@ func TestService_SelectBest(t *testing.T) {
 
 	// Push ep1 below Tier 1 (100 → 75 via critical error, -25). ep2 stays
 	// at 100 in Tier 1; the tier cascade picks ep2 deterministically.
-	_ = svc.RecordSignal(ctx, svcID, ep1, NewCriticalErrorSignal("fail", 0))
+	_ = svc.RecordSignal(ctx, svcID, ep1, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("fail", 0))
 
-	best := svc.SelectBest(ctx, svcID, domain.EndpointAddrList{ep1, ep2})
+	best := svc.SelectBest(ctx, svcID, domain.EndpointAddrList{ep1, ep2}, domain.RPCTypeJSONRPC)
 	if best != ep2 {
 		t.Errorf("expected ep2 (higher tier), got %s", best)
 	}
@@ -157,7 +157,7 @@ func TestService_SelectBest_WithinTierSpread(t *testing.T) {
 	const trials = 2000
 	counts := make(map[domain.EndpointAddr]int, n)
 	for i := 0; i < trials; i++ {
-		pick := svc.SelectBest(ctx, svcID, eps)
+		pick := svc.SelectBest(ctx, svcID, eps, domain.RPCTypeJSONRPC)
 		counts[pick]++
 	}
 	// Every endpoint must see meaningful traffic (expected ~500 each).
@@ -174,7 +174,7 @@ func TestService_SelectBest_Empty(t *testing.T) {
 	svc, _ := newTestService()
 	defer svc.Stop()
 
-	best := svc.SelectBest(context.Background(), "eth", nil)
+	best := svc.SelectBest(context.Background(), "eth", nil, domain.RPCTypeJSONRPC)
 	if best != "" {
 		t.Errorf("expected empty for nil endpoints, got %s", best)
 	}
@@ -188,14 +188,14 @@ func TestService_ResetScore(t *testing.T) {
 	svcID := domain.ServiceID("eth")
 	ep := domain.EndpointAddr("ep1")
 
-	_ = svc.RecordSignal(ctx, svcID, ep, NewFatalErrorSignal("crash", 0))
-	score, _ := svc.GetScore(ctx, svcID, ep)
+	_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewFatalErrorSignal("crash", 0))
+	score, _ := svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
 	if score == 100 {
 		t.Fatal("score should have decreased")
 	}
 
 	_ = svc.ResetScore(ctx, svcID, ep)
-	score, _ = svc.GetScore(ctx, svcID, ep)
+	score, _ = svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
 	if score != 100 {
 		t.Errorf("score after reset = %f, want 100", score)
 	}

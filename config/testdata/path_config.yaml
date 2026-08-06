@@ -94,6 +94,9 @@ gateway_config:
     initial_score: 100
     min_threshold: 5
     recovery_timeout: 7m
+    max_operator_share: 0.55
+    max_operator_share_two_operators: 0.7
+    operator_displacement_ceiling: 2.5
     tiered_selection:
       enabled: true
       tier1_threshold: 85
@@ -126,6 +129,7 @@ gateway_config:
 
   active_health_checks:
     enabled: true
+    disable_backend_url_dedup: false
     local:
       - service_id: eth
         enabled: true

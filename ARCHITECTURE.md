@@ -114,6 +114,53 @@ All plugins share a generic `EndpointStore[T]` and `BlockConsensus` — no code 
 - **Timeline**: per-endpoint ring buffer of the last 100 events for debugging via admin API
 - **Storage**: in-memory with async Redis persistence for cross-pod sharing
 
+**Key granularity** (`reputation/key.go`, `reputation_config.key_granularity`) decides
+what a score is attached to. An `EndpointAddr` is a (supplier, backend URL) pair, and
+several staked suppliers routinely front one machine — on Pocket beta, `pnf-anvil` has
+32 registrations behind a single `rm.beta.infra.pocket.network`. The default is
+**per-URL**: score the backend, so a shared machine is learned to be broken once rather
+than 32 times. `per-endpoint`, `per-domain` and `per-supplier` are available; coarser
+than per-URL blends backends that fail independently. An unrecognised value is a
+startup error, never a silent fallback.
+
+**The RPC type is always part of the key**, at every granularity — keys look like
+`<identity>|<rpc_type>`. A Shannon supplier stakes one service for several RPC types at
+once and the relay miner routes each to a different backend, so a dead WebSocket backend
+says nothing about that supplier's REST backend. Blending them lets one broken transport
+eject an endpoint from traffic it was serving correctly, and the coarser the granularity
+the wider that blast radius: at per-URL a single key would otherwise cover every
+transport of every supplier fronting the URL. `ResetScore` deliberately clears all RPC
+types — an operator resetting an endpoint means the endpoint, not one of its protocols.
+The corollary: a health check only grades the RPC type its payload carries, so a
+transport with no health check of its own is graded by live traffic alone.
+
+**Pool-collapse guard**: when every endpoint scores below the minimum threshold, the
+selector serves the least-bad one instead of nothing. Reputation ranks a pool; it must
+never empty one. Returning nothing would surface as "no endpoint for service" — a total
+outage produced by reputation alone, on suppliers that are all still reachable. The
+guard fires a `degraded{tier="reputation_pool_collapse"}` metric so the condition is
+visible rather than absorbed.
+
+**Per-operator concentration cap** (`reputation/concentration.go`, flag
+`operator_aware_selection`): bounds the fraction of a service's selections any single
+operator (eTLD+1) receives, water-filling the excess across the others. Selection is
+registration-weighted by construction — a candidate is a supplier registration, which is
+what the chain settles against — so the cap only bounds blast radius, it does not
+reweight. Three rules make that safe:
+
+- `max_operator_share`, default **0.50**, is the knob.
+- **Displacement ceiling 3×**: a receiver cannot be pushed past 3× its own entitlement,
+  because each registration carries a per-session allowance and exceeding it produces
+  429s, not served relays. Excess nobody can absorb stays with the capped operator.
+- **Two-operator pools use 0.65**: `0.50 × 2 = 1.0` is the infeasibility boundary, so the
+  tighter cap could only ever force an even split.
+
+The same flag makes retry and hedge prefer a *different operator*, not merely a different
+endpoint — two hostnames run by one provider share a rack, an upstream, and an outage, so
+avoiding only the failed endpoint defeats the purpose of a second attempt. It is a
+preference: when no other operator is available, both fall back to their previous
+behavior rather than giving up the attempt.
+
 ### Heuristic Response Analysis
 
 `heuristic/` uses 4-tier analysis to catch errors HTTP status codes miss:
@@ -138,6 +185,24 @@ All plugins share a generic `EndpointStore[T]` and `BlockConsensus` — no code 
 - Only triggered by `ShouldCircuitBreak`, never by `ShouldRetry` alone
 - Admin API: `POST /admin/circuit-breaker/clear/{serviceId}`
 
+**Breaking is gated on failure RATE, not the first error.** A domain must fail at
+least 5 times within a 30s window *and* fail at least 20% of its attempts in that
+window before it is removed. First-error breaking is volume-sensitive rather than
+quality-sensitive: the operator serving the most traffic reaches its first error
+soonest after every TTL expiry, so the healthiest high-volume host is the one broken
+most often — and a hostname fronting many endpoints takes a large share of the pool
+down with it. The `CircuitBreak` middleware therefore reports *both* outcomes: a
+`ShouldCircuitBreak` result as a candidate failure, and a clean relay as the success
+that forms the denominator. A relay that failed without asking for a break counts as
+neither.
+
+Escalation counts **episodes**, not marks. Duplicate marks arriving during a break
+already in effect (batch sub-relays, hedge arms) neither escalate the TTL nor extend
+the expiry; the hit count rises only when a domain breaks again after being let back
+in, remembered for 60 minutes past the break's own expiry. `Clear` drops that history
+along with the break, so undoing a false positive does not leave the domain primed to
+re-break as a repeat offender.
+
 ### Feature Flags
 
 `featureflag/` provides runtime toggles without redeployment:
@@ -156,6 +221,7 @@ All plugins share a generic `EndpointStore[T]` and `BlockConsensus` — no code 
 | tracing | off | OpenTelemetry spans |
 | supplier_affinity | on | Sticky supplier after write operations |
 | websocket_relays | on | WebSocket relay path (bidirectional bridge) |
+| operator_aware_selection | on | Per-operator concentration cap; operator-aware retry/hedge |
 | debug_log | off | Full request/response body logging |
 | shadow_mode | off | Process traffic but don't serve responses |
 
@@ -173,6 +239,18 @@ PUT /admin/flags/{flag}/{serviceId}  — per-service override
 - **Worker pool**: bounded parallel checks across all services
 - **Executor**: sends health check payloads through the full relay path, records reputation signals, feeds the observation pipeline
 - **External block sources**: polls public RPCs for ground-truth block heights as a floor for perceived block number
+- **Backend-URL dedup** (on by default, `active_health_checks.disable_backend_url_dedup`):
+  one relay per unique backend URL rather than one per supplier, with a representative
+  that rotates each cycle. A check measures the backend, not the registration pointing
+  at it, so probing one machine through five suppliers costs 5× the relays for one
+  machine's worth of information — and blurs the signal, since a backend sampled once
+  per cycle shows an outage immediately while one sampled five times shows five copies
+  of the same moment. Rotation matters because a relay spends the probing supplier's
+  per-session allowance, and a registration that is never probed is never observed to
+  be individually broken. Backend-derived results (block height, the pass/fail grade)
+  fan out to every supplier on that URL; a **transport error does not** — it can be the
+  probing registration rather than the backend, and there is no response to tell them
+  apart.
 
 Checks come from two places, and they add up rather than replace one another:
 

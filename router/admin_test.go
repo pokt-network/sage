@@ -79,35 +79,34 @@ func newMockRepService() *mockRepService {
 	return &mockRepService{scores: make(map[string]float64)}
 }
 
-func (m *mockRepService) RecordSignal(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, _ reputation.Signal) error {
+func (m *mockRepService) RecordSignal(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, _ domain.RPCType, _ reputation.Signal) error {
 	return nil
 }
 
-func (m *mockRepService) GetScore(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) (float64, error) {
+func (m *mockRepService) GetScore(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, _ domain.RPCType) (float64, error) {
 	key := string(serviceID) + ":" + string(endpoint)
 	return m.scores[key], nil
 }
 
-func (m *mockRepService) GetScores(_ context.Context, serviceID domain.ServiceID) (map[domain.EndpointAddr]float64, error) {
+func (m *mockRepService) GetScores(_ context.Context, serviceID domain.ServiceID) (map[string]float64, error) {
 	prefix := string(serviceID) + ":"
-	out := make(map[domain.EndpointAddr]float64)
+	out := make(map[string]float64)
 	for k, v := range m.scores {
 		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
-			ep := domain.EndpointAddr(k[len(prefix):])
-			out[ep] = v
+			out[k[len(prefix):]] = v
 		}
 	}
 	return out, nil
 }
 
-func (m *mockRepService) SelectBest(_ context.Context, _ domain.ServiceID, endpoints domain.EndpointAddrList) domain.EndpointAddr {
+func (m *mockRepService) SelectBest(_ context.Context, _ domain.ServiceID, endpoints domain.EndpointAddrList, _ domain.RPCType) domain.EndpointAddr {
 	if len(endpoints) == 0 {
 		return ""
 	}
 	return endpoints[0]
 }
 
-func (m *mockRepService) SelectSpread(_ context.Context, _ domain.ServiceID, endpoints domain.EndpointAddrList, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
+func (m *mockRepService) SelectSpread(_ context.Context, _ domain.ServiceID, endpoints domain.EndpointAddrList, _ domain.RPCType, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
 	if len(endpoints) == 0 {
 		return ""
 	}

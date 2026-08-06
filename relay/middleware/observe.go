@@ -32,7 +32,7 @@ func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputatio
 			if ctx.Endpoint != "" {
 				sig := buildSignal(ctx, err, latency)
 				// Best-effort: ignore RecordSignal errors so we never block a relay.
-				_ = repSvc.RecordSignal(context.Background(), ctx.ServiceID, ctx.Endpoint, sig)
+				_ = repSvc.RecordSignal(context.Background(), ctx.ServiceID, ctx.Endpoint, ctx.RPCType, sig)
 			}
 
 			// Optionally submit to the observation pipeline.

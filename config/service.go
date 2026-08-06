@@ -205,6 +205,22 @@ type ReputationConfig struct {
 	MinThreshold    int           `yaml:"min_threshold"`
 	RecoveryTimeout time.Duration `yaml:"recovery_timeout"`
 
+	// MaxOperatorShare bounds the fraction of a service's endpoint selections
+	// any single operator (registrable domain / eTLD+1) may receive; the excess
+	// is water-filled across the other operators. Zero means the default
+	// (0.50); negative disables the cap. Two-operator pools use
+	// MaxOperatorShareTwoOperators instead — see reputation/concentration.go
+	// for why.
+	MaxOperatorShare float64 `yaml:"max_operator_share"`
+	// MaxOperatorShareTwoOperators is the cap for pools holding exactly two
+	// operators, where MaxOperatorShare would sit on the infeasibility
+	// boundary. Zero means the default (0.65).
+	MaxOperatorShareTwoOperators float64 `yaml:"max_operator_share_two_operators"`
+	// OperatorDisplacementCeiling is the multiple of its own entitlement an
+	// operator may be displaced up to when absorbing another's capped excess.
+	// Zero means the default (3.0); negative removes the ceiling.
+	OperatorDisplacementCeiling float64 `yaml:"operator_displacement_ceiling"`
+
 	TieredSelection TieredSelectionConfig `yaml:"tiered_selection"`
 	SignalImpacts   SignalImpactsConfig   `yaml:"signal_impacts"`
 	// NOTE: PATH's strike_system has no field here on purpose. SAGE has no
@@ -253,6 +269,22 @@ type SignalImpactsConfig struct {
 // If remote rules are wanted later, add them as a live feature then.
 type HealthCheckConfig struct {
 	Enabled bool `yaml:"enabled"`
+
+	// DisableBackendURLDedup turns off per-backend deduplication, restoring one
+	// health-check relay per supplier.
+	//
+	// Deduplication is on by default because the thing a check measures is the
+	// backend, not the registration pointing at it: several staked suppliers
+	// routinely front one URL, and probing each of them asks the same machine
+	// the same question several times per cycle. That is 2.5-3x the relay
+	// volume for no extra information, and it dilutes the signal — a backend
+	// probed once per cycle shows an outage immediately, one probed through
+	// five suppliers shows five samples of the same moment.
+	//
+	// The flag is negative-sense on purpose: the zero value has to be the
+	// behavior we want, and an operator disabling a default needs to say so in
+	// the config rather than leave a field unset.
+	DisableBackendURLDedup bool `yaml:"disable_backend_url_dedup"`
 
 	// Local defines per-service health checks in the config file. They are
 	// additional to whatever the service's QoS plugin already checks, never a

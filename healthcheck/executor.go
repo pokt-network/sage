@@ -39,6 +39,13 @@ type Executor struct {
 	// the plugin's own checks, never instead of them.
 	configured *ConfiguredChecks
 
+	// dedupByBackendURL fires one relay per unique backend URL rather than one
+	// per supplier, fanning the result to the other suppliers on that URL.
+	dedupByBackendURL bool
+	// cycle counts completed health-check rounds. It rotates which supplier
+	// represents each backend so no single registration carries every probe.
+	cycle uint64
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
@@ -63,16 +70,23 @@ func NewExecutor(
 		workers = defaultWorkers
 	}
 	return &Executor{
-		protocol:    protocol,
-		endpoints:   endpoints,
-		sessions:    sessions,
-		qosRegistry: qosReg,
-		repService:  repSvc,
-		obsQueue:    obsQueue,
-		logger:      logger,
-		interval:    interval,
-		workers:     workers,
+		protocol:          protocol,
+		endpoints:         endpoints,
+		sessions:          sessions,
+		qosRegistry:       qosReg,
+		repService:        repSvc,
+		obsQueue:          obsQueue,
+		logger:            logger,
+		interval:          interval,
+		workers:           workers,
+		dedupByBackendURL: true,
 	}
+}
+
+// SetBackendURLDedup turns per-backend deduplication on or off. On by default;
+// see HealthCheckConfig.DisableBackendURLDedup for why.
+func (e *Executor) SetBackendURLDedup(enabled bool) {
+	e.dedupByBackendURL = enabled
 }
 
 // SetConfiguredChecks attaches operator-declared checks. Passing nil, or not
@@ -141,11 +155,12 @@ func (e *Executor) runOnce(ctx context.Context) {
 			continue
 		}
 
-		for _, ep := range eps {
-			ep := ep // capture for goroutine
+		for _, group := range e.groupByBackend(eps) {
+			group := group // capture for goroutine
+			probe := group.probe(e.cycle)
 			// Plugin checks first: they feed block height and chain ID
 			// tracking, so they must run even when a config adds its own.
-			checks := append(checker.HealthChecks(ep), e.configured.For(serviceID)...)
+			checks := append(checker.HealthChecks(probe), e.configured.For(serviceID)...)
 			if len(checks) == 0 {
 				continue
 			}
@@ -155,22 +170,74 @@ func (e *Executor) runOnce(ctx context.Context) {
 			go func() {
 				defer e.wg.Done()
 				defer func() { <-sem }()
-				e.checkEndpoint(ctx, serviceID, ep, plugin, checks)
+				e.checkEndpoint(ctx, serviceID, probe, group.endpoints, plugin, checks)
 			}()
 		}
 	}
+
+	e.cycle++
 }
 
-// checkEndpoint runs all health checks for a single endpoint.
+// backendGroup is the set of endpoints sharing one backend URL.
+type backendGroup struct {
+	endpoints domain.EndpointAddrList
+}
+
+// probe picks which supplier carries this cycle's relay for the backend.
+//
+// Rotating rather than always using the first member matters for two reasons:
+// a relay consumes the probing supplier's per-session allowance, and a supplier
+// that is never probed is never observed to be individually broken (a bad
+// registration in front of a healthy backend still fails to relay). Rotation
+// spreads the cost and eventually exercises every registration.
+func (g backendGroup) probe(cycle uint64) domain.EndpointAddr {
+	return g.endpoints[cycle%uint64(len(g.endpoints))]
+}
+
+// groupByBackend collapses endpoints sharing a backend URL into one group.
+// With deduplication off, every endpoint becomes its own group and the caller's
+// behavior is unchanged.
+func (e *Executor) groupByBackend(eps domain.EndpointAddrList) []backendGroup {
+	if !e.dedupByBackendURL {
+		groups := make([]backendGroup, 0, len(eps))
+		for _, ep := range eps {
+			groups = append(groups, backendGroup{endpoints: domain.EndpointAddrList{ep}})
+		}
+		return groups
+	}
+
+	byURL := make(map[string]int, len(eps))
+	groups := make([]backendGroup, 0, len(eps))
+	for _, ep := range eps {
+		url, err := ep.URL()
+		if err != nil || url == "" {
+			// An address we cannot parse gets its own group rather than being
+			// lumped in with every other unparseable one.
+			groups = append(groups, backendGroup{endpoints: domain.EndpointAddrList{ep}})
+			continue
+		}
+		if idx, ok := byURL[url]; ok {
+			groups[idx].endpoints = append(groups[idx].endpoints, ep)
+			continue
+		}
+		byURL[url] = len(groups)
+		groups = append(groups, backendGroup{endpoints: domain.EndpointAddrList{ep}})
+	}
+	return groups
+}
+
+// checkEndpoint runs all health checks against probe and applies the results to
+// every endpoint sharing its backend (probe included).
 func (e *Executor) checkEndpoint(
 	ctx context.Context,
 	serviceID domain.ServiceID,
-	ep domain.EndpointAddr,
+	probe domain.EndpointAddr,
+	siblings domain.EndpointAddrList,
 	plugin qos.Plugin,
 	checks []qos.HealthCheck,
 ) {
 	for _, check := range checks {
-		e.sendCheck(ctx, serviceID, ep, plugin, check)
+		e.sendCheck(ctx, serviceID, probe, siblings, plugin, check)
 	}
 }
 
@@ -206,10 +273,16 @@ func checkSignal(checkName string, statusCode int, extractErr error, latency tim
 
 // sendCheck sends a single health check, processes the response, and records
 // reputation signals and observations.
+// siblings are every endpoint on the probed backend, including ep. Results the
+// backend produced — its block height, whether it answered correctly — apply to
+// all of them: they are the same machine reached through different
+// registrations. A transport failure is the exception, since that can be the
+// probing registration rather than the backend behind it.
 func (e *Executor) sendCheck(
 	ctx context.Context,
 	serviceID domain.ServiceID,
 	ep domain.EndpointAddr,
+	siblings domain.EndpointAddrList,
 	plugin qos.Plugin,
 	check qos.HealthCheck,
 ) {
@@ -225,8 +298,12 @@ func (e *Executor) sendCheck(
 			"check", check.Name,
 			"error", err,
 		)
+		// Penalize only the endpoint that actually failed. A relay error can be
+		// the supplier's session or signing rather than the backend, and there
+		// is no response to tell the two apart — blaming the backend's other
+		// registrations for it would eject healthy ones.
 		if e.repService != nil {
-			_ = e.repService.RecordSignal(ctx, serviceID, ep,
+			_ = e.repService.RecordSignal(ctx, serviceID, ep, check.Payload.RPCType(),
 				reputation.NewMajorErrorSignal("health_check: "+check.Name, latency))
 		}
 		e.submitObservation(serviceID, ep, check.Payload.Bytes(), nil, 0, latency, nil)
@@ -257,15 +334,23 @@ func (e *Executor) sendCheck(
 				IsSyncing:   data.IsSyncing,
 				IsArchival:  data.IsArchival,
 			}
-			// Update block height tracker if available.
+			// Update block height tracker if available. The height belongs to
+			// the backend, so every registration in front of it reports it —
+			// otherwise the un-probed siblings would look permanently
+			// height-less and be filtered out of selection.
 			if tracker, ok := plugin.(qos.BlockHeightTracker); ok && data.BlockHeight != nil {
-				tracker.UpdateBlockHeight(ep, *data.BlockHeight)
+				for _, sibling := range siblings {
+					tracker.UpdateBlockHeight(sibling, *data.BlockHeight)
+				}
 			}
 		}
 	}
 
 	// Record reputation signal. A configured check may name the penalty its
 	// failure carries; the default grading applies to everything else.
+	// The backend answered, so what it said grades every registration in front
+	// of it. At per-URL key granularity these all resolve to one score anyway;
+	// recording them individually is what keeps the finer granularities honest.
 	if e.repService != nil {
 		signal := checkSignal(check.Name, resp.HTTPStatusCode, extractErr, latency)
 		if failed := resp.HTTPStatusCode < 200 || resp.HTTPStatusCode >= 300 || extractErr != nil; failed {
@@ -273,7 +358,9 @@ func (e *Executor) sendCheck(
 				signal = configured
 			}
 		}
-		_ = e.repService.RecordSignal(ctx, serviceID, ep, signal)
+		for _, sibling := range siblings {
+			_ = e.repService.RecordSignal(ctx, serviceID, sibling, check.Payload.RPCType(), signal)
+		}
 	}
 
 	e.submitObservation(serviceID, ep, check.Payload.Bytes(), resp.Body, resp.HTTPStatusCode, latency, extracted)

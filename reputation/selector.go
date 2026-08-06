@@ -39,7 +39,7 @@ func DefaultSelectorConfig() SelectorConfig {
 // false when the endpoint is unknown to the implementation (it is then
 // treated as tier 3). Per-endpoint lookup — rather than returning a map for
 // the whole list — keeps the per-relay selection path allocation-free.
-type ScoreFn func(ctx context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr) (float64, bool)
+type ScoreFn func(ctx context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (float64, bool)
 
 // Tier indices used by classify. -1 means filtered out entirely.
 const (
@@ -56,6 +56,19 @@ const (
 type TieredSelector struct {
 	cfg    SelectorConfig
 	scores ScoreFn
+
+	// onCollapse, when set, is invoked once per selection in which every
+	// endpoint scored below MinThreshold and the pool-collapse guard had to
+	// serve a sub-threshold endpoint. See Select.
+	onCollapse func(domain.ServiceID)
+
+	// operatorCap bounds any single operator's share of selections within the
+	// winning tier. See concentration.go.
+	operatorCap OperatorCapConfig
+	// capGate decides per relay whether the cap applies. Nil means never — the
+	// cap is opt-in at wire time, behind a feature flag, so it can be turned
+	// off at runtime without a deploy.
+	capGate func(context.Context, domain.ServiceID) bool
 }
 
 // NewTieredSelector creates a selector that uses the provided score lookup
@@ -67,25 +80,47 @@ func NewTieredSelector(cfg SelectorConfig, scoreFn ScoreFn) *TieredSelector {
 	}
 }
 
+// SetCollapseHook registers a callback invoked whenever the pool-collapse guard
+// fires. Nil clears it. Not safe to call concurrently with selection; call it
+// at wire time.
+func (s *TieredSelector) SetCollapseHook(fn func(domain.ServiceID)) {
+	s.onCollapse = fn
+}
+
+// SetOperatorCap enables the per-operator concentration cap, gated per relay by
+// gate (nil gate = never applied). Not safe to call concurrently with
+// selection; call it at wire time.
+func (s *TieredSelector) SetOperatorCap(cfg OperatorCapConfig, gate func(context.Context, domain.ServiceID) bool) {
+	s.operatorCap = cfg
+	s.capGate = gate
+}
+
+// capActive reports whether the concentration cap should shape this selection.
+func (s *TieredSelector) capActive(ctx context.Context, serviceID domain.ServiceID) bool {
+	return s.capGate != nil && s.capGate(ctx, serviceID)
+}
+
 // classify maps an endpoint to its tier index, or -1 when it's below the
-// minimum threshold and must be skipped.
-func (s *TieredSelector) classify(ctx context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr) int {
-	score, ok := s.scores(ctx, serviceID, ep)
+// minimum threshold and must be skipped. The endpoint's score is returned
+// alongside so callers can rank the endpoints classify rejected — the
+// pool-collapse guard needs the least-bad of them.
+func (s *TieredSelector) classify(ctx context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (int, float64) {
+	score, ok := s.scores(ctx, serviceID, ep, rpcType)
 	if !ok {
 		// Unknown endpoints default to tier 3 (they'll get a score after first relay).
-		return tier3Idx
+		return tier3Idx, score
 	}
 	switch {
 	case score < s.cfg.MinThreshold:
-		return -1 // filtered out entirely
+		return -1, score // filtered out entirely
 	case score < s.cfg.ProbationThreshold:
-		return probationIdx
+		return probationIdx, score
 	case score >= s.cfg.Tier1Threshold:
-		return tier1Idx
+		return tier1Idx, score
 	case score >= s.cfg.Tier2Threshold:
-		return tier2Idx
+		return tier2Idx, score
 	default:
-		return tier3Idx
+		return tier3Idx, score
 	}
 }
 
@@ -94,16 +129,54 @@ func (s *TieredSelector) classify(ctx context.Context, serviceID domain.ServiceI
 //
 // It reservoir-samples one endpoint per tier in a single pass (uniform within
 // each tier), so no per-tier slices are allocated — this runs once per relay.
-func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID, endpoints domain.EndpointAddrList) domain.EndpointAddrList {
+//
+// POOL-COLLAPSE GUARD: when every endpoint scores below MinThreshold, this
+// returns the least-bad one rather than nothing. Returning nothing hands
+// SelectBest an empty result, which surfaces to the client as "no endpoint for
+// service" — a total outage produced by reputation alone, on a service whose
+// suppliers are all still reachable. Reputation exists to rank a pool, not to
+// empty it: the only defensible answer when the whole pool is bad is the least
+// bad member of it. The guard fires the onCollapse hook so the condition is
+// visible rather than silently absorbed.
+func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID, endpoints domain.EndpointAddrList, rpcType domain.RPCType) domain.EndpointAddrList {
 	if len(endpoints) == 0 {
 		return nil
 	}
 
+	// When the concentration cap is on it needs to know which endpoints are in
+	// the winning tier. Recording the tier here rather than re-classifying is
+	// worth a pooled buffer: classify is a score lookup per endpoint, and doing
+	// it twice per relay doubles the cost of selection on the hot path.
+	var tiers []int8
+	capOn := s.capActive(ctx, serviceID)
+	if capOn {
+		buf := getTierBuf(len(endpoints))
+		defer putTierBuf(buf)
+		tiers = *buf
+	}
+
 	var pick [numTiers]domain.EndpointAddr
 	var count [numTiers]int
-	for _, ep := range endpoints {
-		t := s.classify(ctx, serviceID, ep)
+	// Least-bad rejected endpoint, for the pool-collapse guard. Reservoir-
+	// sampled among ties so a collapsed pool still spreads load.
+	var fallback domain.EndpointAddr
+	var fallbackScore float64
+	var fallbackTies int
+	for i, ep := range endpoints {
+		t, score := s.classify(ctx, serviceID, ep, rpcType)
+		if capOn {
+			tiers[i] = int8(t)
+		}
 		if t < 0 {
+			switch {
+			case fallback == "" || score > fallbackScore:
+				fallback, fallbackScore, fallbackTies = ep, score, 1
+			case score == fallbackScore:
+				fallbackTies++
+				if rand.IntN(fallbackTies) == 0 {
+					fallback = ep
+				}
+			}
 			continue
 		}
 		count[t]++
@@ -114,18 +187,37 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 
 	// Cascade: pick from highest available tier.
 	var selected domain.EndpointAddr
+	best := -1
 	switch {
 	case count[tier1Idx] > 0:
-		selected = pick[tier1Idx]
+		best, selected = tier1Idx, pick[tier1Idx]
 	case count[tier2Idx] > 0:
-		selected = pick[tier2Idx]
+		best, selected = tier2Idx, pick[tier2Idx]
 	case count[tier3Idx] > 0:
-		selected = pick[tier3Idx]
+		best, selected = tier3Idx, pick[tier3Idx]
 	case count[probationIdx] > 0:
 		// All endpoints are in probation; pick one.
 		return domain.EndpointAddrList{pick[probationIdx]}
+	case fallback != "":
+		// Pool collapse: every endpoint is below MinThreshold.
+		if s.onCollapse != nil {
+			s.onCollapse(serviceID)
+		}
+		return domain.EndpointAddrList{fallback}
 	default:
 		return nil
+	}
+
+	// Concentration cap: re-pick within the winning tier so no single operator
+	// takes more than its capped share of selections. Only meaningful with more
+	// than one candidate in the tier, and the pick is left alone when the cap
+	// cannot apply (one operator holds everything, cap disabled).
+	if capOn && count[best] > 1 {
+		if _, capped, ok := cappedPick(s.operatorCap, endpoints, func(i int) bool {
+			return int(tiers[i]) == best
+		}); ok {
+			selected = capped
+		}
 	}
 
 	// Probation routing: prepend a probation endpoint with configured probability.
@@ -141,25 +233,50 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 // Cascades T1 → T2 → T3; if only probation endpoints qualify, returns them.
 // Used by callers that want to weight within a tier themselves (e.g.,
 // SelectSpread for connection-count-aware load spreading).
-func (s *TieredSelector) TopTierCandidates(ctx context.Context, serviceID domain.ServiceID, endpoints domain.EndpointAddrList) domain.EndpointAddrList {
+//
+// Carries the same pool-collapse guard as Select: when no endpoint clears
+// MinThreshold, the least-bad ones are returned rather than an empty list.
+func (s *TieredSelector) TopTierCandidates(ctx context.Context, serviceID domain.ServiceID, endpoints domain.EndpointAddrList, rpcType domain.RPCType) domain.EndpointAddrList {
 	if len(endpoints) == 0 {
 		return nil
 	}
 	// Two passes: find the best populated tier, then collect only that tier.
 	// Used by the WS open path (not per-relay), so the extra score pass is fine.
 	best := -1
+	bestRejected := 0.0
+	haveRejected := false
 	for _, ep := range endpoints {
-		t := s.classify(ctx, serviceID, ep)
-		if t >= 0 && (best < 0 || t < best) {
+		t, score := s.classify(ctx, serviceID, ep, rpcType)
+		if t < 0 {
+			if !haveRejected || score > bestRejected {
+				bestRejected, haveRejected = score, true
+			}
+			continue
+		}
+		if best < 0 || t < best {
 			best = t
 		}
 	}
-	if best < 0 {
-		return nil
-	}
+
 	var out domain.EndpointAddrList
+	if best < 0 {
+		if !haveRejected {
+			return nil
+		}
+		// Pool collapse: return every endpoint tied at the least-bad score.
+		if s.onCollapse != nil {
+			s.onCollapse(serviceID)
+		}
+		for _, ep := range endpoints {
+			if _, score := s.classify(ctx, serviceID, ep, rpcType); score == bestRejected {
+				out = append(out, ep)
+			}
+		}
+		return out
+	}
+
 	for _, ep := range endpoints {
-		if s.classify(ctx, serviceID, ep) == best {
+		if t, _ := s.classify(ctx, serviceID, ep, rpcType); t == best {
 			out = append(out, ep)
 		}
 	}
