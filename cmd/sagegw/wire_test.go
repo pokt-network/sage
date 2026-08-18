@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"strings"
@@ -121,5 +122,75 @@ func TestBuild_AcceptsReducedChain(t *testing.T) {
 
 	if _, err := Build(t.Context(), mockConfig(chain), testLogger()); err != nil {
 		t.Fatalf("a valid reduced chain should build: %v", err)
+	}
+}
+
+// An unknown middleware name must stop the process rather than quietly build a
+// chain missing a step the operator asked for, and the error has to say what
+// IS registered — otherwise the only way to find the right spelling is to read
+// Build.
+func TestBuild_UnknownMiddlewareNameIsAStartupError(t *testing.T) {
+	freshRegistry(t)
+
+	_, err := Build(context.Background(), mockConfig([]string{"parse", "not_a_middleware", "send_relay"}), testLogger())
+	if err == nil {
+		t.Fatal("Build accepted a middleware name nothing registered")
+	}
+	if !strings.Contains(err.Error(), "not_a_middleware") {
+		t.Errorf("error %q does not name the offending entry", err)
+	}
+	if !strings.Contains(err.Error(), "parse") {
+		t.Errorf("error %q does not list the registered names, so an operator cannot find the right spelling", err)
+	}
+}
+
+// blocked_domains is a standing ban. A malformed entry must refuse to boot: a
+// ban that silently covers less than it reads as covering is worse than none,
+// because it is trusted.
+func TestBuild_MalformedBlockedDomainRefusesToBoot(t *testing.T) {
+	for _, entry := range []config.BlockedDomain{
+		{Domain: "   "},
+		{Domain: "op.example", RPCTypes: []string{"websockets"}},
+	} {
+		freshRegistry(t)
+		cfg := mockConfig(nil)
+		cfg.Gateway.BlockedDomains = []config.BlockedDomain{entry}
+
+		if _, err := Build(context.Background(), cfg, testLogger()); err == nil {
+			t.Errorf("Build accepted blocked_domains entry %+v", entry)
+		}
+	}
+}
+
+// The mock backend exists so the gateway can be run and load-tested without a
+// fullnode; that only holds if Build actually wires it.
+func TestBuild_MockProtocolNeedsNoFullnode(t *testing.T) {
+	freshRegistry(t)
+
+	app, err := Build(context.Background(), mockConfig(nil), testLogger())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if app.Router == nil {
+		t.Error("no router")
+	}
+	if app.Metrics == nil {
+		t.Error("no metrics handler — prometheus_addr would serve nothing")
+	}
+}
+
+// Every QoS plugin type has to survive wiring, including the passthrough that
+// an unrecognized type falls back to.
+func TestBuild_WiresEveryQoSPluginType(t *testing.T) {
+	for _, qosType := range []string{"evm", "cosmos", "solana", "something-else"} {
+		freshRegistry(t)
+		cfg := mockConfig(nil)
+		cfg.Gateway.Services = []config.ServiceConfig{
+			{ID: "svc", Type: qosType, RPCTypes: []string{"json_rpc"}, SyncAllowance: 5},
+		}
+
+		if _, err := Build(context.Background(), cfg, testLogger()); err != nil {
+			t.Errorf("Build with qos type %q: %v", qosType, err)
+		}
 	}
 }

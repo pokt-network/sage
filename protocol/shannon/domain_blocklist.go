@@ -46,6 +46,18 @@ type domainBlocklist struct {
 	cacheCount atomic.Int64
 }
 
+// ValidateBlockedDomains reports whether the configured entries compile.
+//
+// The blocklist itself is built inside the Shannon protocol, because that is
+// where endpoints are handed out — which would mean a typo in blocked_domains
+// went unnoticed under any other backend, and was only caught the first time
+// the gateway ran for real. Wiring calls this whatever the protocol is, so a
+// malformed ban fails the same way everywhere.
+func ValidateBlockedDomains(entries []config.BlockedDomain) error {
+	_, err := newDomainBlocklist(entries)
+	return err
+}
+
 // newDomainBlocklist compiles config entries into a matcher, unioning in
 // anything named by envBlockedDomains. Returns (nil, nil) when nothing is
 // blocked.

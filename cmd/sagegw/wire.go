@@ -233,6 +233,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// it can be alerted on rather than only appearing in logs.
 	prometheus.MustRegister(metrics.NewPanicCollector())
 
+	// blocked_domains is compiled inside the Shannon protocol, where endpoints
+	// are handed out. Validate it here too, so a malformed entry fails at
+	// startup under every backend rather than only the one that reads it.
+	if err := shannon.ValidateBlockedDomains(cfg.Gateway.BlockedDomains); err != nil {
+		return nil, err
+	}
+
 	// 7. Observation pipeline
 	obsHandler := observe.NewDefaultHandler(qosReg, logger)
 	obsQueue := observe.NewQueue(observe.QueueConfig{
