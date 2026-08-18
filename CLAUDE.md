@@ -20,7 +20,7 @@ All common tasks go through `make`:
 
 Single test: `go test ./relay/middleware/ -run TestRetry -race -count=1 -v`. Use `-count=1` to bypass the test cache.
 
-Go toolchain: `go 1.26.1` (see `go.mod`).
+Go toolchain: `go 1.26.5` (see `go.mod`).
 
 ## Entry Point & Wiring
 
