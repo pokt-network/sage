@@ -307,3 +307,62 @@ func TestExtractData_EpochInfoUnchanged(t *testing.T) {
 		t.Errorf("absoluteSlot was accepted as a height (%d)", *data.BlockHeight)
 	}
 }
+
+// PATH lost this property and halved its selectable pool with it (their
+// 5c1c8d60): once health checks began storing block heights, an endpoint that
+// had been probed for height but not yet for health went from ABSENT — and
+// therefore waved through — to present-but-incomplete, which their validator
+// treated as fatal. Learning more about an endpoint made it less selectable.
+//
+// SAGE cannot reach that state through the same door, because selection filters
+// on measurements alone and has no completeness requirement. This pins it:
+// SAGE runs two probes too (getEpochInfo and getHealth), they land at different
+// moments, and every endpoint passes through the gap after every restart.
+func TestSelectEndpoints_PartiallyProbedEndpointStaysSelectable(t *testing.T) {
+	p := solana.NewPlugin(nil, 100)
+
+	const tip = 300_000_000
+	probed := domain.EndpointAddr("pokt1probed-https://probed.example.com")
+	healthOnly := domain.EndpointAddr("pokt1health-https://health.example.com")
+
+	// probed answered getBlockHeight; healthOnly answered only getHealth, so
+	// nothing about its height is known yet.
+	p.UpdateBlockHeight(probed, tip)
+	if _, err := p.ExtractData(healthOnly, []byte(`{"method":"getHealth"}`), []byte(`{"result":"ok"}`)); err != nil {
+		t.Fatalf("a getHealth response should not error: %v", err)
+	}
+
+	got, err := p.SelectEndpoints(domain.EndpointAddrList{probed, healthOnly}, nil)
+	if err != nil {
+		t.Fatalf("SelectEndpoints: %v", err)
+	}
+	if !got.Contains(healthOnly) {
+		t.Errorf("an endpoint with no height observation was dropped: %v — absence of a measurement is not evidence of staleness", got)
+	}
+	if !got.Contains(probed) {
+		t.Errorf("the fully probed endpoint was dropped: %v", got)
+	}
+}
+
+// The opposite direction: a height that IS measured and is far behind must
+// still narrow the pool, or the filter does nothing.
+func TestSelectEndpoints_MeasuredStalenessStillFilters(t *testing.T) {
+	p := solana.NewPlugin(nil, 100)
+
+	const tip = 300_000_000
+	fresh := domain.EndpointAddr("pokt1fresh-https://fresh.example.com")
+	other := domain.EndpointAddr("pokt1other-https://other.example.com")
+	stale := domain.EndpointAddr("pokt1stale-https://stale.example.com")
+
+	p.UpdateBlockHeight(fresh, tip)
+	p.UpdateBlockHeight(other, tip)
+	p.UpdateBlockHeight(stale, tip-50_000)
+
+	got, err := p.SelectEndpoints(domain.EndpointAddrList{fresh, other, stale}, nil)
+	if err != nil {
+		t.Fatalf("SelectEndpoints: %v", err)
+	}
+	if got.Contains(stale) {
+		t.Errorf("a measurably stale endpoint survived the filter: %v", got)
+	}
+}
