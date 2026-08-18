@@ -1,6 +1,9 @@
 package domain
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrorKind categorizes relay errors for typed handling.
 // Circuit breaker, retry, and reputation logic switch on ErrorKind
@@ -18,6 +21,50 @@ const (
 	ErrValidation                  // bad client request
 	ErrCapability                  // archival not supported, etc.
 )
+
+// ClientMessage is what may be shown to the caller of a relay.
+//
+// Error() renders the whole cause chain, which is right for a log line and
+// wrong for a response body: the chain routinely carries the operator's own
+// infrastructure — a dial failure names the fullnode's host and port, a
+// transport error names the supplier URL and the local address it came from.
+// None of that is the client's business, and on a gateway with no client
+// authentication it is handed to anyone who can send a request.
+//
+// The Message is written by SAGE and is safe by construction; the Cause is
+// whatever the network or a library produced. So the message is returned alone,
+// with the kind for context, and the chain stays in the log where it is useful.
+func ClientMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var re *RelayError
+	if errors.As(err, &re) && re.Message != "" {
+		return re.Kind.String() + ": " + re.Message
+	}
+	return "relay failed"
+}
+
+// String names the kind for a client-facing message. Values are stable — they
+// are part of the response body clients see.
+func (k ErrorKind) String() string {
+	switch k {
+	case ErrTransport:
+		return "transport error"
+	case ErrProtocol:
+		return "protocol error"
+	case ErrEndpoint:
+		return "endpoint error"
+	case ErrRateLimit:
+		return "rate limited"
+	case ErrValidation:
+		return "invalid request"
+	case ErrCapability:
+		return "unsupported capability"
+	default:
+		return "relay error"
+	}
+}
 
 // RelayError is a typed error from a relay attempt.
 type RelayError struct {

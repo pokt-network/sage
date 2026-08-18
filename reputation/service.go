@@ -85,6 +85,19 @@ type scoreShard struct {
 	cache map[domain.ServiceID]map[string]float64
 }
 
+// maxScoresPerServiceShard bounds one service's score map within one shard.
+//
+// At the default per-URL granularity this never binds: keys are backend URLs,
+// a set the size of the real infrastructure. It exists for per-endpoint, where
+// the key carries the supplier address — a staked registration that rotates
+// every session, so the key set grows with the network rather than with SAGE's
+// traffic, and this map is written on the relay path and never otherwise
+// shrinks.
+//
+// 4096 per shard across 32 shards is ~131k keys per service, far above any
+// real endpoint population and low enough to matter before a pod does.
+const maxScoresPerServiceShard = 4096
+
 // serviceImpl is the default implementation of Service.
 type serviceImpl struct {
 	cfg      ServiceConfig
@@ -177,6 +190,30 @@ func (s *serviceImpl) Stop() {
 	s.wg.Wait()
 }
 
+// pruneUninformative drops the scores that say nothing, and only those.
+//
+// This cache is also the read path: a miss returns InitialScore without
+// consulting storage. Dropping entries wholesale would therefore not reclaim
+// memory so much as silently reset reputation, forgiving exactly the endpoints
+// worth remembering. An entry sitting at InitialScore is the one case where
+// that is not true — evicting it and re-reading it produce the same number, so
+// it is free to drop.
+//
+// In practice that is most of the map: healthy endpoints clamp to the ceiling,
+// which at the default configuration is InitialScore. If a service really is
+// holding this many *penalized* keys, the entries stay and the map exceeds the
+// bound — keeping a real penalty is worth more than the bytes, and a pool that
+// size is its own alert.
+//
+// Must be called with the shard locked.
+func (s *serviceImpl) pruneUninformative(svcScores map[string]float64) {
+	for k, v := range svcScores {
+		if v == s.cfg.InitialScore {
+			delete(svcScores, k)
+		}
+	}
+}
+
 // RecordSignal applies a signal's impact to the endpoint's score.
 func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType, signal Signal) error {
 	impact := float64(DefaultImpact(signal.Type))
@@ -192,6 +229,9 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	current, ok := svcScores[repKey]
 	if !ok {
 		current = s.cfg.InitialScore
+		if len(svcScores) >= maxScoresPerServiceShard {
+			s.pruneUninformative(svcScores)
+		}
 	}
 	newScore := current + impact
 	newScore = s.clamp(newScore)

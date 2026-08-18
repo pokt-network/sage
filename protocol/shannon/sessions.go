@@ -25,11 +25,23 @@ const (
 // Sessions are cached by (serviceID, appAddr) and automatically refreshed
 // when the current block height crosses the session's end block height.
 type sessionManager struct {
-	fullNode           fullNodeIface
-	sessionCache       sync.Map // "serviceID:appAddr" → *sessiontypes.Session
-	endpointCache      sync.Map // sessionID (string) → map[domain.EndpointAddr]*endpoint
+	fullNode fullNodeIface
+	// sessionCache is keyed on (serviceID, appAddr), a set that does not grow:
+	// a rollover overwrites the value rather than adding one.
+	sessionCache sync.Map // "serviceID:appAddr" → *sessiontypes.Session
+	// endpointCache is keyed on sessionID, which is a NEW value at every
+	// rollover — so unlike sessionCache it accumulates, and must be evicted.
+	// See evictStaleEndpointsOnRollover.
+	endpointCache      sync.Map // sessionID (string) → cachedEndpoints
 	configuredServices map[domain.ServiceID]struct{}
 	logger             *slog.Logger
+
+	// highestSessionEnd is the newest session end height observed, and
+	// rolloverMu serialises the eviction sweep that crossing it triggers. Same
+	// shape as the signer's ring cache — see evictStaleRingsOnRollover, which
+	// solved this for the other per-session cache.
+	highestSessionEnd atomic.Uint64
+	rolloverMu        sync.Mutex
 
 	// latestBlockHeight is updated by a background poller.
 	// Used to decide when a cached session has expired.
@@ -113,6 +125,59 @@ func (sm *sessionManager) pollBlockHeight(ctx context.Context) {
 	}
 }
 
+// evictStaleEndpointsOnRollover bounds endpointCache.
+//
+// The key is the session ID, which is a fresh value every rollover, so nothing
+// ever overwrites anything: each rollover adds a permanent entry holding that
+// session's whole endpoint map, per service, per app. Nothing fails — memory
+// simply climbs for as long as the process lives, which is why no test catches
+// it and why the symptom shows up days later as an OOM.
+//
+// On observing a session end height newer than any seen, drop entries older
+// than the previous session. Current plus previous is kept deliberately: a
+// relay that picked its endpoint just before the boundary is still in flight,
+// and the grace period means the old session is briefly still valid.
+//
+// An entry with sessionEnd 0 (a session whose header did not carry a height)
+// is never evicted by height, since 0 < anything would drop it immediately —
+// it is dropped only if it is not the current session.
+func (sm *sessionManager) evictStaleEndpointsOnRollover(sessionEnd uint64) {
+	// Fast path: no newer session, nothing to do. Atomic load only.
+	if sessionEnd == 0 || sessionEnd <= sm.highestSessionEnd.Load() {
+		return
+	}
+
+	sm.rolloverMu.Lock()
+	defer sm.rolloverMu.Unlock()
+
+	// Re-check under the lock; another goroutine may have handled this rollover.
+	prevHighest := sm.highestSessionEnd.Load()
+	if sessionEnd <= prevHighest {
+		return
+	}
+	sm.highestSessionEnd.Store(sessionEnd)
+
+	var dropped int
+	sm.endpointCache.Range(func(k, v any) bool {
+		entry, ok := v.(cachedEndpoints)
+		if !ok {
+			return true
+		}
+		if entry.sessionEnd < prevHighest {
+			sm.endpointCache.Delete(k)
+			dropped++
+		}
+		return true
+	})
+
+	if dropped > 0 {
+		sm.logger.Debug("evicted endpoint caches for expired sessions",
+			"dropped", dropped,
+			"session_end", sessionEnd,
+		)
+	}
+}
+
 // sessionCacheKey returns the key for caching sessions by (serviceID, appAddr).
 func sessionCacheKey(serviceID, appAddr string) string {
 	return serviceID + ":" + appAddr
@@ -179,10 +244,23 @@ func (sm *sessionManager) getEndpoints(ctx context.Context, serviceID string, ap
 	return sm.getOrCreateEndpoints(session), nil
 }
 
+// cachedEndpoints is one session's endpoint set plus the height that session
+// ends at. The height is what makes eviction possible: a session ID alone says
+// nothing about whether it is still current.
+type cachedEndpoints struct {
+	endpoints  map[domain.EndpointAddr]*endpoint
+	sessionEnd uint64
+}
+
 // getOrCreateEndpoints returns cached endpoints for the session, or creates and caches them.
 func (sm *sessionManager) getOrCreateEndpoints(session *sessiontypes.Session) map[domain.EndpointAddr]*endpoint {
+	var sessionEnd uint64
+	if session.Header != nil && session.Header.SessionEndBlockHeight > 0 {
+		sessionEnd = uint64(session.Header.SessionEndBlockHeight)
+	}
+
 	if cached, ok := sm.endpointCache.Load(session.SessionId); ok {
-		return cached.(map[domain.EndpointAddr]*endpoint)
+		return cached.(cachedEndpoints).endpoints
 	}
 
 	endpoints := endpointsFromSession(session)
@@ -190,14 +268,17 @@ func (sm *sessionManager) getOrCreateEndpoints(session *sessiontypes.Session) ma
 		endpoints = make(map[domain.EndpointAddr]*endpoint)
 	}
 
-	actual, loaded := sm.endpointCache.LoadOrStore(session.SessionId, endpoints)
+	actual, loaded := sm.endpointCache.LoadOrStore(session.SessionId,
+		cachedEndpoints{endpoints: endpoints, sessionEnd: sessionEnd})
 	if !loaded {
 		sm.logger.Debug("endpoints extracted from session",
 			"session_id", session.SessionId,
+			"session_end", sessionEnd,
 			"endpoint_count", len(endpoints),
 		)
+		sm.evictStaleEndpointsOnRollover(sessionEnd)
 	}
-	return actual.(map[domain.EndpointAddr]*endpoint)
+	return actual.(cachedEndpoints).endpoints
 }
 
 // ConfiguredServices returns the set of service IDs this session manager is configured for.

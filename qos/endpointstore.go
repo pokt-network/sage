@@ -32,6 +32,36 @@ func NewEndpointStore[T any](logger *slog.Logger) *EndpointStore[T] {
 	}
 }
 
+// HeightGetter builds the height lookup that BlockHeightFilter and
+// LeastStaleFallback both take, from a store and an accessor for whichever
+// field that chain calls its height.
+//
+// Every plugin needs this and each used to write its own closure — Cosmos three
+// times in one function — and the copies did not agree. Two treated a stored
+// height of 0 as "unknown, let the endpoint through"; one treated it as a real
+// height and filtered the endpoint out as hopelessly stale. Nothing recorded
+// which was intended, and the difference is only visible in a pool where an
+// endpoint has been seen but never reported.
+//
+// Zero means unknown here, for every chain. An endpoint we have no height for
+// is one we cannot judge on height, and excluding it on that basis penalizes it
+// for our own missing data — the same reasoning BlockHeightFilter already
+// applies to an endpoint that is absent from the store entirely. Treating
+// "absent" and "present with no height" differently was the accident.
+func HeightGetter[T any](store *EndpointStore[T], height func(T) uint64) func(domain.EndpointAddr) (uint64, bool) {
+	return func(addr domain.EndpointAddr) (uint64, bool) {
+		data, ok := store.Get(addr)
+		if !ok {
+			return 0, false
+		}
+		h := height(data)
+		if h == 0 {
+			return 0, false
+		}
+		return h, true
+	}
+}
+
 // Get returns the data for the given endpoint, and whether it was found.
 func (s *EndpointStore[T]) Get(addr domain.EndpointAddr) (T, bool) {
 	s.mu.RLock()

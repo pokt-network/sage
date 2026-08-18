@@ -264,11 +264,15 @@ func (r *Router) writeRelayError(rw relay.ResponseWriter, ctx *relay.Context, er
 		if len(ctx.Payloads) > 0 {
 			id = extractJSONRPCID(ctx.Payloads[0].Bytes())
 		}
-		renderJSONRPCError(rw, -32603, err.Error(), id)
+		// domain.ClientMessage, not err.Error(): the cause chain carries the
+		// operator's own infrastructure (a dial failure names the fullnode's
+		// host and port), and this gateway authenticates no one. The chain is
+		// already in the log line above, which is where it is useful.
+		renderJSONRPCError(rw, -32603, domain.ClientMessage(err), id)
 		return
 	}
 
-	renderJSONError(rw, http.StatusBadGateway, err.Error())
+	renderJSONError(rw, http.StatusBadGateway, domain.ClientMessage(err))
 }
 
 // handleHealth returns 200 when the protocol layer is ready, 503 otherwise.

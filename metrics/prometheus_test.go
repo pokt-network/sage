@@ -19,7 +19,7 @@ import (
 // newIsolatedRecorder creates a Recorder with its own registry to avoid
 // "already registered" panics when multiple test cases run in the same process.
 // The known-service set mirrors what wire.go passes from config; anything not
-// listed collapses to unknownServiceLabel.
+// listed collapses to unknownLabel.
 func newIsolatedRecorder(t *testing.T, knownServices ...domain.ServiceID) *Recorder {
 	t.Helper()
 	r, _ := newIsolatedRecorderWithReg(t, knownServices...)
@@ -33,13 +33,9 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 	if len(knownServices) == 0 {
 		knownServices = []domain.ServiceID{"eth"}
 	}
-	known := make(map[domain.ServiceID]struct{}, len(knownServices))
-	for _, id := range knownServices {
-		known[id] = struct{}{}
-	}
 	reg := prometheus.NewRegistry()
 	r := &Recorder{
-		knownServices: known,
+		services: allowedLabel(knownServices),
 		relayTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "relay_total"},
 			[]string{"service_id", "status"},
@@ -305,14 +301,14 @@ func TestRecordRelay_KnownServicesKeepTheirLabels(t *testing.T) {
 func TestServiceLabel(t *testing.T) {
 	r := newIsolatedRecorder(t, "eth")
 
-	if got := r.serviceLabel("eth"); got != "eth" {
-		t.Errorf("serviceLabel(eth) = %q, want %q", got, "eth")
+	if got := r.services.serviceValue("eth"); got != "eth" {
+		t.Errorf("serviceValue(eth) = %q, want %q", got, "eth")
 	}
-	if got := r.serviceLabel("not-configured"); got != unknownServiceLabel {
-		t.Errorf("serviceLabel(not-configured) = %q, want %q", got, unknownServiceLabel)
+	if got := r.services.serviceValue("not-configured"); got != unknownLabel {
+		t.Errorf("serviceValue(not-configured) = %q, want %q", got, unknownLabel)
 	}
-	if got := r.serviceLabel(""); got != unknownServiceLabel {
-		t.Errorf("serviceLabel(empty) = %q, want %q", got, unknownServiceLabel)
+	if got := r.services.serviceValue(""); got != unknownLabel {
+		t.Errorf("serviceValue(empty) = %q, want %q", got, unknownLabel)
 	}
 }
 

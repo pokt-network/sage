@@ -2,6 +2,7 @@ package reputation
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -198,5 +199,63 @@ func TestService_ResetScore(t *testing.T) {
 	score, _ = svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
 	if score != 100 {
 		t.Errorf("score after reset = %f, want 100", score)
+	}
+}
+
+// Under per-endpoint granularity the reputation key carries the supplier
+// address, which rotates every session, so this map grows with the network
+// rather than with SAGE's traffic. It is written on the relay path and nothing
+// else shrinks it.
+func TestRecordSignal_ScoreCacheIsBounded(t *testing.T) {
+	svc := NewService(NewMemoryStorage(), nil, ServiceConfig{KeyGranularity: KeyPerEndpoint})
+	ctx := context.Background()
+
+	// Every one of these is a distinct supplier on the same backend, which is
+	// exactly what a few days of session rollovers produces.
+	for i := range 200_000 {
+		ep := domain.EndpointAddr(fmt.Sprintf("pokt1supplier%06d-https://node.example.com", i))
+		if err := svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, Signal{Type: SignalSuccess}); err != nil {
+			t.Fatalf("RecordSignal: %v", err)
+		}
+	}
+
+	total := 0
+	for i := range svc.shards {
+		svc.shards[i].mu.RLock()
+		total += len(svc.shards[i].cache["eth"])
+		svc.shards[i].mu.RUnlock()
+	}
+
+	if total >= 200_000 {
+		t.Errorf("cache holds %d keys after 200k rotated suppliers — nothing is bounding it", total)
+	}
+}
+
+// Pruning must never forgive a penalized endpoint: this cache is the read path,
+// and a miss reads back as InitialScore.
+func TestRecordSignal_PruningKeepsPenalizedScores(t *testing.T) {
+	svc := NewService(NewMemoryStorage(), nil, ServiceConfig{KeyGranularity: KeyPerEndpoint})
+	ctx := context.Background()
+
+	bad := domain.EndpointAddr("pokt1bad-https://bad.example.com")
+	for range 3 {
+		if err := svc.RecordSignal(ctx, "eth", bad, domain.RPCTypeJSONRPC, Signal{Type: SignalCriticalError}); err != nil {
+			t.Fatalf("RecordSignal: %v", err)
+		}
+	}
+	penalized, _ := svc.GetScore(ctx, "eth", bad, domain.RPCTypeJSONRPC)
+	if penalized >= 100 {
+		t.Fatalf("setup failed: score %v is not penalized", penalized)
+	}
+
+	// Now flood the same shard set with healthy keys to force pruning.
+	for i := range 200_000 {
+		ep := domain.EndpointAddr(fmt.Sprintf("pokt1ok%06d-https://node.example.com", i))
+		_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, Signal{Type: SignalSuccess})
+	}
+
+	after, _ := svc.GetScore(ctx, "eth", bad, domain.RPCTypeJSONRPC)
+	if after != penalized {
+		t.Errorf("penalized score went from %v to %v — pruning forgave the endpoint worth remembering", penalized, after)
 	}
 }

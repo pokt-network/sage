@@ -5,9 +5,7 @@ package metrics
 import (
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -16,64 +14,13 @@ import (
 	"github.com/pokt-network/sage/internal/safego"
 )
 
-// maxLabelLen bounds every externally-derived Prometheus label value. Service
-// IDs and endpoint addresses are short in practice; the cap is a defensive
-// ceiling, not an expected length.
-const maxLabelLen = 128
-
-// sanitizeLabel makes an externally-derived string safe to pass to prometheus
-// WithLabelValues. client_golang panics inside WithLabelValues when a label
-// value is not valid UTF-8, and SAGE copies the attacker-controlled
-// Target-Service-Id header verbatim into ctx.ServiceID (see relay/middleware/
-// parse.go) — an invalid byte sequence or embedded NUL would otherwise crash
-// the request goroutine. Bound length first (byte-level truncation can split a
-// multibyte rune) then replace any invalid sequence with the Unicode
-// replacement char. Final safety net on every externally-derived label value.
-func sanitizeLabel(s string) string {
-	if len(s) > maxLabelLen {
-		s = s[:maxLabelLen]
-	}
-	if !utf8.ValidString(s) {
-		s = strings.ToValidUTF8(s, "�")
-	}
-	return s
-}
-
-// unknownServiceLabel replaces any service_id that is not configured.
-//
-// A Prometheus label value must come from a bounded set or it is a memory leak
-// with a network interface. service_id does not qualify on its own: it is the
-// client's Target-Service-Id header, copied verbatim in relay/middleware/
-// parse.go, and Validate deliberately passes unknown services through rather
-// than rejecting them. The Metrics middleware also sits outside Validate in the
-// chain, so it records before any rejection could happen. Every distinct junk
-// value would otherwise mint a new time series that lives until restart.
-//
-// Collapsing to one bucket keeps the cardinality of service_id at
-// len(configured services) + 1, and keeps the traffic visible rather than
-// dropping it: a spike here is worth an alert.
-const unknownServiceLabel = "__unknown__"
-
-// serviceLabel bounds the service_id label to the configured set.
-//
-// sanitizeLabel is still applied to known IDs: it caps length and repairs
-// invalid UTF-8, which client_golang panics on. That guards against a hostile
-// header; this guards against an unbounded one. They are different problems and
-// the first fix did not address the second.
-func (r *Recorder) serviceLabel(serviceID domain.ServiceID) string {
-	if _, ok := r.knownServices[serviceID]; ok {
-		return sanitizeLabel(string(serviceID))
-	}
-	return unknownServiceLabel
-}
-
 // Recorder records relay pipeline metrics to Prometheus.
 // It is safe for concurrent use.
 type Recorder struct {
-	// knownServices bounds the service_id label. Nil means no service is
-	// configured, so every ID collapses to unknownServiceLabel — which is the
-	// honest reading, not a reason to trust the input.
-	knownServices map[domain.ServiceID]struct{}
+	// services bounds the service_id label to the configured set. An empty
+	// configuration collapses every ID to __unknown__, which is the honest
+	// reading, not a reason to trust the input.
+	services *labelPolicy
 
 	relayTotal            *prometheus.CounterVec
 	relayLatency          *prometheus.HistogramVec
@@ -89,7 +36,7 @@ type Recorder struct {
 
 	// codespaces bounds the relay miner error codespace label, which is a
 	// string chosen by the supplier's relay miner.
-	codespaces *boundedLabel
+	codespaces *labelPolicy
 }
 
 // NewRecorder creates a Recorder and registers all metrics with
@@ -97,16 +44,11 @@ type Recorder struct {
 // duplicate registration bug).
 //
 // knownServices is the set of configured service IDs, and is what bounds the
-// service_id label — see unknownServiceLabel. Pass every service the gateway
+// service_id label — see labelPolicy. Pass every service the gateway
 // serves; anything else is treated as unknown.
 func NewRecorder(knownServices []domain.ServiceID) *Recorder {
-	known := make(map[domain.ServiceID]struct{}, len(knownServices))
-	for _, id := range knownServices {
-		known[id] = struct{}{}
-	}
-
 	r := &Recorder{
-		knownServices: known,
+		services: allowedLabel(knownServices),
 		relayTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -196,7 +138,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "codespace"},
 		),
-		codespaces: newBoundedLabel(maxCodespaceLabels),
+		codespaces: cappedLabel(maxCodespaceLabels),
 	}
 
 	prometheus.MustRegister(
@@ -225,7 +167,7 @@ func (r *Recorder) RecordRelay(
 	latency time.Duration,
 	_ error,
 ) {
-	sid := r.serviceLabel(serviceID)
+	sid := r.services.serviceValue(serviceID)
 	status := strconv.Itoa(statusCode)
 
 	r.relayTotal.WithLabelValues(sid, status).Inc()
@@ -234,38 +176,38 @@ func (r *Recorder) RecordRelay(
 
 // RecordRetry increments the retry counter for a service with a given reason.
 func (r *Recorder) RecordRetry(serviceID domain.ServiceID, reason string) {
-	r.retryTotal.WithLabelValues(r.serviceLabel(serviceID), reason).Inc()
+	r.retryTotal.WithLabelValues(r.services.serviceValue(serviceID), reason).Inc()
 }
 
 // RecordHedge records the outcome of a hedge race (primary_won, hedge_won,
 // or both_failed).
 func (r *Recorder) RecordHedge(serviceID domain.ServiceID, result string) {
-	r.hedgeTotal.WithLabelValues(r.serviceLabel(serviceID), result).Inc()
+	r.hedgeTotal.WithLabelValues(r.services.serviceValue(serviceID), result).Inc()
 }
 
 // RecordCacheHit increments the cache hit counter for a service.
 func (r *Recorder) RecordCacheHit(serviceID domain.ServiceID) {
-	r.cacheHits.WithLabelValues(r.serviceLabel(serviceID)).Inc()
+	r.cacheHits.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // RecordCacheMiss increments the cache miss counter for a service.
 func (r *Recorder) RecordCacheMiss(serviceID domain.ServiceID) {
-	r.cacheMisses.WithLabelValues(r.serviceLabel(serviceID)).Inc()
+	r.cacheMisses.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // RecordSingleflightCoalesced increments the singleflight coalesced counter.
 func (r *Recorder) RecordSingleflightCoalesced(serviceID domain.ServiceID) {
-	r.singleflightCoalesced.WithLabelValues(r.serviceLabel(serviceID)).Inc()
+	r.singleflightCoalesced.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // RecordDegraded increments the degraded counter for a service and tier label.
 func (r *Recorder) RecordDegraded(serviceID domain.ServiceID, tier string) {
-	r.degradedTotal.WithLabelValues(r.serviceLabel(serviceID), tier).Inc()
+	r.degradedTotal.WithLabelValues(r.services.serviceValue(serviceID), tier).Inc()
 }
 
 // RecordCircuitBreak increments the circuit break counter for a domain.
 func (r *Recorder) RecordCircuitBreak(serviceID domain.ServiceID, domain string) {
-	r.circuitBreaks.WithLabelValues(r.serviceLabel(serviceID), sanitizeLabel(domain)).Inc()
+	r.circuitBreaks.WithLabelValues(r.services.serviceValue(serviceID), sanitizeLabel(domain)).Inc()
 }
 
 // RecordSupplierBlacklist increments the supplier blacklist counter.
@@ -273,7 +215,7 @@ func (r *Recorder) RecordCircuitBreak(serviceID domain.ServiceID, domain string)
 // reason comes from a closed set defined in protocol/shannon, not from the
 // network, so it needs no bounding.
 func (r *Recorder) RecordSupplierBlacklist(serviceID domain.ServiceID, reason string) {
-	r.supplierBlacklists.WithLabelValues(r.serviceLabel(serviceID), reason).Inc()
+	r.supplierBlacklists.WithLabelValues(r.services.serviceValue(serviceID), reason).Inc()
 }
 
 // RecordRelayMinerError increments the counter of relay responses that carried
@@ -281,7 +223,7 @@ func (r *Recorder) RecordSupplierBlacklist(serviceID domain.ServiceID, reason st
 //
 // codespace is written by that miner, so it is bounded here — see boundedLabel.
 func (r *Recorder) RecordRelayMinerError(serviceID domain.ServiceID, codespace string) {
-	r.relayMinerErrors.WithLabelValues(r.serviceLabel(serviceID), r.codespaces.value(codespace)).Inc()
+	r.relayMinerErrors.WithLabelValues(r.services.serviceValue(serviceID), r.codespaces.value(codespace)).Inc()
 }
 
 // ServeHTTP returns a standard Prometheus HTTP handler suitable for mounting

@@ -146,3 +146,27 @@ func TestEndpointStore_NilLogger(t *testing.T) {
 		t.Fatal("expected count 1")
 	}
 }
+
+// The three plugins used to write this closure themselves and disagreed about
+// a stored height of 0: two let the endpoint through as unjudgeable, one
+// filtered it out as hopelessly stale. Pinning the answer here is the point of
+// having one implementation.
+func TestHeightGetter(t *testing.T) {
+	type ep struct{ height uint64 }
+	store := NewEndpointStore[ep](nil)
+
+	store.Update("pokt1a-https://a.example.com", func(e *ep) { e.height = 500 })
+	store.Update("pokt1zero-https://zero.example.com", func(e *ep) { e.height = 0 })
+
+	get := HeightGetter(store, func(e ep) uint64 { return e.height })
+
+	if h, ok := get("pokt1a-https://a.example.com"); !ok || h != 500 {
+		t.Errorf("known endpoint: got (%d, %v), want (500, true)", h, ok)
+	}
+	if _, ok := get("pokt1missing-https://missing.example.com"); ok {
+		t.Error("an endpoint absent from the store must report unknown")
+	}
+	if _, ok := get("pokt1zero-https://zero.example.com"); ok {
+		t.Error("a stored height of 0 must report unknown, not a real height of zero — filtering on it penalizes an endpoint for our own missing data")
+	}
+}

@@ -170,15 +170,10 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	}
 
 	// Block height filter factory (parameterised by sync allowance multiplier).
+	getHeight := qos.HeightGetter(p.store, func(ep cosmosEndpoint) uint64 { return ep.BlockHeight })
+
 	makeBlockFilter := func(allowance uint64) qos.FilterFunc {
-		minHeight := qos.MinAllowedHeight(perceived, allowance)
-		return qos.BlockHeightFilter(func(addr domain.EndpointAddr) (uint64, bool) {
-			ep, ok := p.store.Get(addr)
-			if !ok {
-				return 0, false
-			}
-			return ep.BlockHeight, true
-		}, minHeight)
+		return qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, allowance))
 	}
 
 	// RPC type filter — only applied when we have an explicit type to match.
@@ -210,13 +205,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		nonBlockFilters = append(nonBlockFilters, rpcTypeFilter)
 	}
 
-	ranker := qos.LeastStaleFallback(func(addr domain.EndpointAddr) (uint64, bool) {
-		ep, ok := p.store.Get(addr)
-		if !ok || ep.BlockHeight == 0 {
-			return 0, false
-		}
-		return ep.BlockHeight, true
-	}, perceived)
+	ranker := qos.LeastStaleFallback(getHeight, perceived)
 	result := qos.Select(endpoints, baseFilters, relaxedFilters, nonBlockFilters, ranker)
 
 	if result.Degraded {

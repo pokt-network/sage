@@ -138,13 +138,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	perceived := p.consensus.PerceivedBlock()
 	needsArchival := p.IsArchivalRequest(payloads)
 
-	getHeight := func(addr domain.EndpointAddr) (uint64, bool) {
-		ep, ok := p.store.Get(addr)
-		if !ok || ep.BlockNumber == 0 {
-			return 0, false
-		}
-		return ep.BlockNumber, true
-	}
+	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber })
 
 	archivalFilter := func(addr domain.EndpointAddr) error {
 		if !needsArchival {

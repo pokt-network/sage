@@ -3,6 +3,7 @@ package shannon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	apptypes "github.com/pokt-network/poktroll/x/application/types"
@@ -199,5 +200,85 @@ func TestSessionManager_ConfiguredServices(t *testing.T) {
 	}
 	if _, ok := got["eth"]; !ok {
 		t.Error("expected 'eth' in configured services")
+	}
+}
+
+// sessionAtHeight is buildTestSession with a chosen session end height, so a
+// test can roll sessions forward the way the chain does.
+func sessionAtHeight(sessionID string, end int64) *sessiontypes.Session {
+	s := buildTestSession(sessionID, "pokt1supplier", "https://relay.example.com")
+	s.Header.SessionStartBlockHeight = end - 10
+	s.Header.SessionEndBlockHeight = end
+	return s
+}
+
+func cacheLen(sm *sessionManager) int {
+	n := 0
+	sm.endpointCache.Range(func(any, any) bool { n++; return true })
+	return n
+}
+
+// endpointCache is keyed on the session ID, which is a new value every
+// rollover, so without eviction it grows for the life of the process: each
+// entry holds a whole session's endpoint map, per service, per app. Nothing
+// fails — memory just climbs — which is why this needs an explicit test rather
+// than showing up in any other one.
+func TestSessionManager_EndpointCacheDoesNotGrowWithRollovers(t *testing.T) {
+	sm := newSessionManager(
+		&stubFullNode{height: 200},
+		map[domain.ServiceID]struct{}{"eth": {}},
+		newTestLogger(),
+	)
+
+	for i := range 50 {
+		end := int64(110 + i*10)
+		sm.getOrCreateEndpoints(sessionAtHeight(fmt.Sprintf("session-%d", i), end))
+	}
+
+	// Current plus previous is the intended residency; anything that grows with
+	// the loop count means nothing is being evicted.
+	if got := cacheLen(sm); got > 2 {
+		t.Errorf("endpointCache holds %d sessions after 50 rollovers, want at most 2 (current + previous)", got)
+	}
+}
+
+// The previous session must survive: a relay that selected its endpoint just
+// before the boundary is still in flight, and the grace period keeps the old
+// session briefly valid.
+func TestSessionManager_EvictionKeepsPreviousSession(t *testing.T) {
+	sm := newSessionManager(
+		&stubFullNode{height: 200},
+		map[domain.ServiceID]struct{}{"eth": {}},
+		newTestLogger(),
+	)
+
+	sm.getOrCreateEndpoints(sessionAtHeight("older", 110))
+	sm.getOrCreateEndpoints(sessionAtHeight("previous", 120))
+	sm.getOrCreateEndpoints(sessionAtHeight("current", 130))
+
+	if _, ok := sm.endpointCache.Load("current"); !ok {
+		t.Error("the current session was evicted")
+	}
+	if _, ok := sm.endpointCache.Load("previous"); !ok {
+		t.Error("the previous session was evicted; in-flight relays would miss the cache")
+	}
+	if _, ok := sm.endpointCache.Load("older"); ok {
+		t.Error("a session two rollovers old was retained")
+	}
+}
+
+// A session that arrives out of order must not evict newer entries.
+func TestSessionManager_LateSessionDoesNotEvictNewer(t *testing.T) {
+	sm := newSessionManager(
+		&stubFullNode{height: 200},
+		map[domain.ServiceID]struct{}{"eth": {}},
+		newTestLogger(),
+	)
+
+	sm.getOrCreateEndpoints(sessionAtHeight("current", 200))
+	sm.getOrCreateEndpoints(sessionAtHeight("late", 150))
+
+	if _, ok := sm.endpointCache.Load("current"); !ok {
+		t.Error("a late session evicted the current one")
 	}
 }
