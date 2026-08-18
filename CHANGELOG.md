@@ -63,6 +63,30 @@ the source of truth for the design and the reasoning behind it.
   `ctx.ClientIP` for per-client middleware to key on.
 - **Graceful shutdown** (SIGINT/SIGTERM, 10s drain) and ldflags-stamped version
   info logged at startup.
+- **`blocked_domains`** — a standing operator ban, distinct from the two things
+  beside it: supplier blacklisting and circuit breaking are *earned* by an
+  endpoint's behaviour and expire, while this is "not this infrastructure, not
+  ever". Entries name a registrable domain or an exact hostname plus optional
+  `rpc_types`; `SAGE_BLOCKED_DOMAINS` unions in more at restart and can only
+  widen a ban. Matched on the endpoint URL, so it survives session rollover
+  without anyone re-applying it, and applied where endpoints are handed out, so
+  selection, retry/hedge/batch, WebSocket bind and health checks all inherit it.
+  A malformed entry refuses to boot: a ban that silently covers less than it
+  reads as covering is worse than no ban, because it is trusted.
+- **Panic containment on every goroutine** (`internal/safego`). `net/http`
+  recovers the goroutine serving a request; every `go` statement crosses that
+  boundary, so a panic on a hedge arm would take the process down while the same
+  panic without hedging cost one 500. Background work is contained and logged
+  with a stack; request-shaped work (hedge arms, batch sub-relays) converts the
+  panic to an error, because recovering *without delivering a result* hangs the
+  request instead of crashing it. Surfaced as
+  **`sage_recovered_panics_total`** — non-zero means a bug was contained, not
+  that nothing happened.
+- **Reputation scores are exported** as `sage_endpoint_reputation_score`, derived
+  at scrape time rather than pushed: a pushed gauge keyed on an endpoint identity
+  never evicts, and supplier registrations rotate every session.
+  `sage_endpoint_reputation_scores_dropped` reports truncation, so a trimmed
+  scrape reads as trimmed rather than as complete.
 
 ### Added — config & compatibility
 
@@ -72,6 +96,14 @@ the source of truth for the design and the reasoning behind it.
 - **Value types throughout** (no `*bool`/`*int`) — the zero value is the safe
   default. Chain semantics (chain IDs, comparison rules) belong to the QoS plugin,
   validated at wire time, not to `config/`.
+- **`sync_allowance: 0` means the plugin's own default, and the plugins disagree
+  about what that is, because their chains do.** EVM and Cosmos read it as "no
+  block-height filtering" — a block there is seconds to tens of seconds, so an
+  unset allowance costs a bounded amount of staleness. Solana reads it as 1500
+  blocks (~10 minutes): at ~400ms per block, an unfiltered pool serves deeply
+  stale state within minutes. Zero never means "require the chain tip", which
+  would admit only whichever endpoint reported last and starve every other one
+  of the traffic that keeps its height current.
 
 ### Added — build & tooling
 
@@ -81,6 +113,35 @@ the source of truth for the design and the reasoning behind it.
   gateway with no fullnode or suppliers.
 - E2E suite written to run against **both SAGE and PATH**; integration tests gated
   behind build tags.
+- **Tagged releases** build binaries for linux and darwin on both architectures
+  with checksums, and push a multi-arch image to `ghcr.io`.
+- **CI gates on `govulncheck`** against a reviewed allowlist
+  (`.github/vuln-allowlist.txt`). SAGE links cosmos-sdk and cometbft through the
+  shannon-sdk and inherits findings with no upstream fix, so a bare scan would be
+  permanently red and therefore ignored; the allowlist records why each survivor
+  is accepted, and the checker also flags an entry that has stopped being
+  reported. **Dependabot** covers gomod, docker and github-actions.
+
+### Security
+
+- **The relay port is documented as what it is.** SAGE authenticates no clients
+  and rate-limits nothing — the edge authenticates, SAGE relays — and every relay
+  it accepts is signed with the gateway key and spends staked POKT. An
+  unauthenticated `3069` on the open internet is a stake drain, not a
+  misconfiguration, and README, `SECURITY.md` and the generated route reference
+  now say so rather than labelling that port "public" beside two marked loopback
+  and scrape-only.
+- **Error responses no longer carry internal detail.** Rendering `err.Error()`
+  into the body included the whole cause chain, so a fullnode dial failure
+  reached the caller with the operator's own host and port in it. Clients get the
+  error kind and the message SAGE wrote; the chain stays in the log.
+- **Prometheus label values are bounded by policy, not by call site.** One
+  mechanism replaces three, and sanitising is no longer something a new metric
+  can forget — an unbounded label is a memory leak with a network interface.
+- Outbound gRPC pins TLS 1.2 as a floor on both the supplier and fullnode
+  connections; the container base and Go toolchain track current patch releases
+  (Go 1.26.6 closes six standard-library findings reachable from the request
+  path).
 
 ### Validated
 
@@ -89,6 +150,9 @@ the source of truth for the design and the reasoning behind it.
   HTTP/JSON-RPC, REST, CometBFT, and WebSocket-subscription transports were
   exercised against a live service. gRPC relaying (native + gRPC-Web) is
   implemented and unit-tested; see `ARCHITECTURE.md → Transports → gRPC`.
+- That run predates the hardening above. `blocked_domains`, the panic
+  containment, the cache eviction work and the current toolchain are covered by
+  the unit suite and not yet by a beta run.
 
 ### Notes
 
