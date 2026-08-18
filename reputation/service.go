@@ -5,6 +5,8 @@ import (
 	"sync"
 
 	"github.com/pokt-network/sage/domain"
+
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 // Service defines the contract for recording signals and querying endpoint
@@ -166,7 +168,7 @@ func (s *serviceImpl) SetOperatorCap(cfg OperatorCapConfig, gate func(context.Co
 // Start begins the background goroutine that flushes writes to storage.
 func (s *serviceImpl) Start() {
 	s.wg.Add(1)
-	go s.drainWrites()
+	safego.Go(nil, "reputation.drain", s.drainWrites)
 }
 
 // Stop signals the background goroutine to exit and waits for it to finish.

@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 // MessageProcessor transforms messages before forwarding them across the bridge.
@@ -134,7 +136,7 @@ func StartBridge(
 		done:         make(chan struct{}),
 	}
 
-	go b.run()
+	safego.Go(b.logger, "websocket.bridge", b.run)
 	return b, nil
 }
 
@@ -205,8 +207,8 @@ func (b *Bridge) Shutdown(err error) {
 // writes it to the other side. It also starts the two readLoop goroutines.
 func (b *Bridge) run() {
 	b.logger.Info("websocket: bridge started")
-	go b.readLoop(b.clientConn)
-	go b.readLoop(b.endpointConn)
+	safego.Go(b.logger, "websocket.read.client", func() { b.readLoop(b.clientConn) })
+	safego.Go(b.logger, "websocket.read.endpoint", func() { b.readLoop(b.endpointConn) })
 
 	for {
 		select {

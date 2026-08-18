@@ -45,6 +45,27 @@ Go toolchain: `go 1.26.5` (see `go.mod`).
 - **Redis is optional**: the gateway must run in local-only mode when Redis is unreachable (`wire.go` degrades gracefully). Don't write code that hard-requires Redis on the hot path.
 - **Observation pipeline is async and sampled** (10% of relays, 100% of health checks). Don't do deep parsing in the hot path; publish to `observe.Queue` instead.
 
+## Goroutines
+
+**Never write a bare `go` statement.** `net/http` recovers a panic in the
+goroutine serving a request; that protection stops at the goroutine boundary,
+and every `go` in this codebase crosses it. Before `internal/safego` a panic on
+a hedge arm killed the process while the identical panic on the identical
+request cost one 500 — the outcome decided by whether hedging fired.
+
+- Background work: `safego.Go` / `safego.GoCtx`, or `safego.Run` inside a loop
+  body so one bad tick does not stop the worker.
+- Request-shaped work whose result someone is waiting on (hedge arms, batch
+  sub-relays): `safego.Call`, which turns the panic into an error. Recovering
+  *without* delivering a result trades a crash for a hung request — worse, not
+  better.
+- Keeping your own `go func()` for its defers: `defer safego.Recover(...)` as
+  the **first** deferred statement, so it runs last and can contain a panic from
+  the other defers.
+
+Recovered panics are counted and exported as `sage_recovered_panics_total`.
+Non-zero means a bug was contained, not that nothing happened.
+
 ## Relay Context
 
 `relay.Context` (see `relay/context.go`) is the per-request state passed through the chain. Each field is set by **exactly one** middleware and read by others — keep that discipline when adding fields.

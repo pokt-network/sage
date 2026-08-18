@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -501,5 +502,48 @@ func TestBatch_CancelledRequestDoesNotSpendBudget(t *testing.T) {
 
 	if n := called.Load(); n != 0 {
 		t.Errorf("cancelled requests started %d sub-relays, want 0", n)
+	}
+}
+
+// One payload panicking must cost that payload, not the process and not its
+// siblings. wg.Done() already ran on the way out even before this fix, so the
+// failure mode without it was a crash — and with a bare recover it would have
+// been a silent `null` where an error belongs.
+func TestBatch_PanicInOnePayloadIsIsolated(t *testing.T) {
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		if ctx.Payloads[0].Method() == "eth_explode" {
+			panic("nil map write")
+		}
+		ctx.Response = &domain.Response{Body: []byte(`{"result":"ok"}`), HTTPStatusCode: 200}
+		return nil
+	})
+
+	ctx := makeMultiPayloadCtx([]domain.Payload{
+		domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber"),
+		domain.NewPayload([]byte(`{"method":"eth_explode"}`), domain.RPCTypeJSONRPC, "eth_explode"),
+		domain.NewPayload([]byte(`{"method":"eth_chainId"}`), domain.RPCTypeJSONRPC, "eth_chainId"),
+	})
+
+	if err := Batch(4, 0)(inner).HandleRelay(ctx); err != nil {
+		t.Fatalf("batch failed wholesale: %v", err)
+	}
+
+	var results []json.RawMessage
+	if err := json.Unmarshal(ctx.Response.Body, &results); err != nil {
+		t.Fatalf("response is not a batch array: %v (%s)", err, ctx.Response.Body)
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+
+	body := string(ctx.Response.Body)
+	if strings.Count(body, `"result":"ok"`) != 2 {
+		t.Errorf("the healthy payloads did not both succeed: %s", body)
+	}
+	if !strings.Contains(body, "error") {
+		t.Errorf("the panicking payload produced no error entry: %s", body)
+	}
+	if strings.Contains(string(results[1]), `"result":"ok"`) {
+		t.Errorf("the panicking payload reported success: %s", results[1])
 	}
 }

@@ -17,6 +17,8 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 // ExternalBlockHeight pairs a service with its latest known block height from
@@ -63,6 +65,7 @@ func (f *ExternalBlockFetcher) Start(ctx context.Context) <-chan ExternalBlockHe
 	}
 
 	go func() {
+		defer safego.Recover(f.logger, "healthcheck.external.poll")
 		defer close(ch)
 		// First fetch immediately.
 		f.emit(ctx, ch)
@@ -118,6 +121,7 @@ func (f *ExternalBlockFetcher) fetchMax(ctx context.Context) (uint64, error) {
 		i, src := i, src
 		wg.Add(1)
 		go func() {
+			defer safego.Recover(f.logger, "healthcheck.external.fetch")
 			defer wg.Done()
 			h, err := f.fetchOne(ctx, src)
 			results[i] = result{height: h, err: err}

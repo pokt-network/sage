@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 const redisChannel = "sage:observations"
@@ -121,6 +123,7 @@ func (p *RedisPublisher) Subscribe(ctx context.Context) (<-chan Observation, err
 
 	ch := make(chan Observation, 64)
 	go func() {
+		defer safego.Recover(nil, "observe.subscribe")
 		defer close(ch)
 		for msg := range p.pubsub.Channel() {
 			var obs Observation

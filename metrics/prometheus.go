@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 // maxLabelLen bounds every externally-derived Prometheus label value. Service
@@ -287,4 +288,25 @@ func (r *Recorder) RecordRelayMinerError(serviceID domain.ServiceID, codespace s
 // at /metrics.
 func (r *Recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	promhttp.Handler().ServeHTTP(w, req)
+}
+
+// NewPanicCollector exposes safego's recovered-panic count as
+// sage_recovered_panics_total.
+//
+// A CounterFunc rather than a counter the recovery path increments: safego must
+// not import this package, because the metrics code itself runs under safego.
+// Reading the value at scrape time keeps the dependency pointing one way.
+//
+// Any non-zero value deserves an alert. Nothing here is expected to panic, and a
+// recovered one means a relay or a background task was abandoned partway — the
+// gateway stayed up, which is the point, but something is broken.
+func NewPanicCollector() prometheus.Collector {
+	return prometheus.NewCounterFunc(
+		prometheus.CounterOpts{
+			Namespace: "sage",
+			Name:      "recovered_panics_total",
+			Help:      "Panics recovered on background goroutines and hedge/batch arms since start. Non-zero means a bug was contained, not that nothing happened.",
+		},
+		func() float64 { return float64(safego.Panics()) },
+	)
 }

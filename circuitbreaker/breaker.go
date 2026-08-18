@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 // Default configuration values.
@@ -447,7 +449,7 @@ func (b *Breaker) maybeRefreshFromRedis(serviceID string) {
 	b.lastRefresh[serviceID] = time.Now()
 	b.mu.Unlock()
 
-	go b.refreshFromRedis(serviceID)
+	safego.Go(b.logger, "circuitbreaker.refresh", func() { b.refreshFromRedis(serviceID) })
 }
 
 // refreshFromRedis fetches the service's broken-domain state from Redis and

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/config"
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 var (
@@ -93,12 +94,12 @@ func main() {
 				"addr", cfg.Metrics.PprofAddr,
 			)
 		}
-		go func() {
+		safego.Go(logger, "server.pprof", func() {
 			logger.Info("pprof listening", "addr", cfg.Metrics.PprofAddr)
 			if err := http.ListenAndServe(cfg.Metrics.PprofAddr, nil); err != nil {
 				logger.Warn("pprof server stopped", "error", err)
 			}
-		}()
+		})
 	}
 
 	// Prometheus metrics on their own listener (config: metrics_config.
@@ -110,14 +111,14 @@ func main() {
 	// it would publish heap dumps on the metrics port to whoever scrapes it.
 	// Metrics are meant to be reachable from outside the pod; pprof is not.
 	if cfg.Metrics.PrometheusAddr != "" && app.Metrics != nil {
-		go func() {
+		safego.Go(logger, "server.metrics", func() {
 			mux := http.NewServeMux()
 			mux.Handle("/metrics", app.Metrics)
 			logger.Info("metrics listening", "addr", cfg.Metrics.PrometheusAddr, "path", "/metrics")
 			if err := http.ListenAndServe(cfg.Metrics.PrometheusAddr, mux); err != nil {
 				logger.Warn("metrics server stopped", "error", err)
 			}
-		}()
+		})
 	}
 
 	// Admin API on its own listener (config: admin_config.addr, default
@@ -135,20 +136,22 @@ func main() {
 				"addr", cfg.Admin.Addr,
 			)
 		}
-		go func() {
+		safego.Go(logger, "server.admin", func() {
 			mux := http.NewServeMux()
 			app.Admin.RegisterRoutes(mux)
 			logger.Info("admin listening", "addr", cfg.Admin.Addr)
 			if err := http.ListenAndServe(cfg.Admin.Addr, mux); err != nil {
 				logger.Warn("admin server stopped", "error", err)
 			}
-		}()
+		})
 	}
 
 	// Start HTTP server (blocking in goroutine)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- app.Router.Start()
+		// Call, not Go: main selects on errCh, so a recovery that sent nothing
+		// would hang the process instead of crashing it.
+		errCh <- safego.Call(logger, "server.relay", app.Router.Start)
 	}()
 
 	logger.Info("SAGE gateway ready",

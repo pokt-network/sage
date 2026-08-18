@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"math/rand"
 	"sync"
+
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 // QueueConfig controls the async observation worker pool.
@@ -82,7 +84,7 @@ func (q *Queue) Submit(obs Observation) {
 func (q *Queue) Start(ctx context.Context) {
 	for i := 0; i < q.cfg.WorkerCount; i++ {
 		q.wg.Add(1)
-		go q.worker(ctx)
+		safego.GoCtx(ctx, q.logger, "observe.worker", q.worker)
 	}
 }
 

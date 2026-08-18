@@ -11,6 +11,7 @@ import (
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 const (
@@ -71,7 +72,7 @@ func (sm *sessionManager) StartBlockPoller(ctx context.Context) {
 		for {
 			select {
 			case <-ticker.C:
-				sm.pollBlockHeight(ctx)
+				safego.Run(sm.logger, "shannon.blockpoll", func() { sm.pollBlockHeight(ctx) })
 			case <-sm.stopPoller:
 				return
 			case <-ctx.Done():

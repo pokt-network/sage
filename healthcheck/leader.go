@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 const (
@@ -65,7 +67,7 @@ func (l *LeaderElector) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ticker.C:
-				l.tryAcquire(ctx)
+				safego.Run(l.logger, "healthcheck.leader.renew", func() { l.tryAcquire(ctx) })
 			case <-ctx.Done():
 				return
 			}

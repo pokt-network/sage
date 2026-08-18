@@ -26,6 +26,7 @@ means traffic is arriving for services this gateway does not serve.
 | `sage_endpoint_reputation_score` | gauge | `service_id`, `endpoint` | Current reputation score, by service and reputation key (see reputation/key.go for what a key covers). |
 | `sage_endpoint_reputation_scores_dropped` | gauge | `service_id` | Reputation keys omitted from this scrape because the service exceeded the per-scrape cap. Non-zero means sage_endpoint_reputation_score is showing only the lowest-scoring keys. |
 | `sage_hedge_total` | counter | `service_id`, `result` | Hedge race outcomes (primary_won, hedge_won, both_failed). |
+| `sage_recovered_panics_total` | counter | — | Panics recovered on background goroutines and hedge/batch arms since start. Non-zero means a bug was contained, not that nothing happened. |
 | `sage_relay_latency_seconds` | histogram | `service_id` | Relay latency in seconds. |
 | `sage_relay_miner_errors_total` | counter | `service_id`, `codespace` | Total relay responses carrying a RelayMinerError, by service and miner error codespace. |
 | `sage_relay_total` | counter | `service_id`, `status` | Total relay attempts, partitioned by service and HTTP status. |

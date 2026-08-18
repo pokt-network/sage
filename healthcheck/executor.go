@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/observe"
 	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/qos"
@@ -109,7 +110,10 @@ func (e *Executor) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ticker.C:
-				e.runOnce(ctx)
+				// Per tick, not per loop: a recovery that wrapped the whole
+				// loop would contain the panic and still leave the ticker
+				// dead, which is a stopped health checker that logged once.
+				safego.Run(e.logger, "healthcheck.cycle", func() { e.runOnce(ctx) })
 			case <-ctx.Done():
 				return
 			}
@@ -168,6 +172,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 			sem <- struct{}{}
 			e.wg.Add(1)
 			go func() {
+				defer safego.Recover(e.logger, "healthcheck.endpoint")
 				defer e.wg.Done()
 				defer func() { <-sem }()
 				e.checkEndpoint(ctx, serviceID, probe, group.endpoints, plugin, checks)

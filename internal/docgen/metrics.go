@@ -96,14 +96,21 @@ func GenerateMetricsReference(metricsDir string) (string, error) {
 	return b.String(), nil
 }
 
-// metricFromVecCall recognises prometheus.New{Counter,Gauge,Histogram}Vec,
-// whose first argument is an Opts literal and whose second is the label list.
+// metricFromVecCall recognises prometheus.New{Counter,Gauge,Histogram}Vec and
+// their unlabelled Func variants. The Vec forms take an Opts literal and a
+// label list; the Func forms take an Opts literal and the function that
+// supplies the value, so they document as a metric with no labels.
+//
+// The Func forms are here because a metric this generator cannot see is a
+// metric the reference silently omits, which is the one failure mode generated
+// docs are supposed to remove.
 func metricFromVecCall(call *ast.CallExpr) (metricDoc, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || len(call.Args) < 2 {
 		return metricDoc{}, false
 	}
 	var kind string
+	labelled := true
 	switch sel.Sel.Name {
 	case "NewCounterVec":
 		kind = "counter"
@@ -111,6 +118,10 @@ func metricFromVecCall(call *ast.CallExpr) (metricDoc, bool) {
 		kind = "gauge"
 	case "NewHistogramVec":
 		kind = "histogram"
+	case "NewCounterFunc":
+		kind, labelled = "counter", false
+	case "NewGaugeFunc":
+		kind, labelled = "gauge", false
 	default:
 		return metricDoc{}, false
 	}
@@ -145,7 +156,11 @@ func metricFromVecCall(call *ast.CallExpr) (metricDoc, bool) {
 	if namespace != "" {
 		name = namespace + "_" + name
 	}
-	return metricDoc{name: name, kind: kind, help: help, labels: stringSlice(call.Args[1])}, true
+	var labels []string
+	if labelled {
+		labels = stringSlice(call.Args[1])
+	}
+	return metricDoc{name: name, kind: kind, help: help, labels: labels}, true
 }
 
 // metricFromDescCall recognises prometheus.NewDesc(name, help, labels, nil),

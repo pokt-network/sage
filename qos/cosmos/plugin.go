@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/qos"
 )
 
@@ -246,7 +247,7 @@ func (p *Plugin) PerceivedBlockHeight() uint64 {
 
 // StartSync starts background goroutines for the plugin (stale endpoint sweeping).
 func (p *Plugin) StartSync(ctx context.Context) {
-	go p.sweepLoop(ctx)
+	safego.GoCtx(ctx, p.logger, "qos.cosmos.sweep", p.sweepLoop)
 }
 
 func (p *Plugin) sweepLoop(ctx context.Context) {

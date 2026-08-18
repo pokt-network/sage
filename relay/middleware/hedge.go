@@ -7,6 +7,7 @@ import (
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -55,7 +56,14 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			primaryCtx.Ctx = primaryDetached
 			go func() {
 				defer primaryCancel()
-				err := next.HandleRelay(primaryCtx)
+				// safego.Call rather than a bare recover: an arm that recovered
+				// without sending would leave the select below waiting on a
+				// channel nothing will ever write to, which turns a crash into a
+				// hung request. Converting the panic to an error lets the race
+				// resolve the way it already resolves a failed arm.
+				err := safego.Call(primaryCtx.Logger, "hedge.primary", func() error {
+					return next.HandleRelay(primaryCtx)
+				})
 				primaryCh <- hedgeResult{err: err, ctx: primaryCtx}
 			}()
 
@@ -107,7 +115,9 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			hedgeCtx.Ctx = hedgeDetached
 			go func() {
 				defer hedgeCancel()
-				err := next.HandleRelay(hedgeCtx)
+				err := safego.Call(hedgeCtx.Logger, "hedge.hedge", func() error {
+					return next.HandleRelay(hedgeCtx)
+				})
 				hedgeCh <- hedgeResult{err: err, ctx: hedgeCtx}
 			}()
 

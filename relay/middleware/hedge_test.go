@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -278,5 +280,66 @@ func TestHedge_SingleOperatorPoolStillHedges(t *testing.T) {
 	}
 	if picked[0] == picked[1] {
 		t.Errorf("hedge reused the primary's endpoint: %v", picked)
+	}
+}
+
+// A panic on a hedge arm runs on a detached goroutine, where net/http's
+// recovery does not reach. Before safego this crashed the process — the same
+// panic on the same request cost only a 500 when hedging happened not to fire.
+//
+// Recovering is only half of it: the arm must still deliver a result, or the
+// select waiting on its channel blocks until the request's context expires.
+// That is why this asserts on the returned error and on elapsed time, not just
+// on the test surviving.
+func TestHedge_PanicOnPrimaryDoesNotCrashOrHang(t *testing.T) {
+	panicking := relay.HandlerFunc(func(ctx *relay.Context) error {
+		panic("supplier response parser hit a nil map")
+	})
+
+	mw := Hedge(newFlags("hedge"), hedgeCfg(20*time.Millisecond))
+	h := mw(panicking)
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- h.HandleRelay(baseContext()) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a panicking chain reported success")
+		}
+		if !errors.Is(err, safego.ErrPanic) {
+			t.Errorf("error %v does not wrap safego.ErrPanic", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("hedge never returned — the arm recovered without delivering a result")
+	}
+
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("took %v; a recovered arm should resolve the race immediately", elapsed)
+	}
+}
+
+// The hedge arm panicking must not sink the request either: the primary is
+// healthy, so the race still has a winner.
+func TestHedge_PanicOnHedgeArmStillLetsPrimaryWin(t *testing.T) {
+	var calls int32
+	handler := relay.HandlerFunc(func(ctx *relay.Context) error {
+		if atomic.AddInt32(&calls, 1) == 2 {
+			panic("hedge arm exploded")
+		}
+		time.Sleep(60 * time.Millisecond)
+		ctx.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"ok":true}`)}
+		return nil
+	})
+
+	mw := Hedge(newFlags("hedge"), hedgeCfg(10*time.Millisecond))
+	ctx := baseContext()
+
+	if err := mw(handler).HandleRelay(ctx); err != nil {
+		t.Fatalf("primary should have won, got %v", err)
+	}
+	if ctx.Response == nil {
+		t.Error("no response — the panicking arm took the healthy one with it")
 	}
 }

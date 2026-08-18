@@ -15,6 +15,8 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
+
+	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/observe"
 	"github.com/pokt-network/sage/reputation"
 	"github.com/pokt-network/sage/websockets"
@@ -269,10 +271,14 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	}
 
 	// Watch for session expiry in a goroutine; trigger graceful close.
-	go r.watchSessionExpiry(session.Header.SessionEndBlockHeight, processor, bridge, logger)
+	safego.Go(logger, "websocket.session.expiry", func() {
+		r.watchSessionExpiry(session.Header.SessionEndBlockHeight, processor, bridge, logger)
+	})
 
 	// Drain frame events off the bridge loop until the bridge closes.
-	go r.drainFrameEvents(serviceID, endpointAddr, frameCh, bridge.Done())
+	safego.Go(logger, "websocket.frame.drain", func() {
+		r.drainFrameEvents(serviceID, endpointAddr, frameCh, bridge.Done())
+	})
 
 	<-bridge.Done()
 

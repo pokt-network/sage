@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/internal/safego"
 )
 
 const (
@@ -136,7 +137,7 @@ func (v *Validator) CheckConsensus(serviceID domain.ServiceID, method string) []
 // Start launches a background goroutine that sweeps all windows for consensus
 // violations at regular intervals. The goroutine exits when ctx is cancelled.
 func (v *Validator) Start(ctx context.Context) {
-	go v.sweepLoop(ctx)
+	safego.GoCtx(ctx, v.logger, "crossvalidation.sweep", v.sweepLoop)
 }
 
 // sweepLoop runs CheckConsensus on every known window periodically.

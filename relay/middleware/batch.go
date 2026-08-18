@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -106,7 +107,13 @@ func Batch(maxConcurrentRelays, maxPayloads int) relay.Middleware {
 					sub.Response = nil
 					sub.Err = nil
 
-					err := next.HandleRelay(sub)
+					// A panic here becomes this payload's error rather than the
+					// process's exit: wg.Done() already runs on the way out, so
+					// an unconverted panic would leave results[i] empty and the
+					// client would get a null where an error belongs.
+					err := safego.Call(sub.Logger, "batch.payload", func() error {
+						return next.HandleRelay(sub)
+					})
 					if sub.Degraded {
 						degraded.Store(true)
 					}

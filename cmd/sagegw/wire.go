@@ -17,6 +17,8 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/healthcheck"
+
+	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/metrics"
 	"github.com/pokt-network/sage/observe"
 	"github.com/pokt-network/sage/protocol"
@@ -227,6 +229,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// and scrape bytes until restart. See metrics.ScoreCollector.
 	prometheus.MustRegister(metrics.NewScoreCollector(repSvc, serviceIDsFrom(cfg)))
 
+	// A recovered panic is contained, not harmless — surface it as a metric so
+	// it can be alerted on rather than only appearing in logs.
+	prometheus.MustRegister(metrics.NewPanicCollector())
+
 	// 7. Observation pipeline
 	obsHandler := observe.NewDefaultHandler(qosReg, logger)
 	obsQueue := observe.NewQueue(observe.QueueConfig{
@@ -412,11 +418,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		heights := fetcher.Start(ctx)
 		plugin := qosReg.Get(domain.ServiceID(svc.ID))
 		if tracker, ok := plugin.(qos.BlockHeightTracker); ok {
-			go func() {
+			safego.Go(logger, "external.blockheight.fanin", func() {
 				for h := range heights {
 					tracker.UpdateBlockHeight("external", h.Height)
 				}
-			}()
+			})
 		}
 	}
 
