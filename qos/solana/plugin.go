@@ -155,9 +155,11 @@ func (p *Plugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck {
 // --- qos.DataExtractor --- //
 
 // ExtractData parses structured data from a Solana relay response.
-// It extracts the block height from getEpochInfo responses.
+// It extracts the block height from getEpochInfo and getBlockHeight responses;
+// which shapes are accepted depends on the request, so the request is read
+// rather than ignored (see extractBlockHeightForMethod).
 func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []byte) (*qos.ExtractedData, error) {
-	height, err := extractBlockHeightFromResponse(response)
+	height, err := extractBlockHeightForMethod(request, response)
 	if err != nil {
 		// Not every response carries a block height — not an error worth surfacing.
 		return &qos.ExtractedData{}, nil

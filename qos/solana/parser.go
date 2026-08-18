@@ -48,6 +48,42 @@ func extractBlockHeightFromResponse(response []byte) (uint64, error) {
 	return 0, fmt.Errorf("solana: no blockHeight in response")
 }
 
+// extractBlockHeightForMethod is extractBlockHeightFromResponse plus the one
+// other response shape that really is a block height: getBlockHeight answers
+// with a bare number rather than an object.
+//
+// Gated on the request method, and that gate is the whole point rather than an
+// optimization. getSlot also answers with a bare number, and a slot is not a
+// height — accepting any bare number would reopen exactly the poisoning hole
+// the absoluteSlot comment above describes, just through a different door.
+// Naming the method is what distinguishes "the caller asked for a height and
+// got one" from "this response happens to contain a number".
+//
+// This matters because an operator can configure health checks
+// (active_health_checks.local). A configured getBlockHeight probe would
+// otherwise run, pass, and contribute no height at all: the endpoint stays
+// selectable — SAGE reads an unknown height as unjudgeable rather than stale —
+// but nothing it reports ever reaches the staleness filter, so a genuinely
+// lagging endpoint serving no user traffic is never caught. PATH hit the
+// sharper version of this, where the same gap benched the endpoint outright.
+func extractBlockHeightForMethod(request, response []byte) (uint64, error) {
+	if h, err := extractBlockHeightFromResponse(response); err == nil {
+		return h, nil
+	}
+
+	if gjson.GetBytes(request, "method").String() != "getBlockHeight" {
+		return 0, fmt.Errorf("solana: no blockHeight in response")
+	}
+
+	result := gjson.GetBytes(response, "result")
+	if result.Type == gjson.Number {
+		if v := result.Uint(); v > 0 {
+			return v, nil
+		}
+	}
+	return 0, fmt.Errorf("solana: no blockHeight in response")
+}
+
 // coalescableMethods is the set of read-only Solana methods that are safe
 // to coalesce (de-duplicate in-flight requests with the same key).
 var coalescableMethods = map[string]bool{

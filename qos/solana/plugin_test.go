@@ -240,3 +240,70 @@ func TestSelectEndpoints_DefaultSyncAllowanceKeepsTrailingEndpoints(t *testing.T
 		t.Errorf("endpoint inside the allowance was filtered out: %v", got)
 	}
 }
+
+// An operator can configure health checks (active_health_checks.local), and a
+// getBlockHeight probe answers with a bare number rather than the getEpochInfo
+// object. Before this it parsed as nothing: the check ran, passed, and fed the
+// staleness filter no height at all.
+func TestExtractData_AcceptsGetBlockHeightResponse(t *testing.T) {
+	p := solana.NewPlugin(nil, 100)
+
+	req := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlockHeight"}`)
+	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":300000000}`)
+
+	data, err := p.ExtractData("pokt1a-https://a.example.com", req, resp)
+	if err != nil {
+		t.Fatalf("ExtractData: %v", err)
+	}
+	if data.BlockHeight == nil {
+		t.Fatal("no block height extracted from a getBlockHeight response")
+	}
+	if *data.BlockHeight != 300000000 {
+		t.Errorf("height = %d, want 300000000", *data.BlockHeight)
+	}
+}
+
+// The gate is the point. getSlot also answers with a bare number, and a slot is
+// not a height — Solana skips slots, so absoluteSlot runs tens of millions
+// ahead. Accepting any bare number would poison the perceived-height consensus
+// exactly the way the absoluteSlot fallback did.
+func TestExtractData_RejectsBareNumberFromOtherMethods(t *testing.T) {
+	p := solana.NewPlugin(nil, 100)
+
+	for _, method := range []string{"getSlot", "getTransactionCount", ""} {
+		req := []byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `"}`)
+		resp := []byte(`{"jsonrpc":"2.0","id":1,"result":390000000}`)
+
+		data, err := p.ExtractData("pokt1a-https://a.example.com", req, resp)
+		if err != nil {
+			t.Fatalf("ExtractData(%q): %v", method, err)
+		}
+		if data.BlockHeight != nil {
+			t.Errorf("method %q: a bare number was taken as a block height (%d)", method, *data.BlockHeight)
+		}
+	}
+}
+
+// getEpochInfo keeps working, and absoluteSlot is still not a fallback.
+func TestExtractData_EpochInfoUnchanged(t *testing.T) {
+	p := solana.NewPlugin(nil, 100)
+	req := []byte(`{"jsonrpc":"2.0","id":1,"method":"getEpochInfo"}`)
+
+	withHeight := []byte(`{"result":{"absoluteSlot":390000000,"blockHeight":300000000}}`)
+	data, err := p.ExtractData("pokt1a-https://a.example.com", req, withHeight)
+	if err != nil {
+		t.Fatalf("ExtractData: %v", err)
+	}
+	if data.BlockHeight == nil || *data.BlockHeight != 300000000 {
+		t.Errorf("blockHeight not preferred over absoluteSlot: %+v", data.BlockHeight)
+	}
+
+	slotOnly := []byte(`{"result":{"absoluteSlot":390000000}}`)
+	data, err = p.ExtractData("pokt1a-https://a.example.com", req, slotOnly)
+	if err != nil {
+		t.Fatalf("ExtractData: %v", err)
+	}
+	if data.BlockHeight != nil {
+		t.Errorf("absoluteSlot was accepted as a height (%d)", *data.BlockHeight)
+	}
+}
