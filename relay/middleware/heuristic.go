@@ -30,12 +30,6 @@ func Heuristic(flags featureflag.FlagStore) relay.Middleware {
 				return nil
 			}
 
-			// Extract method from the first payload if available.
-			method := ""
-			if len(ctx.Payloads) > 0 {
-				method = ctx.Payloads[0].Method()
-			}
-
 			// gRPC reports its outcome in grpc-status rather than in the body,
 			// so it gets the analyzer that can read one. Without this a chain
 			// error like NOT_FOUND would be retried across suppliers and
@@ -49,7 +43,6 @@ func Heuristic(flags featureflag.FlagStore) relay.Middleware {
 					ctx.Response.Body,
 					ctx.Response.HTTPStatusCode,
 					ctx.RPCType,
-					method,
 				)
 			}
 

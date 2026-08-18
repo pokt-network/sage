@@ -33,14 +33,14 @@ func TestAnalyze_OverServiced_NoPenalty(t *testing.T) {
 	// HA relay-miner: HTTP 429 + over-serve body. Must NOT be penalized despite 429.
 	t.Run("HA 429 over-serve", func(t *testing.T) {
 		body := []byte(`{"error":"session relay limit reached: claimable portion fully consumed"}`)
-		got := Analyze(body, 429, domain.RPCTypeJSONRPC, "eth_call")
+		got := Analyze(body, 429, domain.RPCTypeJSONRPC)
 		assertOverServiced(t, got)
 	})
 
 	// poktroll relay-miner: HTTP 200 + over-serve payload.
 	t.Run("poktroll 200 over-serve", func(t *testing.T) {
 		body := []byte(`{"error":"offchain rate limit hit by relayer proxy","code":7}`)
-		got := Analyze(body, 200, domain.RPCTypeJSONRPC, "eth_call")
+		got := Analyze(body, 200, domain.RPCTypeJSONRPC)
 		assertOverServiced(t, got)
 	})
 }
@@ -66,7 +66,7 @@ func assertOverServiced(t *testing.T, got AnalysisResult) {
 // over-servicing is exempt.
 func TestAnalyze_GenericRateLimit_StillPenalized(t *testing.T) {
 	body := []byte(`{"error":"too many requests"}`)
-	got := Analyze(body, 429, domain.RPCTypeJSONRPC, "eth_call")
+	got := Analyze(body, 429, domain.RPCTypeJSONRPC)
 	if got.Reason != "http_429" {
 		t.Fatalf("reason = %q, want http_429", got.Reason)
 	}

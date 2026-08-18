@@ -221,6 +221,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// metrics.BreakerCollector.
 	prometheus.MustRegister(metrics.NewBreakerCollector(cb, serviceIDsFrom(cfg)))
 
+	// Reputation scores are likewise derived at scrape time rather than pushed.
+	// A pushed gauge keyed on an endpoint identity never evicts, so every
+	// supplier registration that has ever been scored would keep costing heap
+	// and scrape bytes until restart. See metrics.ScoreCollector.
+	prometheus.MustRegister(metrics.NewScoreCollector(repSvc, serviceIDsFrom(cfg)))
+
 	// 7. Observation pipeline
 	obsHandler := observe.NewDefaultHandler(qosReg, logger)
 	obsQueue := observe.NewQueue(observe.QueueConfig{

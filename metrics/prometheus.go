@@ -81,7 +81,6 @@ type Recorder struct {
 	cacheHits             *prometheus.CounterVec
 	cacheMisses           *prometheus.CounterVec
 	singleflightCoalesced *prometheus.CounterVec
-	endpointScore         *prometheus.GaugeVec
 	degradedTotal         *prometheus.CounterVec
 	circuitBreaks         *prometheus.CounterVec
 	supplierBlacklists    *prometheus.CounterVec
@@ -164,14 +163,6 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id"},
 		),
-		endpointScore: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Namespace: "sage",
-				Name:      "endpoint_reputation_score",
-				Help:      "Current reputation score for an endpoint.",
-			},
-			[]string{"service_id", "endpoint"},
-		),
 		degradedTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -215,7 +206,6 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.cacheHits,
 		r.cacheMisses,
 		r.singleflightCoalesced,
-		r.endpointScore,
 		r.degradedTotal,
 		r.circuitBreaks,
 		r.supplierBlacklists,
@@ -265,11 +255,6 @@ func (r *Recorder) RecordCacheMiss(serviceID domain.ServiceID) {
 // RecordSingleflightCoalesced increments the singleflight coalesced counter.
 func (r *Recorder) RecordSingleflightCoalesced(serviceID domain.ServiceID) {
 	r.singleflightCoalesced.WithLabelValues(r.serviceLabel(serviceID)).Inc()
-}
-
-// SetEndpointScore updates the gauge for an endpoint's reputation score.
-func (r *Recorder) SetEndpointScore(serviceID domain.ServiceID, endpoint domain.EndpointAddr, score float64) {
-	r.endpointScore.WithLabelValues(r.serviceLabel(serviceID), sanitizeLabel(string(endpoint))).Set(score)
 }
 
 // RecordDegraded increments the degraded counter for a service and tier label.

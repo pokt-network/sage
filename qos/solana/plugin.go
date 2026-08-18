@@ -30,11 +30,39 @@ type Plugin struct {
 	consensus *qos.BlockConsensus
 }
 
+// defaultSyncAllowance is the allowance used when the service does not
+// configure one.
+//
+// Zero cannot be the fallback here, and not because it disables the check —
+// it does the opposite. SelectEndpoints computes minHeight as
+// perceived-syncAllowance without EVM's `syncAllowance > 0` guard, so zero
+// makes the tier-1 filter a strict `height >= perceived` comparison. Perceived
+// is the max of non-outlier observations, so by construction only the endpoint
+// that reported last can satisfy it: everyone else's newest report is older
+// than the one that just raised the bar. At ~400ms per Solana block that bar
+// moves faster than health checks can refresh an endpoint, so the tier-1 pool
+// collapses onto whichever endpoint is already carrying traffic — which is the
+// only thing keeping its height current. An endpoint refreshed only by health
+// checks trails permanently and is filtered out, which denies it the traffic
+// that would have refreshed it. PATH hit exactly this in production on
+// 2026-08-18: a solana pool on one operator while the alternatives sat at
+// reputation 100, tier 1, zero cooldown, and received nothing.
+//
+// 1500 blocks is ~10 minutes of Solana, matching what PATH ships. The value is
+// deliberately generous. It decides which endpoints are *selectable*, so
+// lowering it is a routing change, not a check-strictness knob.
+const defaultSyncAllowance = 1500
+
 // NewPlugin creates a Solana Plugin. syncAllowance is the maximum number of
 // blocks behind the perceived chain tip that an endpoint is allowed to be.
+// Zero means unconfigured and falls back to defaultSyncAllowance; it does not
+// disable the check.
 func NewPlugin(logger *slog.Logger, syncAllowance uint64) *Plugin {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if syncAllowance == 0 {
+		syncAllowance = defaultSyncAllowance
 	}
 	return &Plugin{
 		logger:        logger,

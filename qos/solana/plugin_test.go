@@ -184,3 +184,59 @@ func TestPerceivedBlockHeight_UpdatesWithObservations(t *testing.T) {
 		t.Error("perceived block height should be non-zero after updates")
 	}
 }
+
+// An unconfigured service must still filter on block height. Asserted through
+// SelectEndpoints rather than on the plugin's field: the field being set proves
+// nothing about whether selection reads it.
+func TestSelectEndpoints_UnconfiguredSyncAllowanceStillFilters(t *testing.T) {
+	p := solana.NewPlugin(nil, 0) // no sync_allowance in config
+
+	const tip = 300_000_000
+
+	fresh := domain.EndpointAddr("pokt1fresh-https://fresh.example.com")
+	other := domain.EndpointAddr("pokt1other-https://other.example.com")
+	stale := domain.EndpointAddr("pokt1stale-https://stale.example.com")
+
+	// Two fresh endpoints so the perceived height is theirs and the stale one
+	// cannot drag the median.
+	p.UpdateBlockHeight(fresh, tip)
+	p.UpdateBlockHeight(other, tip)
+	// Far past the default allowance — roughly an hour behind.
+	p.UpdateBlockHeight(stale, tip-500_000)
+
+	got, err := p.SelectEndpoints(domain.EndpointAddrList{fresh, other, stale}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Contains(stale) {
+		t.Errorf("stale endpoint selected: an unset sync_allowance must fall back to the Solana default, not disable the check (got %v)", got)
+	}
+	if !got.Contains(fresh) {
+		t.Errorf("fresh endpoint missing from %v", got)
+	}
+}
+
+// The fallback must not be so tight that an endpoint refreshed only by health
+// checks — always a few blocks behind whatever reported last — leaves the pool.
+// That is the starvation loop the generous default exists to avoid.
+func TestSelectEndpoints_DefaultSyncAllowanceKeepsTrailingEndpoints(t *testing.T) {
+	p := solana.NewPlugin(nil, 0)
+
+	// One block short of the 1500-block default.
+	const tip = 300_000_000
+	const trailingHeight = tip - 1499
+
+	leader := domain.EndpointAddr("pokt1leader-https://leader.example.com")
+	trailing := domain.EndpointAddr("pokt1trailing-https://trailing.example.com")
+
+	p.UpdateBlockHeight(leader, tip)
+	p.UpdateBlockHeight(trailing, trailingHeight)
+
+	got, err := p.SelectEndpoints(domain.EndpointAddrList{leader, trailing}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.Contains(trailing) {
+		t.Errorf("endpoint inside the allowance was filtered out: %v", got)
+	}
+}

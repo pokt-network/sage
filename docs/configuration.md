@@ -210,7 +210,7 @@ Services supports the production config format (gateway_config.services[])
 | `id` | string | The service identifier clients name in the Target-Service-Id header, and the key everything per-service is looked up by. |
 | `type` | string | Selects the QoS plugin: "evm", "cosmos", "solana", or anything else for the passthrough plugin, which relays and scores but understands nothing about the payload. |
 | `rpc_types` | list of string | Lists the protocols this service is expected to serve ("json_rpc", "rest", "comet_bft", "websocket", "grpc"). Read by the Cosmos plugin, which fronts several protocols on one service. |
-| `sync_allowance` | integer | How many blocks behind the perceived chain head an endpoint may fall and still be selected. Zero means the plugin's own default. Too tight and a healthy pool empties on every block; too loose and clients read stale state. |
+| `sync_allowance` | integer | How many blocks behind the perceived chain head an endpoint may fall and still be selected. Too tight and a healthy pool empties on every block; too loose and clients read stale state. Zero means the plugin's own default, and the plugins do not agree on what that is, because their chains do not. EVM and Cosmos read zero as "no block-height filtering" — a block there is seconds to tens of seconds, so an unset allowance costs a bounded amount of staleness. Solana reads it as 1500 blocks (~10 minutes), because zero there means a strict height >= perceived comparison rather than no comparison, and at ~400ms per block that starves every endpoint except the one that reported last. See qos/solana.defaultSyncAllowance. |
 | `latency_profile` | string | **⚠️ Parsed, not implemented.** Parsed and not implemented. It names an entry in gateway_config.latency_profiles, which is itself not wired. |
 | `chain_id` | string | The chain identifier this service is expected to serve, as the chain itself reports it. When set, health checks assert the endpoint agrees; one serving a different chain is ejected rather than left to answer with another chain's data under this service's name. The value is opaque here on purpose. Its format and how it compares are chain semantics, so they belong to the QoS plugin, not to config: EVM reports hex from eth_chainId ("0x1") and must compare numerically, since "0x531" and "0x0531" are the same chain; CometBFT reports a name from /status ("cosmoshub-4") that compares exactly. Validation therefore lives in the plugin's own Config.Validate, called at wire time — still a startup failure, without teaching config about any one chain. Empty disables the assertion — the zero value keeps existing services behaving exactly as before, so this is opt-in per service. |
 | `retry_config` | RetryConfig | Same keys as [`gateway_config.retry_config`](#gateway-config-retry-config). |
@@ -263,6 +263,16 @@ Retry at gateway level (gateway_config.retry_config in production config)
 | `connect_timeout` | duration | **⚠️ Parsed, not implemented.** Parsed and not implemented. |
 | `hedge_delay` | duration | How long to wait before racing a second endpoint against an in-flight relay. Zero disables hedging. This is the tail-latency control: set it near the service's p95 so the hedge fires only for requests already running long, and costs a duplicate relay only on those. Set it too low and every request is sent twice. |
 | `max_latency` | duration | The threshold above which a response is treated as slow and penalised in reputation. |
+
+### `gateway_config.blocked_domains[]`
+
+BlockedDomains permanently excludes every endpoint at a domain from the
+listed RPC types, on every service. See BlockedDomain.
+
+| Key | Type | Description |
+|---|---|---|
+| `domain` | string | A registrable domain ("op-alpha.example", matching every host under it) or an exact hostname ("s019.op-alpha.example", matching only that host). Case-insensitive. An empty value is a startup error rather than a no-op. |
+| `rpc_types` | list of string | Lists the banned protocols ("json_rpc", "rest", "comet_bft", "websocket", "grpc"). Empty bans every one of them. An unrecognized value is a startup error: a typo here silently narrows a ban, which is the one failure mode this feature cannot have. |
 
 ### `gateway_config.active_health_checks`
 

@@ -13,9 +13,7 @@ import (
 // Callers are responsible for scaling signal severity appropriately for
 // per-frame use (e.g., downgrading Fatal to Critical so a single bad frame
 // in a long-lived subscription doesn't permanently sink an endpoint).
-func AnalyzeFrame(body []byte, rpcType domain.RPCType, method string) AnalysisResult {
-	_ = method // reserved for future per-method checks
-
+func AnalyzeFrame(body []byte, rpcType domain.RPCType) AnalysisResult {
 	if result, done := analyzeTier1(body); done {
 		return result
 	}

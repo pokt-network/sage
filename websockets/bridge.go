@@ -160,17 +160,35 @@ func (b *Bridge) Shutdown(err error) {
 
 		closeCode, closeText := b.determineCloseCode(err)
 		closeCode = sanitizeCloseCode(closeCode)
-		closeMsg := websocket.FormatCloseMessage(closeCode, closeText)
+		clientMsg := websocket.FormatCloseMessage(closeCode, closeText)
+
+		// The two peers do not get the same frame. SAGE sits in the middle —
+		//
+		//   client --(SAGE is the server)-- SAGE --(SAGE is the client)--> relay miner
+		//
+		// — so a code that is correct facing one direction is nonsense facing
+		// the other. See endpointCloseCode.
+		endpointMsg := clientMsg
+		if endpointCode := endpointCloseCode(closeCode); endpointCode != closeCode {
+			endpointMsg = websocket.FormatCloseMessage(endpointCode, closeText)
+		}
+
 		deadline := time.Now().Add(time.Second)
 
-		for _, conn := range []*Connection{b.clientConn, b.endpointConn} {
-			if conn == nil {
+		for _, c := range []struct {
+			conn *Connection
+			msg  []byte
+		}{
+			{b.clientConn, clientMsg},
+			{b.endpointConn, endpointMsg},
+		} {
+			if c.conn == nil {
 				continue
 			}
-			if writeErr := conn.WriteControl(websocket.CloseMessage, closeMsg, deadline); writeErr != nil {
+			if writeErr := c.conn.WriteControl(websocket.CloseMessage, c.msg, deadline); writeErr != nil {
 				b.logger.Warn("websocket: could not send close frame", "err", writeErr)
 			}
-			_ = conn.Close()
+			_ = c.conn.Close()
 		}
 
 		// NOTE: msgChan is intentionally NOT closed here. Closing it would cause a
@@ -320,6 +338,38 @@ func sanitizeCloseCode(code int) int {
 		return code
 	}
 	return websocket.CloseInternalServerErr // 1011
+}
+
+// endpointCloseCode adapts a client-facing close code for the UPSTREAM
+// direction.
+//
+// SAGE is the server to the external client but the CLIENT to the relay miner,
+// and RFC 6455 §7.4.1 defines 1011/1012/1013 as things a server tells a client:
+// "internal server error", "service restarting, reconnect", "try again later".
+// Sent upstream they invert the roles. "service restarting, please reconnect"
+// — which is what every session rollover and every gateway shutdown currently
+// sends the miner — asks the miner to reconnect to us, which is not a thing it
+// does; "internal server error" reports our fault as if the endpoint had one.
+// Neither describes what happened.
+//
+// 1001 Going Away is defined for both directions ("a server going down OR a
+// browser having navigated away") and says it exactly: the peer that dialed you
+// is leaving.
+//
+// Everything else passes through unchanged — 1000 means the same thing in both
+// directions, and application codes (3000-4999, e.g. the relay miner's own 4000
+// at session expiry) are propagated deliberately.
+//
+// gorilla accepts 1012 on read, so this is not about a protocol error; it is
+// about the operator on the other end being told something true.
+func endpointCloseCode(clientCode int) int {
+	switch clientCode {
+	case websocket.CloseInternalServerErr, // 1011
+		websocket.CloseServiceRestart, // 1012
+		websocket.CloseTryAgainLater:  // 1013
+		return websocket.CloseGoingAway // 1001
+	}
+	return clientCode
 }
 
 // determineCloseCode picks the appropriate WebSocket close code and text based

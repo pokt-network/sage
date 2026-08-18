@@ -2,6 +2,7 @@ package websockets
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -665,4 +666,102 @@ func TestNewConnection_SetsReadLimitOnBothSides(t *testing.T) {
 	_ = raw.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, _, err = raw.ReadMessage()
 	require.Error(t, err, "an echoed oversized frame must trip the read limit")
+}
+
+// newCloseRecordingServer upgrades, then blocks on reads until the peer closes.
+// The close code it received (or 1006 if the socket was merely dropped) is sent
+// on the returned channel.
+//
+// This is what the relay miner sees. Asserting on it is the whole point: a test
+// that inspected endpointCloseCode directly would still pass if Shutdown never
+// called it, which is exactly the bug being fixed.
+func newCloseRecordingServer(t *testing.T) (*httptest.Server, <-chan int) {
+	t.Helper()
+	codeCh := make(chan int, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				var closeErr *websocket.CloseError
+				if errors.As(err, &closeErr) {
+					select {
+					case codeCh <- closeErr.Code:
+					default:
+					}
+				}
+				return
+			}
+		}
+	}))
+	return srv, codeCh
+}
+
+// The two peers hold opposite roles, so they must not get the same close code.
+// SAGE is the server to the client and the client to the relay miner: 1012
+// ("service restarting, reconnect") is a server's word, and sending it upstream
+// asks the miner to reconnect to us — something it does not do.
+func TestBridge_CloseCodeIsAdaptedPerDirection(t *testing.T) {
+	endpointSrv, endpointCode := newCloseRecordingServer(t)
+	defer endpointSrv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	bridgeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := StartBridge(ctx, newTestLogger(), r, w,
+			wsURL(endpointSrv), nil, &passthroughProcessor{})
+		require.NoError(t, err)
+		<-b.Done()
+	}))
+	defer bridgeSrv.Close()
+
+	clientConn := dialTestServer(t, bridgeSrv)
+	defer clientConn.Close()
+
+	// A gateway shutdown: ErrBridgeContextCanceled → 1012 facing the client.
+	cancel()
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, err := clientConn.ReadMessage()
+	var clientErr *websocket.CloseError
+	require.ErrorAs(t, err, &clientErr, "client should receive a close frame")
+	require.Equal(t, websocket.CloseServiceRestart, clientErr.Code,
+		"the client is the one that should reconnect, so it keeps 1012")
+
+	select {
+	case got := <-endpointCode:
+		require.Equal(t, websocket.CloseGoingAway, got,
+			"the relay miner must get 1001 Going Away, not a server-role code")
+	case <-time.After(3 * time.Second):
+		t.Fatal("endpoint never received a close frame")
+	}
+}
+
+// The table is the contract: server-role codes are rewritten upstream, and
+// nothing else is. Application codes carry the miner's own vocabulary (4000 at
+// session expiry) and must survive being echoed back to it.
+func TestEndpointCloseCode(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"1011 internal error is a server's word", websocket.CloseInternalServerErr, websocket.CloseGoingAway},
+		{"1012 service restart is a server's word", websocket.CloseServiceRestart, websocket.CloseGoingAway},
+		{"1013 try again later is a server's word", websocket.CloseTryAgainLater, websocket.CloseGoingAway},
+		{"1000 normal means the same both ways", websocket.CloseNormalClosure, websocket.CloseNormalClosure},
+		{"1001 going away is already correct", websocket.CloseGoingAway, websocket.CloseGoingAway},
+		{"1008 policy violation is not role-bound", websocket.ClosePolicyViolation, websocket.ClosePolicyViolation},
+		{"4000 session expiry is the miner's own code", 4000, 4000},
+		{"3000 application range passes through", 3000, 3000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, endpointCloseCode(tc.in))
+		})
+	}
 }

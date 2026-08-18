@@ -65,7 +65,7 @@ func TestAnalyze_GRPCBodyIsNotJudgedAsText(t *testing.T) {
 		t.Fatal("precondition changed: this body no longer looks like plain text, so the test proves nothing")
 	}
 
-	got := Analyze(protobufBody, 200, "grpc", "Query/Params")
+	got := Analyze(protobufBody, 200, "grpc")
 	if got.ShouldRetry {
 		t.Errorf("a valid gRPC reply was marked for retry: %s (%s)", got.Reason, got.Details)
 	}

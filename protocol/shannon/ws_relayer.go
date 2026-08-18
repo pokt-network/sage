@@ -395,7 +395,7 @@ func (r *WSRelayer) handleEndpointFrame(
 		return
 	}
 
-	res := heuristic.AnalyzeFrame(payload, domain.RPCTypeWebSocket, "")
+	res := heuristic.AnalyzeFrame(payload, domain.RPCTypeWebSocket)
 	sig := frameSeverityToSignal(res, latency)
 	_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket, sig)
 

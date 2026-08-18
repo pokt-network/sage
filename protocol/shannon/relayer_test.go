@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	apptypes "github.com/pokt-network/poktroll/x/application/types"
@@ -16,6 +17,7 @@ import (
 	sdktypes "github.com/pokt-network/shannon-sdk/types"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
 )
 
@@ -429,5 +431,80 @@ func TestProtocol_ConfiguredServices(t *testing.T) {
 	svcs := p.ConfiguredServices()
 	if len(svcs) != 2 {
 		t.Errorf("ConfiguredServices() = %d, want 2", len(svcs))
+	}
+}
+
+// Asserted through AvailableEndpoints and SendRelay rather than through
+// IsBlocked: a blocklist that is never consulted on the production path passes
+// its own unit tests perfectly.
+func TestAvailableEndpoints_ExcludesBlockedDomain(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	session := buildRelayTestSession("pokt1supplier", server.URL)
+	fnMock := &mockRelayFullNode{session: session}
+
+	newProtocol := func(t *testing.T, entries ...config.BlockedDomain) *Protocol {
+		t.Helper()
+		bl, err := newDomainBlocklist(entries)
+		if err != nil {
+			t.Fatalf("newDomainBlocklist: %v", err)
+		}
+		return &Protocol{
+			fullNode:       fnMock,
+			sessions:       newSessionManager(fnMock, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger()),
+			signer:         &mockSigner{},
+			bl:             newBlacklist(),
+			blockedDomains: bl,
+			ownedApps:      map[domain.ServiceID][]string{"eth": {"pokt1app"}},
+			httpClient:     server.Client(),
+			metrics:        noopSupplierMetrics{},
+			logger:         newTestLogger(),
+		}
+	}
+
+	// The endpoint is served over 127.0.0.1, which has no registrable domain
+	// and is therefore its own operator — an exact-host ban.
+	const blockedHost = "127.0.0.1"
+
+	unblocked := newProtocol(t)
+	before, err := unblocked.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
+	if err != nil {
+		t.Fatalf("AvailableEndpoints: %v", err)
+	}
+	if len(before) == 0 {
+		t.Fatal("expected an endpoint before the domain is blocked")
+	}
+	endpointAddr := before[0]
+
+	blockedForWS := newProtocol(t, config.BlockedDomain{Domain: blockedHost, RPCTypes: []string{"websocket"}})
+	stillThere, err := blockedForWS.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
+	if err != nil {
+		t.Fatalf("AvailableEndpoints: %v", err)
+	}
+	if len(stillThere) != len(before) {
+		t.Errorf("a websocket-only ban removed %d JSON-RPC endpoints", len(before)-len(stillThere))
+	}
+
+	blocked := newProtocol(t, config.BlockedDomain{Domain: blockedHost})
+	after, err := blocked.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
+	if err != nil {
+		t.Fatalf("AvailableEndpoints: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("expected 0 endpoints at a blocked domain, got %d", len(after))
+	}
+
+	// And an endpoint address obtained before the ban still cannot be relayed
+	// to — selection is where the ban works, SendRelay is where it holds.
+	_, err = blocked.SendRelay(context.Background(), "eth", endpointAddr,
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, ""))
+	if err == nil {
+		t.Fatal("SendRelay to a blocked domain succeeded")
+	}
+	if !strings.Contains(err.Error(), "blocked domain") {
+		t.Errorf("SendRelay error = %v, want it to name the blocked domain", err)
 	}
 }

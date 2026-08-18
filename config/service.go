@@ -45,11 +45,46 @@ type GatewayConfig struct {
 	// in the chain at all.
 	MiddlewareChain []string `yaml:"middleware_chain"`
 
+	// BlockedDomains permanently excludes every endpoint at a domain from the
+	// listed RPC types, on every service. See BlockedDomain.
+	BlockedDomains []BlockedDomain `yaml:"blocked_domains"`
+
 	HealthChecks        HealthCheckConfig         `yaml:"active_health_checks"`
 	ObservationPipeline ObservationPipelineConfig `yaml:"observation_pipeline"`
 
 	LatencyProfiles map[string]LatencyProfile `yaml:"latency_profiles"`
 	Defaults        ServiceDefaults           `yaml:"defaults"`
+}
+
+// BlockedDomain is one entry of the operator domain blocklist.
+//
+// Every endpoint whose URL is at Domain is excluded from the listed RPC types
+// on every service, everywhere endpoints are handed out: relay selection and
+// therefore retry, hedge and batch; WebSocket bind; and health checks. It is
+// matched on the endpoint's URL, never on a supplier address, so the ban
+// survives session rollover by construction — a supplier rotated into a new
+// session at a blocked domain is banned the moment it appears, without anyone
+// re-applying anything.
+//
+// This is the blunt instrument, and deliberately unlike the two things next to
+// it. The supplier blacklist is earned: a supplier fails validation and is
+// dropped for a while, per service. Circuit breaking is earned too, and
+// expires. This is neither — it is a gateway operator saying "not this
+// infrastructure, not ever", and it does not yield even when honouring it
+// would empty the pool. An empty pool is a legible outage; quietly routing to
+// infrastructure an operator banned is not.
+type BlockedDomain struct {
+	// Domain is a registrable domain ("op-alpha.example", matching every host
+	// under it) or an exact hostname ("s019.op-alpha.example", matching only
+	// that host). Case-insensitive. An empty value is a startup error rather
+	// than a no-op.
+	Domain string `yaml:"domain"`
+
+	// RPCTypes lists the banned protocols ("json_rpc", "rest", "comet_bft",
+	// "websocket", "grpc"). Empty bans every one of them. An unrecognized value
+	// is a startup error: a typo here silently narrows a ban, which is the one
+	// failure mode this feature cannot have.
+	RPCTypes []string `yaml:"rpc_types,omitempty"`
 }
 
 // AllServices returns services from whichever config format was used.
@@ -131,9 +166,17 @@ type ServiceConfig struct {
 	// Cosmos plugin, which fronts several protocols on one service.
 	RPCTypes []string `yaml:"rpc_types"`
 	// SyncAllowance is how many blocks behind the perceived chain head an
-	// endpoint may fall and still be selected. Zero means the plugin's own
-	// default. Too tight and a healthy pool empties on every block; too loose
-	// and clients read stale state.
+	// endpoint may fall and still be selected. Too tight and a healthy pool
+	// empties on every block; too loose and clients read stale state.
+	//
+	// Zero means the plugin's own default, and the plugins do not agree on what
+	// that is, because their chains do not. EVM and Cosmos read zero as "no
+	// block-height filtering" — a block there is seconds to tens of seconds, so
+	// an unset allowance costs a bounded amount of staleness. Solana reads it as
+	// 1500 blocks (~10 minutes), because zero there means a strict
+	// height >= perceived comparison rather than no comparison, and at ~400ms
+	// per block that starves every endpoint except the one that reported last.
+	// See qos/solana.defaultSyncAllowance.
 	SyncAllowance uint64 `yaml:"sync_allowance"`
 	// LatencyProfile is parsed and not implemented. It names an entry in
 	// gateway_config.latency_profiles, which is itself not wired.

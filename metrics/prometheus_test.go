@@ -68,10 +68,6 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "singleflight_coalesced_total"},
 			[]string{"service_id"},
 		),
-		endpointScore: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{Namespace: "sage_test", Name: "endpoint_reputation_score"},
-			[]string{"service_id", "endpoint"},
-		),
 		degradedTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "degraded_total"},
 			[]string{"service_id", "tier"},
@@ -89,7 +85,6 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 		r.cacheHits,
 		r.cacheMisses,
 		r.singleflightCoalesced,
-		r.endpointScore,
 		r.degradedTotal,
 		r.circuitBreaks,
 	)
@@ -144,18 +139,6 @@ func TestRecordCacheHitMiss(t *testing.T) {
 	r := newIsolatedRecorder(t)
 	r.RecordCacheHit("eth")
 	r.RecordCacheMiss("eth")
-}
-
-func TestSetEndpointScore(t *testing.T) {
-	r := newIsolatedRecorder(t)
-	ep := domain.EndpointAddr("supplierA-https://node.example.com")
-	r.SetEndpointScore("eth", ep, 85.5)
-	// Verify gauge was set (no panic = pass).
-	g, err := r.endpointScore.GetMetricWithLabelValues("eth", string(ep))
-	if err != nil {
-		t.Fatalf("GetMetricWithLabelValues: %v", err)
-	}
-	_ = g
 }
 
 func TestRecordDegraded(t *testing.T) {
@@ -217,7 +200,6 @@ func TestRecordRelay_InvalidUTF8ServiceIDNoPanic(t *testing.T) {
 	r.RecordCacheHit(bad)
 	r.RecordCacheMiss(bad)
 	r.RecordSingleflightCoalesced(bad)
-	r.SetEndpointScore(bad, domain.EndpointAddr("sup-\xffnode"), 1)
 	r.RecordDegraded(bad, "tier3")
 	r.RecordCircuitBreak(bad, "node.\xffcom")
 	// Reaching here without panic is the assertion.
@@ -347,7 +329,6 @@ func TestAllServiceLabelledMetricsAreBounded(t *testing.T) {
 		r.RecordCacheHit(junk)
 		r.RecordCacheMiss(junk)
 		r.RecordSingleflightCoalesced(junk)
-		r.SetEndpointScore(junk, "ep1", 50)
 		r.RecordDegraded(junk, "tier2")
 		r.RecordCircuitBreak(junk, "example.com")
 	}
@@ -359,7 +340,6 @@ func TestAllServiceLabelledMetricsAreBounded(t *testing.T) {
 		"sage_test_cache_hits_total",
 		"sage_test_cache_misses_total",
 		"sage_test_singleflight_coalesced_total",
-		"sage_test_endpoint_reputation_score",
 		"sage_test_degraded_total",
 		"sage_test_circuit_breaks_total",
 	} {

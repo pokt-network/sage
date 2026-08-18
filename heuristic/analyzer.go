@@ -16,7 +16,7 @@ import (
 //	1: Structural (empty body, HTML, plain text)
 //	2: Protocol (JSON-RPC parsing and error code classification)
 //	3: Indicator patterns (content matching)
-func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType, method string) AnalysisResult {
+func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) AnalysisResult {
 	// Over-servicing rejections must be checked before the HTTP status tier:
 	// the signal arrives on both HTTP 200 (poktroll relay-miner) and HTTP 429
 	// (HA relay-miner), and a 429 would otherwise be classified as a penalizable

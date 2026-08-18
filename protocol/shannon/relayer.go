@@ -63,6 +63,9 @@ type Protocol struct {
 	httpClient *http.Client
 	// grpc carries gRPC relays, which cannot ride the HTTP path.
 	grpc *grpcRelayTransport
+	// blockedDomains is the operator domain ban. Nil when nothing is blocked,
+	// and nil-safe throughout — see domain_blocklist.go.
+	blockedDomains *domainBlocklist
 	// metrics records supplier-attributable events (blacklists, relay miner
 	// errors). Never nil — see SetMetrics.
 	metrics supplierMetrics
@@ -101,17 +104,27 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 
 	httpClient := &http.Client{Timeout: relayTimeout}
 
+	blockedDomains, err := newDomainBlocklist(cfg.Gateway.BlockedDomains)
+	if err != nil {
+		return nil, fmt.Errorf("shannon.New: %w", err)
+	}
+	for _, e := range blockedDomains.entries() {
+		logger.Warn("blocked domain configured: no endpoint here will be selected or health-checked",
+			"component", "shannon", "domain", e[0], "rpc_type", e[1])
+	}
+
 	return &Protocol{
-		fullNode:    fullNode,
-		sessions:    sm,
-		signer:      signer,
-		bl:          newBlacklist(),
-		gatewayAddr: cfg.Gateway.GatewayAddress,
-		ownedApps:   ownedApps,
-		httpClient:  httpClient,
-		grpc:        newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
-		metrics:     noopSupplierMetrics{},
-		logger:      logger.With("component", "shannon_protocol"),
+		fullNode:       fullNode,
+		sessions:       sm,
+		signer:         signer,
+		bl:             newBlacklist(),
+		gatewayAddr:    cfg.Gateway.GatewayAddress,
+		blockedDomains: blockedDomains,
+		ownedApps:      ownedApps,
+		httpClient:     httpClient,
+		grpc:           newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
+		metrics:        noopSupplierMetrics{},
+		logger:         logger.With("component", "shannon_protocol"),
 	}, nil
 }
 
@@ -170,6 +183,22 @@ func (p *Protocol) SendRelay(
 			"error", err,
 		)
 		return nil, domain.NewRelayError(domain.ErrCapability, "endpoint does not support requested RPC type", err, false)
+	}
+
+	// A banned domain is refused here as well as at selection. Selection is
+	// where the ban does its work; this is the guarantee — anything holding an
+	// endpoint address from before the ban, or reaching SendRelay by a path
+	// that never consulted AvailableEndpoints, still cannot send to it. Not
+	// retryable: another attempt at the same endpoint has the same answer.
+	if p.blockedDomains.IsBlocked(url, payload.RPCType()) {
+		p.logger.Warn("SendRelay: refusing a blocked domain",
+			"component", "shannon",
+			"service_id", serviceID,
+			"endpoint_addr", endpointAddr,
+			"rpc_type", payload.RPCType(),
+		)
+		return nil, domain.NewRelayError(domain.ErrValidation,
+			"endpoint is at a blocked domain", nil, false)
 	}
 
 	// Build the HTTP request to embed in the relay payload. The SDK serializes
@@ -354,14 +383,28 @@ func (p *Protocol) AvailableEndpoints(ctx context.Context, serviceID domain.Serv
 		return nil, fmt.Errorf("AvailableEndpoints: %w", err)
 	}
 
-	// Filter by RPC type support and blacklist in one pass — no intermediate map.
+	// Filter by RPC type support, operator domain ban and blacklist in one pass
+	// — no intermediate map.
+	//
+	// The ban is applied here, at the one place endpoints are handed out, so it
+	// covers relay selection (and therefore retry, hedge and batch), WebSocket
+	// bind and health checks without each of them knowing it exists.
 	result := make(domain.EndpointAddrList, 0, len(endpoints))
-	var blacklisted int
+	var blacklisted, blocked int
 	for addr, ep := range endpoints {
+		url := ""
 		if rpcType != domain.RPCTypeUnknown {
-			if _, err := ep.GetURL(rpcType); err != nil {
+			u, err := ep.GetURL(rpcType)
+			if err != nil {
 				continue
 			}
+			url = u
+		} else {
+			url = ep.PublicURL()
+		}
+		if p.blockedDomains.IsBlocked(url, rpcType) {
+			blocked++
+			continue
 		}
 		if p.bl.IsBlacklisted(serviceID, ep.Supplier()) {
 			blacklisted++
@@ -377,6 +420,7 @@ func (p *Protocol) AvailableEndpoints(ctx context.Context, serviceID domain.Serv
 			"rpc_type", rpcType,
 			"available", len(result),
 			"blacklisted", blacklisted,
+			"blocked_domain", blocked,
 		)
 	}
 

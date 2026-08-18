@@ -17,7 +17,7 @@ func TestAnalyze_CapabilityLimitation_NoPenalty(t *testing.T) {
 		`{"jsonrpc":"2.0","error":{"code":-32000,"message":"requested height is not available, lowest available is 500"},"id":1}`,
 	}
 	for _, body := range bodies {
-		got := Analyze([]byte(body), 200, domain.RPCTypeJSONRPC, "eth_getBalance")
+		got := Analyze([]byte(body), 200, domain.RPCTypeJSONRPC)
 		if got.Attribution != AttrBlockchain {
 			t.Errorf("body %q: attribution = %v, want blockchain", body, got.Attribution)
 		}

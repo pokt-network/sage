@@ -127,6 +127,12 @@ gateway_config:
     hedge_delay: 300ms
     max_latency: 2s
 
+  blocked_domains:
+    - domain: banned-operator.example
+    - domain: s019.partial-operator.example
+      rpc_types:
+        - websocket
+
   active_health_checks:
     enabled: true
     disable_backend_url_dedup: false

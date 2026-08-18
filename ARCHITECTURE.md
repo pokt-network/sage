@@ -103,6 +103,16 @@ All plugins share a generic `EndpointStore[T]` and `BlockConsensus` — no code 
 4. **Relay transport** — HTTP POST of signed protobuf to the supplier's relay miner
 5. **Response validation** — verify supplier signature, extract payload
 6. **Supplier blacklisting** — time-based blacklist for signature/validation failures (15min default)
+7. **Operator domain blocklist** — `blocked_domains` in gateway config (widened at
+   restart by `SAGE_BLOCKED_DOMAINS`). Unlike blacklisting and circuit breaking,
+   which are *earned* by an endpoint's behaviour and expire, this is a standing
+   operator decision: every endpoint at the named domain is refused for the named
+   RPC types, on every service, and it does not yield when honouring it would
+   empty the pool. Matched on the endpoint URL, so it survives session rollover
+   without anyone re-applying it. Applied in `AvailableEndpoints` — the one place
+   endpoints are handed out, so selection, retry/hedge/batch, WebSocket bind and
+   health checks all inherit it — and re-checked in `SendRelay` so an address
+   held from before the ban cannot be used.
 
 ### Reputation System
 

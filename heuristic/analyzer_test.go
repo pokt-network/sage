@@ -67,7 +67,7 @@ func TestAnalyze_Tier0_HTTPStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := Analyze([]byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`), tt.statusCode, domain.RPCTypeJSONRPC, "eth_blockNumber")
+			result := Analyze([]byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`), tt.statusCode, domain.RPCTypeJSONRPC)
 			if result.ShouldRetry != tt.wantRetry {
 				t.Errorf("ShouldRetry = %v, want %v", result.ShouldRetry, tt.wantRetry)
 			}
@@ -124,7 +124,7 @@ func TestAnalyze_Tier1_Structural(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := Analyze(tt.body, 200, domain.RPCTypeJSONRPC, "eth_blockNumber")
+			result := Analyze(tt.body, 200, domain.RPCTypeJSONRPC)
 			if result.ShouldRetry != tt.wantRetry {
 				t.Errorf("ShouldRetry = %v, want %v", result.ShouldRetry, tt.wantRetry)
 			}
@@ -140,7 +140,7 @@ func TestAnalyze_Tier1_Structural(t *testing.T) {
 
 func TestAnalyze_Tier2_JSONRPC_Success(t *testing.T) {
 	body := []byte(`{"jsonrpc":"2.0","result":"0x1234","id":1}`)
-	result := Analyze(body, 200, domain.RPCTypeJSONRPC, "eth_blockNumber")
+	result := Analyze(body, 200, domain.RPCTypeJSONRPC)
 	if result.ShouldRetry {
 		t.Error("ShouldRetry should be false for valid result")
 	}
@@ -155,7 +155,7 @@ func TestAnalyze_Tier2_JSONRPC_Success(t *testing.T) {
 func TestAnalyze_Tier2_JSONRPC_NullResultWithError(t *testing.T) {
 	// result:null + error is a valid error-only pattern — should classify the error, not penalize for null.
 	body := []byte(`{"jsonrpc":"2.0","result":null,"error":{"code":-32601,"message":"method not found"},"id":1}`)
-	result := Analyze(body, 200, domain.RPCTypeJSONRPC, "eth_test")
+	result := Analyze(body, 200, domain.RPCTypeJSONRPC)
 	if result.ShouldRetry {
 		t.Error("ShouldRetry should be false for method not found")
 	}
@@ -170,7 +170,7 @@ func TestAnalyze_Tier2_JSONRPC_NullResultWithError(t *testing.T) {
 func TestAnalyze_Tier2_FabricatedResponse(t *testing.T) {
 	// Both non-null result AND error — fabricated.
 	body := []byte(`{"jsonrpc":"2.0","result":"0x1234","error":{"code":-32000,"message":"some error"},"id":1}`)
-	result := Analyze(body, 200, domain.RPCTypeJSONRPC, "eth_blockNumber")
+	result := Analyze(body, 200, domain.RPCTypeJSONRPC)
 	if !result.ShouldRetry {
 		t.Error("ShouldRetry should be true for fabricated response")
 	}
@@ -261,7 +261,7 @@ func TestAnalyze_Tier2_ErrorCodeClassification(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := []byte(`{"jsonrpc":"2.0","error":` + tt.errorJSON + `,"id":1}`)
-			result := Analyze(body, 200, domain.RPCTypeJSONRPC, "eth_test")
+			result := Analyze(body, 200, domain.RPCTypeJSONRPC)
 			if result.ShouldRetry != tt.wantRetry {
 				t.Errorf("ShouldRetry = %v, want %v", result.ShouldRetry, tt.wantRetry)
 			}
@@ -278,7 +278,7 @@ func TestAnalyze_Tier2_ErrorCodeClassification(t *testing.T) {
 func TestAnalyze_Tier2_CometBFT_EmptyResultIsValid(t *testing.T) {
 	// CometBFT: {"result":{}} is a valid health check response.
 	body := []byte(`{"jsonrpc":"2.0","result":{},"id":1}`)
-	result := Analyze(body, 200, domain.RPCTypeCometBFT, "health")
+	result := Analyze(body, 200, domain.RPCTypeCometBFT)
 	if result.ShouldRetry {
 		t.Error("ShouldRetry should be false for valid CometBFT result")
 	}
@@ -292,7 +292,7 @@ func TestAnalyze_Tier2_CometBFT_EmptyResultIsValid(t *testing.T) {
 
 func TestAnalyze_Tier2_CometBFT_NullResultIsValid(t *testing.T) {
 	body := []byte(`{"jsonrpc":"2.0","result":null,"id":1}`)
-	result := Analyze(body, 200, domain.RPCTypeCometBFT, "status")
+	result := Analyze(body, 200, domain.RPCTypeCometBFT)
 	if result.ShouldRetry {
 		t.Error("ShouldRetry should be false for CometBFT null result")
 	}
@@ -324,7 +324,7 @@ func TestAnalyze_Tier3_Indicators(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := Analyze([]byte(tt.body), 200, domain.RPCTypeJSONRPC, "")
+			result := Analyze([]byte(tt.body), 200, domain.RPCTypeJSONRPC)
 			if result.ShouldRetry != tt.wantRetry {
 				t.Errorf("ShouldRetry = %v, want %v", result.ShouldRetry, tt.wantRetry)
 			}
@@ -337,7 +337,7 @@ func TestAnalyze_Tier3_Indicators(t *testing.T) {
 
 func TestAnalyze_RetryAndCircuitBreakAreIndependent(t *testing.T) {
 	// 429: retry=true, circuit_break=false
-	result429 := Analyze([]byte(`{}`), 429, domain.RPCTypeJSONRPC, "")
+	result429 := Analyze([]byte(`{}`), 429, domain.RPCTypeJSONRPC)
 	if !result429.ShouldRetry {
 		t.Error("429: ShouldRetry should be true")
 	}
@@ -346,7 +346,7 @@ func TestAnalyze_RetryAndCircuitBreakAreIndependent(t *testing.T) {
 	}
 
 	// 500: retry=true, circuit_break=true
-	result500 := Analyze([]byte(`{}`), 500, domain.RPCTypeJSONRPC, "")
+	result500 := Analyze([]byte(`{}`), 500, domain.RPCTypeJSONRPC)
 	if !result500.ShouldRetry {
 		t.Error("500: ShouldRetry should be true")
 	}
@@ -355,7 +355,7 @@ func TestAnalyze_RetryAndCircuitBreakAreIndependent(t *testing.T) {
 	}
 
 	// 400: retry=false, circuit_break=false
-	result400 := Analyze([]byte(`{}`), 400, domain.RPCTypeJSONRPC, "")
+	result400 := Analyze([]byte(`{}`), 400, domain.RPCTypeJSONRPC)
 	if result400.ShouldRetry {
 		t.Error("400: ShouldRetry should be false")
 	}
@@ -365,7 +365,7 @@ func TestAnalyze_RetryAndCircuitBreakAreIndependent(t *testing.T) {
 
 	// Blockchain error: retry=true, circuit_break=false
 	bodyBlockchain := []byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"block not found"},"id":1}`)
-	resultBlockchain := Analyze(bodyBlockchain, 200, domain.RPCTypeJSONRPC, "eth_getBlockByNumber")
+	resultBlockchain := Analyze(bodyBlockchain, 200, domain.RPCTypeJSONRPC)
 	if !resultBlockchain.ShouldRetry {
 		t.Error("blockchain error: ShouldRetry should be true")
 	}
@@ -376,7 +376,7 @@ func TestAnalyze_RetryAndCircuitBreakAreIndependent(t *testing.T) {
 
 func TestAnalyze_ValidResponse_NoActionNeeded(t *testing.T) {
 	body := []byte(`{"jsonrpc":"2.0","result":"0xdeadbeef","id":1}`)
-	result := Analyze(body, 200, domain.RPCTypeJSONRPC, "eth_call")
+	result := Analyze(body, 200, domain.RPCTypeJSONRPC)
 	if result.ShouldRetry {
 		t.Error("valid response should not retry")
 	}
@@ -391,7 +391,7 @@ func TestAnalyze_ValidResponse_NoActionNeeded(t *testing.T) {
 func TestAnalyze_RESTResponse(t *testing.T) {
 	// A REST response that is valid JSON but not JSON-RPC should be treated as success.
 	body := []byte(`{"block":{"header":{"height":"12345"}}}`)
-	result := Analyze(body, 200, domain.RPCTypeREST, "")
+	result := Analyze(body, 200, domain.RPCTypeREST)
 	if result.ShouldRetry {
 		t.Error("valid REST response should not retry")
 	}
