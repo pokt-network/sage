@@ -148,6 +148,35 @@ func applyFilters(endpoints domain.EndpointAddrList, filters []FilterFunc) domai
 	return out
 }
 
+// MinAllowedHeight is the lowest block height an endpoint may report and still
+// be selectable: perceived minus the allowance, floored at zero.
+//
+// It exists because every QoS plugin needs this one line and they each used to
+// spell it themselves, which is how they drifted apart. Two of the three
+// spellings omitted the allowance == 0 guard, and that omission is not a
+// rounding error — it inverts the meaning of the zero value. Without the guard
+// the floor becomes `perceived` itself, so tier 1 admits only endpoints at the
+// exact perceived height. Perceived is the max of non-outlier observations, so
+// by construction that is whoever reported last: every other endpoint's newest
+// report predates the one that raised the bar. The pool collapses onto the
+// endpoint already carrying traffic — the only thing keeping its height current
+// — and endpoints refreshed only by health checks are filtered out, which
+// denies them the traffic that would have refreshed them.
+//
+// So: allowance 0 means "do not filter on height", never "require the exact
+// tip". A plugin that wants an unset allowance to mean something else must
+// substitute its own default BEFORE calling this (see qos/solana), rather than
+// reinterpreting zero here.
+func MinAllowedHeight(perceived, allowance uint64) uint64 {
+	if perceived == 0 || allowance == 0 {
+		return 0
+	}
+	if perceived <= allowance {
+		return 0
+	}
+	return perceived - allowance
+}
+
 // BlockHeightFilter returns a FilterFunc that excludes endpoints below the minimum block height.
 // minHeight is typically perceived - syncAllowance.
 func BlockHeightFilter(getHeight func(domain.EndpointAddr) (uint64, bool), minHeight uint64) FilterFunc {

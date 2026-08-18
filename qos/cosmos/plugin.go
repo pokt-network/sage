@@ -170,10 +170,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 
 	// Block height filter factory (parameterised by sync allowance multiplier).
 	makeBlockFilter := func(allowance uint64) qos.FilterFunc {
-		var minHeight uint64
-		if perceived > allowance {
-			minHeight = perceived - allowance
-		}
+		minHeight := qos.MinAllowedHeight(perceived, allowance)
 		return qos.BlockHeightFilter(func(addr domain.EndpointAddr) (uint64, bool) {
 			ep, ok := p.store.Get(addr)
 			if !ok {

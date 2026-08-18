@@ -165,16 +165,8 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		return nil
 	}
 
-	var minHeight, relaxedMin uint64
-	if perceived > 0 && p.syncAllowance > 0 {
-		if perceived > p.syncAllowance {
-			minHeight = perceived - p.syncAllowance
-		}
-		relaxed := p.syncAllowance * 2
-		if perceived > relaxed {
-			relaxedMin = perceived - relaxed
-		}
-	}
+	minHeight := qos.MinAllowedHeight(perceived, p.syncAllowance)
+	relaxedMin := qos.MinAllowedHeight(perceived, p.syncAllowance*2)
 
 	blockFilter := qos.BlockHeightFilter(getHeight, minHeight)
 	relaxedBlockFilter := qos.BlockHeightFilter(getHeight, relaxedMin)

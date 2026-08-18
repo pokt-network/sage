@@ -714,3 +714,26 @@ func TestGRPCMethodFromPath(t *testing.T) {
 		}
 	}
 }
+
+// An unset sync_allowance must not become a strict `height >= perceived` test.
+// Perceived is a max over observations, so a strict test admits only the
+// endpoint that reported last and starves the rest — the shape of PATH's
+// 2026-08-18 Solana incident, on the plugin that fronts most cosmos services.
+func TestSelectEndpoints_UnsetAllowanceDoesNotRequireTheTip(t *testing.T) {
+	p := newPlugin(0)
+
+	const tip = 1_000_000
+	leader := domain.EndpointAddr("pokt1a-https://a.example.com")
+	trailing := domain.EndpointAddr("pokt1b-https://b.example.com")
+
+	p.UpdateBlockHeight(leader, tip)
+	p.UpdateBlockHeight(trailing, tip-1)
+
+	got, err := p.SelectEndpoints(domain.EndpointAddrList{leader, trailing}, nil)
+	if err != nil {
+		t.Fatalf("SelectEndpoints: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("selected %v — an endpoint one block behind was dropped with no allowance configured", got)
+	}
+}

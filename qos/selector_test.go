@@ -234,3 +234,28 @@ func TestBlockHeightFilter(t *testing.T) {
 		t.Fatalf("unknown should pass: %v", err)
 	}
 }
+
+// Zero allowance means "do not filter on height", never "require the tip".
+// Getting this backwards collapses the pool onto whoever reported last — see
+// MinAllowedHeight's comment for why that starves everyone else.
+func TestMinAllowedHeight(t *testing.T) {
+	cases := []struct {
+		name      string
+		perceived uint64
+		allowance uint64
+		want      uint64
+	}{
+		{"zero allowance does not filter", 1_000_000, 0, 0},
+		{"cold start does not filter", 0, 100, 0},
+		{"ordinary case", 1_000_000, 100, 999_900},
+		{"allowance wider than the chain floors at zero", 50, 100, 0},
+		{"allowance exactly the height floors at zero", 100, 100, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MinAllowedHeight(tc.perceived, tc.allowance); got != tc.want {
+				t.Errorf("MinAllowedHeight(%d, %d) = %d, want %d", tc.perceived, tc.allowance, got, tc.want)
+			}
+		})
+	}
+}

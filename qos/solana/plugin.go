@@ -99,19 +99,9 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 		return data.BlockHeight, true
 	}
 
-	var minHeight uint64
-	if perceived > p.syncAllowance {
-		minHeight = perceived - p.syncAllowance
-	}
-
-	blockFilter := qos.BlockHeightFilter(getHeight, minHeight)
-
-	// Build relaxed filter at 2x sync allowance.
-	var relaxedMin uint64
-	if perceived > p.syncAllowance*2 {
-		relaxedMin = perceived - p.syncAllowance*2
-	}
-	relaxedFilter := qos.BlockHeightFilter(getHeight, relaxedMin)
+	blockFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance))
+	// Relaxed tier: twice the allowance.
+	relaxedFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance*2))
 
 	result := qos.Select(
 		endpoints,
