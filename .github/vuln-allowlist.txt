@@ -4,11 +4,16 @@
 # Format: <OSV ID>  # why it is accepted
 #
 # Review these whenever a dependency moves. An entry that gains a fix upstream
-# should be removed from this file and fixed, not left here.
+# should be removed from this file and fixed, not left here, and the checker
+# prints "stale" for an entry that is no longer reported at all.
+#
+# Removed on 2026-08-19: three lib/pq findings (GO-2026-6170, -6172, -6173) that
+# go1.26.5 reported through an io.Closer interface and go1.26.6 does not. lib/pq
+# is still in the module graph — it arrives via shannon-sdk -> poktroll/app ->
+# cosmos-sdk/server -> cometbft/node — so they may return; if they do, CI fails
+# and someone re-reviews, which is the intended behaviour rather than a
+# standing exception nobody rechecks.
 
 GO-2026-5932  # x/crypto/openpgp is unmaintained with no fix. Reached only by ring-go's package init (armor.init) — SAGE never calls openpgp.
-GO-2026-6170  # lib/pq. No fix. Arrives via shannon-sdk -> poktroll/app -> cosmos-sdk/server -> cometbft/node. Reachable only through an io.Closer interface; SAGE opens no SQL connection.
-GO-2026-6172  # lib/pq, same provenance and same reasoning as GO-2026-6170.
-GO-2026-6173  # lib/pq, same provenance and same reasoning as GO-2026-6170.
 GO-2023-1821  # cosmos-sdk x/crisis. No fix exists. Chain-side module semantics reached only by package init; a gateway evaluates no consensus logic.
 GO-2023-1881  # cosmos-sdk x/crisis, same reasoning as GO-2023-1821.
