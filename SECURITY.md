@@ -43,12 +43,13 @@ public edge:
 
 | Port (default) | Serves | Exposure |
 | --- | --- | --- |
-| `3069` (`router_config.port`) | relays (`/v1`), health (`/health`, `/ready`) | public |
+| `3069` (`router_config.port`) | relays (`/v1`), health (`/health`, `/ready`) | public **only behind an authenticating, rate-limiting edge** |
 | `9091` (`admin_config.addr`) | admin API (`/admin/*`) | **loopback** — unauthenticated |
 | `9090` (`metrics_config.prometheus_addr`) | Prometheus (`/metrics`) | scrape-only |
 
 | Rule | Why it matters |
 | --- | --- |
+| **Never expose the relay port directly.** | SAGE authenticates no one and rate-limits nothing: it has no API keys, no quotas, and no per-client accounting. Every relay it accepts is signed with your gateway key and spends staked POKT, so an unauthenticated `3069` on the open internet is a funnel for draining your stake at line rate. This is a deliberate division of labour — the edge authenticates, SAGE relays — and it only holds if the edge is actually there. Put an authenticating, rate-limiting proxy in front, and scope what it accepts to the services you intend to serve. |
 | **Keep the admin API on loopback.** | `/admin/*` is unauthenticated by design and can toggle feature flags and per-service behavior. On a public bind, anyone can reconfigure the gateway. Put a TLS-terminating authenticating proxy in front if you must reach it remotely. |
 | **Leave `pprof_addr` empty unless you need it.** | pprof hands out heap dumps, and a heap dump holds in-memory signing keys. It is off unless explicitly set — keep it off in production, or bind it somewhere only you can reach. |
 | **Keep `local/` and any keyed config out of git.** | They hold private keys. `local/` is gitignored; keep it that way and never paste a config that contains a key. |

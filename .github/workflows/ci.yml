@@ -59,6 +59,27 @@ jobs:
       - name: Docs tests
         run: go test ./internal/docgen/ -count=1
 
+  vuln:
+    name: vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # govulncheck has no ignore mechanism and SAGE inherits findings with no
+      # upstream fix (a gateway links cosmos-sdk and cometbft through the
+      # shannon-sdk). Running it bare would be permanently red, so the reviewed
+      # set lives in .github/vuln-allowlist.txt and anything else fails here.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck -format json ./... | python3 .github/scripts/vulncheck.py
+
   lint:
     name: lint
     runs-on: ubuntu-latest

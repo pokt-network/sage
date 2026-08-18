@@ -1,0 +1,31 @@
+# SAGE links a large upstream tree (shannon-sdk pulls poktroll, cosmos-sdk and
+# cometbft), so most updates arrive indirectly. Grouping keeps that from
+# becoming a wall of individual PRs while still surfacing a direct bump.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      pocket:
+        patterns:
+          - "github.com/pokt-network/*"
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

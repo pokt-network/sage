@@ -164,9 +164,14 @@ func connectGRPC(cfg config.GRPCConfig) (*grpc.ClientConn, error) {
 	if cfg.Insecure {
 		return grpc.NewClient(cfg.HostPort, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
+	// MinVersion is set explicitly rather than left to the Go default, and it
+	// matches the supplier gRPC transport (see grpc.go). This connection carries
+	// session data the gateway signs relays against; the floor should not be
+	// whatever a future toolchain happens to allow, and it should not differ
+	// between two connections in the same binary.
 	return grpc.Dial( //nolint:staticcheck
 		cfg.HostPort,
-		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})),
+		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})),
 	)
 }
 

@@ -9,7 +9,7 @@ security property, not a detail:
 
 | Port (default) | Config key | Routes | Exposure |
 |---|---|---|---|
-| `3069` | `router_config.port` | relays, health, readiness | public |
+| `3069` | `router_config.port` | relays, health, readiness | public **behind an authenticating, rate-limiting edge** |
 | `9091` | `admin_config.addr` | `/admin/*` | **loopback only** |
 | `9090` | `metrics_config.prometheus_addr` | `/metrics` | scrape-only |
 

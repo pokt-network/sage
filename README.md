@@ -55,9 +55,13 @@ listens on three separate ports, by design:
 
 | Port (default) | Serves | Exposure |
 |---|---|---|
-| `3069` (`router_config.port`) | relays (`/v1`), health (`/health`, `/ready`) | public |
+| `3069` (`router_config.port`) | relays (`/v1`), health (`/health`, `/ready`) | **behind an authenticating, rate-limiting proxy** — SAGE does not authenticate clients, and every relay spends your stake |
 | `9091` (`admin_config.addr`) | admin API (`/admin/*`) | **loopback** — unauthenticated, keep it off the public edge |
 | `9090` (`metrics_config.prometheus_addr`) | Prometheus (`/metrics`) | scrape-only |
+
+SAGE has no client authentication and no rate limiter of its own: it assumes an
+edge in front of it, the way PATH assumes GUARD. An open `3069` is a stake drain,
+not a misconfiguration — see [`SECURITY.md`](SECURITY.md).
 
 `pprof` (`metrics_config.pprof_addr`) is **off** unless set — it hands out heap
 dumps, which hold signing keys. Deployment, degraded modes and a runbook are in

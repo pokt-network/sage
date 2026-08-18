@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /sagegw ./cmd/sagegw
 
 # Stage 2: Runtime
-FROM alpine:3.19
+FROM alpine:3.22
 
 RUN apk --no-cache add ca-certificates tzdata && \
     addgroup -S sage && adduser -S sage -G sage
