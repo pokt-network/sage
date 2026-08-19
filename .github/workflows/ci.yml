@@ -13,9 +13,24 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job below turns setup-go's built-in cache off and caches by hand. That
+# is not gratuitous: setup-go derives one key per (os, go version, go.sum), so
+# all four jobs here share it, and a cache key is written by whichever job's
+# post-step finishes first. That is always `docs`, which compiles a single
+# package. The three jobs that compile the whole cosmos-sdk / cometbft /
+# go-ethereum tree then "hit" a 14 MB cache containing none of their build
+# output and recompile from scratch — a hit that costs a lookup and saves
+# nothing. Splitting it fixes that, and lets the expensive artifact (the
+# race-instrumented object tree, which lives in its own GOCACHE namespace)
+# persist under a key nothing else can claim.
+#
+# The module cache stays shared, because its contents genuinely are identical
+# across jobs — but only once every job has downloaded the same set, hence the
+# explicit `go mod download` rather than letting each build fetch lazily.
+
 jobs:
-  build-test:
-    name: build & test
+  test:
+    name: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -24,14 +39,44 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
 
-      - name: Build
-        run: make sage_build
+      - name: Module cache
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
 
-      - name: Vet
-        run: go vet ./...
+      # restore-keys carries as much weight as key here. A dependency bump
+      # changes go.sum and misses the exact key, and without a fallback every
+      # bump would compile the entire dependency tree cold — which is precisely
+      # what made the run after the last dependabot merge the slowest on record.
+      # Go's build cache is content-addressed, so entries the new go.sum no
+      # longer reaches are simply never read.
+      - name: Build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: gobuild-${{ runner.os }}-test-${{ hashFiles('**/go.sum') }}
+          restore-keys: gobuild-${{ runner.os }}-test-
 
+      - name: Download modules
+        run: go mod download
+
+      # Two steps used to live here and no longer do.
+      #
+      # `go vet ./...` is covered by the lint job: golangci-lint runs govet, and
+      # in config v2 an `enable:` list adds to the default linter set rather than
+      # replacing it, so govet was never opted out of. Running it here as well
+      # bought nothing and cost a second full type-check of the tree.
+      #
+      # `make sage_build` moved to the vuln job, which has to link a binary
+      # anyway to have something to scan. Building it in both meant linking the
+      # dependency tree twice per run.
+      #
+      # Nothing is lost by dropping them: `go test ./...` compiles every package
+      # in the module, so a compile error still fails here, and the CGO-disabled
+      # release link is still exercised — once, next door.
       - name: Test (race)
         run: make test_unit
 
@@ -45,7 +90,20 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+
+      - name: Module cache
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+
+      # No build cache for this job. It compiles one package and finishes in
+      # under half a minute cold, so a cache entry would cost more in storage
+      # against the repository's 10 GB budget than it saves in wall clock.
+
+      - name: Download modules
+        run: go mod download
 
       # The reference docs are generated from the config structs, the metrics
       # collectors and the router's mux. This fails the build when they drift —
@@ -69,7 +127,30 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+
+      - name: Module cache
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+
+      - name: Build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: gobuild-${{ runner.os }}-vuln-${{ hashFiles('**/go.sum') }}
+          restore-keys: gobuild-${{ runner.os }}-vuln-
+
+      - name: Download modules
+        run: go mod download
+
+      # This job owns the release link for the whole workflow. It needs a binary
+      # to scan, and the test job needed the same one built, so it is built here
+      # and only here. Using the make target rather than a bare `go build` means
+      # what gets scanned is the artifact that actually ships, ldflags and all.
+      - name: Build release binary
+        run: make sage_build
 
       # Scan the linked binary, not the source tree. govulncheck's source mode
       # builds an SSA call graph over the entire dependency closure, and SAGE's
@@ -91,7 +172,6 @@ jobs:
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
-          CGO_ENABLED=0 go build -o bin/sagegw ./cmd/sagegw
           govulncheck -mode binary -format json bin/sagegw | python3 .github/scripts/vulncheck.py
 
   lint:
@@ -104,7 +184,23 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+
+      - name: Module cache
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+
+      - name: Build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: gobuild-${{ runner.os }}-lint-${{ hashFiles('**/go.sum') }}
+          restore-keys: gobuild-${{ runner.os }}-lint-
+
+      - name: Download modules
+        run: go mod download
 
       # Warm the build cache first: golangci-lint loads packages via go/packages,
       # and a cold type-check of the cosmos-sdk / go-ethereum / cometbft dep tree
