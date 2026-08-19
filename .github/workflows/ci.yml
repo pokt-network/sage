@@ -42,7 +42,7 @@ jobs:
           cache: false
 
       - name: Module cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
@@ -54,7 +54,7 @@ jobs:
       # Go's build cache is content-addressed, so entries the new go.sum no
       # longer reaches are simply never read.
       - name: Build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ runner.os }}-test-${{ hashFiles('**/go.sum') }}
@@ -93,7 +93,7 @@ jobs:
           cache: false
 
       - name: Module cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
@@ -130,13 +130,13 @@ jobs:
           cache: false
 
       - name: Module cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
 
       - name: Build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ runner.os }}-vuln-${{ hashFiles('**/go.sum') }}
@@ -187,13 +187,13 @@ jobs:
           cache: false
 
       - name: Module cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
 
       - name: Build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ runner.os }}-lint-${{ hashFiles('**/go.sum') }}
