@@ -18,7 +18,7 @@ jobs:
     name: binaries
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Tags and full history: the build stamps the commit, and a shallow
           # clone would stamp a version that does not exist anywhere.
@@ -56,7 +56,7 @@ jobs:
     name: container image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Log in to ghcr.io
         uses: docker/login-action@v4
