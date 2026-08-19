@@ -20,7 +20,12 @@ All common tasks go through `make`:
 
 Single test: `go test ./relay/middleware/ -run TestRetry -race -count=1 -v`. Use `-count=1` to bypass the test cache.
 
-Go toolchain: `go 1.26.5` (see `go.mod`).
+Go toolchain: whatever the `go` directive in `go.mod` says. No version is
+written here on purpose — the one that used to be drifted within days of being
+typed, which is the same failure the generated docs exist to prevent. CI
+resolves it with `go-version-file: go.mod` and `actions/setup-go` pins
+`GOTOOLCHAIN=local`, so the compiler is the one `go.mod` names and nothing will
+silently upgrade past it.
 
 ## Entry Point & Wiring
 
