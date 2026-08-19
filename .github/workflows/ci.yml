@@ -71,14 +71,28 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Scan the linked binary, not the source tree. govulncheck's source mode
+      # builds an SSA call graph over the entire dependency closure, and SAGE's
+      # closure is a chain node (cosmos-sdk, cometbft and go-ethereum arrive
+      # through the shannon-sdk): 4.3 GB RSS for five minutes, which OOM-kills
+      # the 7 GB hosted runner part-way through. That job does not fail with a
+      # finding, it fails with "the runner has received a shutdown signal", so
+      # the gate reports nothing at all. Binary mode reads the symbol table
+      # instead — 210 MB, about a second — and is strictly more conservative:
+      # it reports every vulnerable symbol the linker kept, rather than only
+      # the ones a call graph proves reachable, so it cannot miss a finding
+      # source mode would have made.
+      #
       # govulncheck has no ignore mechanism and SAGE inherits findings with no
-      # upstream fix (a gateway links cosmos-sdk and cometbft through the
-      # shannon-sdk). Running it bare would be permanently red, so the reviewed
+      # upstream fix. Running it bare would be permanently red, so the reviewed
       # set lives in .github/vuln-allowlist.txt and anything else fails here.
+      # The scanner is pinned because an unpinned @latest silently changes what
+      # this gate accepts.
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck -format json ./... | python3 .github/scripts/vulncheck.py
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          CGO_ENABLED=0 go build -o bin/sagegw ./cmd/sagegw
+          govulncheck -mode binary -format json bin/sagegw | python3 .github/scripts/vulncheck.py
 
   lint:
     name: lint

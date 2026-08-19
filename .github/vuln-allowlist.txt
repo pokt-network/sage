@@ -1,5 +1,11 @@
-# Vulnerabilities govulncheck reports as reachable from SAGE's own code, which
-# have been reviewed and accepted. Anything NOT listed here fails CI.
+# Vulnerable symbols govulncheck finds linked into bin/sagegw, which have been
+# reviewed and accepted. Anything NOT listed here fails CI.
+#
+# The gate scans the binary rather than the source tree (see ci.yml for why), so
+# "listed here" means the symbol survived the linker, not that SAGE calls it.
+# That is the conservative direction, and it is why several entries below are
+# chain-side consensus code a gateway never executes: cosmos-sdk arrives whole
+# through the shannon-sdk, and the linker keeps what the module registers.
 #
 # Format: <OSV ID>  # why it is accepted
 #
@@ -17,3 +23,4 @@
 GO-2026-5932  # x/crypto/openpgp is unmaintained with no fix. Reached only by ring-go's package init (armor.init) — SAGE never calls openpgp.
 GO-2023-1821  # cosmos-sdk x/crisis. No fix exists. Chain-side module semantics reached only by package init; a gateway evaluates no consensus logic.
 GO-2023-1881  # cosmos-sdk x/crisis, same reasoning as GO-2023-1821.
+GO-2024-2584  # cosmos-sdk slashing evasion, in x/staking/keeper.Slash and x/auth/vesting. Validator consensus logic; SAGE stakes nothing and runs no keeper.
