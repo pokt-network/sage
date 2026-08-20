@@ -164,31 +164,68 @@ func classifyJSONRPCError(code int64, message string) AnalysisResult {
 	}
 }
 
+// capabilityLimitationPatterns are the wordings in which an endpoint reports
+// that it does not retain the historical state a request asked for. They are
+// listed once, here, because two callers need the same answer: this tier, which
+// must attribute them to the chain rather than to the supplier, and the EVM
+// plugin, which demotes an endpoint out of the archival pool on seeing one.
+// PATH kept two catalogues and they drifted — a wording recognised by the
+// analyzer but missing from the archival list left pruned nodes marked archival
+// and still receiving the requests they had just failed.
+//
+// Every vendor words this differently, so the entries are deliberately short
+// prefixes: geth hash-scheme says "missing trie node", geth path-scheme (PBSS)
+// says "metadata is not found, <block>", erigon "state not available", and
+// gnosis/polygon "historical state is not available" / "historical state <hash>".
+var capabilityLimitationPatterns = []string{
+	"missing trie node",
+	"metadata is not found",
+	"state not available",
+	"historical state",
+	"state has been pruned",
+	"block has been pruned",
+	"is pruned",
+	"height is not available",
+	"haven't been fully indexed",
+	"not been fully indexed",
+	"lite fullnode",
+	"api is not supported",
+}
+
+// ReportsMissingHistoricalState reports whether an error message is an endpoint
+// saying it does not retain the state the request asked for, rather than a
+// fault. Matching is case-insensitive on the caller's behalf.
+//
+// The distinction matters twice over: such an endpoint must not be penalized
+// for answering honestly, and it must not keep receiving archival requests it
+// has already proved it cannot serve.
+func ReportsMissingHistoricalState(message string) bool {
+	lower := strings.ToLower(message)
+	for _, pattern := range capabilityLimitationPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// blockchainErrorPatterns are error wordings attributable to the chain rather
+// than to the supplier serving it. The capability-limitation half is shared
+// with the archival demotion path — a supplier that cannot serve
+// historical/pruned state is a capability mismatch, so retry elsewhere but do
+// not penalize. Built once rather than per call: this runs on every error
+// response.
+var blockchainErrorPatterns = append([]string{
+	"block not found",
+	"header not found",
+	"unknown block",
+	"transaction not found",
+	"receipt not found",
+}, capabilityLimitationPatterns...)
+
 // classifyServerError handles -32000 range errors which are commonly blockchain-specific.
 func classifyServerError(code int64, lowerMsg string) AnalysisResult {
-	// Blockchain-attributed errors: these are real blockchain conditions, not supplier faults.
-	blockchainPatterns := []string{
-		"block not found",
-		"header not found",
-		"missing trie node",
-		"unknown block",
-		"transaction not found",
-		"receipt not found",
-		"state not available",
-		// Archival/capability-limitation: supplier can't serve historical/pruned
-		// state. Retry elsewhere, but no penalty — it's a capability mismatch, not
-		// a fault.
-		"historical state",
-		"state has been pruned",
-		"block has been pruned",
-		"is pruned",
-		"height is not available",
-		"haven't been fully indexed",
-		"not been fully indexed",
-		"lite fullnode",
-		"api is not supported",
-	}
-	for _, pattern := range blockchainPatterns {
+	for _, pattern := range blockchainErrorPatterns {
 		if strings.Contains(lowerMsg, pattern) {
 			return AnalysisResult{
 				ShouldRetry:        true,

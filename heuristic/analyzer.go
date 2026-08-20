@@ -2,6 +2,7 @@ package heuristic
 
 import (
 	"fmt"
+	"net/http"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -42,7 +43,7 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 	}
 
 	// Tier 1: Structural checks.
-	if result, done := analyzeTier1(response); done {
+	if result, done := analyzeTier1(response, httpStatusCode); done {
 		return result
 	}
 
@@ -108,6 +109,14 @@ func analyzeTier0(statusCode int) (AnalysisResult, bool) {
 	}
 }
 
+// isBodylessStatus reports whether an HTTP status is defined to carry no
+// response body.
+func isBodylessStatus(code int) bool {
+	return code == http.StatusNoContent ||
+		code == http.StatusResetContent ||
+		code == http.StatusNotModified
+}
+
 // analyzeTier1 performs structural checks on the response body.
 // analyzeGRPC is the whole of response analysis for gRPC. There is no text to
 // inspect and no JSON-RPC envelope to classify — a unary reply is one
@@ -129,13 +138,25 @@ func analyzeGRPC(body []byte) AnalysisResult {
 	return successResult()
 }
 
-func analyzeTier1(body []byte) (AnalysisResult, bool) {
+func analyzeTier1(body []byte, httpStatusCode int) (AnalysisResult, bool) {
 	if IsEmpty(body) {
+		// 204, 205 and 304 are defined to carry no body, so an empty payload on
+		// one of them is the endpoint behaving correctly. Only a status that
+		// promised content can have failed to deliver it — and that promise is
+		// what the penalty below is for.
+		if isBodylessStatus(httpStatusCode) {
+			return successResult(), true
+		}
+
+		// Critical, not major: no RPC type SAGE forwards has a valid zero-length
+		// response, and the relay is signed and settleable regardless of what
+		// the supplier put in the body. That makes an empty payload a protocol
+		// violation rather than a bad moment.
 		return AnalysisResult{
 			ShouldRetry:        true,
 			ShouldCircuitBreak: true,
 			ShouldPenalize:     true,
-			PenaltySeverity:    SeverityMajor,
+			PenaltySeverity:    SeverityCritical,
 			Attribution:        AttrSupplier,
 			Confidence:         0.85,
 			Reason:             "empty_response",

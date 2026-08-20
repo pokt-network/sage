@@ -20,4 +20,18 @@
 // (archivalTTL). An endpoint that answers a historical-state query today may
 // prune tomorrow; treating one probe as permanent truth routes archival
 // traffic to a node that has since dropped the data.
+//
+// The inference has three states, not two. An endpoint that has never been
+// asked for historical state has told us nothing, and is not the same as one
+// that answered and said it does not retain it — so selection excludes only a
+// fresh negative. Requiring proof of archival before serving an archival
+// request excluded every unobserved endpoint, which at any moment is most of
+// them, and the tier cascade then handed back the unfiltered list anyway.
+//
+// Observations come from client traffic that happened to name a historical
+// block (see observeArchival), which is a free probe and the only kind the
+// plugin gets: health checks ask for the head. That is also why the block
+// parameter, not the method, is the gate — eth_getBalance(addr, "latest") is
+// among the most common calls on the network and a pruned node answers it
+// perfectly.
 package evm

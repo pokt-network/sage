@@ -15,6 +15,11 @@ import (
 )
 
 // evmEndpoint holds per-endpoint state observed from health checks and relays.
+//
+// IsArchival is meaningful only while ArchivalExpiry is in the future. A zero
+// or elapsed expiry means "never observed / no longer known", which is a third
+// state and not the same as a negative: an endpoint nothing has asked for
+// historical state must not be treated as having refused it.
 type evmEndpoint struct {
 	BlockNumber    uint64
 	ChainID        string
@@ -22,8 +27,19 @@ type evmEndpoint struct {
 	ArchivalExpiry time.Time
 }
 
-// archivalTTL is how long an archival determination is considered valid.
-const archivalTTL = 24 * time.Hour
+// archivalTTL is how long one archival observation is trusted.
+//
+// The observation is unverified: it comes from a request a client happened to
+// send, and a node that fabricates state from its current head answers it as
+// convincingly as one that kept the block. An hour keeps a wrong mark cheap and
+// makes a node that has since pruned re-prove itself, at the cost of nothing —
+// archival requests re-observe the endpoint every time they succeed.
+//
+// One constant for both directions on purpose. PATH ran 30m for its verified
+// health-check mark and 8h for the unverified traffic mark, so the weaker
+// evidence outlived the stronger by 16x; a comment claiming they matched was
+// what held the invariant, and it did not.
+const archivalTTL = 1 * time.Hour
 
 // coalescableMethods are read-only EVM methods safe for request coalescing.
 var coalescableMethods = map[string]bool{
@@ -149,10 +165,19 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 			// Unknown — let through for eventual consistency.
 			return nil
 		}
-		if !ep.IsArchival || (!ep.ArchivalExpiry.IsZero() && time.Now().After(ep.ArchivalExpiry)) {
+		// Only a fresh negative observation excludes an endpoint. Archival
+		// status is inferred from traffic that happened to name a historical
+		// block, so most endpoints carry no observation at all — and requiring
+		// proof of archival before serving an archival request would exclude
+		// every one of them, exhausting all three tiers on every such request
+		// and handing back the unfiltered list anyway.
+		if !archivalKnown(ep) {
+			return nil
+		}
+		if !ep.IsArchival {
 			return &domain.RelayError{
 				Kind:      domain.ErrCapability,
-				Message:   "endpoint does not support archival data",
+				Message:   "endpoint does not retain historical state",
 				Retryable: true,
 			}
 		}
@@ -223,19 +248,59 @@ func (p *Plugin) IsArchivalRequest(payloads []domain.Payload) bool {
 	return false
 }
 
-// IsArchivalEndpoint returns true if the endpoint is known to support archival data.
+// IsArchivalEndpoint returns true if the endpoint is known to support archival
+// data. An endpoint nothing has observed serving historical state returns
+// false: this asks what is known, not what is allowed. Selection uses the
+// weaker question — see the archival filter in SelectEndpoints.
 func (p *Plugin) IsArchivalEndpoint(endpoint domain.EndpointAddr) bool {
 	ep, ok := p.store.Get(endpoint)
 	if !ok {
 		return false
 	}
-	if !ep.IsArchival {
-		return false
+	return archivalKnown(ep) && ep.IsArchival
+}
+
+// archivalKnown reports whether the endpoint carries an archival observation
+// that has not aged out.
+func archivalKnown(ep evmEndpoint) bool {
+	return !ep.ArchivalExpiry.IsZero() && time.Now().Before(ep.ArchivalExpiry)
+}
+
+// observeArchival records what a relay says about an endpoint's history
+// retention, and reports the status it recorded.
+//
+// The probe is free: the request was sent by a client, not by us, and it named
+// a historical block, which is the only thing that distinguishes an archival
+// query from an ordinary one. PATH marked an endpoint archival on any success
+// for eth_getBalance / eth_call / eth_getCode / eth_getStorageAt /
+// eth_getTransactionCount without reading the block parameter — and those are
+// also the ordinary way to read current state, so every pruned node answering
+// eth_getBalance(addr, "latest") was promoted into the archival pool. The gate
+// here is isArchivalRequest, which is why that cannot happen.
+func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, request, response []byte) (archival bool, observed bool) {
+	params := gjson.GetBytes(request, "params").Raw
+	if !isArchivalRequest(method, json.RawMessage(params)) {
+		return false, false
 	}
-	if !ep.ArchivalExpiry.IsZero() && time.Now().After(ep.ArchivalExpiry) {
-		return false
+
+	switch classifyArchivalResponse(response) {
+	case archivalServed:
+		p.store.Update(endpoint, func(ep *evmEndpoint) {
+			ep.IsArchival = true
+			ep.ArchivalExpiry = time.Now().Add(archivalTTL)
+		})
+		return true, true
+
+	case archivalMissing:
+		p.store.Update(endpoint, func(ep *evmEndpoint) {
+			ep.IsArchival = false
+			ep.ArchivalExpiry = time.Now().Add(archivalTTL)
+		})
+		return false, true
+
+	default:
+		return false, false
 	}
-	return true
 }
 
 // --- qos.HealthChecker ---
@@ -289,6 +354,13 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 			return nil, err
 		}
 		return &qos.ExtractedData{ChainID: &chainID}, nil
+	}
+
+	// Anything else is user traffic: health checks send only the two methods
+	// above. A relay that named a historical block reports, for free, whether
+	// the endpoint retains it.
+	if archival, observed := p.observeArchival(endpoint, method, request, response); observed {
+		return &qos.ExtractedData{IsArchival: &archival}, nil
 	}
 
 	return nil, nil
@@ -362,7 +434,7 @@ func (p *Plugin) CacheTTL(method string, params []byte, response []byte) time.Du
 			arr := result.Array()
 			if len(arr) > 0 && arr[0].Type == gjson.String {
 				blockParam := arr[0].String()
-				if !archivalBlockTags[blockParam] {
+				if !recentStateBlockTags[blockParam] {
 					if _, err := parseHexUint64(blockParam); err == nil {
 						return 10 * time.Minute
 					}

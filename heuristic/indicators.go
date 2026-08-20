@@ -11,6 +11,10 @@ type indicator struct {
 
 // indicators are Tier 3 content patterns checked when Tier 2 didn't give high confidence.
 // Order matters: first match wins.
+//
+// The capability-limitation entries below duplicate capabilityLimitationPatterns
+// (protocol.go) by design: Tier 2 matches a parsed JSON-RPC error message, this
+// tier scans a body that never parsed. A wording added there belongs here too.
 var indicators = []indicator{
 	// Blockchain-attributed: the chain itself is having issues.
 	{pattern: "missing trie node", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "missing_trie_node"},
@@ -19,6 +23,10 @@ var indicators = []indicator{
 	{pattern: "header not found", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "header_not_found"},
 	{pattern: "state not available", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "state_not_available"},
 	{pattern: "pruned state", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "pruned_state"},
+	// geth's path-based state scheme (PBSS) words a pruned-state miss as
+	// "metadata is not found, <block>" — no "prune" and no "trie" in it, so
+	// every pattern above misses it and an honest answer reads as a fault.
+	{pattern: "metadata is not found", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "pbss_pruned_state"},
 	// Archival/capability-limitation variants: the supplier correctly reports it
 	// can't serve historical/pruned state. Retry on an archival supplier, but do
 	// NOT penalize or circuit-break — punishing a non-archival supplier for a

@@ -188,11 +188,15 @@ func TestSelectEndpoints_ZeroPerceivedAllowsAll(t *testing.T) {
 func TestSelectEndpoints_ArchivalFiltering(t *testing.T) {
 	p := newTestPlugin(5)
 
-	// Two endpoints; only "archival" supports archival data.
+	// Two endpoints; "nonarchival" has told us it does not retain the state.
 	p.UpdateBlockHeight("archival", 100)
 	p.UpdateBlockHeight("nonarchival", 100)
 	p.store.Update("archival", func(ep *evmEndpoint) {
 		ep.IsArchival = true
+		ep.ArchivalExpiry = time.Now().Add(archivalTTL)
+	})
+	p.store.Update("nonarchival", func(ep *evmEndpoint) {
+		ep.IsArchival = false
 		ep.ArchivalExpiry = time.Now().Add(archivalTTL)
 	})
 
@@ -718,5 +722,172 @@ func TestConfig_Validate(t *testing.T) {
 				t.Errorf("Validate(%q) = %v, want nil", tc.chainID, err)
 			}
 		})
+	}
+}
+
+// TestSelectEndpoints_ArchivalUnobservedNotExcluded pins the third state.
+//
+// Archival status is inferred from traffic that happened to name a historical
+// block, so at any moment most endpoints carry no observation at all. Requiring
+// proof of archival before serving an archival request excluded every one of
+// them — which is why this pairs an unobserved endpoint with a known-pruned
+// one. Excluding both is indistinguishable from excluding neither at the
+// selection boundary: qos.Select exhausts all three tiers and hands back the
+// unfiltered list, so the old filter cost a warning per request and changed
+// nothing. Only a set of exactly one discriminates.
+func TestSelectEndpoints_ArchivalUnobservedNotExcluded(t *testing.T) {
+	p := newTestPlugin(5)
+
+	p.UpdateBlockHeight("never-asked", 100)
+	p.UpdateBlockHeight("known-pruned", 100)
+	p.store.Update("known-pruned", func(ep *evmEndpoint) {
+		ep.IsArchival = false
+		ep.ArchivalExpiry = time.Now().Add(archivalTTL)
+	})
+
+	addrs := domain.EndpointAddrList{"never-asked", "known-pruned"}
+	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
+	payloads := []domain.Payload{
+		domain.NewPayload([]byte(body), domain.RPCTypeJSONRPC, "eth_getBalance"),
+	}
+
+	selected, err := p.SelectEndpoints(addrs, payloads)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(selected) != 1 || selected[0] != "never-asked" {
+		t.Fatalf("expected only the unobserved endpoint, got %v", selected)
+	}
+}
+
+// TestSelectEndpoints_ArchivalObservationExpires checks that a negative ages
+// back into "unknown" rather than becoming permanent: a node that pruned in
+// April may be serving full history today, and nothing re-probes it if the
+// filter never lets an archival request reach it again.
+//
+// Paired with a fresh negative for the same reason as above — a result of two
+// would mean the filter excluded everything and the fallback returned the lot.
+func TestSelectEndpoints_ArchivalObservationExpires(t *testing.T) {
+	p := newTestPlugin(5)
+
+	p.UpdateBlockHeight("stale-negative", 100)
+	p.UpdateBlockHeight("fresh-negative", 100)
+	p.store.Update("stale-negative", func(ep *evmEndpoint) {
+		ep.IsArchival = false
+		ep.ArchivalExpiry = time.Now().Add(-time.Minute)
+	})
+	p.store.Update("fresh-negative", func(ep *evmEndpoint) {
+		ep.IsArchival = false
+		ep.ArchivalExpiry = time.Now().Add(archivalTTL)
+	})
+
+	addrs := domain.EndpointAddrList{"stale-negative", "fresh-negative"}
+	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
+	payloads := []domain.Payload{
+		domain.NewPayload([]byte(body), domain.RPCTypeJSONRPC, "eth_getBalance"),
+	}
+
+	selected, err := p.SelectEndpoints(addrs, payloads)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(selected) != 1 || selected[0] != "stale-negative" {
+		t.Fatalf("expected the expired observation to read as unknown, got %v", selected)
+	}
+	if p.IsArchivalEndpoint("stale-negative") {
+		t.Fatal("expired observation must not read as archival either")
+	}
+}
+
+// TestExtractData_ArchivalInference drives the inference through ExtractData,
+// the entry point the observation pipeline calls, rather than through
+// observeArchival directly — the method/params gate is half of what is being
+// tested and a hand-built call skips it.
+func TestExtractData_ArchivalInference(t *testing.T) {
+	tests := []struct {
+		name         string
+		request      string
+		response     string
+		wantObserved bool
+		wantArchival bool
+	}{
+		{
+			name:         "historical block served",
+			request:      `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`,
+			response:     `{"jsonrpc":"2.0","id":1,"result":"0x2386f26fc10000"}`,
+			wantObserved: true,
+			wantArchival: true,
+		},
+		{
+			name:         "geth PBSS pruned state",
+			request:      `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`,
+			response:     `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"metadata is not found, 0x1"}}`,
+			wantObserved: true,
+			wantArchival: false,
+		},
+		{
+			name:         "gnosis historical state wording",
+			request:      `{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0xabc"},"0x64"],"id":1}`,
+			response:     `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"historical state is not available"}}`,
+			wantObserved: true,
+			wantArchival: false,
+		},
+		{
+			// A pruned node answers this perfectly, which is why the block
+			// parameter and not the method decides.
+			name:         "latest is not an archival probe",
+			request:      `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`,
+			response:     `{"jsonrpc":"2.0","id":1,"result":"0x2386f26fc10000"}`,
+			wantObserved: false,
+		},
+		{
+			// A revert says the contract disagreed, not that the state is gone.
+			name:         "unrelated error is inconclusive",
+			request:      `{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0xabc"},"0x64"],"id":1}`,
+			response:     `{"jsonrpc":"2.0","id":1,"error":{"code":3,"message":"execution reverted"}}`,
+			wantObserved: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newTestPlugin(5)
+			data, err := p.ExtractData("ep", []byte(tt.request), []byte(tt.response))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if !tt.wantObserved {
+				if data != nil && data.IsArchival != nil {
+					t.Fatalf("expected no archival observation, got %v", *data.IsArchival)
+				}
+				if _, ok := p.store.Get("ep"); ok {
+					t.Fatal("inconclusive response must not write endpoint state")
+				}
+				return
+			}
+
+			if data == nil || data.IsArchival == nil {
+				t.Fatal("expected an archival observation")
+			}
+			if *data.IsArchival != tt.wantArchival {
+				t.Fatalf("archival = %v, want %v", *data.IsArchival, tt.wantArchival)
+			}
+			if got := p.IsArchivalEndpoint("ep"); got != tt.wantArchival {
+				t.Fatalf("IsArchivalEndpoint = %v, want %v", got, tt.wantArchival)
+			}
+		})
+	}
+}
+
+// TestIsArchivalRequest_Earliest pins genesis as archival. It is a tag, so the
+// hex parse below it never sees it; treating it like "latest" made the deepest
+// query on the chain read as the shallowest.
+func TestIsArchivalRequest_Earliest(t *testing.T) {
+	if !isArchivalRequest("eth_getBalance", []byte(`["0xabc","earliest"]`)) {
+		t.Fatal("earliest must count as archival")
+	}
+	if isArchivalRequest("eth_getBalance", []byte(`["0xabc","latest"]`)) {
+		t.Fatal("latest must not count as archival")
 	}
 }

@@ -14,7 +14,9 @@ import (
 // per-frame use (e.g., downgrading Fatal to Critical so a single bad frame
 // in a long-lived subscription doesn't permanently sink an endpoint).
 func AnalyzeFrame(body []byte, rpcType domain.RPCType) AnalysisResult {
-	if result, done := analyzeTier1(body); done {
+	// Status 0: a frame carries none, and no HTTP status means none of the
+	// bodyless-by-definition statuses (204/205/304) can excuse an empty frame.
+	if result, done := analyzeTier1(body, 0); done {
 		return result
 	}
 	if result, done := analyzeTier2(body, rpcType); done {
