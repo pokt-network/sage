@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>SAGE admin</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fbfaf7;
+  --panel: #ffffff;
+  --line: #e4e0d8;
+  --ink: #1c1a17;
+  --muted: #6d6559;
+  --accent: #2f6f4f;
+  --accent-ink: #ffffff;
+  --warn: #8a5a12;
+  --danger: #a33a2a;
+  --chip: #f0ede6;
+  --radius: 10px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181a;
+    --panel: #1d2023;
+    --line: #2e3338;
+    --ink: #e8e6e1;
+    --muted: #98a0a8;
+    --accent: #6bbd8f;
+    --accent-ink: #10241a;
+    --warn: #d9a44a;
+    --danger: #e07a63;
+    --chip: #262b30;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  position: sticky; top: 0; z-index: 10;
+}
+.brand { font-weight: 650; letter-spacing: -0.01em; }
+.brand span { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 13px; }
+.grow { flex: 1; }
+nav { display: flex; gap: 4px; padding: 10px 20px 0; flex-wrap: wrap; }
+nav button {
+  border: 1px solid transparent; background: none; color: var(--muted);
+  padding: 7px 12px; border-radius: var(--radius); cursor: pointer; font: inherit;
+}
+nav button:hover { color: var(--ink); background: var(--chip); }
+nav button[aria-current="true"] { color: var(--ink); background: var(--panel); border-color: var(--line); font-weight: 550; }
+main { padding: 16px 20px 60px; max-width: 1100px; }
+section { display: none; }
+section[data-active] { display: block; }
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 16px; margin-bottom: 14px;
+}
+h2 { font-size: 15px; margin: 0 0 4px; }
+h3 { font-size: 14px; margin: 0 0 2px; font-family: var(--mono); font-weight: 600; }
+p.note { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 550; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+tr:last-child td { border-bottom: none; }
+td.mono, .mono { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+button.act {
+  font: inherit; font-size: 13px; padding: 5px 10px; cursor: pointer;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--chip); color: var(--ink);
+}
+button.act:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+button.danger { color: var(--danger); }
+input, select {
+  font: inherit; font-size: 14px; padding: 6px 9px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+}
+input.mono { font-family: var(--mono); font-size: 13px; }
+input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.chip {
+  display: inline-block; background: var(--chip); border-radius: 999px;
+  padding: 2px 9px; font-size: 12px; font-family: var(--mono); margin: 2px 4px 2px 0;
+}
+.chip.on { color: var(--accent); }
+.chip.off { color: var(--muted); }
+.banner {
+  border-left: 3px solid var(--warn); background: var(--chip);
+  padding: 10px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 14px; color: var(--ink);
+}
+.banner.err { border-left-color: var(--danger); }
+pre {
+  background: var(--chip); padding: 12px; border-radius: 8px;
+  overflow-x: auto; font-family: var(--mono); font-size: 12.5px; margin: 0;
+}
+#toast {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 16px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.18);
+  opacity: 0; pointer-events: none; transition: opacity .18s; max-width: 90vw;
+}
+#toast[data-show] { opacity: 1; }
+#toast.err { border-color: var(--danger); color: var(--danger); }
+.empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">SAGE <span id="conn">connecting…</span></div>
+  <div class="grow"></div>
+  <div class="row">
+    <input id="token" type="password" placeholder="admin token (if set)" autocomplete="off" size="26">
+    <button class="act" id="save-token">Use token</button>
+    <button class="act" id="refresh">Refresh</button>
+  </div>
+</header>
+
+<nav>
+  <button data-tab="flags" aria-current="true">Flags</button>
+  <button data-tab="tuning">Tuning</button>
+  <button data-tab="reputation">Reputation</button>
+  <button data-tab="breakers">Circuit breakers</button>
+  <button data-tab="config">Config</button>
+</nav>
+
+<main>
+  <div id="auth-warning" class="banner err" style="display:none">
+    The admin API refused the request (401). Enter the bearer token above — it is
+    <code>admin_config.auth_token</code> or <code>SAGE_ADMIN_TOKEN</code> on the gateway.
+  </div>
+
+  <section data-tab="flags" data-active>
+    <div class="card">
+      <h2>Feature flags</h2>
+      <p class="note">
+        Every flag SAGE knows about, whether or not anyone has set it. A per-service
+        override wins over the global value for that service. With Redis configured a
+        change reaches every instance; without it, this one only.
+      </p>
+      <table id="flags-table"><thead>
+        <tr><th>Flag</th><th>Global</th><th>Per-service overrides</th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <section data-tab="tuning">
+    <div class="card">
+      <h2>Runtime tuning</h2>
+      <p class="note" id="tuning-note"></p>
+      <div id="knobs"></div>
+    </div>
+  </section>
+
+  <section data-tab="reputation">
+    <div class="card">
+      <h2>Reputation scores</h2>
+      <p class="note">
+        Keys are reputation keys at the configured granularity — per backend URL by
+        default — not endpoint addresses. Several staked suppliers routinely front one
+        URL and share its score. Worst first.
+      </p>
+      <div class="row" style="margin-bottom:12px">
+        <select id="rep-service"></select>
+        <button class="act" id="rep-load">Load</button>
+      </div>
+      <table id="rep-table"><thead>
+        <tr><th>Key</th><th>Score</th></tr>
+      </thead><tbody></tbody></table>
+      <div class="row" style="margin-top:14px">
+        <input id="rep-reset-endpoint" class="mono" placeholder="endpoint address to reset" size="46">
+        <button class="act" id="rep-reset">Reset score</button>
+      </div>
+      <p class="note" style="margin-top:6px">
+        A reset spans every RPC type: an operator resetting an endpoint means the
+        endpoint, not whichever protocol they happened to name.
+      </p>
+    </div>
+  </section>
+
+  <section data-tab="breakers">
+    <div class="card">
+      <h2>Circuit breakers</h2>
+      <p class="note">
+        Domains currently broken for a service. Breaks expire lazily, so one listed
+        with a past expiry is not actually locked out. Clearing releases the break;
+        escalation history deliberately survives, so a domain let back in and failing
+        again is still a repeat offender.
+      </p>
+      <div class="row" style="margin-bottom:12px">
+        <select id="cb-service"></select>
+        <button class="act" id="cb-load">Load</button>
+        <button class="act danger" id="cb-clear">Clear all for service</button>
+      </div>
+      <table id="cb-table"><thead>
+        <tr><th>Domain</th><th>Reason</th><th>Expires</th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+  </section>
+
+  <section data-tab="config">
+    <div class="card">
+      <h2>Effective configuration</h2>
+      <p class="note">
+        What this process is running, which is not the same as the YAML on disk:
+        defaults have been applied and flags may have changed since startup.
+      </p>
+      <pre id="config-dump">…</pre>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+const TOKEN_KEY = "sage-admin-token";
+let token = sessionStorage.getItem(TOKEN_KEY) || "";
+let services = [];
+
+const $ = (sel) => document.querySelector(sel);
+const el = (tag, props = {}, ...kids) => {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const kid of kids) node.append(kid);
+  return node;
+};
+
+function toast(message, isError) {
+  const t = $("#toast");
+  t.textContent = message;
+  t.className = isError ? "err" : "";
+  t.setAttribute("data-show", "");
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => t.removeAttribute("data-show"), 3200);
+}
+
+async function api(path, options = {}) {
+  const headers = Object.assign({}, options.headers);
+  if (token) headers["Authorization"] = "Bearer " + token;
+  if (options.body) headers["Content-Type"] = "application/json";
+
+  const res = await fetch(path, Object.assign({}, options, { headers }));
+  if (res.status === 401) {
+    $("#auth-warning").style.display = "";
+    $("#conn").textContent = "unauthorized";
+    throw new Error("unauthorized");
+  }
+  $("#auth-warning").style.display = "none";
+
+  const text = await res.text();
+  const body = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new Error((body && body.error) || res.status + " " + res.statusText);
+  return body;
+}
+
+// --- flags ---
+
+async function loadFlags() {
+  const flags = await api("/admin/flags");
+  const tbody = $("#flags-table tbody");
+  tbody.replaceChildren();
+
+  for (const name of Object.keys(flags).sort()) {
+    const state = flags[name];
+    const box = el("input", { type: "checkbox", checked: !!state.enabled });
+    box.addEventListener("change", async () => {
+      try {
+        await api("/admin/flags/" + encodeURIComponent(name), {
+          method: "PUT",
+          body: JSON.stringify({ enabled: box.checked }),
+        });
+        toast(name + " → " + (box.checked ? "on" : "off"));
+      } catch (err) {
+        box.checked = !box.checked;
+        toast(err.message, true);
+      }
+    });
+
+    const overrides = el("td");
+    const perService = state.service_overrides || {};
+    const ids = Object.keys(perService);
+    if (ids.length === 0) {
+      overrides.append(el("span", { className: "empty", textContent: "—" }));
+    } else {
+      for (const id of ids.sort()) {
+        overrides.append(el("span", {
+          className: "chip " + (perService[id] ? "on" : "off"),
+          textContent: id + ": " + (perService[id] ? "on" : "off"),
+        }));
+      }
+    }
+
+    tbody.append(el("tr", {}, el("td", { className: "mono", textContent: name }), el("td", {}, box), overrides));
+  }
+}
+
+// --- tuning ---
+
+async function loadTuning() {
+  const data = await api("/admin/tuning");
+  $("#tuning-note").textContent = data.note || "";
+
+  const host = $("#knobs");
+  host.replaceChildren();
+
+  const knobs = data.knobs || {};
+  for (const name of Object.keys(knobs).sort()) {
+    const state = knobs[name];
+    const knob = state.knob || {};
+    const global = state.global;
+
+    const input = el("input", {
+      className: "mono",
+      size: 12,
+      value: global ? global.value.raw : "",
+      placeholder: "config value",
+    });
+
+    const set = el("button", { className: "act primary", textContent: "Set" });
+    set.addEventListener("click", () => writeKnob(name, "", input.value));
+
+    const clear = el("button", { className: "act", textContent: "Clear" });
+    clear.addEventListener("click", () => clearKnob(name, ""));
+
+    const svcSelect = el("select");
+    for (const id of services) svcSelect.append(el("option", { value: id, textContent: id }));
+    const svcInput = el("input", { className: "mono", size: 12, placeholder: "value" });
+    const svcSet = el("button", { className: "act", textContent: "Set for service" });
+    svcSet.addEventListener("click", () => writeKnob(name, svcSelect.value, svcInput.value));
+
+    const overrides = el("div", { className: "row", style: "margin-top:8px" });
+    const perService = state.service_overrides || {};
+    for (const id of Object.keys(perService).sort()) {
+      const chip = el("span", { className: "chip on", textContent: id + ": " + perService[id].value.raw });
+      const drop = el("button", { className: "act danger", textContent: "clear " + id });
+      drop.addEventListener("click", () => clearKnob(name, id));
+      overrides.append(chip, drop);
+    }
+
+    host.append(el("div", { className: "card" },
+      el("h3", { textContent: name }),
+      el("p", { className: "note", textContent: (knob.description || "") + "  (" + knob.kind + ", " + knob.min + "–" + knob.max + " " + (knob.unit || "") + ")" }),
+      el("div", { className: "row" }, input, set, clear,
+        el("span", { className: "empty", textContent: "│" }), svcSelect, svcInput, svcSet),
+      overrides,
+    ));
+  }
+}
+
+async function writeKnob(name, serviceID, value) {
+  const path = "/admin/tuning/" + encodeURIComponent(name) + (serviceID ? "/" + encodeURIComponent(serviceID) : "");
+  try {
+    await api(path, { method: "PUT", body: JSON.stringify({ value: value }) });
+    toast(name + (serviceID ? " [" + serviceID + "]" : "") + " → " + value);
+    loadTuning();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function clearKnob(name, serviceID) {
+  const path = "/admin/tuning/" + encodeURIComponent(name) + (serviceID ? "/" + encodeURIComponent(serviceID) : "");
+  try {
+    const res = await api(path, { method: "DELETE" });
+    toast(res.cleared ? "cleared " + name : "nothing to clear");
+    loadTuning();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// --- reputation ---
+
+async function loadReputation() {
+  const serviceID = $("#rep-service").value;
+  if (!serviceID) return;
+  const scores = await api("/admin/reputation/" + encodeURIComponent(serviceID));
+  const tbody = $("#rep-table tbody");
+  tbody.replaceChildren();
+
+  const rows = Object.entries(scores).sort((a, b) => a[1] - b[1]);
+  if (rows.length === 0) {
+    tbody.append(el("tr", {}, el("td", { colSpan: 2, className: "empty", textContent: "no scores recorded yet" })));
+    return;
+  }
+  for (const [key, score] of rows) {
+    tbody.append(el("tr", {},
+      el("td", { className: "mono", textContent: key }),
+      el("td", { className: "mono", textContent: Number(score).toFixed(1) }),
+    ));
+  }
+}
+
+async function resetReputation() {
+  const serviceID = $("#rep-service").value;
+  const endpoint = $("#rep-reset-endpoint").value.trim();
+  if (!serviceID || !endpoint) return toast("service and endpoint are required", true);
+  try {
+    await api("/admin/reputation/reset/" + encodeURIComponent(serviceID) + "/" + endpoint, { method: "POST" });
+    toast("reset " + endpoint);
+    loadReputation();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// --- circuit breakers ---
+
+async function loadBreakers() {
+  const serviceID = $("#cb-service").value;
+  if (!serviceID) return;
+  const broken = await api("/admin/circuit-breaker/" + encodeURIComponent(serviceID));
+  const tbody = $("#cb-table tbody");
+  tbody.replaceChildren();
+
+  const domains = Object.keys(broken).sort();
+  if (domains.length === 0) {
+    tbody.append(el("tr", {}, el("td", { colSpan: 3, className: "empty", textContent: "nothing broken" })));
+    return;
+  }
+  for (const domain of domains) {
+    const state = broken[domain] || {};
+    tbody.append(el("tr", {},
+      el("td", { className: "mono", textContent: domain }),
+      el("td", { textContent: state.reason || "—" }),
+      el("td", { className: "mono", textContent: state.expires_at || state.until || "—" }),
+    ));
+  }
+}
+
+async function clearBreakers() {
+  const serviceID = $("#cb-service").value;
+  if (!serviceID) return;
+  try {
+    const res = await api("/admin/circuit-breaker/clear/" + encodeURIComponent(serviceID), { method: "POST" });
+    toast("cleared " + res.cleared_domains + " domain(s)");
+    loadBreakers();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// --- config ---
+
+async function loadConfig() {
+  const cfg = await api("/admin/config");
+  $("#config-dump").textContent = JSON.stringify(cfg, null, 2);
+
+  services = (cfg.services || []).slice().sort();
+  for (const sel of [$("#rep-service"), $("#cb-service")]) {
+    const previous = sel.value;
+    sel.replaceChildren();
+    for (const id of services) sel.append(el("option", { value: id, textContent: id }));
+    if (previous) sel.value = previous;
+  }
+  $("#conn").textContent = services.length + " service" + (services.length === 1 ? "" : "s");
+}
+
+// --- wiring ---
+
+async function refresh() {
+  try {
+    await loadConfig();
+    await loadFlags();
+    await loadTuning();
+  } catch (err) {
+    if (err.message !== "unauthorized") toast(err.message, true);
+  }
+}
+
+document.querySelectorAll("nav button").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach((b) => b.setAttribute("aria-current", String(b === button)));
+    document.querySelectorAll("section").forEach((s) => {
+      s.toggleAttribute("data-active", s.dataset.tab === button.dataset.tab);
+    });
+  });
+});
+
+$("#save-token").addEventListener("click", () => {
+  token = $("#token").value.trim();
+  sessionStorage.setItem(TOKEN_KEY, token);
+  refresh();
+});
+$("#token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#save-token").click(); });
+$("#refresh").addEventListener("click", refresh);
+$("#rep-load").addEventListener("click", () => loadReputation().catch((e) => toast(e.message, true)));
+$("#rep-reset").addEventListener("click", resetReputation);
+$("#cb-load").addEventListener("click", () => loadBreakers().catch((e) => toast(e.message, true)));
+$("#cb-clear").addEventListener("click", clearBreakers);
+
+if (token) $("#token").value = token;
+refresh();
+</script>
+</body>
+</html>

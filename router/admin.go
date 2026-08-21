@@ -10,6 +10,7 @@ import (
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/reputation"
+	"github.com/pokt-network/sage/tuning"
 )
 
 // AdminAPI provides HTTP endpoints for runtime inspection and control.
@@ -19,6 +20,7 @@ type AdminAPI struct {
 	timeline    *reputation.Timeline
 	breaker     *circuitbreaker.Breaker
 	qosRegistry *qos.Registry
+	tuning      *tuning.Store
 	logger      *slog.Logger
 }
 
@@ -29,6 +31,7 @@ func NewAdminAPI(
 	timeline *reputation.Timeline,
 	breaker *circuitbreaker.Breaker,
 	qosReg *qos.Registry,
+	tuningStore *tuning.Store,
 	logger *slog.Logger,
 ) *AdminAPI {
 	return &AdminAPI{
@@ -37,6 +40,7 @@ func NewAdminAPI(
 		timeline:    timeline,
 		breaker:     breaker,
 		qosRegistry: qosReg,
+		tuning:      tuningStore,
 		logger:      logger,
 	}
 }
@@ -59,6 +63,13 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Circuit breaker
 	mux.HandleFunc("POST /admin/circuit-breaker/clear/{serviceID}", a.handleClearCircuitBreaker)
 	mux.HandleFunc("GET /admin/circuit-breaker/{serviceID}", a.handleGetCircuitBreaker)
+
+	// Runtime tuning overrides
+	mux.HandleFunc("GET /admin/tuning", a.handleListTuning)
+	mux.HandleFunc("PUT /admin/tuning/{knob}", a.handleSetTuning)
+	mux.HandleFunc("PUT /admin/tuning/{knob}/{serviceID}", a.handleSetTuningForService)
+	mux.HandleFunc("DELETE /admin/tuning/{knob}", a.handleClearTuning)
+	mux.HandleFunc("DELETE /admin/tuning/{knob}/{serviceID}", a.handleClearTuningForService)
 
 	// Config dump
 	mux.HandleFunc("GET /admin/config", a.handleGetConfig)

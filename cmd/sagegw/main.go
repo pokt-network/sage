@@ -148,10 +148,26 @@ func main() {
 			)
 		}
 		safego.Go(logger, "server.admin", func() {
+			// Two muxes, and the split is the security boundary. Every data
+			// route sits behind the bearer check; the dashboard page does not,
+			// because a browser cannot attach an Authorization header to a
+			// top-level navigation — requiring one for the page would make the
+			// UI unreachable precisely when a token is configured. The page
+			// itself carries no gateway state; it asks for the token and then
+			// calls the authenticated API with it.
+			apiMux := http.NewServeMux()
+			app.Admin.RegisterRoutes(apiMux)
+
 			mux := http.NewServeMux()
-			app.Admin.RegisterRoutes(mux)
-			logger.Info("admin listening", "addr", cfg.Admin.Addr, "authenticated", adminToken != "")
-			if err := http.ListenAndServe(cfg.Admin.Addr, router.RequireAuth(adminToken, mux)); err != nil {
+			app.Admin.RegisterUIRoutes(mux)
+			mux.Handle("/", router.RequireAuth(adminToken, apiMux))
+
+			logger.Info("admin listening",
+				"addr", cfg.Admin.Addr,
+				"authenticated", adminToken != "",
+				"ui", "http://"+cfg.Admin.Addr+"/admin/ui",
+			)
+			if err := http.ListenAndServe(cfg.Admin.Addr, mux); err != nil {
 				logger.Warn("admin server stopped", "error", err)
 			}
 		})

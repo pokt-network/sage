@@ -31,6 +31,13 @@ credential on this port is worse than none, because it reads as protection.
 A TLS-terminating proxy in front is still the right answer for anything exposed:
 the token travels in a header, so it needs the transport to be encrypted.
 
+**The dashboard lives at `/admin/ui`** — one embedded HTML file, no external
+assets, so it works over an SSH tunnel. It is the one route served WITHOUT the
+token check, because a browser cannot attach an Authorization header to a
+top-level navigation; the page carries no gateway state and asks for the token
+itself, which it then sends on every API call. Visiting the admin port's root
+redirects there.
+
 Relay requests name their service with the `Target-Service-Id` header. The
 `/v1` mount point belongs to the gateway, not to the service: the router
 strips it before the chain runs, so a REST or CometBFT request addressed by path
@@ -88,7 +95,14 @@ Reports readiness for every configured service.
 | `GET` | `/admin/timeline/{serviceID}/{endpoint...}` | Returns the reputation events for a single endpoint. |
 | `POST` | `/admin/circuit-breaker/clear/{serviceID}` | Releases every circuit-broken domain for a service and reports how many were cleared. |
 | `GET` | `/admin/circuit-breaker/{serviceID}` | Returns the domains currently circuit-broken for a service, keyed by domain, each with the reason and when the break expires. |
+| `GET` | `/admin/tuning` | Returns every knob that can be overridden at runtime, with whatever has been set on it. |
+| `PUT` | `/admin/tuning/{knob}` | Sets a knob globally. |
+| `PUT` | `/admin/tuning/{knob}/{serviceID}` | Sets a knob for one service only. |
+| `DELETE` | `/admin/tuning/{knob}` | Removes the global override for a knob, returning the config file's value to effect. |
+| `DELETE` | `/admin/tuning/{knob}/{serviceID}` | Removes one service's override, leaving the global one (or the config value) in effect for it. |
 | `GET` | `/admin/config` | Returns the gateway's effective runtime configuration: resolved feature flags, registered services and their QoS plugins. |
+| `GET` | `/admin/ui` | Serves the admin dashboard. |
+| `GET` | `/{$}` | Sends the admin port's root to the dashboard, because that is what an operator who typed the address into a browser was looking for. |
 
 ### `GET /admin/flags`
 
@@ -173,6 +187,46 @@ listed here whose expiry has passed is not actually locked out — the same
 state is exported as the sage_circuit_breaker_state metric, computed at
 scrape time.
 
+### `GET /admin/tuning`
+
+Returns every knob that can be overridden at runtime, with
+whatever has been set on it.
+
+Every registered knob appears whether or not anyone has touched it: the point
+is to show what can be changed, not only what has been. Each knob carries its
+kind, its accepted range and a description, so a client (the admin UI, or a
+person with curl) can render a control and reject a bad value before sending
+it.
+
+Overrides live in memory and are lost on restart, which the response states
+rather than leaving to be discovered.
+
+### `PUT /admin/tuning/{knob}`
+
+Sets a knob globally. Body: `{"value": "3"}` — the value is a
+string in the knob's own notation ("3", "250ms", "0.5") rather than a JSON
+number, so a duration round-trips as what the operator typed.
+
+A per-service override still wins over the global value for that service.
+
+### `PUT /admin/tuning/{knob}/{serviceID}`
+
+Sets a knob for one service only. Body:
+`{"value": "3"}`. This is the narrower switch and takes precedence over the
+global value, which is how a change is tried on one chain first.
+
+### `DELETE /admin/tuning/{knob}`
+
+Removes the global override for a knob, returning the
+config file's value to effect. Per-service overrides are left alone: they are
+the narrower statement, and clearing them here would revert services the
+operator did not name.
+
+### `DELETE /admin/tuning/{knob}/{serviceID}`
+
+Removes one service's override, leaving the
+global one (or the config value) in effect for it.
+
 ### `GET /admin/config`
 
 Returns the gateway's effective runtime configuration:
@@ -181,3 +235,12 @@ resolved feature flags, registered services and their QoS plugins.
 It reports what the process is actually running, which is not the same as the
 YAML on disk — defaults have been applied, and flags may have been changed
 through this API since startup.
+
+### `GET /admin/ui`
+
+Serves the admin dashboard.
+
+### `GET /{$}`
+
+Sends the admin port's root to the dashboard, because that
+is what an operator who typed the address into a browser was looking for.

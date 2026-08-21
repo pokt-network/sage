@@ -41,6 +41,13 @@ credential on this port is worse than none, because it reads as protection.
 A TLS-terminating proxy in front is still the right answer for anything exposed:
 the token travels in a header, so it needs the transport to be encrypted.
 
+**The dashboard lives at ` + "`/admin/ui`" + `** — one embedded HTML file, no external
+assets, so it works over an SSH tunnel. It is the one route served WITHOUT the
+token check, because a browser cannot attach an Authorization header to a
+top-level navigation; the page carries no gateway state and asks for the token
+itself, which it then sends on every API call. Visiting the admin port's root
+redirects there.
+
 Relay requests name their service with the ` + "`Target-Service-Id`" + ` header. The
 ` + "`/v1`" + ` mount point belongs to the gateway, not to the service: the router
 strips it before the chain runs, so a REST or CometBFT request addressed by path

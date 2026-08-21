@@ -34,6 +34,7 @@ import (
 	"github.com/pokt-network/sage/reputation"
 	"github.com/pokt-network/sage/responsecache"
 	"github.com/pokt-network/sage/router"
+	"github.com/pokt-network/sage/tuning"
 )
 
 // relayBackend is the protocol surface needed by the middleware chain, the
@@ -291,19 +292,16 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		},
 	)
 
-	// 11. Per-service config functions
-	retryFn := func(serviceID domain.ServiceID) config.RetryConfig {
-		if svc := cfg.Gateway.GetServiceConfig(string(serviceID)); svc != nil {
-			return svc.EffectiveRetry(cfg.Gateway.EffectiveDefaults())
-		}
-		return cfg.Gateway.EffectiveDefaults().Retry
-	}
-	timeoutFn := func(serviceID domain.ServiceID) time.Duration {
-		if svc := cfg.Gateway.GetServiceConfig(string(serviceID)); svc != nil {
-			return svc.EffectiveTimeout(cfg.Gateway.EffectiveDefaults()).RelayTimeout
-		}
-		return cfg.Gateway.EffectiveDefaults().Timeout.RelayTimeout
-	}
+	// 11. Per-service config functions.
+	//
+	// Each reads the config value and then lets the tuning store override it,
+	// which is what makes a knob changeable without a restart: the middlewares
+	// call these per request, so the next relay picks up whatever the admin API
+	// last stored. A knob that is NOT read through a closure like this cannot be
+	// made runtime-changeable by registering it — see the tuning package doc.
+	tuningStore := tuning.NewStore()
+	retryFn := newRetryFn(cfg, tuningStore)
+	timeoutFn := newTimeoutFn(cfg, tuningStore)
 
 	// 12. Build middleware chain.
 	//
@@ -456,8 +454,40 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 
 	// 16. Admin API + Router
-	app.Admin = router.NewAdminAPI(flags, repSvc, timeline, cb, qosReg, logger)
+	app.Admin = router.NewAdminAPI(flags, repSvc, timeline, cb, qosReg, tuningStore, logger)
 	app.Router = router.New(cfg.Router, chain, proto, wsRelayer, logger)
 
 	return app, nil
+}
+
+// newRetryFn resolves retry/hedge settings for a service: the config value,
+// then whatever the tuning store has been told to override.
+//
+// The middlewares call this per request, which is the whole mechanism behind
+// changing a knob without a restart — the next relay reads whatever the admin
+// API last stored. A setting captured once at wire time cannot be made
+// runtime-changeable by registering a knob for it; see the tuning package doc.
+func newRetryFn(cfg *config.Config, store *tuning.Store) func(domain.ServiceID) config.RetryConfig {
+	return func(serviceID domain.ServiceID) config.RetryConfig {
+		base := cfg.Gateway.EffectiveDefaults().Retry
+		if svc := cfg.Gateway.GetServiceConfig(string(serviceID)); svc != nil {
+			base = svc.EffectiveRetry(cfg.Gateway.EffectiveDefaults())
+		}
+		base.MaxRetries = store.Int(tuning.KnobRetryMaxRetries, serviceID, base.MaxRetries)
+		base.MaxLatency = store.Duration(tuning.KnobRetryMaxLatency, serviceID, base.MaxLatency)
+		base.HedgeDelay = store.Duration(tuning.KnobHedgeDelay, serviceID, base.HedgeDelay)
+		return base
+	}
+}
+
+// newTimeoutFn resolves the per-relay timeout for a service, with the same
+// config-then-override layering as newRetryFn.
+func newTimeoutFn(cfg *config.Config, store *tuning.Store) func(domain.ServiceID) time.Duration {
+	return func(serviceID domain.ServiceID) time.Duration {
+		base := cfg.Gateway.EffectiveDefaults().Timeout.RelayTimeout
+		if svc := cfg.Gateway.GetServiceConfig(string(serviceID)); svc != nil {
+			base = svc.EffectiveTimeout(cfg.Gateway.EffectiveDefaults()).RelayTimeout
+		}
+		return store.Duration(tuning.KnobRelayTimeout, serviceID, base)
+	}
 }
