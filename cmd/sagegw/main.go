@@ -50,6 +50,13 @@ func main() {
 		logger.Warn("config key ignored: SAGE does not implement this setting, and it has no effect", "detail", f)
 	}
 
+	// The quieter half: keys that DO parse into a field and are read by
+	// nothing. These are worse than unknown keys, because they survive the
+	// round trip and show up in GET /admin/config looking live.
+	for _, f := range cfg.Inert {
+		logger.Warn("config key has no effect: SAGE parses this setting but nothing reads it", "detail", f)
+	}
+
 	// Background context for all services
 	ctx, cancel := context.WithCancel(context.Background())
 

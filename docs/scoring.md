@@ -200,6 +200,36 @@ ability to answer "what is grading this endpoint?" and to keep a future
 mechanism from being driven entirely by synthetic traffic — which is the loop
 PATH measured on canary at 19.3× the control's pool-collapse rate.
 
+### 4.7 Build it on PATH's config surface, not a new one
+
+PATH's scoring configuration already exists in `config/service.go`, parsed,
+documented, and read by nothing: `signal_impacts` (the score delta per signal
+type), `latency_profiles` (fast/slow/severe thresholds with a bonus and two
+penalties, per chain), `tiered_selection` (tier thresholds plus probation),
+`min_threshold`, `recovery_timeout`. They are reported at startup as inert (see
+`docs/path-compat.md`), which is honest, but the better answer for most of them
+is to make them true.
+
+Doing the rework through those keys rather than inventing SAGE names has three
+payoffs, and no cost that is not also a benefit:
+
+- An operator's PATH tuning starts doing what it says. Today moving a config
+  across silently drops it.
+- Two of the open questions below stop being ours to answer in the abstract:
+  the score deltas (§4.5) and the latency thresholds (§4.4) become configured
+  values with a documented default, and the default is what we have to defend
+  rather than the only possible answer.
+- It forces the divergence to be where it belongs. PATH's *keys* with SAGE's
+  *machine* is exactly the compatibility line in `docs/path-compat.md`: the
+  operator surface matches, the mechanism does not.
+
+The cost is that a key SAGE honours must mean what PATH means by it. Where it
+cannot — `recovery_timeout` names a cooldown SAGE does not have, and should not
+grow one to satisfy a key — the key stays inert and stays reported. That is the
+choice this design is making explicit: **implement the surface, refuse the
+mechanism**, and say so out loud in the one case where the surface implies a
+mechanism we are declining.
+
 ## 5. What this deliberately does not add
 
 No strike system, no cooldown, no second rate detector, no bench. PATH reached

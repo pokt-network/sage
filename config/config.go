@@ -40,6 +40,15 @@ type Config struct {
 	//
 	// Not a YAML field: it describes the parse, not the configuration.
 	Ignored []string `yaml:"-"`
+
+	// Inert lists config keys that were present in the YAML, parsed into a
+	// field, and are read by nothing. Ignored covers the loud half of PATH
+	// compatibility — a key with no Go field; this is the quiet half, where a
+	// setting survives the round trip and appears in GET /admin/config while
+	// deciding nothing. See inert.go.
+	//
+	// Also not a YAML field, and reported at startup the same way.
+	Inert []string `yaml:"-"`
 }
 
 // Protocol backend types.

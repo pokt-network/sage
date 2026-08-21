@@ -35,6 +35,7 @@ func parse(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("parse config YAML: %w", err)
 	}
 	cfg.Ignored = ignoredFields(data)
+	cfg.Inert = inertKeysFromYAML(data)
 	applyDefaults(&cfg)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
@@ -85,6 +86,19 @@ func ignoredFields(data []byte) []string {
 		}
 	}
 	return out
+}
+
+// inertKeysFromYAML reports the parsed-but-unimplemented keys the operator
+// actually wrote. It decodes a second time into generic maps rather than
+// reading the struct, because a zero-valued field cannot say whether anyone
+// set it.
+func inertKeysFromYAML(data []byte) []string {
+	var tree any
+	if err := yaml.Unmarshal(data, &tree); err != nil {
+		// The real decode reports parse failures; nothing to add.
+		return nil
+	}
+	return InertKeys(tree)
 }
 
 func applyDefaults(cfg *Config) {
