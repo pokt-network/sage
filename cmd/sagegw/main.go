@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	_ "net/http/pprof" // registers /debug/pprof on http.DefaultServeMux
 	"os"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/internal/safego"
+	"github.com/pokt-network/sage/router"
 )
 
 var (
@@ -131,16 +131,20 @@ func main() {
 	// Its own mux, deliberately NOT http.DefaultServeMux — that one carries the
 	// /debug/pprof handlers from the blank import above.
 	if cfg.Admin.Addr != "" && app.Admin != nil {
-		if !isLoopbackAddr(cfg.Admin.Addr) {
-			logger.Warn("admin API is reachable from outside this host: it has no authentication, and anyone who can reach it can toggle feature flags, reset reputation and clear circuit breakers — bind it to localhost or firewall the port",
+		// config.ValidateAdmin has already refused the one combination that
+		// cannot be allowed to start — no token on a non-loopback address — so
+		// by here the API is either authenticated or unreachable from off-host.
+		adminToken := cfg.Admin.EffectiveAuthToken()
+		if adminToken == "" {
+			logger.Warn("admin API is unauthenticated and reachable from this host only: anyone with local access can toggle feature flags, reset reputation and clear circuit breakers — set admin_config.auth_token or "+config.EnvAdminToken+" to require a bearer token",
 				"addr", cfg.Admin.Addr,
 			)
 		}
 		safego.Go(logger, "server.admin", func() {
 			mux := http.NewServeMux()
 			app.Admin.RegisterRoutes(mux)
-			logger.Info("admin listening", "addr", cfg.Admin.Addr)
-			if err := http.ListenAndServe(cfg.Admin.Addr, mux); err != nil {
+			logger.Info("admin listening", "addr", cfg.Admin.Addr, "authenticated", adminToken != "")
+			if err := http.ListenAndServe(cfg.Admin.Addr, router.RequireAuth(adminToken, mux)); err != nil {
 				logger.Warn("admin server stopped", "error", err)
 			}
 		})
@@ -232,16 +236,5 @@ func parseLogLevel(level string) slog.Level {
 // exposed, not as loopback — that is the case worth warning about, and the one
 // that looks harmless in a config file.
 func isLoopbackAddr(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return false
-	}
-	if host == "" {
-		return false
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return config.IsLoopbackAddr(addr)
 }

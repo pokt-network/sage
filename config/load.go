@@ -175,6 +175,9 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("protocol.type must be %q or %q, got %q",
 			ProtocolTypeShannon, ProtocolTypeMock, cfg.Protocol.Type)
 	}
+	if err := ValidateAdmin(cfg.Admin); err != nil {
+		return err
+	}
 	if cfg.Concurrency.MaxBatchPayloads > cfg.Concurrency.MaxConcurrentRelays {
 		return fmt.Errorf("max_batch_payloads (%d) must be <= max_concurrent_relays (%d)",
 			cfg.Concurrency.MaxBatchPayloads, cfg.Concurrency.MaxConcurrentRelays)

@@ -10,15 +10,26 @@ security property, not a detail:
 | Port (default) | Config key | Routes | Exposure |
 |---|---|---|---|
 | `3069` | `router_config.port` | relays, health, readiness | public **behind an authenticating, rate-limiting edge** |
-| `9091` | `admin_config.addr` | `/admin/*` | **loopback only** |
+| `9091` | `admin_config.addr` | `/admin/*` | **loopback, or bearer-token authenticated** |
 | `9090` | `metrics_config.prometheus_addr` | `/metrics` | scrape-only |
 
-**The admin API is unauthenticated.** Anyone who can reach it can flip feature
+**The admin API controls the gateway.** Anyone who can reach it can flip feature
 flags — turning on `shadow_mode` alone stops the gateway answering anything
 — reset reputation, and clear circuit breakers. It defaults to
-`localhost:9091` for that reason, and binding it anywhere non-loopback is
-warned about at startup. Put a TLS-terminating proxy with its own authentication
-in front of it, or leave it on loopback and reach it through an SSH tunnel.
+`localhost:9091` for that reason.
+
+Authentication is a bearer token, set with `admin_config.auth_token` or the
+`SAGE_ADMIN_TOKEN` environment variable (which wins, so the secret never has
+to live in a config file). Send it as `Authorization: Bearer <token>`:
+
+    curl -H "Authorization: Bearer $SAGE_ADMIN_TOKEN" http://localhost:9091/admin/flags
+
+The token may be omitted **only while the API is bound to loopback**. Configuring
+a non-loopback address without one is refused at startup rather than warned
+about, and a token shorter than 16 characters is refused anywhere — a guessable
+credential on this port is worse than none, because it reads as protection.
+A TLS-terminating proxy in front is still the right answer for anything exposed:
+the token travels in a header, so it needs the transport to be encrypted.
 
 Relay requests name their service with the `Target-Service-Id` header. The
 `/v1` mount point belongs to the gateway, not to the service: the router

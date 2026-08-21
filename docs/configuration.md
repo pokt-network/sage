@@ -82,7 +82,8 @@ Controls the admin API listener.
 
 | Key | Type | Description |
 |---|---|---|
-| `addr` | string | The listen address for the admin API. Empty takes DefaultAdminAddr. Binding anywhere non-loopback publishes an unauthenticated control plane, and is warned about at startup. |
+| `addr` | string | The listen address for the admin API. Empty takes DefaultAdminAddr. Binding anywhere non-loopback without an auth token is refused at startup. |
+| `auth_token` | string | The bearer token the admin API requires, compared against the Authorization header. Empty means no authentication, which is only allowed while the API is bound to loopback. EnvAdminToken overrides it. |
 
 ## `concurrency_config`
 

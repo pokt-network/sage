@@ -3,7 +3,13 @@
 // internally (no pointer fields, no nil checks).
 package config
 
-import "time"
+import (
+	"fmt"
+	"net"
+	"os"
+	"strings"
+	"time"
+)
 
 // Config is the root configuration for SAGE.
 type Config struct {
@@ -185,12 +191,81 @@ type MetricsConfig struct {
 // typed on purpose.
 const DefaultAdminAddr = "localhost:9091"
 
+// EnvAdminToken carries the admin API bearer token, and takes precedence over
+// admin_config.auth_token.
+//
+// The env var exists so the token never has to be in the YAML at all: a config
+// file is the artifact most likely to be committed, templated, or shipped in an
+// image, and a shared secret that lives there leaks by copy rather than by
+// attack. The config field remains for setups that keep the whole config in a
+// secret store already.
+const EnvAdminToken = "SAGE_ADMIN_TOKEN"
+
+// MinAdminTokenLength is the shortest admin token SAGE will accept.
+//
+// A bearer token guards flag flips that can stop the gateway serving anything,
+// so a token short enough to guess is worse than none: it reads as protection.
+// 32 characters is what `openssl rand -hex 16` produces, which is the command
+// an operator is most likely to reach for; 16 is the floor, leaving room for a
+// passphrase somebody actually typed.
+const MinAdminTokenLength = 16
+
 // AdminConfig controls the admin API listener.
 type AdminConfig struct {
 	// Addr is the listen address for the admin API. Empty takes
-	// DefaultAdminAddr. Binding anywhere non-loopback publishes an
-	// unauthenticated control plane, and is warned about at startup.
+	// DefaultAdminAddr. Binding anywhere non-loopback without an auth token is
+	// refused at startup.
 	Addr string `yaml:"addr"`
+
+	// AuthToken is the bearer token the admin API requires, compared against
+	// the Authorization header. Empty means no authentication, which is only
+	// allowed while the API is bound to loopback. EnvAdminToken overrides it.
+	AuthToken string `yaml:"auth_token"`
+}
+
+// IsLoopbackAddr reports whether a listen address reaches only this host.
+//
+// An address with no host (":9091") is NOT loopback: it binds every interface,
+// which is the case most likely to be typed by accident.
+func IsLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// ValidateAdmin enforces the one coupling between the admin listener and its
+// credential: the admin API may be unauthenticated, or reachable from off-host,
+// but not both. It used to only warn, which meant the unsafe combination
+// started fine and said so in a log line nobody reads twice.
+func ValidateAdmin(cfg AdminConfig) error {
+	token := cfg.EffectiveAuthToken()
+	if token != "" && len(token) < MinAdminTokenLength {
+		return fmt.Errorf(
+			"admin token is %d characters, minimum is %d: a guessable token on a control plane that can stop the gateway serving is worse than none, because it reads as protection",
+			len(token), MinAdminTokenLength)
+	}
+	if token == "" && cfg.Addr != "" && !IsLoopbackAddr(cfg.Addr) {
+		return fmt.Errorf(
+			"admin_config.addr is %q, which is reachable from outside this host, and no admin token is set: set admin_config.auth_token or %s (openssl rand -hex 16), or bind the admin API to localhost",
+			cfg.Addr, EnvAdminToken)
+	}
+	return nil
+}
+
+// EffectiveAuthToken returns the admin bearer token, preferring EnvAdminToken
+// over the config field. An empty result means the admin API is unauthenticated
+// — valid on loopback, refused anywhere else (see cmd/sagegw).
+func (a AdminConfig) EffectiveAuthToken() string {
+	if env := strings.TrimSpace(os.Getenv(EnvAdminToken)); env != "" {
+		return env
+	}
+	return strings.TrimSpace(a.AuthToken)
 }
 
 // ConcurrencyConfig controls parallel processing limits.
