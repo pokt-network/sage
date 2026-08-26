@@ -31,6 +31,7 @@ type Recorder struct {
 	singleflightCoalesced *prometheus.CounterVec
 	degradedTotal         *prometheus.CounterVec
 	circuitBreaks         *prometheus.CounterVec
+	circuitBreakerOutcome *prometheus.CounterVec
 	supplierBlacklists    *prometheus.CounterVec
 	relayMinerErrors      *prometheus.CounterVec
 
@@ -122,6 +123,19 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "domain"},
 		),
+		// Two labels by design, not three. PATH's sibling metric carried
+		// service × domain × reason × event and reached 233k series — the cross
+		// product, not a leaking label. A two-value outcome keeps this at
+		// roughly a twelfth of that; domain is a supplier hostname, which is
+		// stable across sessions unlike supplier addresses.
+		circuitBreakerOutcome: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "circuit_breaker_outcome_total",
+				Help:      "Relay outcomes as counted by the circuit breaker's failure-rate gate, keyed on the HOSTNAME the gate uses. outcome is success or failure: numerator and denominator of the rate that decides a break. Only what the gate sees — a broken domain is absent, not healthy.",
+			},
+			[]string{"service_id", "domain", "outcome"},
+		),
 		supplierBlacklists: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -151,6 +165,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.singleflightCoalesced,
 		r.degradedTotal,
 		r.circuitBreaks,
+		r.circuitBreakerOutcome,
 		r.supplierBlacklists,
 		r.relayMinerErrors,
 	)
@@ -208,6 +223,17 @@ func (r *Recorder) RecordDegraded(serviceID domain.ServiceID, tier string) {
 // RecordCircuitBreak increments the circuit break counter for a domain.
 func (r *Recorder) RecordCircuitBreak(serviceID domain.ServiceID, domain string) {
 	r.circuitBreaks.WithLabelValues(r.services.serviceValue(serviceID), sanitizeLabel(domain)).Inc()
+}
+
+// RecordCircuitBreakerOutcome records one outcome the breaker's failure-rate
+// gate counted against a domain. It exposes the gate's OWN inputs: the gate
+// keys on the full hostname while every relay counter keys on service alone,
+// so without this an operator running several relay miners under one domain
+// reports one blended rate — a domain whose hosts range from 50% to 80% is
+// indistinguishable from one where every host sits at 65%, and those call for
+// opposite responses. outcome comes from circuitbreaker's closed set.
+func (r *Recorder) RecordCircuitBreakerOutcome(serviceID domain.ServiceID, domain, outcome string) {
+	r.circuitBreakerOutcome.WithLabelValues(r.services.serviceValue(serviceID), sanitizeLabel(domain), outcome).Inc()
 }
 
 // RecordSupplierBlacklist increments the supplier blacklist counter.

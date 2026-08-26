@@ -41,6 +41,9 @@ var indicators = []indicator{
 	// Capability limitation (e.g., Tron lite fullnodes that don't expose an API).
 	{pattern: "lite fullnode", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "lite_fullnode"},
 	{pattern: "api is not supported", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "api_not_supported"},
+	// Solana node started without a secondary account index for this program
+	// (-32010). Configuration, not a fault; another operator has the index.
+	{pattern: "excluded from account secondary indexes", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "account_index_excluded"},
 
 	// Supplier-attributed: the supplier's infrastructure is broken.
 	{pattern: "connection refused", attribution: AttrSupplier, shouldRetry: true, severity: SeverityCritical, reason: "connection_refused"},

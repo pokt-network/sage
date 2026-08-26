@@ -100,9 +100,9 @@ func TestBatch_MultiplePayloads_FanOut(t *testing.T) {
 func TestBatch_PartialFailure_IncludedInResult(t *testing.T) {
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
 		if ctx.Payloads[0].Method() == "fail" {
-			return errors.New("upstream error")
+			return domain.NewRelayError(domain.ErrEndpoint, "no endpoint answered", errors.New("dial tcp 10.0.0.1:8545: connection refused"), true)
 		}
-		ctx.Response = &domain.Response{Body: []byte(`{"ok":true}`), HTTPStatusCode: 200}
+		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":` + string(ctx.Payloads[0].JSONRPCID()) + `,"result":"ok"}`), HTTPStatusCode: 200}
 		return nil
 	})
 
@@ -110,9 +110,9 @@ func TestBatch_PartialFailure_IncludedInResult(t *testing.T) {
 	handler := mw(inner)
 
 	payloads := []domain.Payload{
-		domain.NewPayload([]byte(`ok`), domain.RPCTypeJSONRPC, "ok"),
-		domain.NewPayload([]byte(`fail`), domain.RPCTypeJSONRPC, "fail"),
-		domain.NewPayload([]byte(`ok2`), domain.RPCTypeJSONRPC, "ok"),
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"ok"}`), domain.RPCTypeJSONRPC, "ok"),
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":"req-2","method":"fail"}`), domain.RPCTypeJSONRPC, "fail"),
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":3,"method":"ok"}`), domain.RPCTypeJSONRPC, "ok"),
 	}
 
 	ctx := makeMultiPayloadCtx(payloads)
@@ -130,14 +130,109 @@ func TestBatch_PartialFailure_IncludedInResult(t *testing.T) {
 		t.Fatalf("expected 3 elements, got %d", len(arr))
 	}
 
-	// The second element should be an error object.
-	var errElem map[string]any
-	if err := json.Unmarshal(arr[1], &errElem); err != nil {
-		t.Fatalf("failed to unmarshal error element: %v", err)
+	// The second element is a JSON-RPC error RESPONSE for the second REQUEST:
+	// the client matches it by id, and the id keeps its JSON type.
+	assertBatchErrorItem(t, arr[1], `"req-2"`)
+	var errElem struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	if _, hasErr := errElem["error"]; !hasErr {
-		t.Fatalf("expected error field in failed sub-response, got: %s", arr[1])
+	_ = json.Unmarshal(arr[1], &errElem)
+	if strings.Contains(errElem.Error.Message, "10.0.0.1") {
+		t.Errorf("batch item error leaks the cause chain: %q", errElem.Error.Message)
 	}
+}
+
+// assertBatchErrorItem checks one element of a batch response is a JSON-RPC
+// 2.0 error response object carrying wantID verbatim.
+func assertBatchErrorItem(t *testing.T, item json.RawMessage, wantID string) {
+	t.Helper()
+	var elem struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(item, &elem); err != nil {
+		t.Fatalf("failed to unmarshal error element: %v\n%s", err, item)
+	}
+	if elem.JSONRPC != "2.0" {
+		t.Errorf("jsonrpc = %q, want \"2.0\": %s", elem.JSONRPC, item)
+	}
+	if string(elem.ID) != wantID {
+		t.Errorf("id = %s, want %s: %s", elem.ID, wantID, item)
+	}
+	if elem.Error == nil {
+		t.Fatalf("expected error member: %s", item)
+	}
+	if elem.Error.Code != -32603 {
+		t.Errorf("error.code = %d, want -32603", elem.Error.Code)
+	}
+	if elem.Error.Message == "" {
+		t.Error("error.message is empty")
+	}
+}
+
+// An item that came back with no body gets an error response too. A null in
+// the array is not a response object, and a client walking the batch by id
+// would find nothing for that request.
+func TestBatch_EmptyBodyIsAnErrorResponseWithTheRequestID(t *testing.T) {
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		if ctx.Payloads[0].Method() == "empty" {
+			ctx.Response = &domain.Response{HTTPStatusCode: 200}
+			return nil
+		}
+		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"ok"}`), HTTPStatusCode: 200}
+		return nil
+	})
+	handler := Batch(4, 0)(inner)
+
+	payloads := []domain.Payload{
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"ok"}`), domain.RPCTypeJSONRPC, "ok"),
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":2,"method":"empty"}`), domain.RPCTypeJSONRPC, "empty"),
+		// No id at all: answered with id null, as a node would.
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"empty"}`), domain.RPCTypeJSONRPC, "empty"),
+	}
+
+	ctx := makeMultiPayloadCtx(payloads)
+	if err := handler.HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(ctx.Response.Body, &arr); err != nil {
+		t.Fatalf("expected JSON array: %v\nbody: %s", err, ctx.Response.Body)
+	}
+	if len(arr) != 3 {
+		t.Fatalf("expected 3 elements, got %d", len(arr))
+	}
+	assertBatchErrorItem(t, arr[1], "2")
+	assertBatchErrorItem(t, arr[2], "null")
+}
+
+// The items a dead request never started are answered the same way.
+func TestBatch_NotStartedItemsCarryTheirRequestIDs(t *testing.T) {
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error { return nil })
+	handler := Batch(16, 0)(inner)
+
+	payloads := []domain.Payload{
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":"a","method":"m"}`), domain.RPCTypeJSONRPC, "m"),
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":"b","method":"m"}`), domain.RPCTypeJSONRPC, "m"),
+	}
+	goCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctx := makeMultiPayloadCtxWith(goCtx, payloads)
+	if err := handler.HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(ctx.Response.Body, &arr); err != nil {
+		t.Fatalf("expected JSON array: %v\nbody: %s", err, ctx.Response.Body)
+	}
+	assertBatchErrorItem(t, arr[0], `"a"`)
+	assertBatchErrorItem(t, arr[1], `"b"`)
 }
 
 func TestBatch_EmptyPayloads_PassThrough(t *testing.T) {

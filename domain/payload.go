@@ -1,8 +1,11 @@
 package domain
 
 import (
+	"encoding/json"
 	"strconv"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 // Payload is the raw bytes of a service request.
@@ -51,6 +54,19 @@ func (p Payload) Bytes() []byte { return p.data }
 
 // RPCType returns the RPC type of this payload.
 func (p Payload) RPCType() RPCType { return p.rpcType }
+
+// JSONRPCID returns the request's "id" member exactly as it was written —
+// number, string or null — so an error answered on the request's behalf
+// carries the id the client will match it by. A payload with no id, or one
+// that is not JSON at all, yields null: per JSON-RPC 2.0 that is the id of an
+// error whose request could not be read.
+func (p Payload) JSONRPCID() json.RawMessage {
+	id := gjson.GetBytes(p.data, "id")
+	if !id.Exists() {
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(id.Raw)
+}
 
 // Method returns the JSON-RPC method name (empty for non-JSON-RPC).
 func (p Payload) Method() string { return p.method }

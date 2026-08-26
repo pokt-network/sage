@@ -264,6 +264,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	recorder := metrics.NewRecorder(serviceIDsFrom(cfg))
 	app.Metrics = recorder
 
+	// The breaker's failure-rate gate keys on hostname; every relay counter
+	// keys on service. Exposing the gate's own inputs is the only way to tell
+	// one bad host behind an operator from an operator that is bad everywhere.
+	cb.SetOutcomeHook(func(serviceID, brokenDomain, outcome string) {
+		recorder.RecordCircuitBreakerOutcome(domain.ServiceID(serviceID), brokenDomain, outcome)
+	})
+
 	// Supplier blacklists and relay miner errors are recorded by the protocol
 	// itself: both are decided inside response validation, below the middleware
 	// chain that carries the recorder.

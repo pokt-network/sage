@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -298,5 +299,35 @@ func TestRetry_SingleOperatorPoolStillRetries(t *testing.T) {
 	}
 	if len(distinct) != 3 {
 		t.Errorf("each attempt should use a different endpoint: %v", seen)
+	}
+}
+
+// A retry is for the client's benefit, and once the request context is done
+// there is no client. Every further attempt would select a fresh endpoint and
+// sign a relay that fails on arrival with "context canceled" — charged to a
+// supplier that did nothing. PATH's single-request loop already stopped here;
+// its batch loop did not, and 43 of 43 circuit breaks on one service over two
+// hours were client hang-ups stamped on whichever supplier held the item.
+func TestRetry_StopsWhenRequestContextIsDone(t *testing.T) {
+	goCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var calls int
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		calls++
+		ctx.Endpoint = ctx.Endpoints[0]
+		cancel() // the client hangs up while this attempt is in flight
+		return retryableErr("context canceled")
+	})
+	h := Retry(newFlags("retry"), retryCfg(3, 0))(inner)
+
+	ctx := baseContext()
+	ctx.Ctx = goCtx
+	err := h.HandleRelay(ctx)
+	if err == nil {
+		t.Fatal("expected the attempt's error to be returned")
+	}
+	if calls != 1 {
+		t.Fatalf("made %d attempts against a dead request context, want 1", calls)
 	}
 }

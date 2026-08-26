@@ -262,7 +262,7 @@ func (r *Router) writeRelayError(rw relay.ResponseWriter, ctx *relay.Context, er
 	if ctx.RPCType == domain.RPCTypeJSONRPC || isJSONRPCRequest(ctx) {
 		var id json.RawMessage = []byte("null")
 		if len(ctx.Payloads) > 0 {
-			id = extractJSONRPCID(ctx.Payloads[0].Bytes())
+			id = ctx.Payloads[0].JSONRPCID()
 		}
 		// domain.ClientMessage, not err.Error(): the cause chain carries the
 		// operator's own infrastructure (a dial failure names the fullnode's
@@ -319,18 +319,6 @@ func isJSONRPCRequest(ctx *relay.Context) bool {
 	}
 	ct := ctx.HTTPRequest.Header.Get("Content-Type")
 	return ct == "application/json" || ctx.HTTPRequest.Method == http.MethodPost
-}
-
-// extractJSONRPCID attempts to pull the "id" field from a JSON-RPC payload.
-// Returns json.RawMessage("null") if extraction fails.
-func extractJSONRPCID(payload []byte) json.RawMessage {
-	var msg struct {
-		ID json.RawMessage `json:"id"`
-	}
-	if err := json.Unmarshal(payload, &msg); err != nil || msg.ID == nil {
-		return json.RawMessage("null")
-	}
-	return msg.ID
 }
 
 // withDefault returns d if dur is zero.

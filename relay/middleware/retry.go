@@ -44,6 +44,16 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 
 			for attempt := 0; attempt < maxAttempts; attempt++ {
 				if attempt > 0 {
+					// Nobody is waiting for a retry once the request context is
+					// done: the client hung up, or the Timeout middleware has
+					// already answered. Every further attempt would select and
+					// sign a relay that fails on arrival with the same context
+					// error — and each of those is a failure recorded against a
+					// supplier for something the supplier did not do.
+					if ctx.Ctx.Err() != nil {
+						return lastErr
+					}
+
 					// Exclude the endpoint we just tried.
 					if triedEndpoints == nil {
 						triedEndpoints = make(map[domain.EndpointAddr]bool, maxAttempts)

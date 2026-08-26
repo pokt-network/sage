@@ -20,6 +20,7 @@ means traffic is arriving for services this gateway does not serve.
 |---|---|---|---|
 | `sage_cache_hits_total` | counter | `service_id` | Total response cache hits. |
 | `sage_cache_misses_total` | counter | `service_id` | Total response cache misses. |
+| `sage_circuit_breaker_outcome_total` | counter | `service_id`, `domain`, `outcome` | Relay outcomes as counted by the circuit breaker's failure-rate gate, keyed on the HOSTNAME the gate uses. outcome is success or failure: numerator and denominator of the rate that decides a break. Only what the gate sees — a broken domain is absent, not healthy. |
 | `sage_circuit_breaker_state` | gauge | `service_id`, `domain` | 1 while a domain is circuit-broken for this service (locked out of selection). Absent when healthy. |
 | `sage_circuit_breaks_total` | counter | `service_id`, `domain` | Total circuit breaker open events, by service and domain. |
 | `sage_degraded_total` | counter | `service_id`, `tier` | Total requests served in degraded mode, by service and tier. |

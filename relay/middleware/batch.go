@@ -20,8 +20,12 @@ import (
 // Single-payload requests (len(ctx.Payloads) <= 1) pass through unchanged.
 //
 // If any individual relay fails, its error is captured as a JSON-RPC error
-// object in the combined response rather than failing the entire batch.
-// The final HTTP status is always 200.
+// response object — carrying that request's own id — in the combined response
+// rather than failing the entire batch. Per JSON-RPC 2.0 every request object
+// in a batch gets exactly one response object, and the id is how the client
+// matches them; an error without one is unattributable to the client, and the
+// N−1 answers beside it were already relayed and paid for. The final HTTP
+// status is always 200.
 //
 // maxConcurrentRelays is a GLOBAL ceiling on sub-relay goroutines in flight —
 // the semaphore is built once here, not per request, which is the only way the
@@ -88,7 +92,8 @@ func Batch(maxConcurrentRelays, maxPayloads int) relay.Middleware {
 					// The request is over; do not queue behind the budget for an
 					// answer nobody is waiting for. Report the rest and stop.
 					for j := i; j < n; j++ {
-						results[j] = errorJSON("batch payload not started: " + ctx.Ctx.Err().Error())
+						results[j] = jsonRPCErrorItem(ctx.Payloads[j].JSONRPCID(),
+							"batch payload not started: "+ctx.Ctx.Err().Error())
 						wg.Done()
 					}
 					break
@@ -117,15 +122,21 @@ func Batch(maxConcurrentRelays, maxPayloads int) relay.Middleware {
 					if sub.Degraded {
 						degraded.Store(true)
 					}
+					// domain.ClientMessage, not err.Error(): the cause chain
+					// names the operator's own infrastructure, exactly as on the
+					// single-request path in router.writeRelayError.
 					if err != nil {
-						results[i] = errorJSON(err.Error())
+						results[i] = jsonRPCErrorItem(payload.JSONRPCID(), domain.ClientMessage(err))
 						return
 					}
-					if sub.Response != nil && len(sub.Response.Body) > 0 {
-						results[i] = json.RawMessage(sub.Response.Body)
-					} else {
-						results[i] = json.RawMessage(`null`)
+					// An empty body is not a response object; a null in its
+					// place is not one either. The client asked a question and
+					// gets an error it can attribute.
+					if sub.Response == nil || len(sub.Response.Body) == 0 {
+						results[i] = jsonRPCErrorItem(payload.JSONRPCID(), "endpoint error: empty response")
+						return
 					}
+					results[i] = json.RawMessage(sub.Response.Body)
 				}()
 			}
 
@@ -173,7 +184,30 @@ func acquire(ctx context.Context, sem chan struct{}) bool {
 	}
 }
 
-// errorJSON returns a minimal JSON-RPC error object as a raw message.
+// jsonRPCErrorItem builds the response object for one batch item nothing
+// answered: a JSON-RPC 2.0 error response carrying the request's own id, with
+// its JSON type intact, next to the successes. This is what the single-request
+// path returns for the same failure and what a node does.
+func jsonRPCErrorItem(id json.RawMessage, msg string) json.RawMessage {
+	b, err := json.Marshal(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   map[string]any  `json:"error"`
+	}{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error:   map[string]any{"code": -32603, "message": msg},
+	})
+	if err != nil {
+		// Only an unmarshalable id could get here, and JSONRPCID returns raw
+		// JSON. Fall back to an unattributed error rather than a hole.
+		return errorJSON(msg)
+	}
+	return json.RawMessage(b)
+}
+
+// errorJSON returns a minimal JSON error object as a raw message. It answers a
+// whole request the batch middleware rejected up front, not one item of it.
 func errorJSON(msg string) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{
 		"error": map[string]any{

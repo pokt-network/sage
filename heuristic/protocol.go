@@ -221,6 +221,14 @@ var blockchainErrorPatterns = append([]string{
 	"unknown block",
 	"transaction not found",
 	"receipt not found",
+	// Solana -32010 "<key> excluded from account secondary indexes; this RPC
+	// method unavailable for key": the node was started without a secondary
+	// account index for that program, so it cannot serve getProgramAccounts
+	// for it while another operator serves the identical call from its index.
+	// Node configuration, not a fault — and not historical state either, so
+	// it lives here rather than in capabilityLimitationPatterns, which the EVM
+	// archival demotion path also reads.
+	"excluded from account secondary indexes",
 }, capabilityLimitationPatterns...)
 
 // classifyServerError handles -32000 range errors which are commonly blockchain-specific.

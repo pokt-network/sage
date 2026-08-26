@@ -54,6 +54,32 @@ const (
 	// after being let back in; without memory across expiry, every episode
 	// looks like a first offence.
 	defaultEscalationMemory = 60 * time.Minute
+	// defaultRebreakMargin widens the threshold for a domain that broke
+	// recently, giving the gate hysteresis instead of one line it oscillates
+	// across.
+	//
+	// The threshold breaks a domain and nothing but TTL expiry restores it, so
+	// a domain whose true failure rate sits just above the line is removed
+	// every single time it is let back in, forever, with escalation holding it
+	// out longer each cycle — while a domain far worse is treated identically.
+	// PATH measured it on six relay-miner hosts behind one operator against an
+	// 80% success line: the four marginal hosts (79.7 · 79.3 · 78.3 · 72.5%)
+	// spent 69–92% of a six-hour window removed from the pool, one of them
+	// answering 40 consecutive probes with zero errors while still marked
+	// broken; the two genuinely broken hosts (58.6 · 49.7%) must stay out.
+	//
+	// 0.15 puts the re-break line at 35% failure: above where marginal hosts
+	// live, below where broken ones do, so the two populations separate. A
+	// first break is unaffected — this only governs whether a domain that
+	// already served its TTL is removed again, and it lapses with
+	// escalationMemory rather than granting permanent leniency.
+	defaultRebreakMargin = 0.15
+)
+
+// Outcome values passed to the hook set by SetOutcomeHook.
+const (
+	OutcomeSuccess = "success"
+	OutcomeFailure = "failure"
 )
 
 // BrokenState holds the state of a circuit-broken domain.
@@ -103,9 +129,15 @@ type Breaker struct {
 	failureWindow        time.Duration
 	minFailures          int
 	failureRateThreshold float64
+	rebreakMargin        float64
 	escalationMemory     time.Duration
 	statsMu              sync.Mutex
 	stats                map[string]map[string]*outcomeWindow // serviceID -> domain
+
+	// onOutcome, when set, is told about every outcome the gate counts. It
+	// sees exactly what the gate sees — not every relay — so the fraction it
+	// exposes is the one a break decision was made on.
+	onOutcome func(serviceID, domain, outcome string)
 }
 
 // Option configures a Breaker.
@@ -157,6 +189,24 @@ func WithEscalationMemory(d time.Duration) Option {
 	}
 }
 
+// WithRebreakMargin sets how much worse than failureRateThreshold a domain
+// must be to break again while its last episode is within escalationMemory.
+// Zero restores a single line with no hysteresis.
+func WithRebreakMargin(margin float64) Option {
+	return func(b *Breaker) {
+		b.rebreakMargin = margin
+	}
+}
+
+// SetOutcomeHook installs a callback invoked with OutcomeSuccess or
+// OutcomeFailure for every outcome the failure-rate gate counts. Failures
+// against a domain that is already broken never reach the gate and are not
+// reported — the host goes absent rather than reading as healthy. Not safe to
+// call concurrently with relays; call at wire time.
+func (b *Breaker) SetOutcomeHook(fn func(serviceID, domain, outcome string)) {
+	b.onOutcome = fn
+}
+
 // New creates a new Breaker.
 func New(opts ...Option) *Breaker {
 	b := &Breaker{
@@ -168,6 +218,7 @@ func New(opts ...Option) *Breaker {
 		failureWindow:        defaultFailureWindow,
 		minFailures:          defaultMinFailures,
 		failureRateThreshold: defaultFailureRateThreshold,
+		rebreakMargin:        defaultRebreakMargin,
 		escalationMemory:     defaultEscalationMemory,
 		stats:                make(map[string]map[string]*outcomeWindow),
 	}
@@ -209,8 +260,11 @@ func (b *Breaker) RecordSuccess(serviceID, domain string) {
 		return
 	}
 	b.statsMu.Lock()
-	defer b.statsMu.Unlock()
 	b.windowLocked(serviceID, domain, time.Now()).successes++
+	b.statsMu.Unlock()
+	if b.onOutcome != nil {
+		b.onOutcome(serviceID, domain, OutcomeSuccess)
+	}
 }
 
 // windowLocked returns the outcome window for a domain, rolling it over if the
@@ -242,8 +296,16 @@ func (b *Breaker) windowLocked(serviceID, domain string, now time.Time) *outcome
 //
 // Both conditions must hold: at least minFailures in the window (so a single
 // failure on a quiet domain is not a 100% rate) and a failure fraction at or
-// above failureRateThreshold (so a high-volume domain with a low error rate is
-// never removed, no matter how many raw failures that volume produces).
+// above the threshold (so a high-volume domain with a low error rate is never
+// removed, no matter how many raw failures that volume produces).
+//
+// The threshold is not one line. A domain that broke recently must be CLEARLY
+// worse to be removed again — failureRateThreshold + rebreakMargin — or a
+// domain sitting just above the line re-breaks on every readmission and
+// escalation holds it out for progressively longer. "Broke recently" is the
+// same predicate escalation uses, deliberately: a domain can never be escalated
+// for an episode the margin let pass, and the margin lapses when the memory
+// does.
 func (b *Breaker) shouldBreak(serviceID, domain string, now time.Time) (bool, int) {
 	b.statsMu.Lock()
 	defer b.statsMu.Unlock()
@@ -255,7 +317,12 @@ func (b *Breaker) shouldBreak(serviceID, domain string, now time.Time) (bool, in
 	if w.failures < b.minFailures || total == 0 {
 		return false, 0
 	}
-	if float64(w.failures)/float64(total) < b.failureRateThreshold {
+	recentlyBroken := !w.lastEpisodeAt.IsZero() && now.Sub(w.lastEpisodeAt) <= b.escalationMemory
+	threshold := b.failureRateThreshold
+	if recentlyBroken {
+		threshold += b.rebreakMargin
+	}
+	if float64(w.failures)/float64(total) < threshold {
 		return false, 0
 	}
 
@@ -263,7 +330,7 @@ func (b *Breaker) shouldBreak(serviceID, domain string, now time.Time) (bool, in
 	// — i.e. it was let back in and failed again. Duplicate marks within one
 	// episode are filtered in MarkBroken and never reach here.
 	hitCount := 1
-	if !w.lastEpisodeAt.IsZero() && now.Sub(w.lastEpisodeAt) <= b.escalationMemory {
+	if recentlyBroken {
 		hitCount = w.lastHitCount + 1
 	}
 	w.lastEpisodeAt = now
@@ -303,6 +370,11 @@ func (b *Breaker) MarkBroken(serviceID, domain, reason string) bool {
 	b.mu.RUnlock()
 
 	breakIt, hitCount := b.shouldBreak(serviceID, domain, now)
+	if b.onOutcome != nil {
+		// Reported after the gate has counted it, whatever it decided: this is
+		// the numerator of the fraction the decision was made on.
+		b.onOutcome(serviceID, domain, OutcomeFailure)
+	}
 	if !breakIt {
 		return false
 	}

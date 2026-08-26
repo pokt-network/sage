@@ -72,6 +72,10 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "circuit_breaks_total"},
 			[]string{"service_id", "domain"},
 		),
+		circuitBreakerOutcome: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "circuit_breaker_outcome_total"},
+			[]string{"service_id", "domain", "outcome"},
+		),
 	}
 	reg.MustRegister(
 		r.relayTotal,
@@ -370,4 +374,10 @@ func TestRecorder_MetricsMuxDoesNotCarryPprof(t *testing.T) {
 			t.Errorf("%s status = %d on the metrics mux, want 404 — pprof must not ride along", path, w.Code)
 		}
 	}
+}
+
+func TestRecordCircuitBreakerOutcome(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordCircuitBreakerOutcome("eth", "node.example.com", "success")
+	r.RecordCircuitBreakerOutcome("eth", "node.example.com", "failure")
 }

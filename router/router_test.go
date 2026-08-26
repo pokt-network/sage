@@ -394,28 +394,6 @@ func TestHandleReadyAll(t *testing.T) {
 
 // --- Unit tests for helpers ---
 
-func TestExtractJSONRPCID(t *testing.T) {
-	cases := []struct {
-		name    string
-		payload []byte
-		want    string
-	}{
-		{"numeric id", []byte(`{"id":1}`), "1"},
-		{"string id", []byte(`{"id":"req-1"}`), `"req-1"`},
-		{"null id", []byte(`{"id":null}`), "null"},
-		{"missing id", []byte(`{}`), "null"},
-		{"invalid json", []byte(`not json`), "null"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := string(extractJSONRPCID(tc.payload))
-			if got != tc.want {
-				t.Errorf("got %s, want %s", got, tc.want)
-			}
-		})
-	}
-}
-
 // --- WebSocket routing tests ---
 
 func TestHandleMaybeWebSocket_UpgradeRoutesToWSOpener(t *testing.T) {
