@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/observe"
 	"github.com/pokt-network/sage/protocol"
@@ -276,6 +277,36 @@ func checkSignal(checkName string, statusCode int, extractErr error, latency tim
 	}
 }
 
+// transportSignal grades a health check that failed before any response
+// existed, using the same evidence and verdict as the relay path
+// (heuristic.AnalyzeTransportError) instead of a fixed severity.
+//
+// A dead host must not look healthier to health checks than it does to
+// relays. Beta observed exactly that gap: every transport failure here was
+// graded a flat major error, so a DNS-dead host — critical on the relay
+// path via the same heuristic — took ~7 health-check cycles to fall below
+// the probation threshold, and stayed "vouched for" (reputation.Vouched)
+// the whole time, absorbing a method a block had diverted onto it.
+//
+// The second return is false when nothing should be recorded: a result with
+// ShouldPenalize == false means the executor's own context ended (a
+// client-cancelled check), which is not evidence about the endpoint.
+func transportSignal(checkName string, err error, ctxErr error, latency time.Duration) (reputation.Signal, bool) {
+	result := heuristic.AnalyzeTransportError(err, ctxErr)
+	if !result.ShouldPenalize {
+		return reputation.Signal{}, false
+	}
+	reason := "health_check: " + checkName + ": " + result.Reason
+	switch result.PenaltySeverity {
+	case heuristic.SeverityCritical:
+		return reputation.NewCriticalErrorSignal(reason, latency), true
+	case heuristic.SeverityMajor:
+		return reputation.NewMajorErrorSignal(reason, latency), true
+	default:
+		return reputation.NewMinorErrorSignal(reason, latency), true
+	}
+}
+
 // sendCheck sends a single health check, processes the response, and records
 // reputation signals and observations.
 // siblings are every endpoint on the probed backend, including ep. Results the
@@ -308,8 +339,9 @@ func (e *Executor) sendCheck(
 		// is no response to tell the two apart — blaming the backend's other
 		// registrations for it would eject healthy ones.
 		if e.repService != nil {
-			_ = e.repService.RecordSignal(ctx, serviceID, ep, check.Payload.RPCType(),
-				reputation.NewMajorErrorSignal("health_check: "+check.Name, latency))
+			if signal, ok := transportSignal(check.Name, err, ctx.Err(), latency); ok {
+				_ = e.repService.RecordSignal(ctx, serviceID, ep, check.Payload.RPCType(), signal)
+			}
 		}
 		e.submitObservation(serviceID, ep, check.Payload.Bytes(), nil, 0, latency, nil)
 		return

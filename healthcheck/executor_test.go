@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -119,6 +120,10 @@ func (s *stubRepService) SelectSpread(_ context.Context, _ domain.ServiceID, eps
 
 func (s *stubRepService) ResetScore(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr) error {
 	return nil
+}
+
+func (s *stubRepService) Vouched(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType) bool {
+	return true
 }
 
 // --- tests ---
@@ -383,6 +388,79 @@ func TestCheckSignal_Grading(t *testing.T) {
 			sig := checkSignal("eth_chainId", tc.statusCode, tc.extractErr, 5*time.Millisecond)
 			if sig.Type != tc.want {
 				t.Errorf("checkSignal type = %q, want %q", sig.Type, tc.want)
+			}
+			if sig.Latency != 5*time.Millisecond {
+				t.Errorf("latency = %v, want 5ms", sig.Latency)
+			}
+			if !strings.Contains(sig.Reason, "eth_chainId") {
+				t.Errorf("reason %q should name the check", sig.Reason)
+			}
+		})
+	}
+}
+
+// timeoutErr is a minimal net.Error whose Timeout() is true and which is
+// NOT a *net.OpError with Op == "dial" — the shape of a request that
+// connected and then failed to answer in time, as opposed to a failed dial.
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+// TestTransportSignal_Grading is the health-check counterpart of
+// heuristic.AnalyzeTransportError's own tests: it asserts sendCheck's
+// transport-failure branch grades with the SAME severity the relay path
+// would give the identical error, rather than a flat major. A dead host
+// must not look healthier to health checks than it does to relays.
+func TestTransportSignal_Grading(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		ctxErr error
+		want   reputation.SignalType
+		none   bool
+	}{
+		{
+			// Connect-level failure: the host isn't serving anything. Critical
+			// on the relay path via heuristic.AnalyzeTransportError, and must
+			// be critical here too — this is the exact gap beta found: a flat
+			// major grade let a DNS-dead host sit at score 50 for ~7 cycles,
+			// "vouched for" the whole time.
+			name: "connect failure (dial) is critical",
+			err: domain.NewRelayError(domain.ErrTransport, "HTTP relay failed",
+				&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, true),
+			want: reputation.SignalCriticalError,
+		},
+		{
+			name: "timeout after connect is major",
+			err:  domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", timeoutErr{}, true),
+			want: reputation.SignalMajorError,
+		},
+		{
+			// The executor's own context ended — a client hang-up on the
+			// health-check goroutine, not evidence about the endpoint.
+			name:   "client-cancelled records nothing",
+			err:    domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.Canceled, true),
+			ctxErr: context.Canceled,
+			none:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sig, ok := transportSignal("eth_chainId", tc.err, tc.ctxErr, 5*time.Millisecond)
+			if tc.none {
+				if ok {
+					t.Fatalf("expected no signal, got %+v", sig)
+				}
+				return
+			}
+			if !ok {
+				t.Fatal("expected a signal")
+			}
+			if sig.Type != tc.want {
+				t.Errorf("transportSignal type = %q, want %q", sig.Type, tc.want)
 			}
 			if sig.Latency != 5*time.Millisecond {
 				t.Errorf("latency = %v, want 5ms", sig.Latency)

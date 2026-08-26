@@ -121,6 +121,10 @@ func (m *mockRepService) ResetScore(_ context.Context, serviceID domain.ServiceI
 	return nil
 }
 
+func (m *mockRepService) Vouched(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType) bool {
+	return true
+}
+
 // --- Helper ---
 
 func newTestAdmin(

@@ -202,6 +202,49 @@ func TestService_ResetScore(t *testing.T) {
 	}
 }
 
+// TestService_Vouched exercises the beta-observed cold-start hole: right
+// after boot, before any signal, an endpoint has no recorded score, and
+// scoreForSelector would substitute InitialScore — enough to clear the
+// probation threshold and look "fine" to a filter. Vouched must say no to
+// exactly that endpoint, because a method block diverting traffic must not
+// treat an unmeasured host as vouched for.
+func TestService_Vouched(t *testing.T) {
+	svc, _ := newTestService()
+	defer svc.Stop()
+
+	ctx := context.Background()
+	svcID := domain.ServiceID("eth")
+	ep := domain.EndpointAddr("supplier1-https://example.com")
+
+	// Fresh endpoint, no signal recorded yet: not vouched for, even though
+	// GetScore/scoreForSelector would answer InitialScore (100) for it.
+	if svc.Vouched(ctx, svcID, ep, domain.RPCTypeJSONRPC) {
+		t.Fatal("an endpoint with no recorded score must not be vouched for")
+	}
+
+	// One success signal writes a real score at/above the probation
+	// threshold into the cache: now vouched for.
+	if err := svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if !svc.Vouched(ctx, svcID, ep, domain.RPCTypeJSONRPC) {
+		t.Fatal("a recorded score above the probation threshold must be vouched for")
+	}
+
+	// Enough failures to drop the recorded score below the probation
+	// threshold: not vouched for any more.
+	for range 2 {
+		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewFatalErrorSignal("crash", 0))
+	}
+	score, _ := svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
+	if score >= DefaultSelectorConfig().ProbationThreshold {
+		t.Fatalf("setup failed: score %v did not drop below probation", score)
+	}
+	if svc.Vouched(ctx, svcID, ep, domain.RPCTypeJSONRPC) {
+		t.Fatal("a score below the probation threshold must not be vouched for")
+	}
+}
+
 // Under per-endpoint granularity the reputation key carries the supplier
 // address, which rotates every session, so this map grows with the network
 // rather than with SAGE's traffic. It is written on the relay path and nothing

@@ -56,6 +56,10 @@ func (s *trackingRepService) ResetScore(_ context.Context, _ domain.ServiceID, _
 	return nil
 }
 
+func (s *trackingRepService) Vouched(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType) bool {
+	return true
+}
+
 // trackingQueueHandler records observations for assertion.
 type trackingQueueHandler struct {
 	mu  sync.Mutex

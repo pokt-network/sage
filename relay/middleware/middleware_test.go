@@ -143,6 +143,10 @@ func (m *mockRepService) ResetScore(_ context.Context, _ domain.ServiceID, _ dom
 	return nil
 }
 
+func (m *mockRepService) Vouched(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType) bool {
+	return true
+}
+
 // --- Mock featureflag.FlagStore --- //
 
 type mockFlagStore struct {

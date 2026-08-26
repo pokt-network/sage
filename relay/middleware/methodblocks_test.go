@@ -13,6 +13,7 @@ import (
 	"github.com/pokt-network/sage/methodblock"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
+	"github.com/pokt-network/sage/reputation"
 )
 
 // normPlugin is a qos.Plugin that names every payload's method verbatim,
@@ -54,6 +55,55 @@ func registryWith(t *testing.T) *qos.Registry {
 	return reg
 }
 
+// stubRepService is a minimal reputation.Service for MethodBlocks tests. It
+// tracks a fixed score per endpoint and derives Vouched from the same
+// probation threshold reputation.DefaultSelectorConfig uses; an endpoint
+// absent from scores has no recorded score, so it is NOT vouched — mirroring
+// the cold-start case where a dead host still carries the initial score.
+type stubRepService struct {
+	scores map[domain.EndpointAddr]float64
+}
+
+var _ reputation.Service = (*stubRepService)(nil)
+
+func (s *stubRepService) RecordSignal(context.Context, domain.ServiceID, domain.EndpointAddr, domain.RPCType, reputation.Signal) error {
+	return nil
+}
+
+func (s *stubRepService) GetScore(context.Context, domain.ServiceID, domain.EndpointAddr, domain.RPCType) (float64, error) {
+	return 100, nil
+}
+
+func (s *stubRepService) GetScores(context.Context, domain.ServiceID) (map[string]float64, error) {
+	return nil, nil
+}
+
+func (s *stubRepService) SelectBest(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ domain.RPCType) domain.EndpointAddr {
+	if len(eps) == 0 {
+		return ""
+	}
+	return eps[0]
+}
+
+func (s *stubRepService) SelectSpread(_ context.Context, _ domain.ServiceID, eps domain.EndpointAddrList, _ domain.RPCType, _ map[domain.EndpointAddr]int) domain.EndpointAddr {
+	if len(eps) == 0 {
+		return ""
+	}
+	return eps[0]
+}
+
+func (s *stubRepService) ResetScore(context.Context, domain.ServiceID, domain.EndpointAddr) error {
+	return nil
+}
+
+func (s *stubRepService) Vouched(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType) bool {
+	score, known := s.scores[ep]
+	if !known {
+		return false
+	}
+	return score >= reputation.DefaultSelectorConfig().ProbationThreshold
+}
+
 // A timeout on eth_getLogs marks the host for eth_getLogs and nothing else.
 func TestMethodBlocks_TimeoutMarksOnlyThatMethod(t *testing.T) {
 	store := methodblock.New()
@@ -63,7 +113,7 @@ func TestMethodBlocks_TimeoutMarksOnlyThatMethod(t *testing.T) {
 		ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true, Reason: "transport_timeout"}
 		return retryableErr("timeout")
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil)(inner)
+	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil, nil)(inner)
 	_ = h.HandleRelay(methodCtx("eth_getLogs", eps))
 
 	if !store.Blocked("eth", eps[0].Domain(), "eth_getLogs") {
@@ -88,7 +138,7 @@ func TestMethodBlocks_FiltersBlockedHostForThatMethodOnly(t *testing.T) {
 		ctx.Response = &domain.Response{HTTPStatusCode: 200}
 		return nil
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil)(inner)
+	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil, nil)(inner)
 
 	_ = h.HandleRelay(methodCtx("eth_getLogs", eps))
 	if len(seen) != 1 || seen[0] != eps[1] {
@@ -98,6 +148,99 @@ func TestMethodBlocks_FiltersBlockedHostForThatMethodOnly(t *testing.T) {
 	_ = h.HandleRelay(methodCtx("eth_call", eps))
 	if len(seen) != 2 {
 		t.Fatalf("eth_call saw %v, want both hosts", seen)
+	}
+}
+
+// A block must never route a method onto a host selection already considers
+// junk. A is blocked for the method; B survives the filter but scores below
+// the probation threshold, so the survivor is not vouched for and the
+// middleware must fall back to the empty-case behavior: degrade and serve
+// everything.
+func TestMethodBlocks_BypassesWhenNoSurvivorIsVouched(t *testing.T) {
+	store := methodblock.New()
+	eps := testEndpoints(2)
+	store.Mark("eth", eps[0].Domain(), "eth_getLogs", true)
+	rep := &stubRepService{scores: map[domain.EndpointAddr]float64{eps[1]: 0}}
+	events := &spyEvents{}
+
+	var seen domain.EndpointAddrList
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		seen = ctx.Endpoints
+		return nil
+	})
+	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), rep, events)(inner)
+
+	ctx := methodCtx("eth_getLogs", eps)
+	_ = h.HandleRelay(ctx)
+	if len(seen) != 2 {
+		t.Fatalf("inner must see both endpoints, saw %v", seen)
+	}
+	if !ctx.Degraded {
+		t.Fatal("bypass must mark the relay degraded")
+	}
+	if len(events.events) != 1 || events.events[0] != "bypass:eth_getLogs" {
+		t.Fatalf("events = %v", events.events)
+	}
+}
+
+// Same setup as above, except B scores above the probation threshold: the
+// survivor is vouched for, so the filter applies normally.
+func TestMethodBlocks_FiltersWhenSurvivorIsVouched(t *testing.T) {
+	store := methodblock.New()
+	eps := testEndpoints(2)
+	store.Mark("eth", eps[0].Domain(), "eth_getLogs", true)
+	rep := &stubRepService{scores: map[domain.EndpointAddr]float64{eps[1]: 60}}
+	events := &spyEvents{}
+
+	var seen domain.EndpointAddrList
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		seen = ctx.Endpoints
+		return nil
+	})
+	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), rep, events)(inner)
+
+	ctx := methodCtx("eth_getLogs", eps)
+	_ = h.HandleRelay(ctx)
+	if len(seen) != 1 || seen[0] != eps[1] {
+		t.Fatalf("inner saw %v, want only %v", seen, eps[1])
+	}
+	if ctx.Degraded {
+		t.Fatal("a vouched survivor must not degrade the relay")
+	}
+	if len(events.events) != 0 {
+		t.Fatalf("events = %v, want none", events.events)
+	}
+}
+
+// B has no recorded score at all — the cold-start case that let a mark
+// divert onto a DNS-dead host right after boot, before the first health
+// check: scoreForSelector would answer InitialScore, but Vouched must not.
+// The middleware must bypass rather than absorb this diversion into the
+// filtered list.
+func TestMethodBlocks_UnknownSurvivorDoesNotAbsorbADiversion(t *testing.T) {
+	store := methodblock.New()
+	eps := testEndpoints(2)
+	store.Mark("eth", eps[0].Domain(), "eth_getLogs", true)
+	rep := &stubRepService{scores: map[domain.EndpointAddr]float64{}}
+	events := &spyEvents{}
+
+	var seen domain.EndpointAddrList
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		seen = ctx.Endpoints
+		return nil
+	})
+	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), rep, events)(inner)
+
+	ctx := methodCtx("eth_getLogs", eps)
+	_ = h.HandleRelay(ctx)
+	if len(seen) != 2 {
+		t.Fatalf("inner must see both endpoints, saw %v", seen)
+	}
+	if !ctx.Degraded {
+		t.Fatal("bypass must mark the relay degraded")
+	}
+	if len(events.events) != 1 || events.events[0] != "bypass:eth_getLogs" {
+		t.Fatalf("events = %v", events.events)
 	}
 }
 
@@ -115,7 +258,7 @@ func TestMethodBlocks_EveryHostBlockedDegradesInsteadOfEmptying(t *testing.T) {
 		seen = ctx.Endpoints
 		return nil
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), events)(inner)
+	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil, events)(inner)
 
 	ctx := methodCtx("eth_getLogs", eps)
 	_ = h.HandleRelay(ctx)
@@ -139,7 +282,7 @@ func TestMethodBlocks_ThirdMethodEscalatesAndIsCounted(t *testing.T) {
 		ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true, Attribution: heuristic.AttrSupplier}
 		return retryableErr("timeout")
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), events)(inner)
+	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil, events)(inner)
 	for _, m := range []string{"a", "b", "c"} {
 		_ = h.HandleRelay(methodCtx(m, eps))
 	}
@@ -172,7 +315,7 @@ func TestMethodBlocks_ClientAttributedMarksDoNotEscalate(t *testing.T) {
 			ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true, Attribution: attr}
 			return retryableErr("failed")
 		})
-		h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil)(inner)
+		h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil, nil)(inner)
 		for _, m := range []string{"debug_traceCall", "trace_block", "debug_storageRangeAt"} {
 			_ = h.HandleRelay(methodCtx(m, eps))
 		}
@@ -211,7 +354,7 @@ func TestMethodBlocks_NoNormalizerPassesThrough(t *testing.T) {
 		return retryableErr("timeout")
 	})
 	// Registry with no plugin for "eth".
-	h := MethodBlocks(store, qos.NewRegistry(), newFlags("method_blocks"), nil)(inner)
+	h := MethodBlocks(store, qos.NewRegistry(), newFlags("method_blocks"), nil, nil)(inner)
 	_ = h.HandleRelay(methodCtx("eth_getLogs", eps))
 	if len(seen) != 2 {
 		t.Fatal("without a normalizer nothing may be filtered")
@@ -230,7 +373,7 @@ func TestMethodBlocks_FlagOffPassesThrough(t *testing.T) {
 	store.Mark("eth", eps[0].Domain(), "eth_getLogs", true)
 	var seen domain.EndpointAddrList
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error { seen = ctx.Endpoints; return nil })
-	h := MethodBlocks(store, registryWith(t), newFlags(), nil)(inner)
+	h := MethodBlocks(store, registryWith(t), newFlags(), nil, nil)(inner)
 	_ = h.HandleRelay(methodCtx("eth_getLogs", eps))
 	if len(seen) != 2 {
 		t.Fatal("flag off must not filter")
@@ -295,7 +438,7 @@ func TestMethodBlocks_LosingHedgeArmMarksAndNextHedgeAvoids(t *testing.T) {
 	})
 	cfg := func(domain.ServiceID) config.RetryConfig { return config.RetryConfig{HedgeDelay: hedgeDelay} }
 	chain := Hedge(newFlags("hedge", "method_blocks"), cfg)(
-		MethodBlocks(store, registryWith(t), newFlags("hedge", "method_blocks"), nil)(inner))
+		MethodBlocks(store, registryWith(t), newFlags("hedge", "method_blocks"), nil, nil)(inner))
 
 	// Request 1: primary picks slow, hedge picks a healthy one and wins; the
 	// slow arm finishes later and marks its host.

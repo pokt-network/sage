@@ -35,6 +35,13 @@ type Service interface {
 	// RPC type. An operator resetting an endpoint means the endpoint, not one
 	// of the protocols it happens to serve.
 	ResetScore(ctx context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) error
+	// Vouched reports whether an endpoint has a recorded score for this RPC
+	// type, and that score clears the selector's probation threshold. An
+	// endpoint with no recorded score is not vouched: unknown passes a
+	// filter, but a method block must not divert traffic onto hosts nothing
+	// has measured yet — right after boot every dead host still carries the
+	// initial score.
+	Vouched(ctx context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool
 }
 
 // ServiceConfig holds configuration for the reputation service.
@@ -375,6 +382,22 @@ func (s *serviceImpl) ResetScore(_ context.Context, serviceID domain.ServiceID, 
 		}
 	}
 	return nil
+}
+
+// Vouched reports whether an endpoint has a recorded score for the given RPC
+// type, and that score clears the selector's probation threshold. It reads
+// the cache directly rather than through scoreForSelector, which substitutes
+// InitialScore for an unseen endpoint — the exact case Vouched must say no
+// to: right after boot, before the first health-check cycle, every dead host
+// still carries the initial score, and a method block diverting traffic must
+// not treat that as a vouch.
+func (s *serviceImpl) Vouched(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool {
+	key := s.key(endpoint, rpcType)
+	sh := s.shard(key)
+	sh.mu.RLock()
+	score, ok := sh.cache[serviceID][key]
+	sh.mu.RUnlock()
+	return ok && score >= s.selector.cfg.ProbationThreshold
 }
 
 // clamp constrains a score to [0, MaxScore].

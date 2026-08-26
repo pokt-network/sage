@@ -7,6 +7,7 @@ import (
 	"github.com/pokt-network/sage/methodblock"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
+	"github.com/pokt-network/sage/reputation"
 )
 
 // MethodBlockRecorder is told about method-block events. metrics.Recorder
@@ -27,9 +28,13 @@ const (
 // else.
 //
 //  1. Pre-relay: removes from ctx.Endpoints every host the store blocks for
-//     this request's method. If that leaves nothing, the relay is marked
-//     degraded and the unfiltered list is used — a block must never be able
-//     to empty a pool.
+//     this request's method. Bypass fires when every host is blocked, or when
+//     the filter removed something and no surviving host is vouched for by
+//     reputation (a recorded score at or above the probation threshold) — a
+//     block must never divert a method onto hosts reputation hasn't actually
+//     measured, including a host that is merely unscored (e.g. right after
+//     boot, before the first health check). On bypass the relay is marked
+//     degraded and the unfiltered list is used.
 //  2. Post-relay: if the attempt's verdict is MethodBlocking (a timeout after
 //     connect, or the endpoint saying it does not serve the method), marks
 //     the attempt's host for that method. The mark counts toward a host-wide
@@ -48,6 +53,7 @@ func MethodBlocks(
 	store *methodblock.Store,
 	registry *qos.Registry,
 	flags featureflag.FlagStore,
+	repSvc reputation.Service,
 	events MethodBlockRecorder,
 ) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
@@ -65,7 +71,9 @@ func MethodBlocks(
 				filtered := filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool {
 					return !store.Blocked(serviceID, ep.Domain(), method)
 				})
-				if len(filtered) == 0 {
+				bypass := len(filtered) == 0 ||
+					(len(filtered) < len(ctx.Endpoints) && !anyVouched(repSvc, ctx, filtered))
+				if bypass {
 					ctx.Degraded = true
 					if events != nil {
 						events.RecordMethodBlockEvent(ctx.ServiceID, method, MethodBlockEventBypass)
@@ -95,6 +103,23 @@ func MethodBlocks(
 			return err
 		})
 	}
+}
+
+// anyVouched reports whether at least one endpoint in eps is vouched for by
+// reputation (a recorded score at or above the probation threshold) for this
+// request's RPC type. A nil repSvc means "all vouched" — a deployment that
+// hasn't wired reputation must not have this guard silently degrade every
+// filtered relay.
+func anyVouched(repSvc reputation.Service, ctx *relay.Context, eps domain.EndpointAddrList) bool {
+	if repSvc == nil {
+		return true
+	}
+	for _, ep := range eps {
+		if repSvc.Vouched(ctx.Ctx, ctx.ServiceID, ep, ctx.RPCType) {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizedMethod asks the service's plugin to name the request's method.

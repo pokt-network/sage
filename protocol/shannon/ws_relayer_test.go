@@ -61,6 +61,9 @@ func (s *spyRepSvc) SelectSpread(_ context.Context, _ domain.ServiceID, eps doma
 func (s *spyRepSvc) ResetScore(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr) error {
 	return nil
 }
+func (s *spyRepSvc) Vouched(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType) bool {
+	return true
+}
 
 // newDisabledQueue returns an observe.Queue with Enabled=false so Submit is a
 // no-op. WS relayer tests that only want to exercise reputation paths use this.
