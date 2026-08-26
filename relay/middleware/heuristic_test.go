@@ -1,9 +1,11 @@
 package middleware_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/relay/middleware"
 )
@@ -183,5 +185,52 @@ func TestHeuristic_4xxResponse_NoRetry(t *testing.T) {
 	}
 	if ctx.HeuristicResult.ShouldRetry {
 		t.Error("expected ShouldRetry=false for 4xx response")
+	}
+}
+
+// A transport failure used to leave the chain with no verdict at all. Now
+// the attempt is graded: the inner error is still returned (retry needs it),
+// and ctx.HeuristicResult carries what the failure meant.
+//
+// This package (middleware_test) has no unexported helpers of its own, so
+// this test builds its context and flags with newCtx/newPOSTRequest/
+// newMockFlags — this file's existing convention — rather than the
+// package-internal baseContext/newFlags the brief's snippet used.
+func TestHeuristic_TransportErrorIsGraded(t *testing.T) {
+	inner := relay.HandlerFunc(func(_ *relay.Context) error {
+		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.DeadlineExceeded, true)
+	})
+	flags := newMockFlags(map[string]bool{"heuristic": true})
+	h := middleware.Heuristic(flags)(inner)
+
+	ctx := newCtx(newPOSTRequest("/v1", ""))
+	err := h.HandleRelay(ctx)
+	if err == nil {
+		t.Fatal("the transport error must still propagate")
+	}
+	if ctx.HeuristicResult == nil {
+		t.Fatal("transport error left no HeuristicResult")
+	}
+	if ctx.HeuristicResult.Reason != "transport_timeout" {
+		t.Fatalf("reason = %q, want transport_timeout", ctx.HeuristicResult.Reason)
+	}
+}
+
+// The classifier needs the request context's own error to tell a client
+// hang-up from a supplier hang; the middleware must pass it.
+func TestHeuristic_ClientCancelIsAttributedToClient(t *testing.T) {
+	goCtx, cancel := context.WithCancel(context.Background())
+	inner := relay.HandlerFunc(func(_ *relay.Context) error {
+		cancel()
+		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.Canceled, true)
+	})
+	flags := newMockFlags(map[string]bool{"heuristic": true})
+	h := middleware.Heuristic(flags)(inner)
+
+	ctx := newCtx(newPOSTRequest("/v1", ""))
+	ctx.Ctx = goCtx
+	_ = h.HandleRelay(ctx)
+	if ctx.HeuristicResult == nil || ctx.HeuristicResult.Attribution != heuristic.AttrClient {
+		t.Fatalf("result = %+v, want AttrClient", ctx.HeuristicResult)
 	}
 }

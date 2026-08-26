@@ -59,14 +59,9 @@ func CircuitBreak(
 
 			// Pre-relay: remove endpoints whose domain is broken.
 			if len(ctx.Endpoints) > 0 {
-				filtered := ctx.Endpoints[:0:len(ctx.Endpoints)]
-				filtered = filtered[:0]
-				for _, ep := range ctx.Endpoints {
-					if !breaker.IsBroken(serviceID, ep.Domain()) {
-						filtered = append(filtered, ep)
-					}
-				}
-				ctx.Endpoints = filtered
+				ctx.Endpoints = filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool {
+					return !breaker.IsBroken(serviceID, ep.Domain())
+				})
 			}
 
 			err := next.HandleRelay(ctx)

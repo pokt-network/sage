@@ -8,6 +8,7 @@ import (
 	"github.com/pokt-network/sage/circuitbreaker"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/methodblock"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/reputation"
 	"github.com/pokt-network/sage/tuning"
@@ -19,6 +20,7 @@ type AdminAPI struct {
 	repService  reputation.Service
 	timeline    *reputation.Timeline
 	breaker     *circuitbreaker.Breaker
+	blocks      *methodblock.Store
 	qosRegistry *qos.Registry
 	tuning      *tuning.Store
 	logger      *slog.Logger
@@ -30,6 +32,7 @@ func NewAdminAPI(
 	repSvc reputation.Service,
 	timeline *reputation.Timeline,
 	breaker *circuitbreaker.Breaker,
+	blocks *methodblock.Store,
 	qosReg *qos.Registry,
 	tuningStore *tuning.Store,
 	logger *slog.Logger,
@@ -39,6 +42,7 @@ func NewAdminAPI(
 		repService:  repSvc,
 		timeline:    timeline,
 		breaker:     breaker,
+		blocks:      blocks,
 		qosRegistry: qosReg,
 		tuning:      tuningStore,
 		logger:      logger,
@@ -63,6 +67,10 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Circuit breaker
 	mux.HandleFunc("POST /admin/circuit-breaker/clear/{serviceID}", a.handleClearCircuitBreaker)
 	mux.HandleFunc("GET /admin/circuit-breaker/{serviceID}", a.handleGetCircuitBreaker)
+
+	// Method blocks
+	mux.HandleFunc("POST /admin/method-blocks/clear/{serviceID}", a.handleClearMethodBlocks)
+	mux.HandleFunc("GET /admin/method-blocks/{serviceID}", a.handleGetMethodBlocks)
 
 	// Runtime tuning overrides
 	mux.HandleFunc("GET /admin/tuning", a.handleListTuning)
@@ -299,6 +307,47 @@ func (a *AdminAPI) handleGetCircuitBreaker(w http.ResponseWriter, req *http.Requ
 		broken = map[string]circuitbreaker.BrokenState{}
 	}
 	writeJSON(w, http.StatusOK, broken)
+}
+
+// --- Method block handlers ---
+
+// handleGetMethodBlocks lists the hosts currently blocked from receiving a
+// method for a service, with each block's expiry. A block with an empty
+// method is a host-level block (every method). An empty array means nothing
+// is blocked. The same state is exported as the sage_method_blocks metric.
+func (a *AdminAPI) handleGetMethodBlocks(w http.ResponseWriter, req *http.Request) {
+	serviceID := req.PathValue("serviceID")
+	if serviceID == "" {
+		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
+		return
+	}
+	blocks := []methodblock.Block{}
+	if a.blocks != nil {
+		if active := a.blocks.Active(serviceID); active != nil {
+			blocks = active
+		}
+	}
+	writeJSON(w, http.StatusOK, blocks)
+}
+
+// handleClearMethodBlocks drops every method block for a service. It exists
+// so an operator can undo a false positive; the escalation count goes with
+// the marks, so the next mark is a first mark.
+func (a *AdminAPI) handleClearMethodBlocks(w http.ResponseWriter, req *http.Request) {
+	serviceID := req.PathValue("serviceID")
+	if serviceID == "" {
+		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
+		return
+	}
+	cleared := 0
+	if a.blocks != nil {
+		cleared = a.blocks.Clear(serviceID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service_id": serviceID,
+		"cleared":    cleared,
+		"message":    "method blocks cleared",
+	})
 }
 
 // --- Config handler ---

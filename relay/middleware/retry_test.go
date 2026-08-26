@@ -7,6 +7,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -329,5 +330,37 @@ func TestRetry_StopsWhenRequestContextIsDone(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("made %d attempts against a dead request context, want 1", calls)
+	}
+}
+
+// A heuristic verdict belongs to the attempt that produced it. Attempt 1
+// sets MethodBlocking and fails; attempt 2 succeeds without touching
+// HeuristicResult at all (as happens when Heuristic's flag is off, or there
+// is nothing to analyse). Without a reset, a downstream post-relay check
+// (MethodBlocks) reading ctx.HeuristicResult after HandleRelay returns would
+// see attempt 1's verdict and act on attempt 2's healthy endpoint.
+func TestRetry_ResetsHeuristicResultPerAttempt(t *testing.T) {
+	var calls int
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		calls++
+		ctx.Endpoint = ctx.Endpoints[0]
+		if calls == 1 {
+			ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true}
+			return retryableErr("timeout")
+		}
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+	h := Retry(newFlags("retry"), retryCfg(2, 0))(inner)
+
+	ctx := baseContext()
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatalf("expected success on second attempt, got %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 attempts, got %d", calls)
+	}
+	if ctx.HeuristicResult != nil {
+		t.Fatalf("HeuristicResult leaked from attempt 1 into attempt 2: %+v", ctx.HeuristicResult)
 	}
 }

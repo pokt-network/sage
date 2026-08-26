@@ -27,6 +27,8 @@ means traffic is arriving for services this gateway does not serve.
 | `sage_endpoint_reputation_score` | gauge | `service_id`, `endpoint` | Current reputation score, by service and reputation key (see reputation/key.go for what a key covers). |
 | `sage_endpoint_reputation_scores_dropped` | gauge | `service_id` | Reputation keys omitted from this scrape because the service exceeded the per-scrape cap. Non-zero means sage_endpoint_reputation_score is showing only the lowest-scoring keys. |
 | `sage_hedge_total` | counter | `service_id`, `result` | Hedge race outcomes (primary_won, hedge_won, both_failed). |
+| `sage_method_block_events_total` | counter | `service_id`, `method`, `event` | Method-block events by service and method. event is mark (a host was blocked for a method), escalate (a host was blocked for every method), or bypass (every host was blocked for the method, so the unfiltered pool was used). mark also counts an attempt that landed no block (empty host, or marking disabled by TTL <= 0) — it counts the middleware's attempt to mark, not that a mark landed. |
+| `sage_method_blocks` | gauge | `service_id`, `domain`, `method` | 1 while a host is blocked from receiving a method for this service (method empty = blocked for every method). Absent when nothing is blocked. |
 | `sage_recovered_panics_total` | counter | — | Panics recovered on background goroutines and hedge/batch arms since start. Non-zero means a bug was contained, not that nothing happened. |
 | `sage_relay_latency_seconds` | histogram | `service_id` | Relay latency in seconds. |
 | `sage_relay_miner_errors_total` | counter | `service_id`, `codespace` | Total relay responses carrying a RelayMinerError, by service and miner error codespace. |

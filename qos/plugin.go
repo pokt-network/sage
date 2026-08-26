@@ -80,6 +80,23 @@ type ExtractedData struct {
 	IsArchival  *bool
 }
 
+// MethodOther is the bucket NormalizeMethod returns for a method the plugin
+// does not catalogue. One bucket, so unknown methods cost one key, not one
+// per client-chosen string.
+const MethodOther = "_other"
+
+// MethodNormalizer is implemented by plugins that can name a payload's method
+// from a bounded set. The returned string is a key in method-aware state and
+// a metric label, so it must come from the plugin's own catalogue — never
+// from the request verbatim. Only a label's value SET bounds it; a sanitizer
+// bounds shape, not set.
+type MethodNormalizer interface {
+	// NormalizeMethod returns the catalogued name, MethodOther for a method
+	// the plugin does not list, or "" when the payload has no method notion
+	// at all (a raw body under a plugin that does not parse it).
+	NormalizeMethod(payload domain.Payload) string
+}
+
 // CoalescenceClassifier is implemented by plugins that support request coalescing.
 type CoalescenceClassifier interface {
 	IsCoalescable(method string) bool

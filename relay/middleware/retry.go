@@ -86,6 +86,14 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					// Clear previous response/error state.
 					ctx.Response = nil
 					ctx.Err = nil
+					// A heuristic verdict belongs to the attempt that produced
+					// it. Without this, an attempt whose own Heuristic pass
+					// is skipped (flag off, or no response to analyse) would
+					// read the PRIOR attempt's verdict — e.g. MethodBlocks
+					// would mark this attempt's (healthy) endpoint for a
+					// MethodBlocking verdict some earlier, different endpoint
+					// actually earned.
+					ctx.HeuristicResult = nil
 
 					if ctx.Logger != nil {
 						ctx.Logger.Info("retrying relay",

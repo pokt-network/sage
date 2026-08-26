@@ -95,6 +95,8 @@ Reports readiness for every configured service.
 | `GET` | `/admin/timeline/{serviceID}/{endpoint...}` | Returns the reputation events for a single endpoint. |
 | `POST` | `/admin/circuit-breaker/clear/{serviceID}` | Releases every circuit-broken domain for a service and reports how many were cleared. |
 | `GET` | `/admin/circuit-breaker/{serviceID}` | Returns the domains currently circuit-broken for a service, keyed by domain, each with the reason and when the break expires. |
+| `POST` | `/admin/method-blocks/clear/{serviceID}` | Drops every method block for a service. |
+| `GET` | `/admin/method-blocks/{serviceID}` | Lists the hosts currently blocked from receiving a method for a service, with each block's expiry. |
 | `GET` | `/admin/tuning` | Returns every knob that can be overridden at runtime, with whatever has been set on it. |
 | `PUT` | `/admin/tuning/{knob}` | Sets a knob globally. |
 | `PUT` | `/admin/tuning/{knob}/{serviceID}` | Sets a knob for one service only. |
@@ -186,6 +188,19 @@ An empty object means nothing is broken. Breaks expire lazily, so a domain
 listed here whose expiry has passed is not actually locked out — the same
 state is exported as the sage_circuit_breaker_state metric, computed at
 scrape time.
+
+### `POST /admin/method-blocks/clear/{serviceID}`
+
+Drops every method block for a service. It exists
+so an operator can undo a false positive; the escalation count goes with
+the marks, so the next mark is a first mark.
+
+### `GET /admin/method-blocks/{serviceID}`
+
+Lists the hosts currently blocked from receiving a
+method for a service, with each block's expiry. A block with an empty
+method is a host-level block (every method). An empty array means nothing
+is blocked. The same state is exported as the sage_method_blocks metric.
 
 ### `GET /admin/tuning`
 

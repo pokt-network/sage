@@ -111,6 +111,10 @@ func Batch(maxConcurrentRelays, maxPayloads int) relay.Middleware {
 					sub.Payloads = []domain.Payload{payload}
 					sub.Response = nil
 					sub.Err = nil
+					// A verdict belongs to the attempt that produced it, and
+					// Clone() is shallow — without this a sub-relay starts out
+					// holding the parent's.
+					sub.HeuristicResult = nil
 
 					// A panic here becomes this payload's error rather than the
 					// process's exit: wg.Done() already runs on the way out, so

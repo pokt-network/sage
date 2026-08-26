@@ -76,6 +76,10 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "circuit_breaker_outcome_total"},
 			[]string{"service_id", "domain", "outcome"},
 		),
+		methodBlockEvents: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "method_block_events_total"},
+			[]string{"service_id", "method", "event"},
+		),
 	}
 	reg.MustRegister(
 		r.relayTotal,
@@ -380,4 +384,9 @@ func TestRecordCircuitBreakerOutcome(t *testing.T) {
 	r := newIsolatedRecorder(t)
 	r.RecordCircuitBreakerOutcome("eth", "node.example.com", "success")
 	r.RecordCircuitBreakerOutcome("eth", "node.example.com", "failure")
+}
+
+func TestRecordMethodBlockEvent(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordMethodBlockEvent("eth", "eth_getLogs", "mark")
 }

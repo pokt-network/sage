@@ -43,6 +43,7 @@ type cosmosEndpoint struct {
 //   - qos.HealthChecker
 //   - qos.DataExtractor
 //   - qos.LifecycleHooks
+//   - qos.MethodNormalizer
 type Plugin struct {
 	logger            *slog.Logger
 	syncAllowance     uint64

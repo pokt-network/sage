@@ -45,10 +45,11 @@ HTTP Request
                             [Hedge]    — race primary vs delayed secondary
                               [Affinity] — sticky supplier after writes
                                 [CircuitBreak] — skip broken domains
-                                  [SelectEndpoint] — reputation + QoS filtering
-                                    [DebugLog]     — full request/response logging
-                                      [Heuristic]  — response quality analysis
-                                        [SendRelay] — sign, send, validate
+                                  [MethodBlocks] — skip hosts blocked for this method
+                                    [SelectEndpoint] — reputation + QoS filtering
+                                      [DebugLog]     — full request/response logging
+                                        [Heuristic]  — response quality analysis
+                                          [SendRelay] — sign, send, validate
 ```
 
 Each middleware can be **enabled/disabled at runtime** per-service via feature flags (Redis-backed, no redeploy needed).
@@ -222,10 +223,11 @@ re-break as a repeat offender.
 | retry | on | Retry with endpoint rotation |
 | hedge | on | Parallel race (primary + delayed secondary) |
 | circuit_breaker | on | Domain-wide broken tracking |
+| method_blocks | on | Per-host, per-method memory: a host that timed out on a method stops receiving it for a TTL |
 | singleflight | on | Coalesce identical concurrent requests |
 | cache | on | LRU response cache for finalized data |
 | cross_validation | on | Cross-endpoint response consensus |
-| heuristic | on | Response quality analysis |
+| heuristic | on | Response quality analysis. Gates body analysis only: transport errors are graded on the way out regardless of the flag, because attribution is what the breaker, the method blocks and reputation key on |
 | observation_pipeline | on | Async deep parsing |
 | health_checks | on | Active endpoint health checks |
 | tracing | off | OpenTelemetry spans |

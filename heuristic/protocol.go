@@ -103,6 +103,7 @@ func classifyJSONRPCError(code int64, message string) AnalysisResult {
 			Confidence:         0.95,
 			Reason:             "method_not_found",
 			Details:            "method not found: " + message,
+			MethodBlocking:     true,
 		}
 
 	// Invalid params — client's fault.
@@ -162,6 +163,31 @@ func classifyJSONRPCError(code int64, message string) AnalysisResult {
 			Details:         "unknown JSON-RPC error code " + strconv.FormatInt(code, 10) + ": " + message,
 		}
 	}
+}
+
+// methodUnsupportedPatterns are wordings in which an endpoint reports that it
+// does not serve the METHOD asked for — a namespace it was started without,
+// an API a lite node does not expose. Unlike the historical-state wordings
+// below, which are about one block, these are about the method, so they set
+// MethodBlocking: the host should not receive that method again for a while.
+var methodUnsupportedPatterns = []string{
+	"api is not supported",
+	"lite fullnode",
+	"method not supported",
+	"does not exist/is not available",
+	"is not available on this node",
+}
+
+// reportsMethodUnsupported reports whether message is one of the
+// methodUnsupportedPatterns wordings. It does not fold case: it expects an
+// already-lowercased message, which is how every caller has it.
+func reportsMethodUnsupported(lowerMsg string) bool {
+	for _, pattern := range methodUnsupportedPatterns {
+		if strings.Contains(lowerMsg, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // capabilityLimitationPatterns are the wordings in which an endpoint reports
@@ -235,7 +261,7 @@ var blockchainErrorPatterns = append([]string{
 func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 	for _, pattern := range blockchainErrorPatterns {
 		if strings.Contains(lowerMsg, pattern) {
-			return AnalysisResult{
+			result := AnalysisResult{
 				ShouldRetry:        true,
 				ShouldCircuitBreak: false,
 				ShouldPenalize:     false,
@@ -244,6 +270,8 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 				Reason:             "blockchain_error",
 				Details:            "blockchain error (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
 			}
+			result.MethodBlocking = reportsMethodUnsupported(lowerMsg)
+			return result
 		}
 	}
 

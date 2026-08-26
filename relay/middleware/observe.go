@@ -13,7 +13,11 @@ import (
 )
 
 // Observe returns a middleware that, after the inner handler completes:
-//  1. Always records a reputation signal for the endpoint (success or error).
+//  1. Records a reputation signal for the endpoint, for both success and
+//     error — except when the relay errored and ctx.HeuristicResult
+//     attributes the failure to the client (e.g. a client hang-up): that
+//     case is nobody's signal, and buildSignal returns a zero Signal that
+//     the call site skips recording entirely.
 //  2. If the "observation_pipeline" feature flag is enabled, submits an
 //     Observation to the async queue for deep processing off the hot path.
 //
@@ -31,8 +35,10 @@ func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputatio
 			// Always record a reputation signal when an endpoint was selected.
 			if ctx.Endpoint != "" {
 				sig := buildSignal(ctx, err, latency)
-				// Best-effort: ignore RecordSignal errors so we never block a relay.
-				_ = repSvc.RecordSignal(context.Background(), ctx.ServiceID, ctx.Endpoint, ctx.RPCType, sig)
+				if sig.Type != "" {
+					// Best-effort: ignore RecordSignal errors so we never block a relay.
+					_ = repSvc.RecordSignal(context.Background(), ctx.ServiceID, ctx.Endpoint, ctx.RPCType, sig)
+				}
 			}
 
 			// Optionally submit to the observation pipeline.
@@ -50,6 +56,12 @@ func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputatio
 // It consults the heuristic result (if present) to determine severity;
 // otherwise it falls back to HTTP status code heuristics.
 func buildSignal(ctx *relay.Context, relayErr error, latency time.Duration) reputation.Signal {
+	// A failure the client caused is nobody's signal. successResult also
+	// carries AttrClient, but with no error, so key on both.
+	if relayErr != nil && ctx.HeuristicResult != nil && ctx.HeuristicResult.Attribution == heuristic.AttrClient {
+		return reputation.Signal{}
+	}
+
 	// Check for a heuristic result stored by the Heuristic middleware.
 	if ctx.HeuristicResult != nil && ctx.HeuristicResult.ShouldPenalize {
 		return penaltySignal(*ctx.HeuristicResult, latency)

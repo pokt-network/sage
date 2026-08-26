@@ -133,6 +133,9 @@ gateway_config:
     - domain: s019.partial-operator.example
       rpc_types:
         - websocket
+  method_blocks:
+    ttl: 5m
+    escalation_threshold: 3
 
   active_health_checks:
     enabled: true

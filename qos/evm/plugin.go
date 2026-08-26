@@ -68,6 +68,7 @@ var coalescableMethods = map[string]bool{
 //   - qos.ArchivalDetector
 //   - qos.HealthChecker
 //   - qos.DataExtractor
+//   - qos.MethodNormalizer
 //   - qos.CoalescenceClassifier
 //   - qos.CachePolicy
 //   - qos.ResponseFormatValidator

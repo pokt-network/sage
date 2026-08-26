@@ -1,7 +1,11 @@
 # Method-aware blocks — design
 
-Status: approved in discussion 2026-08-26, not implemented. Implementation plan
-follows in `docs/superpowers/plans/`.
+Status: implemented on branch `feat/method-aware-blocks`, commits
+`634142f..HEAD of the branch` (transport grading, MethodBlocking on JSON-RPC
+errors, MethodNormalizer + EVM/Solana/Cosmos catalogues, methodblock store,
+config/flag/chain slot, copy-on-filter helper, method_blocks middleware,
+metrics, admin routes, wiring); not yet validated on beta — the rollout checks
+in section 8 are the next step.
 
 ## 1. Problem
 
@@ -128,8 +132,12 @@ doing, nobody is waiting for the answer. Hedge arms run on
 
 `AnalysisResult` gains one field, `MethodBlocking bool`, set by this
 classifier for timeouts and by Tier 2/3 for `-32601` and the
-"api is not supported" / "lite fullnode" indicators. It is **not** set for
-`capabilityLimitationPatterns` (archival) or the account-index exclusion.
+"api is not supported" / "lite fullnode" indicators. It is **not** set for the
+historical-state entries in `capabilityLimitationPatterns` (missing trie node,
+pruned state, unindexed height) or the account-index exclusion. Two members of
+that list — "api is not supported" and "lite fullnode" — are in
+`methodUnsupportedPatterns` too and do set it: they are about the method, not
+about one block.
 
 `relay/middleware/observe.go` `buildSignal` gains one rule before anything
 else: `AttrClient` with a relay error ⇒ return a zero signal and record
@@ -183,7 +191,7 @@ is what the per-service method allowlist will consume.
 type Store struct { ... }                       // one per process, all services
 func New(opts ...Option) *Store                 // WithTTL, WithEscalation, WithLogger
 func (s *Store) Blocked(service, host, method string) bool
-func (s *Store) Mark(service, host, method string) (escalated bool)
+func (s *Store) Mark(service, host, method string, escalates bool) (escalated bool)
 func (s *Store) Clear(service string) int
 func (s *Store) Active(service string) []Block  // for the collector and admin GET
 type Block struct { Host, Method string; Expiry time.Time } // Method "" = host-level
@@ -195,9 +203,18 @@ Rules:
   nothing ever extends past that. No escalating TTL for method marks — a
   method mark is cheap to be wrong about, and the breaker already escalates
   the expensive case.
-- On the mark that brings a host to ≥ `escalation` distinct live method marks,
-  the host is blocked for every method for one TTL, its method marks are
-  dropped into it, and `escalated` is true.
+- Escalation counts **supplier-attributed marks only**. `Mark`'s `escalates`
+  argument is `HeuristicResult.Attribution == AttrSupplier`; the method mark is
+  recorded either way, but a mark passed `false` neither triggers an escalation
+  nor is counted toward a later one, and the flag is sticky per method within
+  its live window. `-32601` is MethodBlocking and `AttrClient`, so a healthy
+  node without `debug_*`/`trace_*` answers it to every catalogued method a
+  client cares to ask for; counting those would let any client remove a good
+  host from every method — which is the failure in section 1, arrived at from
+  the other side.
+- On the supplier-attributed mark that brings a host to ≥ `escalation` distinct
+  live supplier-attributed method marks, the host is blocked for every method
+  for one TTL, its method marks are dropped into it, and `escalated` is true.
 - `Blocked` is `hostBlocked(host) || methodBlocked(host, method)`. Expiry is
   lazy on read; a sweep goroutine (`safego.Go`) drops expired entries every
   TTL so the map does not grow with dead hosts.

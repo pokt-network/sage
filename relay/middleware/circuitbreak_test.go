@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -155,6 +157,38 @@ func TestCircuitBreak_NoHeuristicResult_DoesNotCircuitBreak(t *testing.T) {
 
 	if breaker.IsBroken("eth", eps[0].Domain()) {
 		t.Error("missing heuristic result should not trigger circuit break")
+	}
+}
+
+// Hedge's Clone is shallow: the primary arm and its parent share ctx.Endpoints'
+// backing array. If the pre-relay filter compacts in place, the parent's copy
+// of the slice observes the mutation too. CircuitBreak must leave the caller's
+// slice untouched and only ever reassign ctx.Endpoints to a new one.
+func TestCircuitBreak_DoesNotMutateInputEndpoints(t *testing.T) {
+	breaker := firstErrorBreaker()
+	eps := testEndpoints(3)
+	// The middle endpoint's domain is broken, forcing a removal.
+	breaker.MarkBroken("eth", eps[1].Domain(), "test")
+	before := append(domain.EndpointAddrList(nil), eps...)
+
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	mw := CircuitBreak(breaker, nil, newFlags("circuit_breaker"), nil)
+	h := mw(inner)
+
+	ctx := baseContext()
+	ctx.Endpoints = eps
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range before {
+		if eps[i] != before[i] {
+			t.Fatalf("caller's endpoint slice mutated at %d: %v -> %v", i, before[i], eps[i])
+		}
 	}
 }
 
@@ -320,5 +354,29 @@ func TestCircuitBreak_NilRecorderIsSafe(t *testing.T) {
 
 	if !breaker.IsBroken("eth", eps[0].Domain()) {
 		t.Error("the break must still happen without a recorder")
+	}
+}
+
+// A dead host used to be invisible to the breaker: a transport error carried
+// no HeuristicResult, so neither branch of the post-relay switch fired. With
+// transport grading, a connect failure is a break candidate like a 5xx.
+func TestCircuitBreak_ConnectFailureFeedsTheBreaker(t *testing.T) {
+	breaker := circuitbreaker.New(circuitbreaker.WithFailureRateGate(time.Minute, 1, 0))
+	eps := testEndpoints(1)
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = eps[0]
+		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed",
+			&net.OpError{Op: "dial", Err: errors.New("connection refused")}, true)
+	})
+	// Heuristic sits inside CircuitBreak in the real chain; compose them so the
+	// verdict is produced by the production classifier, not stubbed.
+	h := CircuitBreak(breaker, nil, newFlags("circuit_breaker"), nil)(Heuristic(newFlags("heuristic"))(inner))
+
+	ctx := baseContext()
+	ctx.Endpoints = eps
+	_ = h.HandleRelay(ctx)
+
+	if !breaker.IsBroken("eth", eps[0].Domain()) {
+		t.Fatal("a refused connection must reach the breaker")
 	}
 }

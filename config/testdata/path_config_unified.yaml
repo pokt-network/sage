@@ -15,6 +15,10 @@ full_node_config:
 gateway_config:
   gateway_mode: "centralized"
 
+  method_blocks:
+    ttl: 5m
+    escalation_threshold: 3
+
   unified_services:
     middleware_chain:
       - timeout

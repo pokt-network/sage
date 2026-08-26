@@ -19,6 +19,7 @@ import (
 	"github.com/pokt-network/sage/healthcheck"
 
 	"github.com/pokt-network/sage/internal/safego"
+	"github.com/pokt-network/sage/methodblock"
 	"github.com/pokt-network/sage/metrics"
 	"github.com/pokt-network/sage/observe"
 	"github.com/pokt-network/sage/protocol"
@@ -64,6 +65,21 @@ type App struct {
 	Redis     *redis.Client
 	Metrics   *metrics.Recorder
 	Logger    *slog.Logger
+}
+
+// methodBlockLister adapts methodblock.Store to metrics.MethodBlockLister so
+// metrics does not import methodblock (nor the reverse).
+type methodBlockLister struct{ store *methodblock.Store }
+
+// ActiveMethodBlocks reports the live method blocks for a service, translated
+// into the metrics package's own type.
+func (l methodBlockLister) ActiveMethodBlocks(serviceID string) []metrics.MethodBlock {
+	active := l.store.Active(serviceID)
+	out := make([]metrics.MethodBlock, len(active))
+	for i, b := range active {
+		out[i] = metrics.MethodBlock{Host: b.Host, Method: b.Method}
+	}
+	return out
 }
 
 // serviceIDsFrom lists every configured service ID. It bounds the service_id
@@ -230,6 +246,16 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// and scrape bytes until restart. See metrics.ScoreCollector.
 	prometheus.MustRegister(metrics.NewScoreCollector(repSvc, serviceIDsFrom(cfg)))
 
+	// 6b. Method blocks: per-host, per-method memory consulted at selection.
+	// Local memory only — see the methodblock package doc.
+	blocks := methodblock.New(
+		methodblock.WithTTL(cfg.Gateway.MethodBlocks.EffectiveTTL()),
+		methodblock.WithEscalation(cfg.Gateway.MethodBlocks.EffectiveEscalation()),
+		methodblock.WithLogger(logger),
+	)
+	blocks.StartSweep(ctx)
+	prometheus.MustRegister(metrics.NewMethodBlockCollector(methodBlockLister{blocks}, serviceIDsFrom(cfg)))
+
 	// A recovered panic is contained, not harmless — surface it as a metric so
 	// it can be alerted on rather than only appearing in logs.
 	prometheus.MustRegister(metrics.NewPanicCollector())
@@ -355,6 +381,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWCircuitBreak, func() relay.Middleware {
 		return middleware.CircuitBreak(cb, proto, flags, recorder)
 	})
+	mwReg.Register(relay.MWMethodBlocks, func() relay.Middleware {
+		return middleware.MethodBlocks(blocks, qosReg, flags, recorder)
+	})
 	mwReg.Register(relay.MWSelectEndpoint, func() relay.Middleware {
 		return middleware.SelectEndpoint(repSvc, proto, qosReg, flags)
 	})
@@ -461,7 +490,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 
 	// 16. Admin API + Router
-	app.Admin = router.NewAdminAPI(flags, repSvc, timeline, cb, qosReg, tuningStore, logger)
+	app.Admin = router.NewAdminAPI(flags, repSvc, timeline, cb, blocks, qosReg, tuningStore, logger)
 	app.Router = router.New(cfg.Router, chain, proto, wsRelayer, logger)
 
 	return app, nil

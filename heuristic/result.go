@@ -60,6 +60,13 @@ type AnalysisResult struct {
 	Reason string
 	// Details provides human-readable context for debugging.
 	Details string
+	// MethodBlocking indicates the endpoint could not serve THIS METHOD — it
+	// timed out after accepting the connection, or answered that the method
+	// is not available on it — and should not receive that method again for
+	// a while. It is deliberately not set for missing historical state (per
+	// block, owned by archival tri-state) or Solana's per-key index exclusion
+	// (per program), because those are not "cannot do this method".
+	MethodBlocking bool
 }
 
 // successResult returns an AnalysisResult for a successful response.

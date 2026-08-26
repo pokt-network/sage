@@ -275,6 +275,18 @@ listed RPC types, on every service. See BlockedDomain.
 | `domain` | string | A registrable domain ("op-alpha.example", matching every host under it) or an exact hostname ("s019.op-alpha.example", matching only that host). Case-insensitive. An empty value is a startup error rather than a no-op. |
 | `rpc_types` | list of string | Lists the banned protocols ("json_rpc", "rest", "comet_bft", "websocket", "grpc"). Empty bans every one of them. An unrecognized value is a startup error: a typo here silently narrows a ban, which is the one failure mode this feature cannot have. |
 
+### `gateway_config.method_blocks`
+
+MethodBlocks tunes the per-host, per-method memory consulted at
+selection: a host that timed out on a method, or said it does not
+serve it, stops receiving that method for a while and keeps receiving
+everything else. See MethodBlocksConfig.
+
+| Key | Type | Description |
+|---|---|---|
+| `ttl` | duration | How long one mark keeps a method away from a host. Zero means 5m; negative disables marking entirely (the middleware still runs and passes everything through). Short on purpose — a mark is one timeout of evidence and a host re-proves itself with one relay when it lapses. |
+| `escalation_threshold` | integer | How many distinct methods must be marked on one host inside one TTL before the host is blocked for every method. Zero means 3; negative never escalates. |
+
 ### `gateway_config.active_health_checks`
 
 Controls active health checks.

@@ -171,4 +171,11 @@ func mergeContext(dst, src *relay.Context) {
 	dst.Degraded = src.Degraded
 	dst.Cached = src.Cached
 	dst.Coalesced = src.Coalesced
+	// The winning arm's verdict, or Observe (which sits outside Hedge) never
+	// sees one and falls back to grading by HTTP status: a transport timeout
+	// would score as a minor error and a client hang-up would be scored
+	// against the supplier, both only when hedging is on. Safe to copy by
+	// pointer: the arm has already returned through its channel, so nothing
+	// writes to it any more.
+	dst.HeuristicResult = src.HeuristicResult
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/pokt-network/sage/circuitbreaker"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/methodblock"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/reputation"
 	"github.com/pokt-network/sage/tuning"
@@ -129,7 +130,19 @@ func newTestAdmin(
 	breaker *circuitbreaker.Breaker,
 	qosReg *qos.Registry,
 ) *AdminAPI {
-	return NewAdminAPI(flags, repSvc, tl, breaker, qosReg, tuning.NewStore(), discardLogger())
+	return NewAdminAPI(flags, repSvc, tl, breaker, nil, qosReg, tuning.NewStore(), discardLogger())
+}
+
+// newTestAdminAPIWithBlocks is the same as newTestAdmin, plus a method-block
+// store, for tests that exercise the method-blocks admin routes.
+func newTestAdminAPIWithBlocks(t *testing.T, store *methodblock.Store) *AdminAPI {
+	t.Helper()
+	flags := newMockFlagStore()
+	repSvc := newMockRepService()
+	tl := reputation.NewTimeline(100)
+	breaker := circuitbreaker.New()
+	qosReg := qos.NewRegistry()
+	return NewAdminAPI(flags, repSvc, tl, breaker, store, qosReg, tuning.NewStore(), discardLogger())
 }
 
 func newAdminServer(t *testing.T) (*AdminAPI, *httptest.Server) {

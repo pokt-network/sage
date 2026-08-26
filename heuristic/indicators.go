@@ -2,11 +2,12 @@ package heuristic
 
 // indicator represents a content pattern that hints at the cause of an error.
 type indicator struct {
-	pattern     string
-	attribution ErrorAttribution
-	shouldRetry bool
-	severity    string
-	reason      string
+	pattern        string
+	attribution    ErrorAttribution
+	shouldRetry    bool
+	severity       string
+	reason         string
+	methodBlocking bool
 }
 
 // indicators are Tier 3 content patterns checked when Tier 2 didn't give high confidence.
@@ -39,8 +40,10 @@ var indicators = []indicator{
 	{pattern: "haven't been fully indexed", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "not_indexed"},
 	{pattern: "not been fully indexed", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "not_indexed"},
 	// Capability limitation (e.g., Tron lite fullnodes that don't expose an API).
-	{pattern: "lite fullnode", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "lite_fullnode"},
-	{pattern: "api is not supported", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "api_not_supported"},
+	// These two report the endpoint cannot serve the METHOD, not just this
+	// block, so they set methodBlocking.
+	{pattern: "lite fullnode", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "lite_fullnode", methodBlocking: true},
+	{pattern: "api is not supported", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "api_not_supported", methodBlocking: true},
 	// Solana node started without a secondary account index for this program
 	// (-32010). Configuration, not a fault; another operator has the index.
 	{pattern: "excluded from account secondary indexes", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "account_index_excluded"},
@@ -81,6 +84,7 @@ func matchIndicator(body []byte) *AnalysisResult {
 				Confidence:         0.60,
 				Reason:             ind.reason,
 				Details:            "indicator match: " + ind.pattern,
+				MethodBlocking:     ind.methodBlocking,
 			}
 			return &result
 		}

@@ -34,6 +34,7 @@ type Recorder struct {
 	circuitBreakerOutcome *prometheus.CounterVec
 	supplierBlacklists    *prometheus.CounterVec
 	relayMinerErrors      *prometheus.CounterVec
+	methodBlockEvents     *prometheus.CounterVec
 
 	// codespaces bounds the relay miner error codespace label, which is a
 	// string chosen by the supplier's relay miner.
@@ -153,6 +154,18 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			[]string{"service_id", "codespace"},
 		),
 		codespaces: cappedLabel(maxCodespaceLabels),
+		// No domain label on purpose: the gauge above names the host, and a
+		// counter keyed on host is the series growth PATH's cardinality
+		// incident was about. method is the plugin catalogue; event is a
+		// closed set from relay/middleware.
+		methodBlockEvents: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "method_block_events_total",
+				Help:      "Method-block events by service and method. event is mark (a host was blocked for a method), escalate (a host was blocked for every method), or bypass (every host was blocked for the method, so the unfiltered pool was used). mark also counts an attempt that landed no block (empty host, or marking disabled by TTL <= 0) — it counts the middleware's attempt to mark, not that a mark landed.",
+			},
+			[]string{"service_id", "method", "event"},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -168,6 +181,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.circuitBreakerOutcome,
 		r.supplierBlacklists,
 		r.relayMinerErrors,
+		r.methodBlockEvents,
 	)
 
 	return r
@@ -250,6 +264,13 @@ func (r *Recorder) RecordSupplierBlacklist(serviceID domain.ServiceID, reason st
 // codespace is written by that miner, so it is bounded here — see boundedLabel.
 func (r *Recorder) RecordRelayMinerError(serviceID domain.ServiceID, codespace string) {
 	r.relayMinerErrors.WithLabelValues(r.services.serviceValue(serviceID), r.codespaces.value(codespace)).Inc()
+}
+
+// RecordMethodBlockEvent counts one method-block event. method comes from
+// the plugin's bounded catalogue and event from a closed set, so neither
+// needs bounding here.
+func (r *Recorder) RecordMethodBlockEvent(serviceID domain.ServiceID, method, event string) {
+	r.methodBlockEvents.WithLabelValues(r.services.serviceValue(serviceID), method, event).Inc()
 }
 
 // ServeHTTP returns a standard Prometheus HTTP handler suitable for mounting

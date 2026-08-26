@@ -49,6 +49,12 @@ type GatewayConfig struct {
 	// listed RPC types, on every service. See BlockedDomain.
 	BlockedDomains []BlockedDomain `yaml:"blocked_domains"`
 
+	// MethodBlocks tunes the per-host, per-method memory consulted at
+	// selection: a host that timed out on a method, or said it does not
+	// serve it, stops receiving that method for a while and keeps receiving
+	// everything else. See MethodBlocksConfig.
+	MethodBlocks MethodBlocksConfig `yaml:"method_blocks"`
+
 	HealthChecks        HealthCheckConfig         `yaml:"active_health_checks"`
 	ObservationPipeline ObservationPipelineConfig `yaml:"observation_pipeline"`
 
@@ -85,6 +91,43 @@ type BlockedDomain struct {
 	// is a startup error: a typo here silently narrows a ban, which is the one
 	// failure mode this feature cannot have.
 	RPCTypes []string `yaml:"rpc_types,omitempty"`
+}
+
+// MethodBlocksConfig tunes method-aware blocks. Both fields follow the
+// zero-is-default, negative-is-off convention.
+type MethodBlocksConfig struct {
+	// TTL is how long one mark keeps a method away from a host. Zero means
+	// 5m; negative disables marking entirely (the middleware still runs and
+	// passes everything through). Short on purpose — a mark is one timeout
+	// of evidence and a host re-proves itself with one relay when it lapses.
+	TTL time.Duration `yaml:"ttl"`
+	// EscalationThreshold is how many distinct methods must be marked on one
+	// host inside one TTL before the host is blocked for every method. Zero
+	// means 3; negative never escalates.
+	EscalationThreshold int `yaml:"escalation_threshold"`
+}
+
+// EffectiveTTL resolves TTL: zero to the default, negative to off.
+func (m MethodBlocksConfig) EffectiveTTL() time.Duration {
+	switch {
+	case m.TTL < 0:
+		return 0
+	case m.TTL == 0:
+		return 5 * time.Minute
+	}
+	return m.TTL
+}
+
+// EffectiveEscalation resolves EscalationThreshold: zero to the default,
+// negative to never.
+func (m MethodBlocksConfig) EffectiveEscalation() int {
+	switch {
+	case m.EscalationThreshold < 0:
+		return 0
+	case m.EscalationThreshold == 0:
+		return 3
+	}
+	return m.EscalationThreshold
 }
 
 // AllServices returns services from whichever config format was used.

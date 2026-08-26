@@ -25,6 +25,11 @@ const (
 	// reaching a different operator than the attempt that just failed. Off
 	// restores per-endpoint-only behavior.
 	FlagOperatorAwareSelection = "operator_aware_selection"
+	// FlagMethodBlocks gates the method_blocks middleware: per-host,
+	// per-method memory that stops sending a method to a host that recently
+	// timed out on it or said it does not serve it, without affecting any
+	// other method on that host. Off passes every relay through unpruned.
+	FlagMethodBlocks = "method_blocks"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -53,6 +58,7 @@ var DefaultFlags = map[string]bool{
 	FlagWebsocketRelays:     true,
 
 	FlagOperatorAwareSelection: true,
+	FlagMethodBlocks:           true,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

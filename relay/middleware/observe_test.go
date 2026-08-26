@@ -254,3 +254,46 @@ func TestObserve_NoSignalWhenNoEndpoint(t *testing.T) {
 func newTrackingQueueHandler() *trackingQueueHandler {
 	return &trackingQueueHandler{}
 }
+
+// A client hang-up is nobody's fault. The old fallback turned every relay
+// error into a MinorError against whichever supplier held the relay — PATH's
+// A/B showed those cancels track the slowest operator's tail latency, a
+// latency signal misfiled as a fault.
+func TestObserve_ClientCancelRecordsNoSignal(t *testing.T) {
+	repSvc := &trackingRepService{}
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = ctx.Endpoints[0]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{Attribution: heuristic.AttrClient, Reason: "client_cancelled"}
+		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.Canceled, true)
+	})
+	mw := Observe(newFlags(), nil, repSvc)
+	ctx := baseContext()
+	_ = mw(inner).HandleRelay(ctx)
+
+	repSvc.mu.Lock()
+	defer repSvc.mu.Unlock()
+	if repSvc.called {
+		t.Fatalf("a client cancel recorded a %q signal against the supplier", repSvc.last.Type)
+	}
+}
+
+// The control: a transport timeout graded major must reach reputation as
+// major, not as the old undifferentiated minor.
+func TestObserve_TransportTimeoutIsMajor(t *testing.T) {
+	repSvc := &trackingRepService{}
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = ctx.Endpoints[0]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{
+			Attribution: heuristic.AttrSupplier, ShouldPenalize: true, PenaltySeverity: heuristic.SeverityMajor, Reason: "transport_timeout",
+		}
+		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.DeadlineExceeded, true)
+	})
+	mw := Observe(newFlags(), nil, repSvc)
+	_ = mw(inner).HandleRelay(baseContext())
+
+	repSvc.mu.Lock()
+	defer repSvc.mu.Unlock()
+	if !repSvc.called || repSvc.last.Type != reputation.SignalMajorError {
+		t.Fatalf("signal = %v (called=%v), want major_error", repSvc.last.Type, repSvc.called)
+	}
+}

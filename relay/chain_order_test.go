@@ -107,3 +107,19 @@ func TestValidateChainOrder_UnknownNamesAreAbsent(t *testing.T) {
 		t.Errorf("an unknown middleware name should validate as absent, got: %v", err)
 	}
 }
+
+func TestValidateChainOrder_MethodBlocksAfterSelectEndpoint(t *testing.T) {
+	order := []string{MWParse, MWHedge, MWSelectEndpoint, MWMethodBlocks, MWSendRelay}
+	err := ValidateChainOrder(order)
+	if err == nil || !strings.Contains(err.Error(), "method_blocks") {
+		t.Errorf("expected method_blocks→select_endpoint violation, got %v", err)
+	}
+}
+
+func TestValidateChainOrder_MethodBlocksOutsideHedge(t *testing.T) {
+	order := []string{MWParse, MWMethodBlocks, MWHedge, MWSelectEndpoint, MWSendRelay}
+	err := ValidateChainOrder(order)
+	if err == nil || !strings.Contains(err.Error(), "method_blocks") {
+		t.Errorf("expected hedge→method_blocks violation, got %v", err)
+	}
+}

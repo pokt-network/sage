@@ -25,6 +25,7 @@ const (
 	MWHedge            = "hedge"
 	MWSupplierAffinity = "supplier_affinity"
 	MWCircuitBreak     = "circuit_break"
+	MWMethodBlocks     = "method_blocks"
 	MWSelectEndpoint   = "select_endpoint"
 	MWDebugLog         = "debug_log"
 	MWHeuristic        = "heuristic"
@@ -57,6 +58,7 @@ func DefaultChainOrder() []string {
 		MWHedge,
 		MWSupplierAffinity,
 		MWCircuitBreak,
+		MWMethodBlocks,
 		MWSelectEndpoint,
 		MWDebugLog,
 		MWHeuristic,
@@ -82,6 +84,10 @@ func DefaultChainOrder() []string {
 //     own endpoint).
 //   - circuit_break must precede select_endpoint (CB prunes domains before
 //     selection; running after would let traffic reach broken endpoints).
+//   - hedge must precede method_blocks (each hedge arm must honour and feed
+//     method blocks, not just the primary attempt).
+//   - method_blocks must precede select_endpoint (it prunes before
+//     selection; running after would let traffic reach blocked methods).
 //   - heuristic must precede send_relay (heuristic wraps the relay so it
 //     can analyze ctx.Response).
 //
@@ -133,6 +139,9 @@ func ValidateChainOrder(names []string) error {
 		{MWHedge, MWSelectEndpoint, "each hedge racer must pick its own endpoint"},
 
 		{MWCircuitBreak, MWSelectEndpoint, "circuit_break prunes broken domains before selection"},
+
+		{MWHedge, MWMethodBlocks, "each hedge arm must honour and feed method blocks"},
+		{MWMethodBlocks, MWSelectEndpoint, "method_blocks prunes before selection"},
 	}
 
 	for _, rule := range mustPrecede {
