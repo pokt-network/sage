@@ -1,8 +1,9 @@
 # Reputation scoring — design
 
-Status: **proposal**. Nothing here is implemented yet. It exists because the
-scoring path was audited on 2026-08-21 and what it actually does is not what the
-code reads like it does.
+Status: **decided 2026-08-27, implementation pending**. §1–§2 record what the
+code did at the 2026-08-21 audit; §3–§6 the model; §7 the decisions and the data
+they rest on. The implementation contract is
+`docs/superpowers/specs/2026-08-27-scoring-v2-design.md`.
 
 `ARCHITECTURE.md` describes reputation as the thing that learns from relays and
 steers selection away from bad endpoints. That is the intent. This document
@@ -153,13 +154,18 @@ shared across the whole request tree — which is normally a hazard (see the
 mutex, and one signal per `(endpoint, rpc_type)` is emitted when the parent
 request completes, carrying the **worst** severity observed for that endpoint.
 
-Open: worst-of versus majority. Worst-of is proposed because a single fabricated
-response inside a batch is still a fabricated response, and averaging it away is
-how a bad endpoint hides in bulk traffic.
+Worst-of, over **supplier-attributed** outcomes only (decided, §7.1). A single
+fabricated response inside a batch is still a fabricated response, and averaging
+it away is how a bad endpoint hides in bulk traffic. The attribution filter is
+what the data forced: on beta 66% of mixed batches contain an item error, and
+every one of them was `-32601` — the client asked for a method the chain does
+not have. Worst-of over raw outcomes would have scored two thirds of all batch
+traffic as a supplier fault.
 
 ### 4.4 Decide what latency does
 
-Three options, in order of preference:
+Decided: option 3, delete the two signal types, and give latency a reporting
+role only (§7.2). The three options as they were weighed:
 
 1. **Score it relative to the service, not absolutely.** Emit `slow_response` /
    `very_slow_response` when an attempt exceeds a multiple of the service's
@@ -177,6 +183,10 @@ excludes at selection. `recovery_success` should be deleted or given a
 definition; today it is a synonym for `success` with the same `+5`.
 
 ### 4.5 Recalibrate the weights, and write down the ratio
+
+Decided (§7.3): the additive constants stay, the ratio is stated, and a second
+term — a rate term — is added to the score for the violators the additive term
+provably cannot see.
 
 `+5` success against `-25` critical means five good relays erase one critical.
 That ratio was never stated as an intent; it fell out of two constants. Per-attempt
@@ -255,11 +265,152 @@ Revert-check every change, and make sure each test discriminates: for scoring in
 particular, "no signal recorded" and "the right signal recorded" are easy to
 confuse when the assertion only counts calls.
 
-## 7. Open questions
+## 7. Decisions, and the data behind them
 
-- Worst-of or majority for a batch (§4.3)?
-- Which latency option, if any (§4.4)?
-- The erase ratio, stated as a number (§4.5)?
-- Should a probe-only-graded endpoint be selectable at full score, or capped
-  until real traffic has confirmed it (§4.6)? This is the one place where
-  probe/traffic separation would change behaviour rather than only reporting.
+Answered 2026-08-27 from two sources, because neither alone covers both sides
+of the question:
+
+- **Beta TestNet, 12 minutes of mixed traffic through SAGE** (20,304 relay
+  attempts, 156 probes): singles, batches of 5/10/20 with 15% unsupported
+  methods mixed in, client timeouts of 150/250/400 ms, Cosmos REST, CometBFT
+  and JSON-RPC. Beta has exactly one live backend
+  (`rm.beta.infra.pocket.network`; the other two registered hosts do not
+  resolve), so it yields a real healthy-endpoint latency distribution and
+  probe-versus-traffic agreement, and nothing about bad-but-alive endpoints.
+- **PATH's mainnet evidence** (`EVIDENCE_EMPTY_RESPONSES_2026-08-19.md`) for the
+  violator side: per-domain empty-response rates over one day — spacebelt
+  0.216%, rpcgate 0.065%, nodefleet 0.00003%, kleomedes ~0%. Every one of the
+  bad responses landed on a 3.0 s deadline (p50 3021 ms, min 2820, max 3080).
+- **Simulation** of the scoring rules against those rates, where the question
+  is arithmetic rather than measurement.
+
+### 7.1 Batch: worst-of over supplier-attributed outcomes
+
+Beta: 1,238 batches, 812 (66%) with at least one item error, 1,459 item errors,
+**all** `-32601`. Not one supplier-attributed partial failure was observed. So
+worst-of and majority differ on nothing in the data, and the decision is by
+principle: worst-of, because the case that separates them — one fabricated item
+in twenty — is exactly the case a bad endpoint hides behind. The data's
+contribution is the filter: the collapse runs over outcomes with
+`Attribution == Supplier`; client- and blockchain-attributed items are ignored;
+a batch with only those and at least one success scores one `success`; a batch
+with only client-attributed items scores nothing.
+
+### 7.2 Latency: no penalising power, reporting only
+
+Two findings, one arithmetic and one empirical.
+
+Arithmetic: under a score clamped at 100, a `-1` slow signal at any plausible
+rate is invisible — the next `+5` restores it. For latency to move a score it
+would have to fire often (then it is the median, not a tail) or cost as much as
+an error (then a slow-but-correct endpoint is treated as a broken one). PATH's
+`latency_profiles` model — multipliers on the success reward — has the same
+property under the same clamp.
+
+Empirical (beta, 16,533 healthy `pnf-anvil` attempts, median 126 ms): the
+fraction of correct responses above k× the service median is 6.2% at 2×, 3.4%
+at 3×, 1.1% at 5×, 0.01% at 8×. The tail of a healthy endpoint is wide and
+smooth; there is no multiple that separates "slow endpoint" from "normal tail".
+PATH's `fast` profile thresholds (`penalty_threshold: 1000ms`) would have fired
+on 0.012% of them — a rule that never fires and whose absence is invisible.
+
+What latency **is** in the data is a fault signature: every mainnet empty
+response sat at the RelayMiner's 3 s deadline. That is evidence for the
+heuristic (a body-less 200 at the transport deadline is a timeout wearing a
+success envelope), not for the score.
+
+Decision: delete `slow_response`, `very_slow_response`, `stale_block` and
+`recovery_success` and their constructors (principle 6). Keep `Signal.Latency`
+and maintain a per-key latency EWMA from **traffic** attempts, exported through
+the admin reputation listing. Probes are excluded from it: their connections are
+cold, and on beta the probe tail was 2.4× the traffic tail at p90 (500 ms vs
+206 ms for `eth_blockNumber`) with the same median. `latency_profiles` and
+`latency_profile` stay parsed, inert and reported at startup, and this section
+is the reason.
+
+### 7.3 The ratio, and the term the ratio cannot buy
+
+The additive term with `+5 / -25` has a break-even failure rate of
+`s / (s + c) = 16.7%`: an endpoint failing less often than one relay in six sits
+at 100 forever; one failing more often drifts to 0. Simulated over 20,000
+attempts, an endpoint at 15% critical is below tier 1 62% of the time, at 10%
+31%, at 5% 9.5%, at 2% 2.6%, at 0.2% 0.2%. Raising the ratio does not reach the
+mainnet violators: at `k = 20` (`-100` per critical) spacebelt at 0.216% is
+below tier 1 2.3% of the time, and one transient error costs a perfect host 20
+relays of demotion. No ratio catches a 0.2% violator without punishing a 0.001%
+one.
+
+So the ratio is **kept at 5 and stated**: the additive term is an outage
+detector — it exists to remove an endpoint that has *started* failing within a
+handful of attempts (a dead host at `-25` leaves tier 1 on the first critical
+and hits 0 on the fourth) — and it is not asked to see anything under a 1-in-6
+failure rate. `signal_impacts` becomes live so an operator can move it.
+
+The chronic violator gets a term of its own inside the same score (§5 rule:
+measures something the score cannot represent, and its power is the score's —
+demotion by tier, nothing else). Per `(endpoint, rpc_type)`, an EWMA of
+supplier-attributed failure per attempt (`1` for critical/fatal, `0.5` for
+major, `0` otherwise; client-attributed outcomes are not attempts), half-life
+20,000 attempts, mapped to a penalty that is 0 up to 0.02% and logarithmic
+above it: `-40` at 1%, `-70` at 10% and beyond. Effective score is
+`clamp(additive + rate_penalty)`.
+
+Simulated at steady state (100k attempts, 10 runs): nodefleet 0; rpcgate `-11`
+(tier 1, 89); spacebelt `-23` (tier 2, 77); 1% `-40` (tier 2, 60); 5% `-61`;
+20% `-70` (probation). A burst of 3 criticals on a clean endpoint moves the
+rate term by 0.010% — penalty 0; a burst of 6 costs `-0.4` and clears in ~1,100
+clean attempts; 20 in a row cost `-13`. Detection of a spacebelt-rate violator
+takes 12k–22k attempts, which at that supplier's mainnet volume (2M relays/day)
+is under fifteen minutes and at 1 relay/s is six hours: the term is for chronic
+behaviour and is allowed to be slow. Where the two terms disagree the additive
+one is the fast path and the rate term the memory, and neither has state the
+other needs.
+
+What it does not do: a 0.065% endpoint keeps tier 1. That is the price of not
+penalising a 6-error burst, and it is the trade the half-life sets. A shorter
+half-life reacts faster and treats bursts as chronic; 20k is where a 6-burst
+stays under the onset.
+
+### 7.4 Probe-only endpoints: selectable at full score
+
+Beta: probes and traffic agreed on every host — the live one passed every probe
+(156/156) and served 20,304 attempts without one supplier-attributed failure;
+the two dead hosts failed every probe and were never selected. Median latency
+agreed within 15% (108 vs 127 ms). The data gives no case where a probe-graded
+endpoint misled selection.
+
+The cost of trusting a probe is bounded by the per-attempt model: the first bad
+relay scores the endpoint itself (`-25`, out of tier 1) and Retry moves on, so a
+wrong probe costs one client one retry. The cost of capping is unbounded in the
+other direction: a capped endpoint gets traffic only through probation's 10%,
+which on a tier-1-heavy pool is how a new supplier never earns a score — the
+single-healthy-host caveat again, from the other side. No cap. `Signal.Probe`
+is set by the health-check executor so the admin listing can say which keys
+have never seen traffic, and so that a future mechanism can be checked against
+principle 5.
+
+### 7.5 Client cancellation: no signal, not a latency signal either
+
+Beta, 627 requests with client timeouts of 150–400 ms against an endpoint whose
+median is 126 ms: 72 cancellations, 58 of them at 150 ms. The attempts SAGE
+saw cancelled had a p50 of 151 ms — the client's deadline, not the supplier's
+latency. Scoring a cancel penalises the endpoint for the caller's impatience,
+and the fastest endpoint takes the most traffic and therefore the most
+cancels. The censored observation ("the supplier had not answered by *t*") is
+the client's *t*, which says nothing about the supplier that a `slow` signal
+could carry. Stays as implemented in `observe.go`: `AttrClient` on an error is
+nobody's signal. Cancelled attempts are not attempts for the rate term either.
+
+### 7.6 PATH's config surface, key by key
+
+Honoured: `signal_impacts.{success,minor_error,major_error,critical_error,fatal_error}`,
+`tiered_selection.{tier1_threshold,tier2_threshold}`,
+`tiered_selection.probation.{threshold,traffic_percent}`, `min_threshold`.
+Inert and reported, with the reason: `signal_impacts.{recovery_success,slow_response,very_slow_response,stale_block}`
+(types deleted, §7.2), `latency_profiles` / `latency_profile` (§7.2),
+`tiered_selection.enabled` and `probation.enabled` (always on),
+`probation.recovery_multiplier` (no such mechanism), `recovery_timeout` (a
+cooldown SAGE does not have, §4.7). The rate term's three numbers are SAGE keys
+under `reputation_config` because PATH has no equivalent:
+`chronic_half_life_attempts` (0 = 20000, negative = term off),
+`chronic_onset_rate` (0 = 0.0002), `chronic_full_rate` (0 = 0.01).
