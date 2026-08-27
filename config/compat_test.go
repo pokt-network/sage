@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/reputation"
 )
 
 // SAGE is a restructured fork of PATH and must load a PATH config unmodified.
@@ -183,6 +184,10 @@ func TestConfigCompatibility_Gateway(t *testing.T) {
 			t.Errorf("reputation scores = %+v", rep)
 		}
 
+		if rep.ChronicHalfLifeAttempts != 15000 || rep.ChronicOnsetRate != 0.0005 || rep.ChronicFullRate != 0.02 {
+			t.Errorf("chronic keys = %+v", rep)
+		}
+
 		want := TieredSelectionConfig{
 			Enabled:        true,
 			Tier1Threshold: 85,
@@ -196,6 +201,32 @@ func TestConfigCompatibility_Gateway(t *testing.T) {
 		}
 		if rep.TieredSelection != want {
 			t.Errorf("tiered_selection = %+v, want %+v", rep.TieredSelection, want)
+		}
+
+		// The keys are not merely parsed: these are the numbers the selector
+		// and the scorer are built from.
+		wantSel := reputation.SelectorConfig{
+			Tier1Threshold: 85, Tier2Threshold: 35, MinThreshold: 5,
+			ProbationThreshold: 45, ProbationPct: 25,
+		}
+		if got := rep.SelectorConfig(); got != wantSel {
+			t.Errorf("SelectorConfig() = %+v, want %+v", got, wantSel)
+		}
+		// The fixture's thresholds do not descend (probation 45 sits above
+		// tier2 35), which is the shape a PATH config in production has. It
+		// must load — loadFixture would have failed the test otherwise — and
+		// it must say something, because tier 2 ends up narrower than it
+		// reads.
+		if len(cfg.Warnings) == 0 {
+			t.Error("a PATH config whose thresholds do not descend loaded silently")
+		}
+		if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "probation.threshold") {
+			t.Errorf("warnings = %v, want one naming probation.threshold", cfg.Warnings)
+		}
+
+		wantRate := reputation.RateConfig{HalfLifeAttempts: 15000, OnsetRate: 0.0005, FullRate: 0.02}
+		if got := rep.RateConfig(); got != wantRate {
+			t.Errorf("RateConfig() = %+v, want %+v", got, wantRate)
 		}
 
 		wantImpacts := SignalImpactsConfig{

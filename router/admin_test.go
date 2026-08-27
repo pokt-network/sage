@@ -130,6 +130,19 @@ func (m *mockRepService) Vouched(_ context.Context, _ domain.ServiceID, _ domain
 	return true
 }
 
+// mockRepStateService is mockRepService plus reputation.StateLister, for the
+// admin listing. It is kept separate from mockRepService on purpose: the
+// listing falls back to the plain {key: score} shape when the service does not
+// implement the optional interface, and that fallback needs a fake without it.
+type mockRepStateService struct {
+	*mockRepService
+	states map[string]reputation.StateView
+}
+
+func (m *mockRepStateService) GetStates(_ context.Context, _ domain.ServiceID) (map[string]reputation.StateView, error) {
+	return m.states, nil
+}
+
 // --- Helper ---
 
 func newTestAdmin(
@@ -303,6 +316,97 @@ func TestAdminGetReputation(t *testing.T) {
 	}
 	if score != 82.5 {
 		t.Errorf("score = %f, want 82.5", score)
+	}
+}
+
+// A service that implements reputation.StateLister gets the full state row per
+// key — the effective score plus the two terms it is made of, the attempt
+// counts and the probe-only marker — not just a number.
+func TestAdmin_GetReputation_ReturnsStateRows(t *testing.T) {
+	repSvc := &mockRepStateService{
+		mockRepService: newMockRepService(),
+		states: map[string]reputation.StateView{
+			"https://a": {
+				Score:           77,
+				Additive:        100,
+				Rate:            0.002,
+				Penalty:         -23,
+				Attempts:        40000,
+				TrafficAttempts: 39990,
+				LatencyMS:       130,
+			},
+		},
+	}
+	admin := newTestAdmin(newMockFlagStore(), repSvc, reputation.NewTimeline(10), circuitbreaker.New(), qos.NewRegistry())
+	mux := http.NewServeMux()
+	admin.RegisterRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/admin/reputation/eth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var body map[string]map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	row, ok := body["https://a"]
+	if !ok {
+		t.Fatalf("expected key https://a in %v", body)
+	}
+	for _, tc := range []struct {
+		field string
+		want  any
+	}{
+		{"score", 77.0},
+		{"additive", 100.0},
+		{"rate", 0.002},
+		{"penalty", -23.0},
+		{"attempts", 40000.0},
+		{"traffic_attempts", 39990.0},
+		{"probe_only", false},
+		{"latency_ms", 130.0},
+	} {
+		if row[tc.field] != tc.want {
+			t.Errorf("%s = %v (%T), want %v", tc.field, row[tc.field], row[tc.field], tc.want)
+		}
+	}
+}
+
+// A reputation service that is only reputation.Service — every test stub, and
+// any future implementation that does not opt in — still answers with the old
+// {key: score} shape rather than an error or an empty listing.
+func TestAdmin_GetReputation_FallsBackToScoresWithoutStateLister(t *testing.T) {
+	repSvc := newMockRepService()
+	repSvc.scores["eth:https://a"] = 42.5
+	if _, isLister := any(repSvc).(reputation.StateLister); isLister {
+		t.Fatal("mockRepService must not implement StateLister; the fallback would go untested")
+	}
+	admin := newTestAdmin(newMockFlagStore(), repSvc, reputation.NewTimeline(10), circuitbreaker.New(), qos.NewRegistry())
+	mux := http.NewServeMux()
+	admin.RegisterRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/admin/reputation/eth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var body map[string]float64
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["https://a"] != 42.5 {
+		t.Errorf("score = %v, want 42.5", body["https://a"])
 	}
 }
 

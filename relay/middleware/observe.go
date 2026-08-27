@@ -18,7 +18,12 @@ import (
 //     error — except when the relay errored and ctx.HeuristicResult
 //     attributes the failure to the client (e.g. a client hang-up): that
 //     case is nobody's signal, and buildSignal returns a zero Signal that
-//     the call site skips recording entirely.
+//     the call site skips recording entirely. This is the pre-v2 path: one
+//     signal per CLIENT REQUEST, from outside retry and hedge, so the
+//     attempts that lost are never seen. Under the scoring_v2 flag it does
+//     not run at all — the score middleware records one signal per ATTEMPT
+//     from inside retry, hedge and batch instead, and doing both would count
+//     every request twice.
 //  2. If the "request_sampler" feature flag is enabled AND the relay is for a
 //     configured service, hands the relay's payloads to sampler for
 //     request-shape tracking (see package traffic). This runs on the 100%
@@ -49,8 +54,11 @@ func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputatio
 
 			latency := time.Since(start)
 
-			// Always record a reputation signal when an endpoint was selected.
-			if ctx.Endpoint != "" {
+			// Record a reputation signal when an endpoint was selected.
+			//
+			// Under scoring_v2 the score middleware records per attempt;
+			// recording here too would count every request twice.
+			if ctx.Endpoint != "" && !scoringV2Enabled(flags, ctx) {
 				sig := buildSignal(ctx, err, latency)
 				if sig.Type != "" {
 					// Best-effort: ignore RecordSignal errors so we never block a relay.

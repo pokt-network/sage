@@ -34,25 +34,43 @@ type inertField struct {
 // not implemented belongs here; TestInertRegistryCoversDocComments fails if one
 // is missing, so the two cannot drift.
 //
-// Block-level entries (signal_impacts, tiered_selection, latency_profiles)
-// cover every key inside them: reporting the block once is more useful than
-// reporting eight leaves that share one reason.
+// A block-level entry (latency_profiles, defaults.reputation_config) covers
+// every key inside it: where one reason is true of the whole block, reporting
+// it once is more useful than reporting eight leaves that share it. The
+// gateway-level reputation-tuning blocks are the other case — most of
+// signal_impacts and tiered_selection is honoured there, so only the leaves
+// SAGE still ignores are listed, one reason each.
+//
+// Both shapes are needed for the same key: the same tier thresholds are read
+// under gateway_config.reputation_config and read by nothing under
+// gateway_config.defaults.reputation_config, and the path is what separates
+// them.
 var inertFields = []inertField{
 	{Parent: "reputation_config", Key: "enabled",
 		Reason: "reputation always runs; endpoint scoring is how selection works"},
 	{Parent: "reputation_config", Key: "storage_type",
 		Reason: "storage follows redis_config: Redis when an address is set, in-memory otherwise"},
-	{Parent: "reputation_config", Key: "min_threshold",
-		Reason: "the tiered selector uses reputation.DefaultSelectorConfig()"},
 	{Parent: "reputation_config", Key: "recovery_timeout",
 		Reason: "SAGE has no cooldown; recovery happens through probation traffic, not a timer"},
-	{Parent: "reputation_config", Key: "tiered_selection",
-		Reason: "tier thresholds and probation come from reputation.DefaultSelectorConfig()"},
-	{Parent: "reputation_config", Key: "signal_impacts",
-		Reason: "score deltas per signal live in reputation/signals.go"},
+
+	{Parent: "defaults", Key: "reputation_config",
+		Reason: "reputation is configured from gateway_config.reputation_config only; the selector and the scorer are global, so a copy under defaults is read by nothing"},
+
+	{Parent: "tiered_selection", Key: "enabled",
+		Reason: "tiering always runs"},
+	{Parent: "probation", Key: "enabled",
+		Reason: "probation routing always runs"},
+	{Parent: "probation", Key: "recovery_multiplier",
+		Reason: "SAGE has no recovery multiplier; a probation endpoint recovers through the traffic it is given"},
+	{Parent: "signal_impacts", Key: "recovery_success",
+		Reason: "the signal type was removed; success is success (docs/scoring.md §7.2)"},
+	{Parent: "signal_impacts", Key: "slow_response",
+		Reason: "latency does not penalise; it is reported per key in the admin listing (docs/scoring.md §7.2)"},
+	{Parent: "signal_impacts", Key: "very_slow_response",
+		Reason: "latency does not penalise; it is reported per key in the admin listing (docs/scoring.md §7.2)"},
 
 	{Key: "latency_profiles",
-		Reason: "latency does not affect reputation at all today; see docs/scoring.md"},
+		Reason: "latency has reporting power only — docs/scoring.md §7.2"},
 	{Parent: "", Key: "latency_profile",
 		Reason: "names an entry in latency_profiles, which nothing reads"},
 

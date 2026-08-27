@@ -9,8 +9,10 @@ import (
 	"sync/atomic"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/relay"
+	"github.com/pokt-network/sage/reputation"
 )
 
 // Batch returns a middleware that fans out multi-payload requests into
@@ -45,7 +47,12 @@ import (
 // and hedge fan-out. Without a cap the only limit is the request body size, so
 // a 1 MiB body of ~50-byte payloads buys roughly 20k relays. <= 0 disables the
 // cap.
-func Batch(maxConcurrentRelays, maxPayloads int) relay.Middleware {
+//
+// repSvc and flags exist for reputation only: under featureflag.FlagScoringV2
+// the batch installs a relay.ScoreSink so the whole fan-out costs an endpoint
+// one signal rather than one per payload (docs/scoring.md §4.3). Both may be
+// nil, which disables that and leaves scoring to Observe as before.
+func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, repSvc reputation.Service) relay.Middleware {
 	// Built once per process, deliberately: see above.
 	var sem chan struct{}
 	if maxConcurrentRelays > 0 {
@@ -70,6 +77,31 @@ func Batch(maxConcurrentRelays, maxPayloads int) relay.Middleware {
 					_ = ctx.Writer.Write(errorJSON(ctx.Err.Error()))
 				}
 				return ctx.Err
+			}
+
+			// One signal per endpoint for the whole batch (docs/scoring.md
+			// §4.3): the sink is shared by every sub-relay through the
+			// shallow clone, and flushed once every payload has returned.
+			// Only under scoring_v2 — with the flag off, Observe scores each
+			// sub-relay as before.
+			//
+			// The sink carries no attribution: dropping client-attributed
+			// outcomes is the caller's job, done before Add by the score
+			// middleware, which is what makes "a batch of only client errors
+			// scores nothing" hold — nothing was added, so the flush is empty.
+			if repSvc != nil && scoringV2Enabled(flags, ctx) {
+				sink := relay.NewScoreSink()
+				ctx.ScoreSink = sink
+				defer func() {
+					ctx.ScoreSink = nil
+					sink.Flush(func(ep domain.EndpointAddr, rpc domain.RPCType, sig reputation.Signal) {
+						// context.Background(), not ctx.Ctx: the request's
+						// context is routinely done by the time the last
+						// payload returns, and a signal dropped for that
+						// reason is exactly the failure worth recording.
+						_ = repSvc.RecordSignal(context.Background(), ctx.ServiceID, ep, rpc, sig)
+					})
+				}()
 			}
 
 			n := len(ctx.Payloads)

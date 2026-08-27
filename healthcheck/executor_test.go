@@ -7,11 +7,15 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
@@ -82,6 +86,11 @@ func (p *checkOnlyPlugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck 
 type stubRepService struct {
 	mu      sync.Mutex
 	signals []signalRecord
+	// onceCalls is one entry per RecordSignalOnce call, holding the endpoint
+	// list the executor handed over. signals alone cannot show the difference
+	// between one call naming three siblings and three calls naming one each,
+	// which is exactly what ruling F1 changed.
+	onceCalls []domain.EndpointAddrList
 }
 
 type signalRecord struct {
@@ -93,6 +102,20 @@ type signalRecord struct {
 func (s *stubRepService) RecordSignal(_ context.Context, svcID domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType, sig reputation.Signal) error {
 	s.mu.Lock()
 	s.signals = append(s.signals, signalRecord{svcID, ep, sig})
+	s.mu.Unlock()
+	return nil
+}
+
+// RecordSignalOnce implements reputation.OnceRecorder. The stub records the
+// call itself and, so the per-registration assertions elsewhere keep their
+// meaning, one signalRecord per named endpoint — the real service dedupes by
+// reputation key, which is its own business and is tested in reputation/.
+func (s *stubRepService) RecordSignalOnce(_ context.Context, svcID domain.ServiceID, eps domain.EndpointAddrList, _ domain.RPCType, sig reputation.Signal) error {
+	s.mu.Lock()
+	s.onceCalls = append(s.onceCalls, append(domain.EndpointAddrList(nil), eps...))
+	for _, ep := range eps {
+		s.signals = append(s.signals, signalRecord{svcID, ep, sig})
+	}
 	s.mu.Unlock()
 	return nil
 }
@@ -248,6 +271,126 @@ func TestRunOnce_RecordsErrorSignalOnRelayFailure(t *testing.T) {
 	}
 	if signals[0].signal.Type != reputation.SignalMajorError {
 		t.Errorf("expected major error signal, got %q", signals[0].signal.Type)
+	}
+}
+
+// TestExecutor_ProbeSignalsAreMarkedProbe pins Probe on the response path
+// (arranged exactly as TestRunOnce_RecordsSuccessSignal). Reverting Probe to
+// its zero value makes this fail.
+func TestExecutor_ProbeSignalsAreMarkedProbe(t *testing.T) {
+	relayer := &stubRelayer{
+		response: &domain.Response{HTTPStatusCode: 200},
+	}
+	eps := &stubEndpointProvider{
+		endpoints: domain.EndpointAddrList{"supplierA-https://node.example.com"},
+	}
+	sessions := &stubSessionManager{
+		services: map[domain.ServiceID]struct{}{"eth": {}},
+	}
+
+	payload := domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	plugin := &checkOnlyPlugin{
+		checks: []qos.HealthCheck{{Name: "block_number", Payload: payload}},
+	}
+	reg := qos.NewRegistry()
+	_ = reg.Register("eth", plugin)
+
+	rep := &stubRepService{}
+	exec := newTestExecutor(relayer, eps, sessions, reg, rep)
+	exec.runOnce(context.Background())
+
+	time.Sleep(50 * time.Millisecond)
+
+	rep.mu.Lock()
+	signals := rep.signals
+	rep.mu.Unlock()
+
+	require.NotEmpty(t, signals)
+	for _, sig := range signals {
+		assert.True(t, sig.signal.Probe, "every health-check signal must carry Probe")
+	}
+}
+
+// TestExecutor_ProbeSignalsAreMarkedProbe_TransportFailure pins Probe on the
+// transport-failure path (arranged exactly as
+// TestRunOnce_RecordsErrorSignalOnRelayFailure).
+func TestExecutor_ProbeSignalsAreMarkedProbe_TransportFailure(t *testing.T) {
+	relayer := &stubRelayer{err: context.DeadlineExceeded}
+	eps := &stubEndpointProvider{
+		endpoints: domain.EndpointAddrList{"supplierA-https://node.example.com"},
+	}
+	sessions := &stubSessionManager{
+		services: map[domain.ServiceID]struct{}{"eth": {}},
+	}
+
+	payload := domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	plugin := &checkOnlyPlugin{
+		checks: []qos.HealthCheck{{Name: "block_number", Payload: payload}},
+	}
+	reg := qos.NewRegistry()
+	_ = reg.Register("eth", plugin)
+
+	rep := &stubRepService{}
+	exec := newTestExecutor(relayer, eps, sessions, reg, rep)
+	exec.runOnce(context.Background())
+
+	time.Sleep(50 * time.Millisecond)
+
+	rep.mu.Lock()
+	signals := rep.signals
+	rep.mu.Unlock()
+
+	require.NotEmpty(t, signals)
+	for _, sig := range signals {
+		assert.True(t, sig.signal.Probe, "every health-check transport-failure signal must carry Probe")
+	}
+}
+
+// TestExecutor_ProbeSignalsAreMarkedProbe_ConfiguredOverride pins Probe on a
+// signal built from a configured check's declared reputation_signal
+// (configured.SignalFor override), not just the default grading path.
+func TestExecutor_ProbeSignalsAreMarkedProbe_ConfiguredOverride(t *testing.T) {
+	relayer := &stubRelayer{
+		response: &domain.Response{HTTPStatusCode: 500},
+	}
+	eps := &stubEndpointProvider{
+		endpoints: domain.EndpointAddrList{"supplierA-https://node.example.com"},
+	}
+	sessions := &stubSessionManager{
+		services: map[domain.ServiceID]struct{}{"eth": {}},
+	}
+
+	// No plugin-provided checks; only the configured one runs.
+	plugin := &checkOnlyPlugin{}
+	reg := qos.NewRegistry()
+	_ = reg.Register("eth", plugin)
+
+	configured, warnings := BuildConfiguredChecks(localConfig(config.ServiceHealthChecks{
+		ServiceID: "eth",
+		Enabled:   true,
+		Checks: []config.HealthCheck{
+			{Name: "configured", Method: "eth_chainId", ReputationSignal: "critical_error"},
+		},
+	}))
+	require.Empty(t, warnings)
+
+	rep := &stubRepService{}
+	exec := newTestExecutor(relayer, eps, sessions, reg, rep)
+	exec.SetConfiguredChecks(configured)
+	exec.runOnce(context.Background())
+
+	time.Sleep(50 * time.Millisecond)
+
+	rep.mu.Lock()
+	signals := rep.signals
+	rep.mu.Unlock()
+
+	require.NotEmpty(t, signals)
+	for _, sig := range signals {
+		// Sanity: confirm the configured override actually fired, otherwise
+		// this test would pass for the wrong reason.
+		assert.Equal(t, reputation.SignalCriticalError, sig.signal.Type)
+		assert.True(t, sig.signal.Probe, "a configured-override signal must still carry Probe")
 	}
 }
 
@@ -588,7 +731,46 @@ func TestRunOnce_FansBackendResultsToSiblings(t *testing.T) {
 	rep.mu.Lock()
 	defer rep.mu.Unlock()
 	if len(rep.signals) != 4 {
-		t.Errorf("expected 4 reputation signals (one per registration), got %d", len(rep.signals))
+		t.Errorf("expected all 4 registrations to be named, got %d", len(rep.signals))
+	}
+}
+
+// Ruling F1: one probe is one attempt per reputation key. The executor must
+// hand the whole sibling set to the reputation service in ONE call and let it
+// dedupe by key, rather than looping and charging a backend's stake count as
+// its attempt count. Asserting on the signal list alone cannot see this — the
+// stub fans a call back out — so it asserts on the calls.
+func TestRunOnce_ProbeIsOneCallPerBackend(t *testing.T) {
+	exe, _, rep, _ := dedupTestFixture(t)
+
+	exe.runOnce(context.Background())
+	exe.wg.Wait()
+
+	rep.mu.Lock()
+	defer rep.mu.Unlock()
+	if len(rep.onceCalls) != 2 {
+		t.Fatalf("expected 1 reputation call per backend (2 backends), got %d: %v",
+			len(rep.onceCalls), rep.onceCalls)
+	}
+	bySize := map[int]domain.EndpointAddrList{}
+	for _, call := range rep.onceCalls {
+		bySize[len(call)] = call
+	}
+	shared, ok := bySize[3]
+	if !ok {
+		t.Fatalf("no call carried the 3 siblings of node1 in one go: %v", rep.onceCalls)
+	}
+	for _, want := range []domain.EndpointAddr{
+		"supplierA-https://node1.example.com",
+		"supplierB-https://node1.example.com",
+		"supplierC-https://node1.example.com",
+	} {
+		if !slices.Contains(shared, want) {
+			t.Errorf("sibling %q missing from the shared-backend call %v", want, shared)
+		}
+	}
+	if _, ok := bySize[1]; !ok {
+		t.Errorf("expected the lone node2 registration in a call of its own: %v", rep.onceCalls)
 	}
 }
 

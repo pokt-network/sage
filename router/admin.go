@@ -210,16 +210,35 @@ func (a *AdminAPI) handleSetFlagForService(w http.ResponseWriter, req *http.Requ
 
 // --- Reputation handlers ---
 
-// handleGetReputation returns every reputation score for a service.
+// handleGetReputation returns every reputation state for a service.
 //
-// The response is a JSON object of score keys to numeric scores. **Keys are
-// reputation keys at the configured granularity — per backend URL by default —
-// not endpoint addresses.** Several staked suppliers routinely front one URL
-// and share its score, so there is often no single endpoint a key belongs to.
+// **Keys are reputation keys at the configured granularity — per backend URL by
+// default — not endpoint addresses.** Several staked suppliers routinely front
+// one URL and share its score, so there is often no single endpoint a key
+// belongs to.
+//
+// When the reputation service implements reputation.StateLister the rows are
+// reputation.StateView objects: `score` is the effective value the selector
+// uses, and `additive` and `penalty` are the two terms it is the sum of (see
+// docs/scoring.md §7). `probe_only` means nothing but health checks has graded
+// the key — its score is evidence about the probe payload, not about client
+// traffic. Otherwise the response falls back to the older JSON object of score
+// keys to numeric scores.
 func (a *AdminAPI) handleGetReputation(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
 	if serviceID == "" {
 		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
+		return
+	}
+
+	if lister, ok := a.repService.(reputation.StateLister); ok {
+		states, err := lister.GetStates(req.Context(), serviceID)
+		if err != nil {
+			a.logger.Error("admin: get reputation", "service", serviceID, "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "failed to get reputation scores")
+			return
+		}
+		writeJSON(w, http.StatusOK, states)
 		return
 	}
 

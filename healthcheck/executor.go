@@ -370,6 +370,7 @@ func (e *Executor) sendCheck(
 		// registrations for it would eject healthy ones.
 		if e.repService != nil {
 			if signal, ok := transportSignal(check.Name, err, ctx.Err(), latency); ok {
+				signal.Probe = true
 				_ = e.repService.RecordSignal(ctx, serviceID, ep, check.Payload.RPCType(), signal)
 			}
 		}
@@ -415,9 +416,15 @@ func (e *Executor) sendCheck(
 
 	// Record reputation signal. A configured check may name the penalty its
 	// failure carries; the default grading applies to everything else.
+	//
 	// The backend answered, so what it said grades every registration in front
-	// of it. At per-URL key granularity these all resolve to one score anyway;
-	// recording them individually is what keeps the finer granularities honest.
+	// of it — but it is still ONE probe, and the service records it once per
+	// distinct reputation key. At the default per-URL granularity the siblings
+	// are one key and the probe is one attempt against it; at per-endpoint each
+	// registration is its own key and each gets the attempt. Looping here
+	// instead would charge a backend its stake count in attempts, which is a
+	// property of the stake table and not of the machine (ruling F1,
+	// docs/scoring.md §3 principle 4 and §7.4).
 	if e.repService != nil {
 		signal := checkSignal(check.Name, resp.HTTPStatusCode, extractErr, latency)
 		if failed := resp.HTTPStatusCode < 200 || resp.HTTPStatusCode >= 300 || extractErr != nil; failed {
@@ -425,8 +432,15 @@ func (e *Executor) sendCheck(
 				signal = declared
 			}
 		}
-		for _, sibling := range siblings {
-			_ = e.repService.RecordSignal(ctx, serviceID, sibling, check.Payload.RPCType(), signal)
+		signal.Probe = true
+		if once, ok := e.repService.(reputation.OnceRecorder); ok {
+			_ = once.RecordSignalOnce(ctx, serviceID, siblings, check.Payload.RPCType(), signal)
+		} else {
+			// A Service that cannot dedupe: the pre-F1 fan-out is still better
+			// than dropping the probe.
+			for _, sibling := range siblings {
+				_ = e.repService.RecordSignal(ctx, serviceID, sibling, check.Payload.RPCType(), signal)
+			}
 		}
 	}
 

@@ -69,12 +69,20 @@ type AnalysisResult struct {
 	MethodBlocking bool
 }
 
+// ReasonSuccess is the Reason a verdict carries when the response passed every
+// check.
+//
+// It is exported because a caller cannot key on attribution alone to tell an
+// answered request from a client error: this verdict is AttrClient too (see
+// successResult). The score middleware compares against it.
+const ReasonSuccess = "success"
+
 // successResult returns an AnalysisResult for a successful response.
 func successResult() AnalysisResult {
 	return AnalysisResult{
 		Attribution: AttrClient, // not really "client's fault" — just means no action needed
 		Confidence:  1.0,
-		Reason:      "success",
+		Reason:      ReasonSuccess,
 		Details:     "valid response",
 	}
 }

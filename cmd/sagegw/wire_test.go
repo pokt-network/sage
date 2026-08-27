@@ -13,7 +13,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/pokt-network/sage/config"
+	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/relay"
+	"github.com/pokt-network/sage/reputation"
 	"github.com/pokt-network/sage/tuning"
 )
 
@@ -292,5 +294,80 @@ func TestBuild_MockProtocolGetsNoDrainStore(t *testing.T) {
 			t.Errorf("%s %s: status = %d, want 503 (no drain store under the mock backend), body=%s",
 				tc.method, tc.path, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// warnIfUnscoredChain is the migration trap for a config written before the
+// score middleware existed: under scoring_v2 observe stops recording and score
+// starts, so a pinned chain naming observe and not score records nothing at
+// all — and nothing errors, because both middlewares behave as designed.
+func TestWarnIfUnscoredChain(t *testing.T) {
+	cases := []struct {
+		name  string
+		chain []string
+		warn  bool
+	}{
+		{"default chain has both", relay.DefaultChainOrder(), false},
+		{"observe without score", []string{relay.MWParse, relay.MWObserve, relay.MWSelectEndpoint, relay.MWSendRelay}, true},
+		{"score without observe is fine", []string{relay.MWParse, relay.MWSelectEndpoint, relay.MWScore, relay.MWSendRelay}, false},
+		{"neither is a deliberately minimal chain", []string{relay.MWParse, relay.MWSelectEndpoint, relay.MWSendRelay}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, got := warnIfUnscoredChain(tc.chain)
+			if got != tc.warn {
+				t.Fatalf("warnIfUnscoredChain(%v) = %v, want %v", tc.chain, got, tc.warn)
+			}
+			if got && !strings.Contains(msg, relay.MWScore) {
+				t.Errorf("the warning must name the middleware to add; got %q", msg)
+			}
+		})
+	}
+}
+
+// And the warning has to actually reach the log at startup: a pure function
+// nothing calls would leave the trap exactly as unguarded as before.
+func TestBuild_WarnsOnChainThatObservesButDoesNotScore(t *testing.T) {
+	freshRegistry(t)
+	var logged strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	chain := []string{relay.MWParse, relay.MWObserve, relay.MWRetry, relay.MWSelectEndpoint, relay.MWSendRelay}
+	if _, err := Build(t.Context(), mockConfig(chain), logger); err != nil {
+		t.Fatalf("a chain without score must still build: %v", err)
+	}
+	if !strings.Contains(logged.String(), "names observe but not score") {
+		t.Errorf("startup did not warn about an unscored chain; log was:\n%s", logged.String())
+	}
+}
+
+// TestBuild_ReputationTuningReachesTheService is the wiring half of the config
+// surface: the accessors on ReputationConfig are only worth having if Build
+// passes them to reputation.NewService. A configured impact is the cheapest
+// observable proof — the default for a major error is -10, so a score of 50
+// after one signal can only come from the config.
+func TestBuild_ReputationTuningReachesTheService(t *testing.T) {
+	freshRegistry(t)
+	cfg := mockConfig(nil)
+	cfg.Gateway.Reputation.InitialScore = 100
+	cfg.Gateway.Reputation.SignalImpacts.MajorError = -50
+
+	app, err := Build(t.Context(), cfg, testLogger())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	const ep = domain.EndpointAddr("supplier1-http://endpoint.invalid")
+	if err := app.RepSvc.RecordSignal(t.Context(), "eth", ep, domain.RPCTypeJSONRPC,
+		reputation.Signal{Type: reputation.SignalMajorError, Timestamp: time.Now()}); err != nil {
+		t.Fatalf("RecordSignal: %v", err)
+	}
+
+	score, err := app.RepSvc.GetScore(t.Context(), "eth", ep, domain.RPCTypeJSONRPC)
+	if err != nil {
+		t.Fatalf("GetScore: %v", err)
+	}
+	if score != 50 {
+		t.Errorf("score = %v, want 50 — signal_impacts.major_error is not reaching the service", score)
 	}
 }

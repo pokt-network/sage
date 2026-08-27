@@ -412,3 +412,22 @@ func TestObserve_SamplerSkipsServiceWithNoPlugin(t *testing.T) {
 		t.Error("expected the sampler to have observed nothing for a service with no plugin")
 	}
 }
+
+// Under scoring_v2 the score middleware records one signal per attempt, from
+// inside retry and hedge. Observe sits outside both and used to record one per
+// client request; doing both would count every request twice.
+func TestObserve_DoesNotScoreUnderScoringV2(t *testing.T) {
+	rep := &trackingRepService{}
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{}`)}
+		return nil
+	})
+	ctx := baseContext()
+	ctx.Endpoint = "pokt1a-https://a"
+	if err := Observe(newFlags(featureflag.FlagScoringV2), nil, rep, nil)(inner).HandleRelay(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rep.called {
+		t.Error("under scoring_v2 the score middleware records; Observe must not double-count")
+	}
+}

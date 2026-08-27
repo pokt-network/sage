@@ -54,7 +54,7 @@ func TestPickWeightedByInverseLoad_Empty(t *testing.T) {
 }
 
 func TestSelectSpread_CascadesToLowerTier(t *testing.T) {
-	svc, _ := newTestService()
+	svc, _ := newTestServiceStore()
 	defer svc.Stop()
 
 	ctx := context.Background()
@@ -74,7 +74,7 @@ func TestSelectSpread_CascadesToLowerTier(t *testing.T) {
 }
 
 func TestSelectSpread_EmptyEndpoints(t *testing.T) {
-	svc, _ := newTestService()
+	svc, _ := newTestServiceStore()
 	defer svc.Stop()
 	if got := svc.SelectSpread(context.Background(), "eth", nil, domain.RPCTypeJSONRPC, nil); got != "" {
 		t.Errorf("expected empty for nil endpoints, got %q", got)

@@ -37,6 +37,7 @@ func parse(data []byte) (*Config, error) {
 	cfg.Ignored = ignoredFields(data)
 	cfg.Inert = inertKeysFromYAML(data)
 	applyDefaults(&cfg)
+	cfg.Warnings = reputationWarnings(cfg.Gateway.Reputation)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
@@ -196,5 +197,95 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("max_batch_payloads (%d) must be <= max_concurrent_relays (%d)",
 			cfg.Concurrency.MaxBatchPayloads, cfg.Concurrency.MaxConcurrentRelays)
 	}
+	if err := validateReputation(cfg.Gateway.Reputation); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateReputation refuses a scoring block that cannot mean anything.
+//
+// The line it draws is between impossible and merely odd. A traffic share of
+// 101%, or a chronic onset rate at or above the full rate, describes no
+// behaviour at all — there is nothing to do with it but refuse. Thresholds
+// that fail to descend are a different case: they describe a real selection,
+// just a lopsided one, and a PATH config in production has them. Those are
+// warnings; see reputationWarnings.
+//
+// Only the gateway-level block is checked. One TieredSelector serves every
+// service, so a per-service copy of these keys is not read at all.
+func validateReputation(r ReputationConfig) error {
+	// A negative threshold is the same kind of nothing as a negative traffic
+	// share: scores run 0..100, so it names no band. It cannot be allowed to
+	// fall through to SelectorConfig, which only copies positive values and
+	// would hand back the default — an operator who typed -1 would get 80.
+	for _, t := range []struct {
+		key   string
+		value int
+	}{
+		{"reputation_config.min_threshold", r.MinThreshold},
+		{"reputation_config.tiered_selection.tier1_threshold", r.TieredSelection.Tier1Threshold},
+		{"reputation_config.tiered_selection.tier2_threshold", r.TieredSelection.Tier2Threshold},
+		{"reputation_config.tiered_selection.probation.threshold", r.TieredSelection.Probation.Threshold},
+	} {
+		if t.value < 0 {
+			return fmt.Errorf("%s must not be negative, got %d", t.key, t.value)
+		}
+	}
+	if p := r.TieredSelection.Probation.TrafficPercent; p < 0 || p > 100 {
+		return fmt.Errorf("reputation_config.tiered_selection.probation.traffic_percent must be 0..100, got %d", p)
+	}
+	// Defaulted, not Normalized: Normalized repairs an inconsistent pair for
+	// programmatic callers, and reading through it here would turn an operator's
+	// mistake into a silently different curve instead of a refusal.
+	rc := r.RateConfig().Defaulted()
+	if rc.OnsetRate < 0 || rc.FullRate >= 1 || rc.OnsetRate >= rc.FullRate {
+		return fmt.Errorf("reputation_config: chronic_onset_rate (%v) must be >= 0 and below chronic_full_rate (%v), which must be below 1", rc.OnsetRate, rc.FullRate)
+	}
+	return nil
+}
+
+// reputationWarnings reports thresholds that load and select in a way the
+// operator probably did not intend.
+//
+// The thresholds are read as the selector will see them — defaults filled in,
+// not the raw keys — because that is what decides behaviour, and because a
+// config naming two of the five can collide with the defaults of the other
+// three. Each sentence says what the selector actually does with the values
+// given, since the operator's question on reading the log is "so what happens
+// to my traffic", not "which inequality did I break".
+//
+// The classification order in reputation.TieredSelector.classify is what makes
+// these harmless-but-wrong rather than broken: min_threshold first, then
+// probation, then tier 1, then tier 2. A band that a later branch can never be
+// reached for is empty, and nothing errors.
+func reputationWarnings(r ReputationConfig) []string {
+	sel := r.SelectorConfig()
+	var out []string
+
+	if sel.Tier2Threshold >= sel.Tier1Threshold {
+		out = append(out, fmt.Sprintf(
+			"reputation_config.tiered_selection.tier2_threshold (%v) is not below tier1_threshold (%v): tier 2 is empty — every score at or above %v is tier 1, and everything below it falls to tier 3",
+			sel.Tier2Threshold, sel.Tier1Threshold, sel.Tier1Threshold))
+	}
+	if sel.ProbationThreshold >= sel.Tier2Threshold {
+		// What tier 2 is left with depends on whether probation also swallowed
+		// tier 1's band. Saying "from 90 up to tier1_threshold (80)" would be
+		// worse than saying nothing, and it would contradict the tier-2-is-
+		// empty sentence above whenever both fire.
+		leftover := "tier 2 is empty"
+		if sel.ProbationThreshold < sel.Tier1Threshold {
+			leftover = fmt.Sprintf("tier 2 holds only scores from %v up to tier1_threshold (%v)",
+				sel.ProbationThreshold, sel.Tier1Threshold)
+		}
+		out = append(out, fmt.Sprintf(
+			"reputation_config.tiered_selection.probation.threshold (%v) is not below tier2_threshold (%v): scores from %v up to %v are treated as probation, so %s",
+			sel.ProbationThreshold, sel.Tier2Threshold, sel.MinThreshold, sel.ProbationThreshold, leftover))
+	}
+	if sel.MinThreshold > sel.ProbationThreshold {
+		out = append(out, fmt.Sprintf(
+			"reputation_config.min_threshold (%v) is above the probation threshold (%v): no endpoint is ever put on probation, because a score below %v is filtered out before the probation band is reached",
+			sel.MinThreshold, sel.ProbationThreshold, sel.MinThreshold))
+	}
+	return out
 }

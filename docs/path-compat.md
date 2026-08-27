@@ -22,12 +22,34 @@ same as pretending, so every key SAGE does not act on is reported at startup:
 - `Config.Inert` — the key parses into a field that nothing reads. Caught by the
   registry in `config/inert.go`, which `TestInertRegistryCoversDocComments`
   holds to the doc comments so the two cannot drift.
+- `Config.Warnings` — the key parses, *is* read, and probably does not do what
+  whoever wrote it expected. One sentence saying what the gateway will actually
+  do with the value, because refusing the file would break the compatibility
+  promise and accepting it silently would mislead.
 
-A PATH config today produces roughly two dozen `Inert` warnings, most of them
-the reputation-tuning surface: `signal_impacts`, `tiered_selection`,
-`latency_profiles`, `min_threshold`, `recovery_timeout`. An operator who tuned
-those on PATH and moved the file across was, until this existed, editing structs
-no code reads — and nothing said so.
+Most of the reputation-tuning surface is honoured rather than reported:
+`signal_impacts` for the five signal types SAGE still has, the
+`tiered_selection` thresholds, `probation.{threshold,traffic_percent}` and
+`min_threshold` are read by the selector and the scorer — globally, because one
+selector serves every service, so a per-service copy of them changes nothing.
+
+Thresholds that do not descend — the beta config we run has `tier2_threshold:
+30` above `probation.threshold: 50` — still load. PATH accepts that file and
+the selector copes, classifying probation before tier 2 so a band simply ends
+up narrower than it reads. Refusing to boot on it would break the whole point
+of layer 2 over something that works. It is not silent either: it produces a
+third kind of startup complaint, `Config.Warnings`, one sentence saying what
+the selector will actually do with the numbers given. Only values that describe
+no behaviour at all (a traffic share above 100%, a chronic onset rate at or
+above the full rate) are refused.
+
+What stays `Inert` is what SAGE has no mechanism for: `latency_profiles` and the
+two latency signal impacts (latency reports, it does not penalise),
+`recovery_success` (the type is gone), `recovery_timeout` and
+`probation.recovery_multiplier` (there is no cooldown and no multiplier),
+`tiered_selection.enabled` and `probation.enabled` (both always run). An
+operator who tuned those on PATH and moved the file across was, until this
+existed, editing structs no code reads — and nothing said so.
 
 **3. How it works inside — free to diverge.**
 Middleware decomposition, reputation mechanics, QoS plugin interfaces, session
@@ -52,8 +74,9 @@ when the behaviour is identical.
 | Area | PATH | SAGE | Why |
 |---|---|---|---|
 | Strike system / cooldowns | Endpoints are benched by a strike system and by two rate detectors, all sharing one `CooldownUntil` | None. Reputation is a continuous score feeding tiered selection | PATH accumulated five mechanisms that could each remove an endpoint, with separate counters and one shared timestamp; a first offence inherited a stale escalation. `strike_system` has no field here on purpose and lands in `Ignored` |
-| Score deltas | `signal_impacts` config | Constants in `reputation/signals.go`; the config block is `Inert` | Should change — see `docs/scoring.md` |
-| Latency scoring | `latency_profiles` (thresholds, bonuses, penalties) | Latency is recorded on every signal and read by nothing; the block is `Inert` | Open design question, not a decision — `docs/scoring.md` §4.4 |
+| Score deltas | `signal_impacts` config | Honoured for the five surviving signal types; `recovery_success`, `slow_response`, `very_slow_response` stay `Inert` | Types deleted — `docs/scoring.md` §7.2 |
+| Latency scoring | `latency_profiles` (thresholds, bonuses, penalties) | Latency has reporting power only: a per-key EWMA in the admin listing; the block stays `Inert` | Decided, not open — `docs/scoring.md` §7.2 |
+| Chronic violators | Critical-rate detector with its own EWMA, threshold, escalation and cooldown | A rate term inside the score: EWMA failure weight → penalty → same tiers | One mechanism, one state, one power — `docs/scoring.md` §7.3 |
 | Archival routing | Positive proof required: an endpoint must be marked archival to serve archival requests | Tri-state; only a **fresh negative** excludes | A node fabricating state from its head produces the same success as a real archival node, so a positive mark cannot be trusted to gate traffic. A self-reported negative can |
 | Solana `sync_allowance` | Unset means a strict `height >= perceived` comparison | Unset defaults to 1500 blocks | PATH's 2026-08-18 production incident: perceived is a max, so at 400ms/block only the last reporter survived |
 | Supplier blacklisting on validation errors | Blacklists on `ErrRelayResponseValidationGetPubKey` | Deliberately excluded (`protocol/shannon/response_validation.go`) | That error is SAGE's own full node failing to answer, not the supplier's fault. During a local full-node outage PATH's rule empties the pool in one pass |

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,10 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "method_block_events_total"},
 			[]string{"service_id", "method", "event"},
 		),
+		reputationAttempts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "reputation_attempts_total"},
+			[]string{"service_id", "rpc_type", "signal", "probe"},
+		),
 	}
 	reg.MustRegister(
 		r.relayTotal,
@@ -91,6 +96,7 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 		r.singleflightCoalesced,
 		r.degradedTotal,
 		r.circuitBreaks,
+		r.reputationAttempts,
 	)
 	return r, reg
 }
@@ -258,6 +264,34 @@ func min(a, b int) int {
 // --- service_id cardinality ---
 
 // countSeries returns how many series exist for a metric name in the registry.
+// scrapeValues is countSeries when the value matters, not just the count: it
+// returns each exported series of name keyed by its label set, exactly as the
+// scrape renders it. It reads the registry rather than the vec so it cannot
+// mint the series it is asked about.
+func scrapeValues(t *testing.T, reg *prometheus.Registry, name string) map[string]float64 {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP(w, req)
+
+	out := make(map[string]float64)
+	for _, line := range strings.Split(w.Body.String(), "\n") {
+		if !strings.HasPrefix(line, name+"{") {
+			continue
+		}
+		labels, value, ok := strings.Cut(strings.TrimPrefix(line, name), " ")
+		if !ok {
+			t.Fatalf("unparseable scrape line: %q", line)
+		}
+		v, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			t.Fatalf("value in %q: %v", line, err)
+		}
+		out[labels] = v
+	}
+	return out
+}
+
 func countSeries(t *testing.T, reg *prometheus.Registry, name string) int {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -389,4 +423,28 @@ func TestRecordCircuitBreakerOutcome(t *testing.T) {
 func TestRecordMethodBlockEvent(t *testing.T) {
 	r := newIsolatedRecorder(t)
 	r.RecordMethodBlockEvent("eth", "eth_getLogs", "mark")
+}
+
+// One recorded reputation signal is one series increment, and probe traffic is
+// separable from client traffic — the whole point of the probe label is that
+// "40000 attempts, all of them health checks" reads differently from "40000
+// attempts from real requests".
+func TestRecorder_ReputationAttempts(t *testing.T) {
+	r, reg := newIsolatedRecorderWithReg(t, "svc")
+
+	r.RecordReputationAttempt("svc", "json_rpc", "critical_error", false)
+	r.RecordReputationAttempt("svc", "json_rpc", "success", true)
+
+	values := scrapeValues(t, reg, "sage_test_reputation_attempts_total")
+	if n := len(values); n != 2 {
+		t.Fatalf("reputation_attempts_total series = %d, want 2: %v", n, values)
+	}
+	for _, tc := range []struct{ labels string }{
+		{`{probe="false",rpc_type="json_rpc",service_id="svc",signal="critical_error"}`},
+		{`{probe="true",rpc_type="json_rpc",service_id="svc",signal="success"}`},
+	} {
+		if got, ok := values[tc.labels]; !ok || got != 1 {
+			t.Errorf("series %s = %v (present=%v), want 1", tc.labels, got, ok)
+		}
+	}
 }

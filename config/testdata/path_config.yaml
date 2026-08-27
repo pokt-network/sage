@@ -99,6 +99,9 @@ gateway_config:
     max_operator_share: 0.55
     max_operator_share_two_operators: 0.7
     operator_displacement_ceiling: 2.5
+    chronic_half_life_attempts: 15000
+    chronic_onset_rate: 0.0005
+    chronic_full_rate: 0.02
     tiered_selection:
       enabled: true
       tier1_threshold: 85

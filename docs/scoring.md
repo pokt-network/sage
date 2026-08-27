@@ -1,8 +1,9 @@
 # Reputation scoring — design
 
-Status: **decided 2026-08-27, implementation pending**. §1–§2 record what the
-code did at the 2026-08-21 audit; §3–§6 the model; §7 the decisions and the data
-they rest on. The implementation contract is
+Status: **decided 2026-08-27, implemented**. §1–§2 record what the code did at
+the 2026-08-21 audit, with the places the implementation has since moved marked
+inline; §3–§6 the model; §7 the decisions and the data they rest on. The
+implementation contract is
 `docs/superpowers/specs/2026-08-27-scoring-v2-design.md`.
 
 `ARCHITECTURE.md` describes reputation as the thing that learns from relays and
@@ -16,7 +17,7 @@ Four things produce `reputation.Signal`s:
 
 | Producer | Where | Cadence |
 |---|---|---|
-| Relay outcomes | `relay/middleware/observe.go` | once per **client request** |
+| Relay outcomes | `relay/middleware/score.go` | once per **relay attempt** (with `scoring_v2` on; with it off, `observe.go` instead, once per client request) |
 | Health-check probes | `healthcheck/executor.go` | once per probe, fanned out to every sibling on the same backend URL |
 | WebSocket lifecycle | `protocol/shannon/ws_relayer.go` | on connect failure, on close |
 | Configured checks | `healthcheck/configured.go` (`SignalFor`) | overrides the grade of a named check |
@@ -32,18 +33,23 @@ equality and a `(method=…)` suffix silently disabled six of its branches.
 Relay severity comes from `heuristic.Analyze`, which the `heuristic`
 middleware runs inside `send_relay` and stores on `ctx.HeuristicResult`. Two
 middlewares read that field: `circuit_break`, which reports per-attempt outcomes
-to the breaker, and `observe`, which converts it into the signal.
+to the breaker, and `observe`, which converts it into the signal. (A third,
+`score`, reads it now — that is the change §2 argues for.)
 
 The chain positions are what make the difference between those two:
 
 ```
 … cache → batch → singleflight → observe → cross_validate → retry → hedge
-    → supplier_affinity → circuit_break → select_endpoint → heuristic → send_relay
+    → supplier_affinity → circuit_break → select_endpoint → score → heuristic
+    → send_relay
 ```
 
 `circuit_break` sits **inside** `retry`/`hedge`, so it sees every attempt.
 `observe` sits **outside** both, so it sees one outcome per client request — and
-it sits **inside** `batch`, so it sees one per payload.
+it sits **inside** `batch`, so it sees one per payload. That position is the
+cause of §2.1, §2.3 and §2.4; `score` is the middleware added to fix it, and it sits
+inside `retry`/`hedge` beside `circuit_break` for exactly the reason
+`circuit_break` does.
 
 ## 2. What is wrong
 
@@ -371,6 +377,29 @@ penalising a 6-error burst, and it is the trade the half-life sets. A shorter
 half-life reacts faster and treats bursts as chronic; 20k is where a 6-burst
 stays under the onset.
 
+**An outage does not feed the rate.** A signal recorded against a key whose
+additive term is *already* 0 updates everything except `Rate`: the attempt that
+floors the key still counts, and every one after it does not. The rule follows
+from principle 3 — the additive term has already removed the endpoint from
+selection, and charging the same fact to the chronic term as well is the second
+power the principle forbids. The arithmetic that makes it more than a
+principle: a dead host answers nothing but health checks, two checks every 30
+seconds is 5,760 criticals a day, and 5,760 attempts at the 20k half-life take
+the rate to 0.18 — the `-70` cap. Getting back to tier 1 from the cap needs the
+rate to fall by a factor of ~130, seven half-lives, 140,000 attempts; at
+probe-only volume that is **24 days** of the host being perfectly healthy and
+still capped, because a benched endpoint receives nothing but probes. The
+additive term brings the same host back in four successes, and the two terms
+would then be arguing about a fact only one of them observed.
+
+The cost is real and is accepted: a host that alternates outages with clean
+stretches shows a lower chronic rate than its true failure fraction, because
+the attempts it spends floored are not counted against it. What that host does
+not escape is the additive term, which removes it for the duration of every
+outage — the case the chronic term exists for is the endpoint that fails 0.2%
+of the time and is *never* floored, and its arithmetic is untouched (a 1-in-500
+violator never reaches 0, so every one of its attempts feeds the rate).
+
 ### 7.4 Probe-only endpoints: selectable at full score
 
 Beta: probes and traffic agreed on every host — the live one passed every probe
@@ -387,7 +416,11 @@ which on a tier-1-heavy pool is how a new supplier never earns a score — the
 single-healthy-host caveat again, from the other side. No cap. `Signal.Probe`
 is set by the health-check executor so the admin listing can say which keys
 have never seen traffic, and so that a future mechanism can be checked against
-principle 5.
+principle 5. One probe is one attempt *per key*, whatever the registration
+count: the executor hands the whole sibling set to `RecordSignalOnce`, which
+records once per distinct reputation key — so at per-URL a backend fronted by
+ten stakes is graded once, and at per-endpoint each of the ten is graded once
+(principle 4; a probe's weight must not be set by the stake table).
 
 ### 7.5 Client cancellation: no signal, not a latency signal either
 

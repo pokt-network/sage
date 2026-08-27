@@ -15,11 +15,11 @@ func TestDefaultImpact(t *testing.T) {
 		{SignalMajorError, -10},
 		{SignalCriticalError, -25},
 		{SignalFatalError, -50},
-		{SignalRecoverySuccess, 5},
-		{SignalSlowResponse, -1},
-		{SignalVerySlowResponse, -3},
-		{SignalStaleBlock, -15},
 		{SignalType("unknown"), 0},
+		// The latency and stale-block types were removed: latency never fed the
+		// score, and staleness is a QoS filter, not a reputation penalty.
+		{SignalType("slow_response"), 0},
+		{SignalType("stale_block"), 0},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.signal), func(t *testing.T) {
@@ -43,10 +43,6 @@ func TestSignalConstructors(t *testing.T) {
 		{"MajorError", NewMajorErrorSignal, SignalMajorError},
 		{"CriticalError", NewCriticalErrorSignal, SignalCriticalError},
 		{"FatalError", NewFatalErrorSignal, SignalFatalError},
-		{"RecoverySuccess", NewRecoverySuccessSignal, SignalRecoverySuccess},
-		{"SlowResponse", NewSlowResponseSignal, SignalSlowResponse},
-		{"VerySlowResponse", NewVerySlowResponseSignal, SignalVerySlowResponse},
-		{"StaleBlock", NewStaleBlockSignal, SignalStaleBlock},
 	}
 	for _, tc := range constructors {
 		t.Run(tc.name, func(t *testing.T) {
@@ -64,5 +60,45 @@ func TestSignalConstructors(t *testing.T) {
 				t.Errorf("timestamp %v is before test start %v", sig.Timestamp, before)
 			}
 		})
+	}
+}
+
+// The constructors leave Probe false: a probe is marked by the caller that
+// knows it is one (the health-check executor), not by the signal's severity.
+func TestSignalConstructors_ProbeDefaultsFalse(t *testing.T) {
+	if NewSuccessSignal("ok", 0).Probe {
+		t.Error("a constructed signal must not claim to be a probe")
+	}
+}
+
+func TestSignalImpacts_Normalized(t *testing.T) {
+	// Only the fields an operator set move; the rest keep their defaults.
+	got := SignalImpacts{Success: 1, CriticalError: -50}.Normalized()
+	want := SignalImpacts{Success: 1, MinorError: -3, MajorError: -10, CriticalError: -50, FatalError: -50}
+	if got != want {
+		t.Errorf("Normalized() = %+v, want %+v", got, want)
+	}
+	// The zero value is exactly the defaults.
+	if def := (SignalImpacts{}).Normalized(); def != (SignalImpacts{Success: 5, MinorError: -3, MajorError: -10, CriticalError: -25, FatalError: -50}) {
+		t.Errorf("zero SignalImpacts normalized to %+v", def)
+	}
+}
+
+func TestSignalImpacts_Impact(t *testing.T) {
+	i := SignalImpacts{Success: 5, MinorError: -3, MajorError: -10, CriticalError: -25, FatalError: -50}
+	for _, tc := range []struct {
+		t    SignalType
+		want float64
+	}{
+		{SignalSuccess, 5},
+		{SignalMinorError, -3},
+		{SignalMajorError, -10},
+		{SignalCriticalError, -25},
+		{SignalFatalError, -50},
+		{SignalType("stale_block"), 0},
+	} {
+		if got := i.Impact(tc.t); got != tc.want {
+			t.Errorf("Impact(%s) = %v, want %v", tc.t, got, tc.want)
+		}
 	}
 }

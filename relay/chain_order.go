@@ -27,6 +27,7 @@ const (
 	MWCircuitBreak     = "circuit_break"
 	MWMethodBlocks     = "method_blocks"
 	MWSelectEndpoint   = "select_endpoint"
+	MWScore            = "score"
 	MWDebugLog         = "debug_log"
 	MWHeuristic        = "heuristic"
 	MWSendRelay        = "send_relay"
@@ -60,6 +61,7 @@ func DefaultChainOrder() []string {
 		MWCircuitBreak,
 		MWMethodBlocks,
 		MWSelectEndpoint,
+		MWScore,
 		MWDebugLog,
 		MWHeuristic,
 		MWSendRelay,
@@ -90,6 +92,11 @@ func DefaultChainOrder() []string {
 //     selection; running after would let traffic reach blocked methods).
 //   - heuristic must precede send_relay (heuristic wraps the relay so it
 //     can analyze ctx.Response).
+//   - select_endpoint must precede score, and score must precede heuristic:
+//     score records this attempt's endpoint with this attempt's verdict.
+//   - retry, hedge and batch must all precede score — one attempt is one
+//     scoring event, so a retried or hedged attempt that lost is still
+//     scored, and a batch's per-attempt signals collapse in its sink.
 //
 // Duplicates of any canonical name are rejected — middlewares are singletons.
 func ValidateChainOrder(names []string) error {
@@ -142,6 +149,15 @@ func ValidateChainOrder(names []string) error {
 
 		{MWHedge, MWMethodBlocks, "each hedge arm must honour and feed method blocks"},
 		{MWMethodBlocks, MWSelectEndpoint, "method_blocks prunes before selection"},
+
+		// The fan-out rules come first so that a chain putting score outside
+		// them is told the load-bearing thing — score missed an attempt —
+		// rather than the select_endpoint rule such an order also trips.
+		{MWRetry, MWScore, "one attempt is one scoring event; score must see every retry"},
+		{MWHedge, MWScore, "each hedge arm scores its own attempt"},
+		{MWBatch, MWScore, "batch collapses the per-attempt signals score adds to its sink"},
+		{MWSelectEndpoint, MWScore, "score reads ctx.Endpoint, which select_endpoint sets for this attempt"},
+		{MWScore, MWHeuristic, "score consumes the verdict heuristic produces for this attempt"},
 	}
 
 	for _, rule := range mustPrecede {

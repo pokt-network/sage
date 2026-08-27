@@ -225,6 +225,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		InitialScore:   initialScore,
 		MaxScore:       100,
 		KeyGranularity: cfg.Gateway.Reputation.KeyGranularity,
+		Impacts:        cfg.Gateway.Reputation.Impacts(),
+		Rate:           cfg.Gateway.Reputation.RateConfig(),
+		Selector:       cfg.Gateway.Reputation.SelectorConfig(),
 	})
 	repSvc.Start()
 	app.RepSvc = repSvc
@@ -375,6 +378,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		recorder.RecordDegraded(serviceID, "reputation_pool_collapse")
 	})
 
+	// Count what actually reached reputation. The gap between relays served and
+	// signals recorded is the thing scoring gets wrong quietly — an endpoint
+	// with 40000 attempts, all of them probes, scores like a well-tested one.
+	repSvc.SetSignalHook(func(serviceID domain.ServiceID, rpcType domain.RPCType, signal reputation.SignalType, probe bool) {
+		recorder.RecordReputationAttempt(serviceID, string(rpcType), string(signal), probe)
+	})
+
 	// Per-operator concentration cap. Gated per relay so an operator can turn
 	// it off at runtime — globally or for one service — without a deploy.
 	repSvc.SetOperatorCap(
@@ -427,7 +437,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	})
 	mwReg.Register(relay.MWCache, func() relay.Middleware { return middleware.Cache(flags, respCache) })
 	mwReg.Register(relay.MWBatch, func() relay.Middleware {
-		return middleware.Batch(cfg.Concurrency.MaxConcurrentRelays, cfg.Concurrency.MaxBatchPayloads)
+		return middleware.Batch(cfg.Concurrency.MaxConcurrentRelays, cfg.Concurrency.MaxBatchPayloads, flags, repSvc)
 	})
 	mwReg.Register(relay.MWSingleflight, func() relay.Middleware { return middleware.Singleflight(flags) })
 	mwReg.Register(relay.MWObserve, func() relay.Middleware {
@@ -450,6 +460,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWSelectEndpoint, func() relay.Middleware {
 		return middleware.SelectEndpoint(repSvc, proto, qosReg, flags)
 	})
+	mwReg.Register(relay.MWScore, func() relay.Middleware { return middleware.Score(flags, repSvc) })
 	mwReg.Register(relay.MWDebugLog, func() relay.Middleware { return middleware.DebugLog(flags) })
 	mwReg.Register(relay.MWHeuristic, func() relay.Middleware { return middleware.Heuristic(flags) })
 	mwReg.Register(relay.MWSendRelay, func() relay.Middleware { return middleware.SendRelay(proto) })
@@ -459,6 +470,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		order = relay.DefaultChainOrder()
 	} else {
 		logger.Info("middleware chain set by config", "chain", order)
+	}
+
+	// A chain that observes but does not score records no reputation under
+	// scoring_v2 — see warnIfUnscoredChain.
+	if msg, unscored := warnIfUnscoredChain(order); unscored {
+		logger.Warn(msg)
 	}
 
 	// A middleware that is registered but unnamed by the chain does not run. That

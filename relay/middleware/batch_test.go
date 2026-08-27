@@ -11,10 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/relay"
+	"github.com/pokt-network/sage/reputation"
 )
 
 func makeMultiPayloadCtx(payloads []domain.Payload) *relay.Context {
@@ -33,7 +36,7 @@ func TestBatch_SinglePayload_PassThrough(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(4, 0)
+	mw := Batch(4, 0, nil, nil)
 	handler := mw(inner)
 
 	p := domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
@@ -64,7 +67,7 @@ func TestBatch_MultiplePayloads_FanOut(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(4, 0)
+	mw := Batch(4, 0, nil, nil)
 	handler := mw(inner)
 
 	payloads := []domain.Payload{
@@ -106,7 +109,7 @@ func TestBatch_PartialFailure_IncludedInResult(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(4, 0)
+	mw := Batch(4, 0, nil, nil)
 	handler := mw(inner)
 
 	payloads := []domain.Payload{
@@ -188,7 +191,7 @@ func TestBatch_EmptyBodyIsAnErrorResponseWithTheRequestID(t *testing.T) {
 		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"ok"}`), HTTPStatusCode: 200}
 		return nil
 	})
-	handler := Batch(4, 0)(inner)
+	handler := Batch(4, 0, nil, nil)(inner)
 
 	payloads := []domain.Payload{
 		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"ok"}`), domain.RPCTypeJSONRPC, "ok"),
@@ -215,7 +218,7 @@ func TestBatch_EmptyBodyIsAnErrorResponseWithTheRequestID(t *testing.T) {
 // The items a dead request never started are answered the same way.
 func TestBatch_NotStartedItemsCarryTheirRequestIDs(t *testing.T) {
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error { return nil })
-	handler := Batch(16, 0)(inner)
+	handler := Batch(16, 0, nil, nil)(inner)
 
 	payloads := []domain.Payload{
 		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":"a","method":"m"}`), domain.RPCTypeJSONRPC, "m"),
@@ -243,7 +246,7 @@ func TestBatch_EmptyPayloads_PassThrough(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(4, 0)
+	mw := Batch(4, 0, nil, nil)
 	handler := mw(inner)
 
 	ctx := makeMultiPayloadCtx(nil)
@@ -264,7 +267,7 @@ func TestBatch_UnboundedParallelism(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(0, 0) // unbounded
+	mw := Batch(0, 0, nil, nil) // unbounded
 	handler := mw(inner)
 
 	payloads := make([]domain.Payload, 10)
@@ -293,7 +296,7 @@ func TestBatch_OversizedBatchRejectedBeforeFanOut(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(4, 3)
+	mw := Batch(4, 3, nil, nil)
 	handler := mw(inner)
 
 	payloads := make([]domain.Payload, 10)
@@ -331,7 +334,7 @@ func TestBatch_AtLimitIsAllowed(t *testing.T) {
 		return nil
 	})
 
-	handler := Batch(4, 3)(inner)
+	handler := Batch(4, 3, nil, nil)(inner)
 
 	payloads := make([]domain.Payload, 3)
 	for i := range payloads {
@@ -353,7 +356,7 @@ func TestBatch_ZeroLimitDisablesCap(t *testing.T) {
 		ctx.Response = &domain.Response{Body: []byte(`{"result":"ok"}`), HTTPStatusCode: 200}
 		return nil
 	})
-	handler := Batch(4, 0)(inner)
+	handler := Batch(4, 0, nil, nil)(inner)
 
 	payloads := make([]domain.Payload, 50)
 	for i := range payloads {
@@ -392,7 +395,7 @@ func TestBatch_MergesDegradedFromSubRelays(t *testing.T) {
 				return nil
 			})
 
-			handler := Batch(1, 0)(inner) // maxParallel=1 makes the index deterministic
+			handler := Batch(1, 0, nil, nil)(inner) // maxParallel=1 makes the index deterministic
 
 			payloads := make([]domain.Payload, 3)
 			for i := range payloads {
@@ -418,7 +421,7 @@ func TestBatch_SinglePayloadDegradedPassesThrough(t *testing.T) {
 		ctx.Response = &domain.Response{Body: []byte(`{"result":"ok"}`), HTTPStatusCode: 200}
 		return nil
 	})
-	handler := Batch(4, 0)(inner)
+	handler := Batch(4, 0, nil, nil)(inner)
 
 	p := domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
 	ctx := makeMultiPayloadCtx([]domain.Payload{p})
@@ -475,7 +478,7 @@ func TestBatch_ConcurrencyBoundIsGlobalAcrossRequests(t *testing.T) {
 	})
 
 	// ONE middleware instance shared by both requests — as in wire.go.
-	handler := Batch(budget, 0)(inner)
+	handler := Batch(budget, 0, nil, nil)(inner)
 
 	payloads := make([]domain.Payload, 4)
 	for i := range payloads {
@@ -539,7 +542,7 @@ func TestBatch_SaturatedBudgetRespectsRequestDeadline(t *testing.T) {
 		return nil
 	})
 
-	handler := Batch(1, 0)(inner) // budget of exactly one
+	handler := Batch(1, 0, nil, nil)(inner) // budget of exactly one
 
 	payloads := make([]domain.Payload, 2)
 	for i := range payloads {
@@ -580,7 +583,7 @@ func TestBatch_CancelledRequestDoesNotSpendBudget(t *testing.T) {
 	})
 
 	// A wide-open budget: nothing is contended, only the context is dead.
-	handler := Batch(16, 0)(inner)
+	handler := Batch(16, 0, nil, nil)(inner)
 
 	payloads := make([]domain.Payload, 2)
 	for i := range payloads {
@@ -619,7 +622,7 @@ func TestBatch_PanicInOnePayloadIsIsolated(t *testing.T) {
 		domain.NewPayload([]byte(`{"method":"eth_chainId"}`), domain.RPCTypeJSONRPC, "eth_chainId"),
 	})
 
-	if err := Batch(4, 0)(inner).HandleRelay(ctx); err != nil {
+	if err := Batch(4, 0, nil, nil)(inner).HandleRelay(ctx); err != nil {
 		t.Fatalf("batch failed wholesale: %v", err)
 	}
 
@@ -641,4 +644,88 @@ func TestBatch_PanicInOnePayloadIsIsolated(t *testing.T) {
 	if strings.Contains(string(results[1]), `"result":"ok"`) {
 		t.Errorf("the panicking payload reported success: %s", results[1])
 	}
+}
+
+func TestBatch_SetsSinkAndFlushesWorstOf(t *testing.T) {
+	rep := &recordingRepService{}
+	flags := newFlags(featureflag.FlagScoringV2)
+	// Inner handler: every sub-relay lands on endpoint A; the third one
+	// adds a fatal signal to the sink the way the score middleware would.
+	var n int32
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		// assert, not require: this runs on the sub-relay goroutine, and
+		// require's FailNow there would leave the batch waiting forever.
+		if !assert.NotNil(t, ctx.ScoreSink, "batch must hand sub-relays a sink") {
+			ctx.Response = &domain.Response{Body: []byte(`{}`), HTTPStatusCode: 200}
+			return nil
+		}
+		i := atomic.AddInt32(&n, 1)
+		sig := reputation.NewSuccessSignal("ok", 0)
+		if i == 3 {
+			sig = reputation.NewFatalErrorSignal("fabricated", 0)
+		}
+		ctx.ScoreSink.Add("pokt1a-https://a", domain.RPCTypeJSONRPC, sig)
+		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`), HTTPStatusCode: 200}
+		return nil
+	})
+	// maxParallel=1: the sub-relays run in order, so "the third one is fatal
+	// and the two after it are successes" is deterministic rather than a race
+	// that would sometimes let the fatal be the last Add and pass regardless
+	// of whether the collapse is worst-of or last-wins.
+	h := Batch(1, 0, flags, rep)(inner)
+	ctx := baseContext()
+	ctx.Payloads = make([]domain.Payload, 5)
+	for i := range ctx.Payloads {
+		ctx.Payloads[i] = domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	}
+	require.NoError(t, h.HandleRelay(ctx))
+	got := rep.all()
+	require.Len(t, got, 1, "one signal per endpoint, not per payload")
+	assert.Equal(t, reputation.SignalFatalError, got[0].Signal.Type)
+	assert.Equal(t, domain.EndpointAddr("pokt1a-https://a"), got[0].Endpoint)
+	assert.Equal(t, domain.RPCTypeJSONRPC, got[0].RPC)
+	assert.Nil(t, ctx.ScoreSink, "the sink is cleared after flush so a reused context does not carry it")
+}
+
+func TestBatch_NoSinkWhenFlagOff(t *testing.T) {
+	rep := &recordingRepService{}
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		assert.Nil(t, ctx.ScoreSink)
+		ctx.Response = &domain.Response{Body: []byte(`{}`), HTTPStatusCode: 200}
+		return nil
+	})
+	h := Batch(0, 0, newFlags(), rep)(inner)
+	ctx := baseContext()
+	ctx.Payloads = make([]domain.Payload, 2)
+	for i := range ctx.Payloads {
+		ctx.Payloads[i] = domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	}
+	require.NoError(t, h.HandleRelay(ctx))
+	assert.Empty(t, rep.all())
+}
+
+// A single payload is not a batch: it passes straight through, so there is
+// nothing to collapse and batch must not install a sink or score anything —
+// even with scoring_v2 on and a live reputation service. Scoring that relay is
+// the score middleware's job, on the ordinary single-relay path.
+func TestBatch_SinglePayload_NoSinkWithFlagOn(t *testing.T) {
+	rep := &recordingRepService{}
+	var called atomic.Int32
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		called.Add(1)
+		assert.Nil(t, ctx.ScoreSink, "a single-payload pass-through gets no sink")
+		ctx.Response = &domain.Response{Body: []byte(`{"result":"ok"}`), HTTPStatusCode: 200}
+		return nil
+	})
+
+	h := Batch(4, 0, newFlags(featureflag.FlagScoringV2), rep)(inner)
+	ctx := baseContext()
+	ctx.Payloads = []domain.Payload{
+		domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber"),
+	}
+
+	require.NoError(t, h.HandleRelay(ctx))
+	require.Equal(t, int32(1), called.Load())
+	assert.Nil(t, ctx.ScoreSink, "and none left on the parent either")
+	assert.Empty(t, rep.all(), "batch records nothing for a request it only passed through")
 }

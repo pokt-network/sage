@@ -89,7 +89,7 @@ Reports readiness for every configured service.
 | `GET` | `/admin/flags` | Returns the effective state of every known feature flag. |
 | `PUT` | `/admin/flags/{flag}` | Toggles a feature flag globally. |
 | `PUT` | `/admin/flags/{flag}/{serviceID}` | Toggles a feature flag for one service only. |
-| `GET` | `/admin/reputation/{serviceID}` | Returns every reputation score for a service. |
+| `GET` | `/admin/reputation/{serviceID}` | Returns every reputation state for a service. |
 | `POST` | `/admin/reputation/reset/{serviceID}/{endpoint...}` | Returns one endpoint to the initial score. |
 | `POST` | `/admin/chain-state/clear/{serviceID}` | Discards the QoS state a service's plugin has learned: block consensus (perceived height, external floor) and its per-endpoint QoS store (block heights, chain-id observations, archival marks — see qos.StateResetter). |
 | `GET` | `/admin/timeline/{serviceID}` | Returns the recent reputation events for every endpoint of a service, newest last. |
@@ -143,12 +143,20 @@ one chain before turning it on everywhere.
 
 ### `GET /admin/reputation/{serviceID}`
 
-Returns every reputation score for a service.
+Returns every reputation state for a service.
 
-The response is a JSON object of score keys to numeric scores. **Keys are
-reputation keys at the configured granularity — per backend URL by default —
-not endpoint addresses.** Several staked suppliers routinely front one URL
-and share its score, so there is often no single endpoint a key belongs to.
+**Keys are reputation keys at the configured granularity — per backend URL by
+default — not endpoint addresses.** Several staked suppliers routinely front
+one URL and share its score, so there is often no single endpoint a key
+belongs to.
+
+When the reputation service implements reputation.StateLister the rows are
+reputation.StateView objects: `score` is the effective value the selector
+uses, and `additive` and `penalty` are the two terms it is the sum of (see
+docs/scoring.md §7). `probe_only` means nothing but health checks has graded
+the key — its score is evidence about the probe payload, not about client
+traffic. Otherwise the response falls back to the older JSON object of score
+keys to numeric scores.
 
 ### `POST /admin/reputation/reset/{serviceID}/{endpoint...}`
 

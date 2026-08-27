@@ -366,6 +366,30 @@ coordination:
 	}
 }
 
+// TestReload_ReportsConfigWarnings: the same argument as the test above, for
+// the third kind of complaint. A reload is where a threshold that loads and
+// selects lopsidedly is most likely to have just been introduced, and the
+// startup log that would have said so has long since scrolled away.
+func TestReload_ReportsConfigWarnings(t *testing.T) {
+	app, path := buildReloadApp(t, reloadTestYAML)
+
+	rewriteReloadConfig(t, path, reloadTestYAML+`  reputation_config:
+    tiered_selection:
+      tier2_threshold: 30
+      probation:
+        threshold: 50
+`)
+
+	res, err := app.Reload(t.Context())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	joined := strings.Join(res.Warnings, "\n")
+	if !strings.Contains(joined, "probation.threshold") {
+		t.Errorf("warnings = %v, want one naming probation.threshold", res.Warnings)
+	}
+}
+
 // TestDiffConfig_NewTopLevelFieldNeedsRestart is the fail-safe pin.
 //
 // The diff walks config.Config by reflection and names, per section, what it
@@ -377,10 +401,10 @@ coordination:
 // The test mutates each top-level field in turn and insists the diff notices.
 func TestDiffConfig_NewTopLevelFieldNeedsRestart(t *testing.T) {
 	// The two fields with runtime seams are covered by their own tests above,
-	// and the two parse-metadata fields describe the parse rather than the
+	// and the parse-metadata fields describe the parse rather than the
 	// configuration. Everything else has to be fail-safe.
 	seams := map[string]bool{"Gateway": true, "FeatureFlags": true}
-	metadata := map[string]bool{"Ignored": true, "Inert": true}
+	metadata := map[string]bool{"Ignored": true, "Inert": true, "Warnings": true}
 
 	typ := reflect.TypeOf(config.Config{})
 	for i := range typ.NumField() {
@@ -615,5 +639,27 @@ func TestDiffConfig_DefaultsDescendLeafWise(t *testing.T) {
 	}
 	if slices.Contains(d.defaults, "gateway_config.defaults.reputation_config") {
 		t.Error("defaults claims to apply reputation_config, which nothing reads")
+	}
+}
+
+// TestDiffConfig_ReputationTuningNeedsRestart: the scoring keys are honoured
+// now, which makes how a reload reports them a claim an operator will act on.
+// The service is built once at wire time, so changing them takes a restart —
+// and the reflection diff has to keep saying so as keys are added to the block,
+// rather than a hand-written list quietly missing the new ones.
+func TestDiffConfig_ReputationTuningNeedsRestart(t *testing.T) {
+	old := &config.Config{}
+	next := &config.Config{}
+	next.Gateway.Reputation.ChronicHalfLifeAttempts = 5000
+	next.Gateway.Reputation.TieredSelection.Tier1Threshold = 90
+	next.Gateway.Reputation.SignalImpacts.Success = 2
+
+	d := diffConfig(old, next)
+
+	if !slices.Contains(d.needsRestart, "gateway_config.reputation_config") {
+		t.Errorf("needs_restart = %v, want gateway_config.reputation_config", d.needsRestart)
+	}
+	if slices.Contains(d.defaults, "gateway_config.reputation_config") {
+		t.Error("the diff claims the reputation block was applied; the service is built once")
 	}
 }

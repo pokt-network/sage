@@ -170,14 +170,17 @@ pre {
       <p class="note">
         Keys are reputation keys at the configured granularity — per backend URL by
         default — not endpoint addresses. Several staked suppliers routinely front one
-        URL and share its score. Worst first.
+        URL and share its score. Worst first. Score is what the selector uses:
+        the additive term plus the chronic-failure penalty. "Probe only" marks a
+        key nothing but health checks has graded, so its score is evidence about
+        the probe payload, not about client traffic.
       </p>
       <div class="row" style="margin-bottom:12px">
         <select id="rep-service"></select>
         <button class="act" id="rep-load">Load</button>
       </div>
       <table id="rep-table"><thead>
-        <tr><th>Key</th><th>Score</th></tr>
+        <tr><th>Key</th><th>Score</th><th>Additive</th><th>Penalty</th><th>Rate</th><th>Attempts</th><th>Probe only</th><th>Latency ms</th></tr>
       </thead><tbody></tbody></table>
       <div class="row" style="margin-top:14px">
         <input id="rep-reset-endpoint" class="mono" placeholder="endpoint address to reset" size="46">
@@ -476,15 +479,26 @@ async function loadReputation() {
   const tbody = $("#rep-table tbody");
   tbody.replaceChildren();
 
-  const rows = Object.entries(scores).sort((a, b) => a[1] - b[1]);
+  // A row is either a state object or, from a gateway whose reputation service
+  // does not implement StateLister, a bare number.
+  const scoreOf = (v) => Number(v && typeof v === "object" ? v.score : v);
+  const rows = Object.entries(scores).sort((a, b) => scoreOf(a[1]) - scoreOf(b[1]));
   if (rows.length === 0) {
-    tbody.append(el("tr", {}, el("td", { colSpan: 2, className: "empty", textContent: "no scores recorded yet" })));
+    tbody.append(el("tr", {}, el("td", { colSpan: 8, className: "empty", textContent: "no scores recorded yet" })));
     return;
   }
-  for (const [key, score] of rows) {
+  const num = (v, digits) => (v === undefined || v === null ? "" : Number(v).toFixed(digits));
+  for (const [key, v] of rows) {
+    const s = v && typeof v === "object" ? v : {};
     tbody.append(el("tr", {},
       el("td", { className: "mono", textContent: key }),
-      el("td", { className: "mono", textContent: Number(score).toFixed(1) }),
+      el("td", { className: "mono", textContent: scoreOf(v).toFixed(1) }),
+      el("td", { className: "mono", textContent: num(s.additive, 1) }),
+      el("td", { className: "mono", textContent: num(s.penalty, 1) }),
+      el("td", { className: "mono", textContent: num(s.rate, 4) }),
+      el("td", { className: "mono", textContent: s.attempts === undefined ? "" : String(s.attempts) }),
+      el("td", { className: "mono", textContent: s.probe_only ? "yes" : "" }),
+      el("td", { className: "mono", textContent: num(s.latency_ms, 0) }),
     ));
   }
 }

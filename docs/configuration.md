@@ -151,57 +151,54 @@ Controls the reputation system.
 | `storage_type` | string | **⚠️ Parsed, not implemented.** Parsed and not implemented. Storage follows redis_config: Redis when an address is set, in-memory otherwise. |
 | `key_granularity` | string | Selects what a score is attached to: "per-url" (default), "per-endpoint", "per-domain" or "per-supplier". See reputation/key.go for why per-URL is the default. An unrecognised value is a startup error rather than a fallback to the default — silently changing what scores attach to is not something an operator could detect until an incident. |
 | `initial_score` | integer | The score a newly seen endpoint starts at. Default: 100. |
-| `min_threshold` | integer | **⚠️ Parsed, not implemented.** Parsed and not implemented; the selector uses its own built-in thresholds. See tiered_selection. |
+| `min_threshold` | integer | The score below which an endpoint is not selected at all (the pool-collapse guard still serves the least-bad one). Global: one selector serves every service. There is no per-service copy — ServiceConfig has no reputation_config, so a copy placed under a service lands in Config.Ignored, and a copy under gateway_config.defaults is reported as inert. Zero means the default (10); a negative value is a startup error, not an off switch. |
 | `recovery_timeout` | duration | **⚠️ Parsed, not implemented.** Parsed and not implemented. SAGE has no cooldown mechanism — reputation is a continuous score, and recovery happens through probation traffic rather than by waiting out a timer. |
 | `max_operator_share` | number | Bounds the fraction of a service's endpoint selections any single operator (registrable domain / eTLD+1) may receive; the excess is water-filled across the other operators. Zero means the default (0.50); negative disables the cap. Two-operator pools use MaxOperatorShareTwoOperators instead — see reputation/concentration.go for why. |
 | `max_operator_share_two_operators` | number | The cap for pools holding exactly two operators, where MaxOperatorShare would sit on the infeasibility boundary. Zero means the default (0.65). |
 | `operator_displacement_ceiling` | number | The multiple of its own entitlement an operator may be displaced up to when absorbing another's capped excess. Zero means the default (3.0); negative removes the ceiling. |
+| `chronic_half_life_attempts` | integer | The half-life, in attempts, of the EWMA failure rate behind the chronic-failure term of the score. 0 means the default (20000); negative turns the term off. docs/scoring.md §7.3 explains the number: long enough that a 6-critical burst on a clean key stays under the onset, short enough to catch a 0.2% violator within tens of thousands of attempts. |
+| `chronic_onset_rate` | number | The failure rate at which the chronic penalty starts. 0 means the default (0.0002, i.e. 0.02%). Must be below chronic_full_rate. |
+| `chronic_full_rate` | number | The failure rate at which the chronic penalty reaches -40 points (out of tier 1); it continues to -70 one decade higher. 0 means the default (0.01, i.e. 1%). Must be below 1. |
 
 #### `gateway_config.reputation_config.tiered_selection`
 
-Controls endpoint tiering.
-
-Parsed and not implemented. The selector is always built from
-reputation.DefaultSelectorConfig(), so none of these thresholds are consulted
-— change them in reputation/selector.go, or wire this block through, but do
-not expect setting them here to do anything today.
+TieredSelection holds the tier thresholds and probation routing. Global:
+one selector serves every service. There is no per-service copy —
+ServiceConfig has no reputation_config, so a copy placed under a service
+lands in Config.Ignored, and a copy under gateway_config.defaults is
+reported as inert.
 
 | Key | Type | Description |
 |---|---|---|
-| `enabled` | boolean | Would turn tiering on. Tiering is always on. |
-| `tier1_threshold` | integer | **⚠️ Parsed, not implemented.** The minimum score for the best tier. The value in effect is reputation.DefaultSelectorConfig().Tier1Threshold. |
-| `tier2_threshold` | integer | **⚠️ Parsed, not implemented.** The minimum score for the second tier. The value in effect is reputation.DefaultSelectorConfig().Tier2Threshold. |
+| `enabled` | boolean | Parsed and not implemented: tiering always runs. Selection is tiered by construction, so there is no untiered mode to switch back to. |
+| `tier1_threshold` | integer | The minimum score for the best tier. Zero means the default (80) and a negative value is a startup error. Should be above tier2_threshold; a set that does not descend loads and warns rather than failing. |
+| `tier2_threshold` | integer | The minimum score for the second tier. Zero means the default (50), and a negative value is a startup error. Should be above the probation threshold, for the same reason. |
 
 ##### `gateway_config.reputation_config.tiered_selection.probation`
 
-Controls probation routing for recovering endpoints.
-
-Parsed and not implemented, for the same reason as TieredSelectionConfig.
+Probation holds the probation-routing thresholds.
 
 | Key | Type | Description |
 |---|---|---|
-| `enabled` | boolean | Would turn probation routing on. Probation always runs. |
-| `threshold` | integer | **⚠️ Parsed, not implemented.** The score below which an endpoint counts as on probation. |
-| `traffic_percent` | integer | **⚠️ Parsed, not implemented.** The share of requests a probation endpoint is prepended to, so a recovering endpoint can earn its way back. |
-| `recovery_multiplier` | number | **⚠️ Parsed, not implemented.** Would scale how fast a probation endpoint recovers. |
+| `enabled` | boolean | Parsed and not implemented: probation routing always runs. Probation traffic is how an endpoint earns its score back, so there is no mode in which a demoted endpoint is never retried. |
+| `threshold` | integer | The score below which an endpoint counts as on probation. Zero means the default (30) and a negative value is a startup error. Should be below tier2_threshold and at or above min_threshold; if it is not, the bands overlap, the config still loads, and Config.Warnings says which one ends up empty. |
+| `traffic_percent` | integer | The share of requests a probation endpoint is prepended to, so a recovering endpoint can earn its way back. Zero means the default (10); the value must be 0..100. |
+| `recovery_multiplier` | number | **⚠️ Parsed, not implemented.** Parsed and not implemented. SAGE has no recovery multiplier — a probation endpoint recovers through the traffic it is given, at the same score deltas as everything else. |
 
 #### `gateway_config.reputation_config.signal_impacts`
 
-Defines how each signal type affects reputation.
-
-Parsed and not implemented — no field here is read. Score deltas per signal
-live in the reputation package.
+SignalImpacts holds the score delta each signal type carries.
 
 | Key | Type | Description |
 |---|---|---|
-| `success` | integer | **⚠️ Parsed, not implemented.** The score change for a successful relay. |
-| `minor_error` | integer | **⚠️ Parsed, not implemented.** The score change for a minor, recoverable error. |
-| `major_error` | integer | **⚠️ Parsed, not implemented.** The score change for an error affecting reliability. |
-| `critical_error` | integer | **⚠️ Parsed, not implemented.** The score change for a severe error. |
-| `fatal_error` | integer | **⚠️ Parsed, not implemented.** The score change for an error warranting immediate removal from selection. |
-| `recovery_success` | integer | **⚠️ Parsed, not implemented.** The score change when a failing endpoint recovers. |
-| `slow_response` | integer | **⚠️ Parsed, not implemented.** The score change for a response over the latency bound. |
-| `very_slow_response` | integer | **⚠️ Parsed, not implemented.** The score change for a response far over it. |
+| `success` | integer | The score change for a successful relay. Zero means the default (+5). |
+| `minor_error` | integer | The score change for a minor, recoverable error. Zero means the default (-3). |
+| `major_error` | integer | The score change for an error affecting reliability. Zero means the default (-10). |
+| `critical_error` | integer | The score change for a severe error. Zero means the default (-25). |
+| `fatal_error` | integer | The score change for an error warranting immediate removal from selection. Zero means the default (-50). |
+| `recovery_success` | integer | **⚠️ Parsed, not implemented.** Parsed and not implemented: the signal type was removed. A successful relay from a recovering endpoint is a success like any other (docs/scoring.md §7.2). |
+| `slow_response` | integer | **⚠️ Parsed, not implemented.** Parsed and not implemented: latency does not penalise a score. It is reported instead, as a per-key EWMA in the admin listing (docs/scoring.md §7.2). |
+| `very_slow_response` | integer | **⚠️ Parsed, not implemented.** Parsed and not implemented, for the same reason as slow_response (docs/scoring.md §7.2). |
 
 ### `gateway_config.services[]`
 
@@ -348,8 +345,10 @@ Controls async observation processing.
 
 Defines per-chain latency thresholds for reputation scoring.
 The whole latency_profiles block is parsed and not implemented — no field
-below is read. Latency is scored against retry_config.max_latency instead.
-The struct exists so a PATH config carrying the block still loads.
+below is read. Latency has reporting power only: it is kept as a per-key EWMA
+and shown in the admin listing, never subtracted from a score
+(docs/scoring.md §7.2). The struct exists so a PATH config carrying the block
+still loads.
 
 | Key | Type | Description |
 |---|---|---|
@@ -420,18 +419,8 @@ exists. Treat them as documentation of PATH's format, not as SAGE settings.
 - `full_node_config.session_rollover_blocks`
 - `full_node_config.cache_config.session_ttl`
 - `gateway_config.reputation_config.storage_type`
-- `gateway_config.reputation_config.min_threshold`
 - `gateway_config.reputation_config.recovery_timeout`
-- `gateway_config.reputation_config.tiered_selection.tier1_threshold`
-- `gateway_config.reputation_config.tiered_selection.tier2_threshold`
-- `gateway_config.reputation_config.tiered_selection.probation.threshold`
-- `gateway_config.reputation_config.tiered_selection.probation.traffic_percent`
 - `gateway_config.reputation_config.tiered_selection.probation.recovery_multiplier`
-- `gateway_config.reputation_config.signal_impacts.success`
-- `gateway_config.reputation_config.signal_impacts.minor_error`
-- `gateway_config.reputation_config.signal_impacts.major_error`
-- `gateway_config.reputation_config.signal_impacts.critical_error`
-- `gateway_config.reputation_config.signal_impacts.fatal_error`
 - `gateway_config.reputation_config.signal_impacts.recovery_success`
 - `gateway_config.reputation_config.signal_impacts.slow_response`
 - `gateway_config.reputation_config.signal_impacts.very_slow_response`

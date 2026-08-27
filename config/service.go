@@ -1,6 +1,10 @@
 package config
 
-import "time"
+import (
+	"time"
+
+	"github.com/pokt-network/sage/reputation"
+)
 
 // GatewayConfig holds the gateway-specific configuration.
 // Supports both PATH config formats:
@@ -260,8 +264,14 @@ type ServiceConfig struct {
 
 // ServiceDefaults provides default values for services.
 type ServiceDefaults struct {
-	Retry      RetryConfig      `yaml:"retry_config"`
-	Timeout    TimeoutConfig    `yaml:"timeout_config"`
+	// Retry is the default retry policy, folded into EffectiveDefaults.
+	Retry RetryConfig `yaml:"retry_config"`
+	// Timeout is the default timeout policy, folded into EffectiveDefaults.
+	Timeout TimeoutConfig `yaml:"timeout_config"`
+	// Reputation is parsed and not implemented. Reputation is configured from
+	// gateway_config.reputation_config only; the selector and the scorer are
+	// global, so a copy under defaults is read by nothing. The whole block is
+	// reported at startup rather than each key inside it.
 	Reputation ReputationConfig `yaml:"reputation_config"`
 }
 
@@ -341,8 +351,10 @@ type ExternalBlockSource struct {
 
 // LatencyProfile defines per-chain latency thresholds for reputation scoring.
 // The whole latency_profiles block is parsed and not implemented — no field
-// below is read. Latency is scored against retry_config.max_latency instead.
-// The struct exists so a PATH config carrying the block still loads.
+// below is read. Latency has reporting power only: it is kept as a per-key EWMA
+// and shown in the admin listing, never subtracted from a score
+// (docs/scoring.md §7.2). The struct exists so a PATH config carrying the block
+// still loads.
 type LatencyProfile struct {
 	// FastThreshold is the latency below which a response counts as fast.
 	FastThreshold time.Duration `yaml:"fast_threshold"`
@@ -380,8 +392,13 @@ type ReputationConfig struct {
 	KeyGranularity string `yaml:"key_granularity"`
 	// InitialScore is the score a newly seen endpoint starts at. Default: 100.
 	InitialScore int `yaml:"initial_score"`
-	// MinThreshold is parsed and not implemented; the selector uses its own
-	// built-in thresholds. See tiered_selection.
+	// MinThreshold is the score below which an endpoint is not selected at all
+	// (the pool-collapse guard still serves the least-bad one). Global: one
+	// selector serves every service. There is no per-service copy — ServiceConfig
+	// has no reputation_config, so a copy placed under a service lands in
+	// Config.Ignored, and a copy under gateway_config.defaults is reported as
+	// inert. Zero means the default (10); a negative value is a startup error,
+	// not an off switch.
 	MinThreshold int `yaml:"min_threshold"`
 	// RecoveryTimeout is parsed and not implemented. SAGE has no cooldown
 	// mechanism — reputation is a continuous score, and recovery happens
@@ -404,8 +421,29 @@ type ReputationConfig struct {
 	// Zero means the default (3.0); negative removes the ceiling.
 	OperatorDisplacementCeiling float64 `yaml:"operator_displacement_ceiling"`
 
+	// ChronicHalfLifeAttempts is the half-life, in attempts, of the EWMA
+	// failure rate behind the chronic-failure term of the score. 0 means the
+	// default (20000); negative turns the term off. docs/scoring.md §7.3
+	// explains the number: long enough that a 6-critical burst on a clean
+	// key stays under the onset, short enough to catch a 0.2% violator within
+	// tens of thousands of attempts.
+	ChronicHalfLifeAttempts int `yaml:"chronic_half_life_attempts"`
+	// ChronicOnsetRate is the failure rate at which the chronic penalty starts.
+	// 0 means the default (0.0002, i.e. 0.02%). Must be below chronic_full_rate.
+	ChronicOnsetRate float64 `yaml:"chronic_onset_rate"`
+	// ChronicFullRate is the failure rate at which the chronic penalty reaches
+	// -40 points (out of tier 1); it continues to -70 one decade higher. 0
+	// means the default (0.01, i.e. 1%). Must be below 1.
+	ChronicFullRate float64 `yaml:"chronic_full_rate"`
+
+	// TieredSelection holds the tier thresholds and probation routing. Global:
+	// one selector serves every service. There is no per-service copy —
+	// ServiceConfig has no reputation_config, so a copy placed under a service
+	// lands in Config.Ignored, and a copy under gateway_config.defaults is
+	// reported as inert.
 	TieredSelection TieredSelectionConfig `yaml:"tiered_selection"`
-	SignalImpacts   SignalImpactsConfig   `yaml:"signal_impacts"`
+	// SignalImpacts holds the score delta each signal type carries.
+	SignalImpacts SignalImpactsConfig `yaml:"signal_impacts"`
 	// NOTE: PATH's strike_system has no field here on purpose. SAGE has no
 	// strike/cooldown mechanism — reputation is a continuous score feeding
 	// tiered selection, so there is no cooldown for these knobs to tune. The
@@ -414,60 +452,136 @@ type ReputationConfig struct {
 	// that do not do anything.
 }
 
+// SelectorConfig is the tiered-selector configuration this block asks for,
+// with reputation.DefaultSelectorConfig() filling anything unset.
+//
+// Zero means "unset", which is why each threshold is copied only when
+// positive: a config that names two of the five must not drag the other three
+// to zero, where every endpoint is tier 1 and nothing is ever filtered out.
+func (r ReputationConfig) SelectorConfig() reputation.SelectorConfig {
+	sel := reputation.DefaultSelectorConfig()
+	if r.TieredSelection.Tier1Threshold > 0 {
+		sel.Tier1Threshold = float64(r.TieredSelection.Tier1Threshold)
+	}
+	if r.TieredSelection.Tier2Threshold > 0 {
+		sel.Tier2Threshold = float64(r.TieredSelection.Tier2Threshold)
+	}
+	if r.MinThreshold > 0 {
+		sel.MinThreshold = float64(r.MinThreshold)
+	}
+	if r.TieredSelection.Probation.Threshold > 0 {
+		sel.ProbationThreshold = float64(r.TieredSelection.Probation.Threshold)
+	}
+	if r.TieredSelection.Probation.TrafficPercent > 0 {
+		sel.ProbationPct = r.TieredSelection.Probation.TrafficPercent
+	}
+	return sel
+}
+
+// Impacts is the signal_impacts block as the reputation package reads it. The
+// three PATH signal types SAGE no longer has are not carried across; they are
+// reported as inert instead.
+func (r ReputationConfig) Impacts() reputation.SignalImpacts {
+	return reputation.SignalImpacts{
+		Success: r.SignalImpacts.Success, MinorError: r.SignalImpacts.MinorError,
+		MajorError: r.SignalImpacts.MajorError, CriticalError: r.SignalImpacts.CriticalError,
+		FatalError: r.SignalImpacts.FatalError,
+	}
+}
+
+// RateConfig is the chronic-failure term's configuration.
+func (r ReputationConfig) RateConfig() reputation.RateConfig {
+	return reputation.RateConfig{
+		HalfLifeAttempts: r.ChronicHalfLifeAttempts,
+		OnsetRate:        r.ChronicOnsetRate,
+		FullRate:         r.ChronicFullRate,
+	}
+}
+
 // TieredSelectionConfig controls endpoint tiering.
 //
-// Parsed and not implemented. The selector is always built from
-// reputation.DefaultSelectorConfig(), so none of these thresholds are consulted
-// — change them in reputation/selector.go, or wire this block through, but do
-// not expect setting them here to do anything today.
+// The thresholds here are honoured: they fill in reputation.SelectorConfig,
+// anything left zero taking reputation.DefaultSelectorConfig(). They are
+// global — one TieredSelector serves every service — so the block is read from
+// gateway_config.reputation_config and a per-service copy of it changes
+// nothing. Thresholds that do not descend (tier2 at or above tier1, probation
+// at or above tier2) still load — a PATH config in production has them, and
+// the selector copes by classifying probation first — but they leave a
+// sentence in Config.Warnings saying which band ends up empty.
 type TieredSelectionConfig struct {
-	// Enabled would turn tiering on. Tiering is always on.
+	// Enabled is parsed and not implemented: tiering always runs. Selection is
+	// tiered by construction, so there is no untiered mode to switch back to.
 	Enabled bool `yaml:"enabled"`
-	// Tier1Threshold is the minimum score for the best tier. The value in
-	// effect is reputation.DefaultSelectorConfig().Tier1Threshold.
+	// Tier1Threshold is the minimum score for the best tier. Zero means the
+	// default (80) and a negative value is a startup error. Should be above
+	// tier2_threshold; a set that does not descend loads and warns rather than
+	// failing.
 	Tier1Threshold int `yaml:"tier1_threshold"`
-	// Tier2Threshold is the minimum score for the second tier. The value in
-	// effect is reputation.DefaultSelectorConfig().Tier2Threshold.
-	Tier2Threshold int             `yaml:"tier2_threshold"`
-	Probation      ProbationConfig `yaml:"probation"`
+	// Tier2Threshold is the minimum score for the second tier. Zero means the
+	// default (50), and a negative value is a startup error. Should be above
+	// the probation threshold, for the same reason.
+	Tier2Threshold int `yaml:"tier2_threshold"`
+	// Probation holds the probation-routing thresholds.
+	Probation ProbationConfig `yaml:"probation"`
 }
 
 // ProbationConfig controls probation routing for recovering endpoints.
 //
-// Parsed and not implemented, for the same reason as TieredSelectionConfig.
+// Honoured, and global, for the same reasons as TieredSelectionConfig.
 type ProbationConfig struct {
-	// Enabled would turn probation routing on. Probation always runs.
+	// Enabled is parsed and not implemented: probation routing always runs.
+	// Probation traffic is how an endpoint earns its score back, so there is
+	// no mode in which a demoted endpoint is never retried.
 	Enabled bool `yaml:"enabled"`
 	// Threshold is the score below which an endpoint counts as on probation.
+	// Zero means the default (30) and a negative value is a startup error.
+	// Should be below tier2_threshold and at or above min_threshold; if it is
+	// not, the bands overlap, the config still loads, and Config.Warnings says
+	// which one ends up empty.
 	Threshold int `yaml:"threshold"`
 	// TrafficPercent is the share of requests a probation endpoint is
-	// prepended to, so a recovering endpoint can earn its way back.
+	// prepended to, so a recovering endpoint can earn its way back. Zero means
+	// the default (10); the value must be 0..100.
 	TrafficPercent int `yaml:"traffic_percent"`
-	// RecoveryMultiplier would scale how fast a probation endpoint recovers.
+	// RecoveryMultiplier is parsed and not implemented. SAGE has no recovery
+	// multiplier — a probation endpoint recovers through the traffic it is
+	// given, at the same score deltas as everything else.
 	RecoveryMultiplier float64 `yaml:"recovery_multiplier"`
 }
 
 // SignalImpactsConfig defines how each signal type affects reputation.
 //
-// Parsed and not implemented — no field here is read. Score deltas per signal
-// live in the reputation package.
+// The five surviving signal types are honoured; a zero field takes the default
+// from reputation.SignalImpacts. The three PATH keys below them do nothing,
+// because the signal types themselves no longer exist — see docs/scoring.md
+// §7.2. Each says so on its own, so that this type doc does not stand in for
+// the eight fields under it.
 type SignalImpactsConfig struct {
-	// Success is the score change for a successful relay.
+	// Success is the score change for a successful relay. Zero means the
+	// default (+5).
 	Success int `yaml:"success"`
-	// MinorError is the score change for a minor, recoverable error.
+	// MinorError is the score change for a minor, recoverable error. Zero
+	// means the default (-3).
 	MinorError int `yaml:"minor_error"`
-	// MajorError is the score change for an error affecting reliability.
+	// MajorError is the score change for an error affecting reliability. Zero
+	// means the default (-10).
 	MajorError int `yaml:"major_error"`
-	// CriticalError is the score change for a severe error.
+	// CriticalError is the score change for a severe error. Zero means the
+	// default (-25).
 	CriticalError int `yaml:"critical_error"`
 	// FatalError is the score change for an error warranting immediate
-	// removal from selection.
+	// removal from selection. Zero means the default (-50).
 	FatalError int `yaml:"fatal_error"`
-	// RecoverySuccess is the score change when a failing endpoint recovers.
+	// RecoverySuccess is parsed and not implemented: the signal type was
+	// removed. A successful relay from a recovering endpoint is a success like
+	// any other (docs/scoring.md §7.2).
 	RecoverySuccess int `yaml:"recovery_success"`
-	// SlowResponse is the score change for a response over the latency bound.
+	// SlowResponse is parsed and not implemented: latency does not penalise a
+	// score. It is reported instead, as a per-key EWMA in the admin listing
+	// (docs/scoring.md §7.2).
 	SlowResponse int `yaml:"slow_response"`
-	// VerySlowResponse is the score change for a response far over it.
+	// VerySlowResponse is parsed and not implemented, for the same reason as
+	// slow_response (docs/scoring.md §7.2).
 	VerySlowResponse int `yaml:"very_slow_response"`
 }
 

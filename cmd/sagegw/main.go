@@ -59,6 +59,14 @@ func main() {
 		logger.Warn("config key has no effect: SAGE parses this setting but nothing reads it", "detail", f)
 	}
 
+	// The third case: a setting that is read, does something, and probably
+	// does not do what whoever wrote it expected. It loads — refusing a PATH
+	// config over it would break the compatibility promise — so this line is
+	// the only place it is ever mentioned.
+	for _, f := range cfg.Warnings {
+		logger.Warn("config setting is probably not what was meant", "detail", f)
+	}
+
 	// Background context for all services
 	ctx, cancel := context.WithCancel(context.Background())
 

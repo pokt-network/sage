@@ -65,6 +65,13 @@ type Context struct {
 	// Nil when the heuristic flag is disabled or there is no response to analyse.
 	HeuristicResult *heuristic.AnalysisResult
 
+	// ScoreSink, when non-nil, collects this request tree's per-attempt
+	// reputation signals so batch can emit one per endpoint instead of one
+	// per payload. Set by exactly one middleware, batch, on the parent before
+	// it clones; nil on every non-batch request. SHARED across clones on
+	// purpose — see ScoreSink.
+	ScoreSink *ScoreSink
+
 	// Metadata flags set by middleware
 	Degraded  bool // true if fallback strategy was used
 	Cached    bool // true if response came from cache

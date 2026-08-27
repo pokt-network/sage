@@ -2,11 +2,13 @@ package middleware
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/relay"
+	"github.com/pokt-network/sage/reputation"
 )
 
 // ---------------------------------------------------------------------------
@@ -95,6 +97,40 @@ func (f *mockFlags) Delete(_ context.Context, flag string, _ domain.ServiceID) e
 
 func (f *mockFlags) DeleteGlobal(ctx context.Context, flag string) error {
 	return f.Delete(ctx, flag, "")
+}
+
+// ---------------------------------------------------------------------------
+// Mock reputation.Service
+// ---------------------------------------------------------------------------
+
+// recordingRepService captures every signal, in order, for assertions. It
+// embeds trackingRepService for the reputation.Service methods nothing here
+// cares about; RecordSignal is redefined so the whole sequence is kept rather
+// than only the last one.
+type recordingRepService struct {
+	trackingRepService
+	mu      sync.Mutex
+	signals []recordedSignal
+}
+
+// recordedSignal is one RecordSignal call, with the arguments a caller asserts on.
+type recordedSignal struct {
+	Endpoint domain.EndpointAddr
+	RPC      domain.RPCType
+	Signal   reputation.Signal
+}
+
+func (r *recordingRepService) RecordSignal(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr, rpc domain.RPCType, sig reputation.Signal) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.signals = append(r.signals, recordedSignal{ep, rpc, sig})
+	return nil
+}
+
+func (r *recordingRepService) all() []recordedSignal {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]recordedSignal(nil), r.signals...)
 }
 
 // ---------------------------------------------------------------------------

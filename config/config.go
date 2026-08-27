@@ -49,6 +49,22 @@ type Config struct {
 	//
 	// Also not a YAML field, and reported at startup the same way.
 	Inert []string `yaml:"-"`
+
+	// Warnings lists settings that load, are read, and are probably not what
+	// the operator meant — as operator-facing sentences saying what the
+	// gateway will actually do with them.
+	//
+	// The distinction from a validation error is deliberate. SAGE must load a
+	// PATH config unmodified, and a PATH config in production today can hold a
+	// reputation block whose tier thresholds do not descend; PATH accepts it
+	// and the selector copes (it classifies probation first, so a band simply
+	// ends up empty). Refusing to boot on it would break the compatibility
+	// promise over something that works. Saying nothing would leave an
+	// operator believing in a tier that never gets an endpoint. So: it loads,
+	// and it says so.
+	//
+	// Also not a YAML field, and reported at startup the same way.
+	Warnings []string `yaml:"-"`
 }
 
 // Protocol backend types.

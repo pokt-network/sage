@@ -33,13 +33,25 @@ gateway_config:
 			name: "a block-level inert key is reported once, not per leaf",
 			yaml: `
 gateway_config:
+  latency_profiles:
+    evm:
+      fast_threshold: 100ms
+      slow_threshold: 2s
+      slow_penalty: -3
+`,
+			want: []string{"gateway_config.latency_profiles is parsed but not implemented"},
+		},
+		{
+			name: "a live block reports only the leaves that are still inert",
+			yaml: `
+gateway_config:
   reputation_config:
     signal_impacts:
       success: 1
       minor_error: -2
-      major_error: -3
+      slow_response: -3
 `,
-			want: []string{"reputation_config.signal_impacts is parsed but not implemented"},
+			want: []string{"reputation_config.signal_impacts.slow_response is parsed but not implemented"},
 		},
 		{
 			name: "the same key under different parents is reported at each path",

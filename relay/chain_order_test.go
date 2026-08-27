@@ -123,3 +123,34 @@ func TestValidateChainOrder_MethodBlocksOutsideHedge(t *testing.T) {
 		t.Errorf("expected hedge→method_blocks violation, got %v", err)
 	}
 }
+
+// TestValidateChainOrder_ScorePosition pins where score sits: inside
+// select_endpoint (it reads the endpoint that attempt picked) and outside
+// retry (one attempt is one scoring event, so every retry must pass through
+// it).
+func TestValidateChainOrder_ScorePosition(t *testing.T) {
+	if err := ValidateChainOrder(DefaultChainOrder()); err != nil {
+		t.Fatalf("canonical order should validate with score in it, got: %v", err)
+	}
+	var present bool
+	for _, n := range DefaultChainOrder() {
+		if n == MWScore {
+			present = true
+		}
+	}
+	if !present {
+		t.Fatalf("DefaultChainOrder() must contain %q", MWScore)
+	}
+
+	order := []string{MWParse, MWRetry, MWScore, MWSelectEndpoint, MWHeuristic, MWSendRelay}
+	err := ValidateChainOrder(order)
+	if err == nil || !strings.Contains(err.Error(), `"select_endpoint" must precede "score"`) {
+		t.Errorf("expected select_endpoint→score violation, got %v", err)
+	}
+
+	order = []string{MWParse, MWScore, MWRetry, MWSelectEndpoint, MWHeuristic, MWSendRelay}
+	err = ValidateChainOrder(order)
+	if err == nil || !strings.Contains(err.Error(), `"retry" must precede "score"`) {
+		t.Errorf("expected retry→score violation, got %v", err)
+	}
+}

@@ -35,6 +35,7 @@ type Recorder struct {
 	supplierBlacklists    *prometheus.CounterVec
 	relayMinerErrors      *prometheus.CounterVec
 	methodBlockEvents     *prometheus.CounterVec
+	reputationAttempts    *prometheus.CounterVec
 
 	// codespaces bounds the relay miner error codespace label, which is a
 	// string chosen by the supplier's relay miner.
@@ -166,6 +167,17 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "method", "event"},
 		),
+		// No key label: reputation keys are backend URLs, which is the
+		// unbounded dimension. rpc_type and signal are closed sets and probe
+		// is a boolean, so the series count per service is fixed.
+		reputationAttempts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "reputation_attempts_total",
+				Help:      "Reputation signals recorded, by service, RPC type, signal type and whether the signal came from a health-check probe (probe=true) or client traffic (probe=false). One signal is one relay attempt, or one batch collapsed to its worst outcome per endpoint; client-attributed outcomes are not recorded and so are not counted.",
+			},
+			[]string{"service_id", "rpc_type", "signal", "probe"},
+		),
 	}
 
 	prometheus.MustRegister(
@@ -182,6 +194,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.supplierBlacklists,
 		r.relayMinerErrors,
 		r.methodBlockEvents,
+		r.reputationAttempts,
 	)
 
 	return r
@@ -271,6 +284,18 @@ func (r *Recorder) RecordRelayMinerError(serviceID domain.ServiceID, codespace s
 // needs bounding here.
 func (r *Recorder) RecordMethodBlockEvent(serviceID domain.ServiceID, method, event string) {
 	r.methodBlockEvents.WithLabelValues(r.services.serviceValue(serviceID), method, event).Inc()
+}
+
+// RecordReputationAttempt counts one recorded reputation signal. signal is
+// the closed set of reputation.SignalType values; rpcType the closed
+// domain.RPCType set. Neither needs bounding here.
+func (r *Recorder) RecordReputationAttempt(serviceID domain.ServiceID, rpcType, signal string, probe bool) {
+	r.reputationAttempts.WithLabelValues(
+		r.services.serviceValue(serviceID),
+		rpcType,
+		signal,
+		strconv.FormatBool(probe),
+	).Inc()
 }
 
 // ServeHTTP returns a standard Prometheus HTTP handler suitable for mounting

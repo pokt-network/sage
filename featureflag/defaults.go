@@ -36,6 +36,14 @@ const (
 	// sampler entirely — the admin request-sample routes and gauges then
 	// report nothing for that service, not zeros.
 	FlagRequestSampler = "request_sampler"
+	// FlagScoringV2 gates per-attempt reputation scoring: the score middleware
+	// records one signal per attempt (batch collapses to one per endpoint) and
+	// Observe records nothing. Off restores the pre-v2 path where Observe
+	// records once per client request. Observe, score and batch each read the
+	// flag per request, so a flip while a request is in flight can count that
+	// one request on both paths or neither — an admin action, not a traffic
+	// pattern. See docs/scoring.md.
+	FlagScoringV2 = "scoring_v2"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -66,6 +74,7 @@ var DefaultFlags = map[string]bool{
 	FlagOperatorAwareSelection: true,
 	FlagMethodBlocks:           true,
 	FlagRequestSampler:         true,
+	FlagScoringV2:              true,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

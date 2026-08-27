@@ -109,6 +109,36 @@ func validateServiceQoS(svc config.ServiceConfig) error {
 	return nil
 }
 
+// unscoredChainWarning is what warnIfUnscoredChain reports. It names the fix
+// as well as the fault: an operator reading it at 3am should not have to find
+// out from ARCHITECTURE.md where in the chain score belongs.
+const unscoredChainWarning = `middleware_chain names observe but not score: ` +
+	`with feature flag scoring_v2 on, nothing records reputation signals — ` +
+	`add "score" after "select_endpoint" or disable scoring_v2`
+
+// warnIfUnscoredChain reports a pinned chain that would record no reputation
+// at all, and the warning to log for it.
+//
+// Under scoring_v2, observe deliberately stops recording signals and score
+// records them instead. A config written before score existed — a PATH config,
+// or a SAGE one that pins gateway_config.middleware_chain — names observe and
+// not score, so with the flag on (the default) nothing records anything: every
+// endpoint keeps its starting score forever, selection degrades to round-robin
+// over a pool that never learns, and no error surfaces because both
+// middlewares are behaving exactly as designed.
+//
+// A warning rather than a startup error: dropping a middleware from the chain
+// is a legitimate thing for a config to do, and refusing to boot on it would
+// make an upgrade fail closed for a gateway that was running fine a minute
+// earlier. A chain that names NEITHER observe nor score is not warned about —
+// that reads as a deliberately minimal chain, not as a missed migration.
+func warnIfUnscoredChain(names []string) (string, bool) {
+	if !slices.Contains(names, relay.MWObserve) || slices.Contains(names, relay.MWScore) {
+		return "", false
+	}
+	return unscoredChainWarning, true
+}
+
 // evmConfigFor builds the EVM plugin's config for a service. Shared with Build
 // so the settings validated here are the settings the plugin is constructed
 // with, rather than two lists that can drift.

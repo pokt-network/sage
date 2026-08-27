@@ -3,6 +3,7 @@ package reputation
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/pokt-network/sage/domain"
 
@@ -44,6 +45,21 @@ type Service interface {
 	Vouched(ctx context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool
 }
 
+// OnceRecorder is the optional extension a reputation service implements when
+// it can collapse a fan-out of endpoint addresses to one signal per reputation
+// key. It is not part of Service: only the health-check executor has a list of
+// addresses that all describe the same observation, and every other caller
+// scores the one endpoint that served the attempt.
+//
+// A caller that cannot type-assert its way to this interface must fall back to
+// RecordSignal per address, which is what SAGE did before ruling F1.
+type OnceRecorder interface {
+	// RecordSignalOnce records signal once per DISTINCT reputation key among
+	// endpoints. See serviceImpl.RecordSignalOnce for what that means at each
+	// granularity.
+	RecordSignalOnce(ctx context.Context, serviceID domain.ServiceID, endpoints domain.EndpointAddrList, rpcType domain.RPCType, signal Signal) error
+}
+
 // ServiceConfig holds configuration for the reputation service.
 type ServiceConfig struct {
 	// InitialScore is the score assigned to newly seen endpoints. Default: 100.
@@ -55,6 +71,16 @@ type ServiceConfig struct {
 	// KeyGranularity selects what a score is attached to — see key.go. Empty
 	// means the default, per-URL.
 	KeyGranularity string
+	// Impacts is the additive score delta per signal type. A zero field takes
+	// that type's default; see SignalImpacts.
+	Impacts SignalImpacts
+	// Rate parameterises the chronic-failure term. Zero fields take the
+	// defaults; a negative HalfLifeAttempts turns the term off.
+	Rate RateConfig
+	// Selector holds the tier thresholds. The zero value — every field zero —
+	// means DefaultSelectorConfig(); a partially set struct is used as-is, so
+	// a caller that sets any field must set all of them (wire.go does).
+	Selector SelectorConfig
 }
 
 // DefaultServiceConfig returns a ServiceConfig with sensible defaults.
@@ -72,24 +98,24 @@ func scoreKey(serviceID domain.ServiceID, key string) string {
 	return string(serviceID) + ":" + key
 }
 
-// writeOp represents an asynchronous score write.
+// writeOp represents an asynchronous state write.
 type writeOp struct {
 	key   string
-	score float64
+	state State
 }
 
 // scoreShards stripes the in-memory score map so concurrent relays recording
 // signals for different endpoints don't serialize on one process-wide mutex.
 const scoreShards = 32
 
-// scoreShard holds scores keyed by serviceID then reputation key. Nested maps
-// (rather than a concatenated string key) keep the per-relay selector read
+// scoreShard holds per-key state keyed by serviceID then reputation key.
+// Nested maps (rather than a concatenated string key) keep the selector read
 // path allocation-free: lookups never build a key string. The reputation key
 // itself is a substring of the endpoint address, so deriving it allocates
 // nothing either.
 type scoreShard struct {
 	mu    sync.RWMutex
-	cache map[domain.ServiceID]map[string]float64
+	cache map[domain.ServiceID]map[string]State
 }
 
 // maxScoresPerServiceShard bounds one service's score map within one shard.
@@ -113,6 +139,14 @@ type serviceImpl struct {
 	selector *TieredSelector
 	// key maps an endpoint address to the identity its score lives under.
 	key KeyFn
+	// impacts and rate are the two halves of the score: the additive delta per
+	// signal, and the chronic-failure penalty. Both normalized at construction.
+	impacts SignalImpacts
+	rate    RateConfig
+	// lambda is rate.Lambda(), hoisted out of the per-signal path under lock.
+	lambda float64
+	// signalHook, when set, runs on every recorded signal. Wire time only.
+	signalHook func(domain.ServiceID, domain.RPCType, SignalType, bool)
 
 	// In-memory score cache, striped by key hash.
 	shards [scoreShards]scoreShard
@@ -139,15 +173,37 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 		cfg:      cfg,
 		storage:  storage,
 		timeline: timeline,
+		impacts:  cfg.Impacts.Normalized(),
+		rate:     cfg.Rate.Normalized(),
 		writeCh:  make(chan writeOp, cfg.WriteQueueSize),
 		stopCh:   make(chan struct{}),
 	}
 	for i := range s.shards {
-		s.shards[i].cache = make(map[domain.ServiceID]map[string]float64)
+		s.shards[i].cache = make(map[domain.ServiceID]map[string]State)
 	}
+	s.lambda = s.rate.Lambda()
 	s.key = memoize(keyFnFor(cfg.KeyGranularity))
-	s.selector = NewTieredSelector(DefaultSelectorConfig(), s.scoreForSelector)
+	selCfg := cfg.Selector
+	if selCfg == (SelectorConfig{}) {
+		selCfg = DefaultSelectorConfig()
+	}
+	s.selector = NewTieredSelector(selCfg, s.scoreForSelector)
 	return s
+}
+
+// effective is the score every reader sees: the additive term plus the
+// chronic rate penalty, clamped. docs/scoring.md §7.3.
+func (s *serviceImpl) effective(st State) float64 {
+	return s.clamp(st.Score + s.rate.Penalty(st.Rate))
+}
+
+// latencyAlpha is the traffic-latency EWMA step. Reporting only.
+const latencyAlpha = 0.05
+
+// SetSignalHook registers a callback run on every recorded signal, after the
+// state is updated. Wire time only; used for the attempts counter.
+func (s *serviceImpl) SetSignalHook(fn func(domain.ServiceID, domain.RPCType, SignalType, bool)) {
+	s.signalHook = fn
 }
 
 // shard returns the score shard for a reputation key. Sharding by key (not
@@ -164,12 +220,12 @@ func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.Servi
 	key := s.key(ep, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
-	v, ok := sh.cache[serviceID][key]
+	st, ok := sh.cache[serviceID][key]
 	sh.mu.RUnlock()
 	if !ok {
 		return s.cfg.InitialScore, true
 	}
-	return v, true
+	return s.effective(st), true
 }
 
 // SetCollapseHook registers a callback fired whenever the selector's
@@ -212,37 +268,75 @@ func (s *serviceImpl) Stop() {
 // bound — keeping a real penalty is worth more than the bytes, and a pool that
 // size is its own alert.
 //
+// With the chronic term the test is on the *effective* score, not on the two
+// raw fields: an entry goes only when evicting it and re-reading it produce the
+// same number — a full additive score and a rate that carries no penalty. A
+// rate above the onset does carry one, so a chronically-flaky endpoint sitting
+// at the ceiling stays, which is exactly the key the rate term exists to catch.
+//
+// A rate *below* the onset is latent information — it would have grown into a
+// penalty had the failures continued — and this is where we agree to forget it.
+// Testing v.Rate == 0 instead would forget nothing: the EWMA decays towards
+// zero but never reaches it, so one major error would pin a key for the life of
+// the process and the bound below would stop bounding anything. What is lost
+// with an evicted key is also the attempt counters, which are reporting-only —
+// the key comes back at zero attempts even though it served traffic.
+//
 // Must be called with the shard locked.
-func (s *serviceImpl) pruneUninformative(svcScores map[string]float64) {
-	for k, v := range svcScores {
-		if v == s.cfg.InitialScore {
-			delete(svcScores, k)
+func (s *serviceImpl) pruneUninformative(svcStates map[string]State) {
+	for k, v := range svcStates {
+		if v.Score == s.cfg.InitialScore && s.rate.Penalty(v.Rate) == 0 {
+			delete(svcStates, k)
 		}
 	}
 }
 
 // RecordSignal applies a signal's impact to the endpoint's score.
 func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType, signal Signal) error {
-	impact := float64(DefaultImpact(signal.Type))
+	impact := s.impacts.Impact(signal.Type)
 
 	repKey := s.key(endpoint, rpcType)
 	sh := s.shard(repKey)
 	sh.mu.Lock()
-	svcScores := sh.cache[serviceID]
-	if svcScores == nil {
-		svcScores = make(map[string]float64)
-		sh.cache[serviceID] = svcScores
+	svcStates := sh.cache[serviceID]
+	if svcStates == nil {
+		svcStates = make(map[string]State)
+		sh.cache[serviceID] = svcStates
 	}
-	current, ok := svcScores[repKey]
+	st, ok := svcStates[repKey]
 	if !ok {
-		current = s.cfg.InitialScore
-		if len(svcScores) >= maxScoresPerServiceShard {
-			s.pruneUninformative(svcScores)
+		st = State{Score: s.cfg.InitialScore}
+		if len(svcStates) >= maxScoresPerServiceShard {
+			s.pruneUninformative(svcStates)
 		}
 	}
-	newScore := current + impact
-	newScore = s.clamp(newScore)
-	svcScores[repKey] = newScore
+	prev := st
+	st.Score = s.clamp(st.Score + impact)
+	// An endpoint the additive term has already floored is in an outage, not
+	// exhibiting a rate; letting a day of probes against a dead host drive the
+	// chronic term to its cap would cost weeks of probe-only recovery (final
+	// review 2026-08-27). One fact, one power — docs/scoring.md §3 principle 3.
+	//
+	// The test is on the score BEFORE this signal: the attempt that floors the
+	// key still feeds the rate, and only what happens to an already-floored key
+	// is discounted.
+	if s.rate.Enabled() && prev.Score != 0 {
+		st.Rate += s.lambda * (FailureWeight(signal.Type) - st.Rate)
+	}
+	st.Attempts++
+	if !signal.Probe {
+		st.TrafficAttempts++
+		if signal.Latency > 0 {
+			ms := float64(signal.Latency) / float64(time.Millisecond)
+			if st.LatencyMS == 0 {
+				st.LatencyMS = ms
+			} else {
+				st.LatencyMS += latencyAlpha * (ms - st.LatencyMS)
+			}
+		}
+	}
+	svcStates[repKey] = st
+	newScore := s.effective(st)
 	sh.mu.Unlock()
 
 	// Storage and timeline are keyed by the concatenated string form.
@@ -256,18 +350,77 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 			Event:      "signal",
 			SignalType: string(signal.Type),
 			Reason:     signal.Reason,
-			OldScore:   current,
+			OldScore:   s.effective(prev),
 			Score:      newScore,
 		})
 	}
 
 	// Enqueue async write (non-blocking: drop if queue full).
 	select {
-	case s.writeCh <- writeOp{key: key, score: newScore}:
+	case s.writeCh <- writeOp{key: key, state: st}:
 	default:
 	}
 
+	if s.signalHook != nil {
+		s.signalHook(serviceID, rpcType, signal.Type, signal.Probe)
+	}
+
 	return nil
+}
+
+// The health-check executor reaches this method through OnceRecorder; pin the
+// implementation here so a signature change breaks the build, not the fan-out.
+var _ OnceRecorder = (*serviceImpl)(nil)
+
+// RecordSignalOnce records signal once per DISTINCT reputation key among
+// endpoints.
+//
+// One probe is one attempt, and what it is an attempt against is a key, not an
+// address. At the default per-URL granularity a backend's N staked
+// registrations collapse to one key, so one probe moves that key once however
+// many suppliers front it — recording it N times would charge one observation
+// N attempts, inflate the chronic term's denominator and multiply the additive
+// delta by the registration count, which is a property of the stake table and
+// not of the machine. At per-endpoint each registration is its own key and each
+// one gets the attempt, because there the registration is the thing being
+// scored (docs/scoring.md §3 principle 4).
+//
+// Errors from the individual records are collapsed to the first non-nil one;
+// the loop always finishes, since a failure on one key says nothing about the
+// next.
+func (s *serviceImpl) RecordSignalOnce(ctx context.Context, serviceID domain.ServiceID, endpoints domain.EndpointAddrList, rpcType domain.RPCType, signal Signal) error {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	// The common case is a set of siblings on one backend, which at per-URL is
+	// a single key: compare the keys directly rather than building a set for
+	// what is nearly always one entry. Keys are memoized, so this is a map
+	// lookup and a string compare per sibling.
+	first := s.key(endpoints[0], rpcType)
+	oneKey := true
+	for _, ep := range endpoints[1:] {
+		if s.key(ep, rpcType) != first {
+			oneKey = false
+			break
+		}
+	}
+	if oneKey {
+		return s.RecordSignal(ctx, serviceID, endpoints[0], rpcType, signal)
+	}
+
+	seen := make(map[string]struct{}, len(endpoints))
+	var firstErr error
+	for _, ep := range endpoints {
+		k := s.key(ep, rpcType)
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		if err := s.RecordSignal(ctx, serviceID, ep, rpcType, signal); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // GetScore returns the cached score for the endpoint. If the endpoint has not
@@ -276,12 +429,12 @@ func (s *serviceImpl) GetScore(_ context.Context, serviceID domain.ServiceID, en
 	key := s.key(endpoint, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
-	score, ok := sh.cache[serviceID][key]
+	st, ok := sh.cache[serviceID][key]
 	sh.mu.RUnlock()
 	if !ok {
 		return s.cfg.InitialScore, nil
 	}
-	return score, nil
+	return s.effective(st), nil
 }
 
 // GetScores returns all cached scores for the given service, keyed by
@@ -291,12 +444,43 @@ func (s *serviceImpl) GetScores(_ context.Context, serviceID domain.ServiceID) (
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.RLock()
-		for key, v := range sh.cache[serviceID] {
-			result[key] = v
+		for key, st := range sh.cache[serviceID] {
+			result[key] = s.effective(st)
 		}
 		sh.mu.RUnlock()
 	}
 	return result, nil
+}
+
+// The admin state listing reaches the service through StateLister; pin the
+// implementation here so a signature change breaks the build, not the route.
+var _ StateLister = (*serviceImpl)(nil)
+
+// GetStates returns the full per-key state for a service, with the derived
+// effective score and penalty. Admin read path; allocates.
+func (s *serviceImpl) GetStates(_ context.Context, serviceID domain.ServiceID) (map[string]StateView, error) {
+	// Copy the raw states out under the lock and derive afterwards: the two
+	// logarithms per key in Penalty have no business running while relays are
+	// blocked on this shard.
+	states := make(map[string]State)
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for key, st := range sh.cache[serviceID] {
+			states[key] = st
+		}
+		sh.mu.RUnlock()
+	}
+	out := make(map[string]StateView, len(states))
+	for key, st := range states {
+		out[key] = StateView{
+			Score: s.effective(st), Additive: st.Score, Rate: st.Rate,
+			Penalty: s.rate.Penalty(st.Rate), Attempts: st.Attempts,
+			TrafficAttempts: st.TrafficAttempts, ProbeOnly: st.TrafficAttempts == 0,
+			LatencyMS: st.LatencyMS,
+		}
+	}
+	return out, nil
 }
 
 // SelectBest returns an endpoint chosen by tier cascade (T1 → T2 → T3), with
@@ -368,16 +552,17 @@ func (s *serviceImpl) ResetScore(_ context.Context, serviceID domain.ServiceID, 
 		repKey := s.key(endpoint, rpcType)
 		sh := s.shard(repKey)
 		sh.mu.Lock()
-		svcScores := sh.cache[serviceID]
-		if svcScores == nil {
-			svcScores = make(map[string]float64)
-			sh.cache[serviceID] = svcScores
+		svcStates := sh.cache[serviceID]
+		if svcStates == nil {
+			svcStates = make(map[string]State)
+			sh.cache[serviceID] = svcStates
 		}
-		svcScores[repKey] = s.cfg.InitialScore
+		fresh := State{Score: s.cfg.InitialScore}
+		svcStates[repKey] = fresh
 		sh.mu.Unlock()
 
 		select {
-		case s.writeCh <- writeOp{key: scoreKey(serviceID, repKey), score: s.cfg.InitialScore}:
+		case s.writeCh <- writeOp{key: scoreKey(serviceID, repKey), state: fresh}:
 		default:
 		}
 	}
@@ -395,9 +580,9 @@ func (s *serviceImpl) Vouched(_ context.Context, serviceID domain.ServiceID, end
 	key := s.key(endpoint, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
-	score, ok := sh.cache[serviceID][key]
+	st, ok := sh.cache[serviceID][key]
 	sh.mu.RUnlock()
-	return ok && score >= s.selector.cfg.ProbationThreshold
+	return ok && s.effective(st) >= s.selector.cfg.ProbationThreshold
 }
 
 // clamp constrains a score to [0, MaxScore].
@@ -417,13 +602,13 @@ func (s *serviceImpl) drainWrites() {
 	for {
 		select {
 		case op := <-s.writeCh:
-			_ = s.storage.SetScore(context.Background(), op.key, op.score)
+			_ = s.storage.SetState(context.Background(), op.key, op.state)
 		case <-s.stopCh:
 			// Drain remaining writes.
 			for {
 				select {
 				case op := <-s.writeCh:
-					_ = s.storage.SetScore(context.Background(), op.key, op.score)
+					_ = s.storage.SetState(context.Background(), op.key, op.state)
 				default:
 					return
 				}

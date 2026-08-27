@@ -46,8 +46,10 @@ type Result struct {
 	Ignored []string `json:"ignored"`
 	// Inert lists keys in the file that parse into a field nothing reads.
 	Inert []string `json:"inert"`
-	// Warnings lists anything the apply steps had to say — a health-check rule
-	// that could not be built, a flag name SAGE does not know.
+	// Warnings lists what the parse itself flagged — settings that load and are
+	// probably not what was meant (config.Config.Warnings) — followed by
+	// anything the apply steps had to say: a health-check rule that could not
+	// be built, a flag name SAGE does not know.
 	Warnings []string `json:"warnings"`
 }
 

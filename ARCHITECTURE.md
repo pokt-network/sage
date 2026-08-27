@@ -47,9 +47,10 @@ HTTP Request
                                 [CircuitBreak] — skip broken domains
                                   [MethodBlocks] — skip hosts blocked for this method
                                     [SelectEndpoint] — reputation + QoS filtering
-                                      [DebugLog]     — full request/response logging
-                                        [Heuristic]  — response quality analysis
-                                          [SendRelay] — sign, send, validate
+                                      [Score]        — one reputation signal per attempt
+                                        [DebugLog]   — full request/response logging
+                                          [Heuristic] — response quality analysis
+                                            [SendRelay] — sign, send, validate
 ```
 
 Each middleware can be **enabled/disabled at runtime** per-service via feature flags (Redis-backed, no redeploy needed).
@@ -119,11 +120,30 @@ All plugins share a generic `EndpointStore[T]` and `BlockConsensus` — no code 
 
 `reputation/` tracks endpoint quality with tiered selection:
 
-- **Signals**: success (+5), minor error (-3), major (-10), critical (-25), fatal (-50), stale block (-15)
+- **Signals**: success (+5), minor error (-3), major error (-10), critical error (-25),
+  fatal error (-50). Every delta is configurable via `signal_impacts`. Those five are
+  the whole set — the latency- and staleness-derived types PATH also carried were
+  deleted rather than left unwired, for the reasons in
+  [`docs/scoring.md`](docs/scoring.md) §7.2.
 - **Tiers**: T1 (score >= 80), T2 (>= 50), T3 (remaining above minimum)
 - **Probation**: low-score endpoints get limited traffic for recovery. Probation endpoints are prepended to the healthy list, never replace it.
 - **Timeline**: per-endpoint ring buffer of the last 100 events for debugging via admin API
-- **Storage**: in-memory with async Redis persistence for cross-pod sharing
+- **Storage**: in-memory, with a write-behind copy pushed to Redis. The service never
+  reads that copy back — a cache miss answers `initial_score` — so it is for external
+  tooling and for a load path that does not exist yet, not for cross-pod sharing.
+
+**A score has two terms** (`reputation/rate.go`, and **[`docs/scoring.md`](docs/scoring.md)
+§7** for the decisions and the beta/mainnet data behind them). The *additive* term is
+the running sum of the signal deltas above, clamped to `[0, 100]`; it reacts to outages
+in seconds. The *chronic* term is a penalty derived from an EWMA failure rate, and
+exists because the additive term cannot see a violator that fails a fraction of a
+percent of the time — at `+5/-25` the break-even failure rate is one in six, so an
+endpoint that fabricates a response on 0.2% of its traffic holds a perfect score
+forever. The effective score the selector uses is `clamp(additive + chronic_penalty)`;
+the admin listing reports all three, plus the attempt counts and whether anything but a
+health check has ever graded the key. Signals are recorded **per relay attempt** by the
+`score` middleware (flag `scoring_v2`), so a retry loser is charged for its own failure
+rather than being erased by the attempt that rescued the request.
 
 **Key granularity** (`reputation/key.go`, `reputation_config.key_granularity`) decides
 what a score is attached to. An `EndpointAddr` is a (supplier, backend URL) pair, and
@@ -237,6 +257,7 @@ re-break as a repeat offender.
 | debug_log | off | Full request/response body logging |
 | shadow_mode | off | Process traffic but don't serve responses |
 | request_sampler | on | Per-service request-shape sampling for diversity metrics and the admin request-sample routes |
+| scoring_v2 | on | Per-attempt reputation scoring: the score middleware records each attempt against its own endpoint; batch collapses to one signal per endpoint; Observe records nothing. Off restores once-per-request scoring in Observe |
 
 Flags can be toggled globally or per-service via admin API:
 ```
