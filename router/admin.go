@@ -4,13 +4,17 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/pokt-network/sage/circuitbreaker"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/drain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/methodblock"
+	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/reputation"
+	"github.com/pokt-network/sage/traffic"
 	"github.com/pokt-network/sage/tuning"
 )
 
@@ -21,20 +25,39 @@ type AdminAPI struct {
 	timeline    *reputation.Timeline
 	breaker     *circuitbreaker.Breaker
 	blocks      *methodblock.Store
+	drains      drain.Store
+	endpoints   protocol.EndpointProvider
+	maxDrain    time.Duration
 	qosRegistry *qos.Registry
 	tuning      *tuning.Store
+	reloader    Reloader
+	sampler     *traffic.Sampler
 	logger      *slog.Logger
 }
 
 // NewAdminAPI constructs an AdminAPI.
+//
+// drains, endpoints, reloader and sampler are nil-safe: with drains nil every
+// drain route answers 503 (no store configured); with endpoints nil,
+// matched_endpoints and the last-operator check see no live endpoints; with
+// reloader nil POST /admin/reload answers 501; with sampler nil every
+// /admin/request-sample route answers 503 (no sampler configured). maxDrain
+// should already be the resolved ceiling
+// (config.AdminConfig.EffectiveMaxDrain()), not a raw possibly-zero config
+// value.
 func NewAdminAPI(
 	flags featureflag.FlagStore,
 	repSvc reputation.Service,
 	timeline *reputation.Timeline,
 	breaker *circuitbreaker.Breaker,
 	blocks *methodblock.Store,
+	drains drain.Store,
+	endpoints protocol.EndpointProvider,
+	maxDrain time.Duration,
 	qosReg *qos.Registry,
 	tuningStore *tuning.Store,
+	reloader Reloader,
+	sampler *traffic.Sampler,
 	logger *slog.Logger,
 ) *AdminAPI {
 	return &AdminAPI{
@@ -43,8 +66,13 @@ func NewAdminAPI(
 		timeline:    timeline,
 		breaker:     breaker,
 		blocks:      blocks,
+		drains:      drains,
+		endpoints:   endpoints,
+		maxDrain:    maxDrain,
 		qosRegistry: qosReg,
 		tuning:      tuningStore,
+		reloader:    reloader,
+		sampler:     sampler,
 		logger:      logger,
 	}
 }
@@ -60,6 +88,9 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/reputation/{serviceID}", a.handleGetReputation)
 	mux.HandleFunc("POST /admin/reputation/reset/{serviceID}/{endpoint...}", a.handleResetReputation)
 
+	// Chain state
+	mux.HandleFunc("POST /admin/chain-state/clear/{serviceID}", a.handleClearChainState)
+
 	// Timeline
 	mux.HandleFunc("GET /admin/timeline/{serviceID}", a.handleGetTimeline)
 	mux.HandleFunc("GET /admin/timeline/{serviceID}/{endpoint...}", a.handleGetTimelineEndpoint)
@@ -72,6 +103,11 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/method-blocks/clear/{serviceID}", a.handleClearMethodBlocks)
 	mux.HandleFunc("GET /admin/method-blocks/{serviceID}", a.handleGetMethodBlocks)
 
+	// Operator drain
+	mux.HandleFunc("POST /admin/reputation/drain/{serviceID}", a.handleSetDrain)
+	mux.HandleFunc("GET /admin/reputation/drain/{serviceID}", a.handleGetDrains)
+	mux.HandleFunc("DELETE /admin/reputation/drain/{serviceID}/{domain}", a.handleReleaseDrain)
+
 	// Runtime tuning overrides
 	mux.HandleFunc("GET /admin/tuning", a.handleListTuning)
 	mux.HandleFunc("PUT /admin/tuning/{knob}", a.handleSetTuning)
@@ -79,8 +115,13 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/tuning/{knob}", a.handleClearTuning)
 	mux.HandleFunc("DELETE /admin/tuning/{knob}/{serviceID}", a.handleClearTuningForService)
 
-	// Config dump
+	// Config dump and reload
 	mux.HandleFunc("GET /admin/config", a.handleGetConfig)
+	mux.HandleFunc("POST /admin/reload", a.handleReload)
+
+	// Request-shape sampler
+	mux.HandleFunc("GET /admin/request-sample", a.handleListRequestSamples)
+	mux.HandleFunc("GET /admin/request-sample/{serviceID}", a.handleGetRequestSample)
 }
 
 // --- Feature flag handlers ---

@@ -181,3 +181,4 @@ func (m *mockFlagStore) GetAll(_ context.Context) (map[string]featureflag.FlagSt
 }
 
 func (m *mockFlagStore) Delete(_ context.Context, _ string, _ domain.ServiceID) error { return nil }
+func (m *mockFlagStore) DeleteGlobal(_ context.Context, _ string) error               { return nil }

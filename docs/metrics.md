@@ -24,6 +24,7 @@ means traffic is arriving for services this gateway does not serve.
 | `sage_circuit_breaker_state` | gauge | `service_id`, `domain` | 1 while a domain is circuit-broken for this service (locked out of selection). Absent when healthy. |
 | `sage_circuit_breaks_total` | counter | `service_id`, `domain` | Total circuit breaker open events, by service and domain. |
 | `sage_degraded_total` | counter | `service_id`, `tier` | Total requests served in degraded mode, by service and tier. |
+| `sage_drained_operators` | gauge | `service_id`, `domain`, `rpc_type` | 1 while an operator is drained from a service (rpc_type "all" = every RPC type). Absent when nothing is drained. |
 | `sage_endpoint_reputation_score` | gauge | `service_id`, `endpoint` | Current reputation score, by service and reputation key (see reputation/key.go for what a key covers). |
 | `sage_endpoint_reputation_scores_dropped` | gauge | `service_id` | Reputation keys omitted from this scrape because the service exceeded the per-scrape cap. Non-zero means sage_endpoint_reputation_score is showing only the lowest-scoring keys. |
 | `sage_hedge_total` | counter | `service_id`, `result` | Hedge race outcomes (primary_won, hedge_won, both_failed). |
@@ -33,6 +34,8 @@ means traffic is arriving for services this gateway does not serve.
 | `sage_relay_latency_seconds` | histogram | `service_id` | Relay latency in seconds. |
 | `sage_relay_miner_errors_total` | counter | `service_id`, `codespace` | Total relay responses carrying a RelayMinerError, by service and miner error codespace. |
 | `sage_relay_total` | counter | `service_id`, `status` | Total relay attempts, partitioned by service and HTTP status. |
+| `sage_request_sample_distinct_ratio` | gauge | `service_id` | Distinct fingerprints divided by sampled requests, for the previous complete request-sample window. Absent when the service has no completed window yet. |
+| `sage_request_sample_top_share` | gauge | `service_id` | Share of sampled requests taken by the single most common request fingerprint, for the previous complete request-sample window. Absent when the service has no completed window yet. |
 | `sage_retry_total` | counter | `service_id`, `reason` | Total relay retries, partitioned by service and reason. |
 | `sage_singleflight_coalesced_total` | counter | `service_id` | Total requests coalesced by the singleflight deduplicator. |
 | `sage_supplier_blacklists_total` | counter | `service_id`, `reason` | Total supplier blacklist events from relay response validation, by service and reason. |

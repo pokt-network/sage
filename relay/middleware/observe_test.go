@@ -13,6 +13,7 @@ import (
 	"github.com/pokt-network/sage/observe"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/reputation"
+	"github.com/pokt-network/sage/traffic"
 )
 
 // trackingRepService records the last signal passed to RecordSignal.
@@ -95,7 +96,7 @@ func TestObserve_SuccessSignalOnGoodResponse(t *testing.T) {
 	ctx := baseContext()
 	ctx.Endpoint = "supplierA-https://node.example.com"
 
-	mw := Observe(flags, queue, repSvc)
+	mw := Observe(flags, queue, repSvc, nil)
 	if err := mw(inner).HandleRelay(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,7 +127,7 @@ func TestObserve_ErrorSignalOnRelayError(t *testing.T) {
 	ctx := baseContext()
 	ctx.Endpoint = "supplierA-https://node.example.com"
 
-	mw := Observe(flags, queue, repSvc)
+	mw := Observe(flags, queue, repSvc, nil)
 	err := mw(inner).HandleRelay(ctx)
 	if !errors.Is(err, sentErr) {
 		t.Fatalf("expected sentErr, got %v", err)
@@ -164,7 +165,7 @@ func TestObserve_HeuristicPenaltyRaisesSignalSeverity(t *testing.T) {
 	ctx := baseContext()
 	ctx.Endpoint = "supplierA-https://node.example.com"
 
-	mw := Observe(flags, queue, repSvc)
+	mw := Observe(flags, queue, repSvc, nil)
 	if err := mw(inner).HandleRelay(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestObserve_ObservationSubmittedWhenFlagEnabled(t *testing.T) {
 	ctx := baseContext()
 	ctx.Endpoint = "supplierA-https://node.example.com"
 
-	mw := Observe(flags, queue, repSvc)
+	mw := Observe(flags, queue, repSvc, nil)
 	if err := mw(inner).HandleRelay(ctx); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -222,7 +223,7 @@ func TestObserve_ObservationNotSubmittedWhenFlagDisabled(t *testing.T) {
 
 	ctx := baseContext()
 
-	mw := Observe(flags, queue, repSvc)
+	mw := Observe(flags, queue, repSvc, nil)
 	_ = mw(inner).HandleRelay(ctx)
 
 	queue.Stop()
@@ -246,7 +247,7 @@ func TestObserve_NoSignalWhenNoEndpoint(t *testing.T) {
 	ctx := baseContext()
 	ctx.Endpoint = "" // Explicitly clear it.
 
-	mw := Observe(flags, queue, repSvc)
+	mw := Observe(flags, queue, repSvc, nil)
 	_ = mw(inner).HandleRelay(ctx)
 
 	if repSvc.called {
@@ -270,7 +271,7 @@ func TestObserve_ClientCancelRecordsNoSignal(t *testing.T) {
 		ctx.HeuristicResult = &heuristic.AnalysisResult{Attribution: heuristic.AttrClient, Reason: "client_cancelled"}
 		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.Canceled, true)
 	})
-	mw := Observe(newFlags(), nil, repSvc)
+	mw := Observe(newFlags(), nil, repSvc, nil)
 	ctx := baseContext()
 	_ = mw(inner).HandleRelay(ctx)
 
@@ -292,12 +293,122 @@ func TestObserve_TransportTimeoutIsMajor(t *testing.T) {
 		}
 		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.DeadlineExceeded, true)
 	})
-	mw := Observe(newFlags(), nil, repSvc)
+	mw := Observe(newFlags(), nil, repSvc, nil)
 	_ = mw(inner).HandleRelay(baseContext())
 
 	repSvc.mu.Lock()
 	defer repSvc.mu.Unlock()
 	if !repSvc.called || repSvc.last.Type != reputation.SignalMajorError {
 		t.Fatalf("signal = %v (called=%v), want major_error", repSvc.last.Type, repSvc.called)
+	}
+}
+
+// --- Traffic sampler hook ---
+
+// samplerRelayContext returns a relay context for a configured service:
+// ctx.Plugin is set, as it would be by Parse for any Target-Service-Id that
+// matches a registered service.
+func samplerRelayContext() *relay.Context {
+	ctx := baseContext()
+	ctx.Endpoint = "supplierA-https://node.example.com"
+	ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`), domain.RPCTypeJSONRPC, "eth_blockNumber")}
+	ctx.Plugin = normPlugin{}
+	return ctx
+}
+
+func TestObserve_SamplerRecordsWhenFlagEnabled(t *testing.T) {
+	repSvc := &trackingRepService{}
+	flags := newFlags(featureflag.FlagRequestSampler)
+	queue := observe.NewQueue(observe.QueueConfig{Enabled: false}, nil, nil)
+	sampler := traffic.New(traffic.WithRate(1))
+
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{HTTPStatusCode: http.StatusOK, Body: []byte(`{"result":"0x1"}`)}
+		return nil
+	})
+
+	ctx := samplerRelayContext()
+
+	mw := Observe(flags, queue, repSvc, sampler)
+	if err := mw(inner).HandleRelay(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	summary, ok := sampler.Summary(ctx.ServiceID, false)
+	if !ok {
+		t.Fatal("expected the sampler to have observed the service")
+	}
+	if summary.Sampled != 1 {
+		t.Errorf("sampled = %d, want 1", summary.Sampled)
+	}
+}
+
+func TestObserve_SamplerNotRecordedWhenFlagDisabled(t *testing.T) {
+	repSvc := &trackingRepService{}
+	flags := newFlags() // request_sampler not enabled
+	queue := observe.NewQueue(observe.QueueConfig{Enabled: false}, nil, nil)
+	sampler := traffic.New(traffic.WithRate(1))
+
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{HTTPStatusCode: http.StatusOK, Body: []byte(`{"result":"0x1"}`)}
+		return nil
+	})
+
+	ctx := samplerRelayContext()
+
+	mw := Observe(flags, queue, repSvc, sampler)
+	if err := mw(inner).HandleRelay(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := sampler.Summary(ctx.ServiceID, false); ok {
+		t.Error("expected the sampler to have observed nothing while the flag is off")
+	}
+}
+
+// A nil sampler must not panic, flag on or off.
+func TestObserve_NilSamplerIsSafe(t *testing.T) {
+	repSvc := &trackingRepService{}
+	flags := newFlags(featureflag.FlagRequestSampler)
+	queue := observe.NewQueue(observe.QueueConfig{Enabled: false}, nil, nil)
+
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{HTTPStatusCode: http.StatusOK}
+		return nil
+	})
+
+	ctx := samplerRelayContext()
+
+	mw := Observe(flags, queue, repSvc, nil)
+	if err := mw(inner).HandleRelay(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A relay for a service with no plugin attached — Validate lets an unknown
+// Target-Service-Id through, but no configured service means no plugin — must
+// not reach the sampler even with the flag on: sampling it would let an
+// unauthenticated client grow the sampler's per-service state without bound.
+func TestObserve_SamplerSkipsServiceWithNoPlugin(t *testing.T) {
+	repSvc := &trackingRepService{}
+	flags := newFlags(featureflag.FlagRequestSampler)
+	queue := observe.NewQueue(observe.QueueConfig{Enabled: false}, nil, nil)
+	sampler := traffic.New(traffic.WithRate(1))
+
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{HTTPStatusCode: http.StatusOK, Body: []byte(`{"result":"0x1"}`)}
+		return nil
+	})
+
+	ctx := samplerRelayContext()
+	ctx.Plugin = nil // no plugin registered for this service.
+
+	mw := Observe(flags, queue, repSvc, sampler)
+	if err := mw(inner).HandleRelay(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := sampler.Summary(ctx.ServiceID, false); ok {
+		t.Error("expected the sampler to have observed nothing for a service with no plugin")
 	}
 }

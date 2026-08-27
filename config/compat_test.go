@@ -86,6 +86,9 @@ func TestConfigCompatibility_GlobalSections(t *testing.T) {
 		if cfg.Admin.Addr != "localhost:9095" {
 			t.Errorf("admin addr = %q, want localhost:9095", cfg.Admin.Addr)
 		}
+		if cfg.Admin.MaxDrain != 2*time.Hour {
+			t.Errorf("admin max_drain = %v, want 2h", cfg.Admin.MaxDrain)
+		}
 	})
 
 	t.Run("concurrency", func(t *testing.T) {

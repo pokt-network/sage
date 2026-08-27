@@ -40,6 +40,7 @@ metrics_config:
 admin_config:
   addr: "localhost:9095"
   auth_token: "fixture-token-0123456789abcdef"
+  max_drain: 2h
 
 concurrency_config:
   max_concurrent_relays: 8000

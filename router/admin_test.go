@@ -61,6 +61,11 @@ func (m *mockFlagStore) GetAll(_ context.Context) (map[string]featureflag.FlagSt
 	return out, nil
 }
 
+// DeleteGlobal removes the global value only, mirroring FlagStore.
+func (m *mockFlagStore) DeleteGlobal(ctx context.Context, flag string) error {
+	return m.Delete(ctx, flag, "")
+}
+
 func (m *mockFlagStore) Delete(_ context.Context, flag string, serviceID domain.ServiceID) error {
 	if serviceID == "" {
 		delete(m.flags, flag)
@@ -134,7 +139,7 @@ func newTestAdmin(
 	breaker *circuitbreaker.Breaker,
 	qosReg *qos.Registry,
 ) *AdminAPI {
-	return NewAdminAPI(flags, repSvc, tl, breaker, nil, qosReg, tuning.NewStore(), discardLogger())
+	return NewAdminAPI(flags, repSvc, tl, breaker, nil, nil, nil, 0, qosReg, tuning.NewStore(), nil, nil, discardLogger())
 }
 
 // newTestAdminAPIWithBlocks is the same as newTestAdmin, plus a method-block
@@ -146,7 +151,7 @@ func newTestAdminAPIWithBlocks(t *testing.T, store *methodblock.Store) *AdminAPI
 	tl := reputation.NewTimeline(100)
 	breaker := circuitbreaker.New()
 	qosReg := qos.NewRegistry()
-	return NewAdminAPI(flags, repSvc, tl, breaker, store, qosReg, tuning.NewStore(), discardLogger())
+	return NewAdminAPI(flags, repSvc, tl, breaker, store, nil, nil, 0, qosReg, tuning.NewStore(), nil, nil, discardLogger())
 }
 
 func newAdminServer(t *testing.T) (*AdminAPI, *httptest.Server) {

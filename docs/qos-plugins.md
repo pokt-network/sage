@@ -40,6 +40,8 @@ Callers type-assert and skip the feature when it is absent.
 | `CachePolicy` | per-method response cache TTLs |
 | `ResponseFormatValidator` | reject structurally wrong responses |
 | `LifecycleHooks` | react to session and endpoint changes |
+| `MethodNormalizer` | name a payload's method from a bounded catalogue, for method-aware state and metric labels |
+| `StateResetter` | discard learned chain state (block consensus, per-endpoint heights, archival marks) via the admin chain-state reset route, without a restart |
 
 A new method on the core `Plugin` interface is a compile error in every existing
 plugin, and forces four chains to stub out a feature one of them needed. That is

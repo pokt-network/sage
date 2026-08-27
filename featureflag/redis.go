@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -33,7 +34,15 @@ type cacheEntry struct {
 type RedisStore struct {
 	client   RedisClient
 	cacheTTL time.Duration
-	defaults map[string]bool
+
+	// defaults is the config file's override layer, below the Redis keys and
+	// above DefaultFlags.
+	//
+	// A pointer swapped whole rather than a plain map because a config reload
+	// removes entries from it (see DeleteGlobal) while relays are reading it.
+	// Copy-on-write keeps the read side free of locking, which matters: this
+	// is consulted on every flag check that misses the cache.
+	defaults atomic.Pointer[map[string]bool]
 
 	mu    sync.RWMutex
 	cache map[string]cacheEntry
@@ -57,13 +66,27 @@ func NewRedisStore(client RedisClient, overrides map[string]bool, opts ...RedisS
 	s := &RedisStore{
 		client:   client,
 		cacheTTL: defaultCacheTTL,
-		defaults: overrides,
 		cache:    make(map[string]cacheEntry),
 	}
+	copied := make(map[string]bool, len(overrides))
+	for flag, enabled := range overrides {
+		copied[flag] = enabled
+	}
+	s.defaults.Store(&copied)
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// configOverride reports the config file's value for a flag, if it set one.
+func (s *RedisStore) configOverride(flag string) (bool, bool) {
+	overrides := s.defaults.Load()
+	if overrides == nil {
+		return false, false
+	}
+	value, ok := (*overrides)[flag]
+	return value, ok
 }
 
 // IsEnabled resolves a flag in precedence order: the per-service key in Redis,
@@ -87,7 +110,7 @@ func (s *RedisStore) IsEnabled(ctx context.Context, flag string, serviceID domai
 	}
 
 	// Fall back to config defaults, then compiled defaults.
-	if val, ok := s.defaults[flag]; ok {
+	if val, ok := s.configOverride(flag); ok {
 		return val
 	}
 	return DefaultFlags[flag]
@@ -120,7 +143,7 @@ func (s *RedisStore) GetAll(ctx context.Context) (map[string]FlagState, error) {
 	for flag, enabled := range DefaultFlags {
 		result[flag] = FlagState{Enabled: enabled}
 	}
-	for flag, enabled := range s.defaults {
+	for flag, enabled := range *s.defaults.Load() {
 		st := result[flag]
 		st.Enabled = enabled
 		result[flag] = st
@@ -173,6 +196,42 @@ func (s *RedisStore) Delete(ctx context.Context, flag string, serviceID domain.S
 		key = globalKey(flag)
 	}
 
+	s.mu.Lock()
+	delete(s.cache, key)
+	s.mu.Unlock()
+
+	if s.client == nil {
+		return nil
+	}
+	return s.client.Del(ctx, key).Err()
+}
+
+// DeleteGlobal removes every non-per-service source of a flag's value: the
+// global Redis key and the config file's override. Per-service keys are left
+// alone.
+//
+// Dropping the config layer too is the whole point. It is captured from the
+// file at construction, so deleting only the Redis key would leave a reload
+// falling straight back onto the value the operator just removed from the
+// file — a removal that reports success and changes nothing.
+func (s *RedisStore) DeleteGlobal(ctx context.Context, flag string) error {
+	for {
+		current := s.defaults.Load()
+		if _, present := (*current)[flag]; !present {
+			break
+		}
+		next := make(map[string]bool, len(*current))
+		for name, enabled := range *current {
+			if name != flag {
+				next[name] = enabled
+			}
+		}
+		if s.defaults.CompareAndSwap(current, &next) {
+			break
+		}
+	}
+
+	key := globalKey(flag)
 	s.mu.Lock()
 	delete(s.cache, key)
 	s.mu.Unlock()

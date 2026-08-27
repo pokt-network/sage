@@ -737,3 +737,31 @@ func TestSelectEndpoints_UnsetAllowanceDoesNotRequireTheTip(t *testing.T) {
 		t.Errorf("selected %v — an endpoint one block behind was dropped with no allowance configured", got)
 	}
 }
+
+// TestResetState pins what an operator-triggered chain-state reset discards:
+// the perceived block height and the per-endpoint QoS store.
+func TestResetState(t *testing.T) {
+	p := newPlugin(5)
+
+	addrs := domain.EndpointAddrList{"a", "b"}
+	p.UpdateBlockHeight("a", 100)
+	p.UpdateBlockHeight("b", 10) // far behind; would be filtered pre-reset
+
+	if got := p.PerceivedBlockHeight(); got == 0 {
+		t.Fatalf("expected nonzero perceived block height before reset, got %d", got)
+	}
+
+	p.ResetState()
+
+	if got := p.PerceivedBlockHeight(); got != 0 {
+		t.Fatalf("PerceivedBlockHeight() = %d after ResetState, want 0", got)
+	}
+
+	selected, err := p.SelectEndpoints(addrs, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(selected) != len(addrs) {
+		t.Fatalf("SelectEndpoints after ResetState = %v, want every endpoint to pass (%v)", selected, addrs)
+	}
+}

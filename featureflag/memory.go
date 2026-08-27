@@ -131,3 +131,17 @@ func (s *MemoryStore) Delete(_ context.Context, flag string, serviceID domain.Se
 	delete(s.serviceOverrides, flag)
 	return nil
 }
+
+// DeleteGlobal removes the global value of a flag, leaving every per-service
+// override in place.
+//
+// This store seeds the config file's overrides straight into the global map,
+// so one delete covers both sources — unlike RedisStore, which keeps them in
+// separate layers and has to drop each. See FlagStore.DeleteGlobal for why the
+// per-service overrides must survive.
+func (s *MemoryStore) DeleteGlobal(_ context.Context, flag string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.global, flag)
+	return nil
+}

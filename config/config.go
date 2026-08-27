@@ -230,7 +230,28 @@ type AdminConfig struct {
 	// the Authorization header. Empty means no authentication, which is only
 	// allowed while the API is bound to loopback. EnvAdminToken overrides it.
 	AuthToken string `yaml:"auth_token"`
+
+	// MaxDrain caps how long an operator drain (POST
+	// /admin/reputation/drain/{serviceID}) may run for. A request naming a
+	// longer duration is refused, not clamped, so an operator who typed 72h
+	// learns the ceiling instead of silently getting a day. Zero takes
+	// EffectiveMaxDrain's default of 24h.
+	MaxDrain time.Duration `yaml:"max_drain"`
 }
+
+// EffectiveMaxDrain returns the ceiling on an operator drain's duration. Zero
+// takes DefaultMaxDrain (24h) rather than meaning "unbounded" — an unbounded
+// drain is exactly the kind of admin mistake the ceiling exists to catch.
+func (a AdminConfig) EffectiveMaxDrain() time.Duration {
+	if a.MaxDrain <= 0 {
+		return DefaultMaxDrain
+	}
+	return a.MaxDrain
+}
+
+// DefaultMaxDrain is the ceiling EffectiveMaxDrain returns when
+// admin_config.max_drain is unset.
+const DefaultMaxDrain = 24 * time.Hour
 
 // IsLoopbackAddr reports whether a listen address reaches only this host.
 //

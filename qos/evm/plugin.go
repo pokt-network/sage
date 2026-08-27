@@ -73,6 +73,7 @@ var coalescableMethods = map[string]bool{
 //   - qos.CachePolicy
 //   - qos.ResponseFormatValidator
 //   - qos.LifecycleHooks
+//   - qos.StateResetter
 type Plugin struct {
 	logger          *slog.Logger
 	store           *qos.EndpointStore[evmEndpoint]
@@ -504,4 +505,16 @@ func (p *Plugin) OnEndpointDiscovered(serviceID domain.ServiceID, endpoint domai
 // OnEndpointEvicted logs the eviction; the store entry is kept until SweepStale removes it.
 func (p *Plugin) OnEndpointEvicted(serviceID domain.ServiceID, endpoint domain.EndpointAddr) {
 	p.logger.Debug("endpoint evicted", "service", serviceID, "endpoint", endpoint)
+}
+
+// --- qos.StateResetter ---
+
+// ResetState discards the block consensus and every per-endpoint observation
+// (block height, chain ID, archival marks) this plugin has learned. It is the
+// admin chain-state reset: nothing else about the plugin's configuration
+// changes, and the next health-check cycle and the next relays repopulate
+// both from scratch.
+func (p *Plugin) ResetState() {
+	p.consensus.Reset()
+	p.store.Clear()
 }

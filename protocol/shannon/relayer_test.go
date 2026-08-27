@@ -452,17 +452,18 @@ func TestAvailableEndpoints_ExcludesBlockedDomain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("newDomainBlocklist: %v", err)
 		}
-		return &Protocol{
-			fullNode:       fnMock,
-			sessions:       newSessionManager(fnMock, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger()),
-			signer:         &mockSigner{},
-			bl:             newBlacklist(),
-			blockedDomains: bl,
-			ownedApps:      map[domain.ServiceID][]string{"eth": {"pokt1app"}},
-			httpClient:     server.Client(),
-			metrics:        noopSupplierMetrics{},
-			logger:         newTestLogger(),
+		p := &Protocol{
+			fullNode:   fnMock,
+			sessions:   newSessionManager(fnMock, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger()),
+			signer:     &mockSigner{},
+			bl:         newBlacklist(),
+			ownedApps:  map[domain.ServiceID][]string{"eth": {"pokt1app"}},
+			httpClient: server.Client(),
+			metrics:    noopSupplierMetrics{},
+			logger:     newTestLogger(),
 		}
+		p.blockedDomains.Store(bl)
+		return p
 	}
 
 	// The endpoint is served over 127.0.0.1, which has no registrable domain

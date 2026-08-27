@@ -58,6 +58,26 @@ func ValidateBlockedDomains(entries []config.BlockedDomain) error {
 	return err
 }
 
+// SetBlockedDomains rebuilds the operator domain ban from entries and swaps it
+// in atomically, unioning in the SAGE_BLOCKED_DOMAINS env entries exactly as
+// New does (newDomainBlocklist does that unioning either way it is called).
+//
+// entries is validated before anything is swapped: an invalid entry (an
+// empty domain, an unknown rpc_type) returns an error and leaves the
+// previously installed list serving reads unchanged — a malformed reload
+// input must not disable a working ban. Safe to call concurrently with
+// AvailableEndpoints and SendRelay; a reader sees either the old list or the
+// fully built new one, never a partially built one, because they only ever
+// observe it through the atomic pointer.
+func (p *Protocol) SetBlockedDomains(entries []config.BlockedDomain) error {
+	next, err := newDomainBlocklist(entries)
+	if err != nil {
+		return err
+	}
+	p.blockedDomains.Store(next)
+	return nil
+}
+
 // newDomainBlocklist compiles config entries into a matcher, unioning in
 // anything named by envBlockedDomains. Returns (nil, nil) when nothing is
 // blocked.

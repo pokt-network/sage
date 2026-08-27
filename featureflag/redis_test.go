@@ -110,3 +110,47 @@ func TestRedisStore_NilClient_GetAll(t *testing.T) {
 		t.Error("expected retry enabled in GetAll")
 	}
 }
+
+// TestRedisStore_DeleteGlobal_DropsTheConfigLayer is the one that matters for
+// a config reload.
+//
+// The config overrides are captured from the file at construction and sit
+// below the Redis keys. Deleting only the Redis key would leave a reload
+// falling straight back onto the value the operator just removed from the
+// file — a removal that reports success and changes nothing.
+func TestRedisStore_DeleteGlobal_DropsTheConfigLayer(t *testing.T) {
+	ctx := context.Background()
+	store := NewRedisStore(nil, map[string]bool{FlagTracing: true})
+
+	if !store.IsEnabled(ctx, FlagTracing, "eth") {
+		t.Fatal("the config override should be in effect before the delete")
+	}
+	if err := store.DeleteGlobal(ctx, FlagTracing); err != nil {
+		t.Fatalf("delete global: %v", err)
+	}
+	if store.IsEnabled(ctx, FlagTracing, "eth") {
+		t.Fatal("the config override survived DeleteGlobal, so removing the line from the file did nothing")
+	}
+}
+
+// TestRedisStore_DeleteGlobal_KeepsServiceOverrides: see
+// FlagStore.DeleteGlobal — a deleted config line must not revoke a
+// per-service decision.
+func TestRedisStore_DeleteGlobal_KeepsServiceOverrides(t *testing.T) {
+	ctx := context.Background()
+	store := NewRedisStore(nil, map[string]bool{FlagTracing: true})
+	if err := store.SetForService(ctx, FlagTracing, "eth", true); err != nil {
+		t.Fatalf("set for service: %v", err)
+	}
+
+	if err := store.DeleteGlobal(ctx, FlagTracing); err != nil {
+		t.Fatalf("delete global: %v", err)
+	}
+
+	if !store.IsEnabled(ctx, FlagTracing, "eth") {
+		t.Error("DeleteGlobal cleared the per-service override")
+	}
+	if store.IsEnabled(ctx, FlagTracing, "poly") {
+		t.Error("the global/config value survived DeleteGlobal")
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/reputation"
@@ -649,5 +650,118 @@ func TestRunOnce_DedupCanBeDisabled(t *testing.T) {
 	defer relayer.mu.Unlock()
 	if len(relayer.calls) != 4 {
 		t.Errorf("expected 4 relays with dedup off, got %d", len(relayer.calls))
+	}
+}
+
+// TestSetConfiguredChecks_SafeWhileRunning is the discriminating test for the
+// atomics on configured/dedupByBackendURL.
+//
+// A config reload calls both setters from its own goroutine against a running
+// executor while a check cycle reads them. Reverting either field to a plain
+// assignment makes this fail under -race — which is the point: the race is
+// invisible without a reader and a writer actually overlapping.
+func TestSetConfiguredChecks_SafeWhileRunning(t *testing.T) {
+	relayer := &stubRelayer{
+		response: &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`)},
+	}
+	eps := &stubEndpointProvider{
+		endpoints: domain.EndpointAddrList{
+			"supplierA-https://node1.example.com",
+			"supplierB-https://node2.example.com",
+		},
+	}
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}}}
+
+	payload := domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`),
+		domain.RPCTypeJSONRPC, "eth_blockNumber")
+	reg := qos.NewRegistry()
+	if err := reg.Register("eth", &checkOnlyPlugin{
+		checks: []qos.HealthCheck{{Name: "block_number", Payload: payload}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	exec := newTestExecutor(relayer, eps, sessions, reg, &stubRepService{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cycles, from one goroutine.
+	var cycles sync.WaitGroup
+	cycles.Add(1)
+	go func() {
+		defer cycles.Done()
+		for i := 0; i < 50; i++ {
+			exec.runOnce(ctx)
+		}
+	}()
+
+	// Reloads, from another — exactly what POST /admin/reload does.
+	var reloads sync.WaitGroup
+	reloads.Add(1)
+	go func() {
+		defer reloads.Done()
+		for i := 0; i < 50; i++ {
+			checks, _ := BuildConfiguredChecks(config.HealthCheckConfig{
+				Local: []config.ServiceHealthChecks{{
+					ServiceID: "eth",
+					Enabled:   true,
+					Checks:    []config.HealthCheck{{Name: "configured", Method: "eth_chainId"}},
+				}},
+			})
+			exec.SetConfiguredChecks(checks)
+			exec.SetBackendURLDedup(i%2 == 0)
+		}
+	}()
+
+	cycles.Wait()
+	reloads.Wait()
+	exec.wg.Wait()
+}
+
+// TestRunOnce_DoesNotWriteIntoThePluginsCheckSlice pins the ownership of the
+// slice a plugin returns from HealthChecks. Appending the configured checks to
+// it writes into the plugin's own backing array whenever that array has spare
+// capacity — the plugin hands the same slice to every service and every cycle,
+// so one service's YAML check would end up in the array behind everyone's.
+//
+// The sentinel is what an unrelated element of that array looks like; nothing
+// the executor does may disturb it.
+func TestRunOnce_DoesNotWriteIntoThePluginsCheckSlice(t *testing.T) {
+	payload := domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`),
+		domain.RPCTypeJSONRPC, "eth_blockNumber")
+
+	// Length 1, capacity 2: exactly the shape that makes append reuse the
+	// array instead of copying it.
+	backing := make([]qos.HealthCheck, 2)
+	backing[0] = qos.HealthCheck{Name: "block_number", Payload: payload}
+	backing[1] = qos.HealthCheck{Name: "plugin_owned_sentinel", Payload: payload}
+
+	reg := qos.NewRegistry()
+	if err := reg.Register("eth", &checkOnlyPlugin{checks: backing[:1]}); err != nil {
+		t.Fatal(err)
+	}
+
+	relayer := &stubRelayer{
+		response: &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`)},
+	}
+	eps := &stubEndpointProvider{endpoints: domain.EndpointAddrList{"supplierA-https://node1.example.com"}}
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}}}
+
+	exec := newTestExecutor(relayer, eps, sessions, reg, &stubRepService{})
+	configured, _ := BuildConfiguredChecks(config.HealthCheckConfig{
+		Local: []config.ServiceHealthChecks{{
+			ServiceID: "eth",
+			Enabled:   true,
+			Checks:    []config.HealthCheck{{Name: "configured", Method: "eth_chainId"}},
+		}},
+	})
+	exec.SetConfiguredChecks(configured)
+
+	exec.runOnce(context.Background())
+	exec.wg.Wait()
+
+	if got := backing[1].Name; got != "plugin_owned_sentinel" {
+		t.Fatalf("the plugin's backing array was overwritten: backing[1].Name = %q, want the sentinel", got)
 	}
 }

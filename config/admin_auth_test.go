@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateAdmin(t *testing.T) {
@@ -79,5 +80,16 @@ func TestEffectiveAuthToken_FileFallback(t *testing.T) {
 	cfg := AdminConfig{AuthToken: "file-token-0123456789abcdef"}
 	if got := cfg.EffectiveAuthToken(); got != "file-token-0123456789abcdef" {
 		t.Fatalf("token = %q, want the config value", got)
+	}
+}
+
+// TestEffectiveMaxDrain pins zero taking the 24h default rather than meaning
+// "unbounded" — an unbounded drain defeats the ceiling the ceiling exists for.
+func TestEffectiveMaxDrain(t *testing.T) {
+	if got := (AdminConfig{}).EffectiveMaxDrain(); got != DefaultMaxDrain {
+		t.Fatalf("zero max_drain = %v, want the default %v", got, DefaultMaxDrain)
+	}
+	if got := (AdminConfig{MaxDrain: 2 * time.Hour}).EffectiveMaxDrain(); got != 2*time.Hour {
+		t.Fatalf("max_drain = %v, want 2h", got)
 	}
 }

@@ -152,3 +152,25 @@ func TestMemoryStore_UnknownFlag(t *testing.T) {
 		t.Error("expected unknown flag to be disabled")
 	}
 }
+
+// TestMemoryStore_DeleteGlobal_KeepsServiceOverrides: config carries global
+// values only, so a flag dropped from the file must not revoke a per-service
+// decision an operator made through the admin API.
+func TestMemoryStore_DeleteGlobal_KeepsServiceOverrides(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore(map[string]bool{FlagTracing: true})
+	if err := store.SetForService(ctx, FlagTracing, "eth", true); err != nil {
+		t.Fatalf("set for service: %v", err)
+	}
+
+	if err := store.DeleteGlobal(ctx, FlagTracing); err != nil {
+		t.Fatalf("delete global: %v", err)
+	}
+
+	if store.IsEnabled(ctx, FlagTracing, "poly") {
+		t.Error("the global value survived DeleteGlobal; DefaultFlags should apply again")
+	}
+	if !store.IsEnabled(ctx, FlagTracing, "eth") {
+		t.Error("DeleteGlobal wiped the per-service override too")
+	}
+}

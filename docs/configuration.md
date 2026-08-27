@@ -84,6 +84,7 @@ Controls the admin API listener.
 |---|---|---|
 | `addr` | string | The listen address for the admin API. Empty takes DefaultAdminAddr. Binding anywhere non-loopback without an auth token is refused at startup. |
 | `auth_token` | string | The bearer token the admin API requires, compared against the Authorization header. Empty means no authentication, which is only allowed while the API is bound to loopback. EnvAdminToken overrides it. |
+| `max_drain` | duration | Caps how long an operator drain (POST /admin/reputation/drain/{serviceID}) may run for. A request naming a longer duration is refused, not clamped, so an operator who typed 72h learns the ceiling instead of silently getting a day. Zero takes EffectiveMaxDrain's default of 24h. |
 
 ## `concurrency_config`
 

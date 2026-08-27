@@ -30,6 +30,7 @@ func (f *staticFlags) GetAll(_ context.Context) (map[string]featureflag.FlagStat
 	return nil, nil
 }
 func (f *staticFlags) Delete(_ context.Context, _ string, _ domain.ServiceID) error { return nil }
+func (f *staticFlags) DeleteGlobal(_ context.Context, _ string) error               { return nil }
 
 // coalescablePlugin is a minimal qos.Plugin that classifies every method as
 // coalescable.

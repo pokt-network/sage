@@ -23,7 +23,7 @@ func hedgeVerdictChain(inner relay.Handler) (relay.Handler, *trackingRepService)
 	cfg := func(domain.ServiceID) config.RetryConfig {
 		return config.RetryConfig{HedgeDelay: 500 * time.Millisecond}
 	}
-	chain := Observe(flags, nil, repSvc)(Hedge(flags, cfg)(Heuristic(flags)(inner)))
+	chain := Observe(flags, nil, repSvc, nil)(Hedge(flags, cfg)(Heuristic(flags)(inner)))
 	return chain, repSvc
 }
 

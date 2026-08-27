@@ -10,6 +10,7 @@ import (
 	"github.com/pokt-network/sage/observe"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/reputation"
+	"github.com/pokt-network/sage/traffic"
 )
 
 // Observe returns a middleware that, after the inner handler completes:
@@ -18,12 +19,28 @@ import (
 //     attributes the failure to the client (e.g. a client hang-up): that
 //     case is nobody's signal, and buildSignal returns a zero Signal that
 //     the call site skips recording entirely.
-//  2. If the "observation_pipeline" feature flag is enabled, submits an
+//  2. If the "request_sampler" feature flag is enabled AND the relay is for a
+//     configured service, hands the relay's payloads to sampler for
+//     request-shape tracking (see package traffic). This runs on the 100%
+//     path, before the observation-pipeline submit below: the sampler needs
+//     every relay to compute an accurate distinct-request ratio, and keeps
+//     its own cost bounded through its internal 1-in-N sampling rather than
+//     through this flag.
+//  3. If the "observation_pipeline" feature flag is enabled, submits an
 //     Observation to the async queue for deep processing off the hot path.
 //
 // Signal severity is derived from ctx.HeuristicResult. If no heuristic result
 // is present, the signal defaults to success/minor-error based on HTTP status code.
-func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputation.Service) relay.Middleware {
+//
+// sampler is nil-safe: a nil sampler (no traffic package wired up) makes step
+// 2 a no-op regardless of the flag. Step 2 also requires ctx.Plugin != nil —
+// Validate lets a relay for an unknown Target-Service-Id through with no
+// plugin attached, and every configured service gets one at wire time (noop
+// included), so a nil Plugin means an unauthenticated client is naming
+// whatever service string it likes. Sampling that would let such a client
+// grow the sampler's per-service state, and the admin request-sample
+// listing, without bound.
+func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputation.Service, sampler *traffic.Sampler) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			start := time.Now()
@@ -39,6 +56,16 @@ func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputatio
 					// Best-effort: ignore RecordSignal errors so we never block a relay.
 					_ = repSvc.RecordSignal(context.Background(), ctx.ServiceID, ctx.Endpoint, ctx.RPCType, sig)
 				}
+			}
+
+			// Optionally record this relay's request shape for the traffic
+			// sampler. On the 100% path, ahead of the (separately sampled)
+			// observation-pipeline submit below. ctx.Plugin == nil means an
+			// unknown Target-Service-Id — Validate lets those through — and
+			// sampling one would grow unbounded per-service state for a
+			// service that does not exist.
+			if sampler != nil && ctx.Plugin != nil && flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagRequestSampler, ctx.ServiceID) {
+				sampler.Observe(ctx.ServiceID, ctx.Payloads)
 			}
 
 			// Optionally submit to the observation pipeline.

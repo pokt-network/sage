@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apptypes "github.com/pokt-network/poktroll/x/application/types"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/drain"
 	"github.com/pokt-network/sage/protocol"
 )
 
@@ -63,9 +65,16 @@ type Protocol struct {
 	httpClient *http.Client
 	// grpc carries gRPC relays, which cannot ride the HTTP path.
 	grpc *grpcRelayTransport
-	// blockedDomains is the operator domain ban. Nil when nothing is blocked,
-	// and nil-safe throughout — see domain_blocklist.go.
-	blockedDomains *domainBlocklist
+	// blockedDomains is the operator domain ban. An atomic.Pointer so
+	// SetBlockedDomains can swap in a rebuilt list without a lock on the
+	// AvailableEndpoints/SendRelay read path. A nil *domainBlocklist (the zero
+	// value, and what Load returns before anything is ever Stored) blocks
+	// nothing and is nil-safe throughout — see domain_blocklist.go.
+	blockedDomains atomic.Pointer[domainBlocklist]
+	// drains is the operator-drain store consulted next to blockedDomains in
+	// AvailableEndpoints. Nil until SetDrains is called, and nil-safe at the
+	// call site — see drain.go.
+	drains drain.Store
 	// metrics records supplier-attributable events (blacklists, relay miner
 	// errors). Never nil — see SetMetrics.
 	metrics supplierMetrics
@@ -113,19 +122,20 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 			"component", "shannon", "domain", e[0], "rpc_type", e[1])
 	}
 
-	return &Protocol{
-		fullNode:       fullNode,
-		sessions:       sm,
-		signer:         signer,
-		bl:             newBlacklist(),
-		gatewayAddr:    cfg.Gateway.GatewayAddress,
-		blockedDomains: blockedDomains,
-		ownedApps:      ownedApps,
-		httpClient:     httpClient,
-		grpc:           newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
-		metrics:        noopSupplierMetrics{},
-		logger:         logger.With("component", "shannon_protocol"),
-	}, nil
+	p := &Protocol{
+		fullNode:    fullNode,
+		sessions:    sm,
+		signer:      signer,
+		bl:          newBlacklist(),
+		gatewayAddr: cfg.Gateway.GatewayAddress,
+		ownedApps:   ownedApps,
+		httpClient:  httpClient,
+		grpc:        newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
+		metrics:     noopSupplierMetrics{},
+		logger:      logger.With("component", "shannon_protocol"),
+	}
+	p.blockedDomains.Store(blockedDomains)
+	return p, nil
 }
 
 // SendRelay sends a relay for the given service to the specified endpoint.
@@ -190,7 +200,7 @@ func (p *Protocol) SendRelay(
 	// endpoint address from before the ban, or reaching SendRelay by a path
 	// that never consulted AvailableEndpoints, still cannot send to it. Not
 	// retryable: another attempt at the same endpoint has the same answer.
-	if p.blockedDomains.IsBlocked(url, payload.RPCType()) {
+	if p.blockedDomains.Load().IsBlocked(url, payload.RPCType()) {
 		p.logger.Warn("SendRelay: refusing a blocked domain",
 			"component", "shannon",
 			"service_id", serviceID,
@@ -383,14 +393,16 @@ func (p *Protocol) AvailableEndpoints(ctx context.Context, serviceID domain.Serv
 		return nil, fmt.Errorf("AvailableEndpoints: %w", err)
 	}
 
-	// Filter by RPC type support, operator domain ban and blacklist in one pass
-	// — no intermediate map.
+	// Filter by RPC type support, operator domain ban, operator drain and
+	// blacklist in one pass — no intermediate map.
 	//
-	// The ban is applied here, at the one place endpoints are handed out, so it
-	// covers relay selection (and therefore retry, hedge and batch), WebSocket
-	// bind and health checks without each of them knowing it exists.
+	// The ban and the drain are applied here, at the one place endpoints are
+	// handed out, so they cover relay selection (and therefore retry, hedge
+	// and batch), WebSocket bind and health checks without each of them
+	// knowing either exists.
+	blockedDomains := p.blockedDomains.Load()
 	result := make(domain.EndpointAddrList, 0, len(endpoints))
-	var blacklisted, blocked int
+	var blacklisted, blocked, drained int
 	for addr, ep := range endpoints {
 		url := ""
 		if rpcType != domain.RPCTypeUnknown {
@@ -402,8 +414,12 @@ func (p *Protocol) AvailableEndpoints(ctx context.Context, serviceID domain.Serv
 		} else {
 			url = ep.PublicURL()
 		}
-		if p.blockedDomains.IsBlocked(url, rpcType) {
+		if blockedDomains.IsBlocked(url, rpcType) {
 			blocked++
+			continue
+		}
+		if d := p.drains; d != nil && d.Drained(serviceID, operatorOf(url), rpcType) {
+			drained++
 			continue
 		}
 		if p.bl.IsBlacklisted(serviceID, ep.Supplier()) {
@@ -421,6 +437,7 @@ func (p *Protocol) AvailableEndpoints(ctx context.Context, serviceID domain.Serv
 			"available", len(result),
 			"blacklisted", blacklisted,
 			"blocked_domain", blocked,
+			"drained", drained,
 		)
 	}
 

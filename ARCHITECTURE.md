@@ -236,6 +236,7 @@ re-break as a repeat offender.
 | operator_aware_selection | on | Per-operator concentration cap; operator-aware retry/hedge |
 | debug_log | off | Full request/response body logging |
 | shadow_mode | off | Process traffic but don't serve responses |
+| request_sampler | on | Per-service request-shape sampling for diversity metrics and the admin request-sample routes |
 
 Flags can be toggled globally or per-service via admin API:
 ```
@@ -322,10 +323,27 @@ Two properties of that surface are architectural rather than incidental, and
 belong here:
 
 **Three listeners, not one.** Relays, the admin API and Prometheus each get
-their own port. The admin API is unauthenticated — turning on `shadow_mode`
-alone stops the gateway answering anything — so it defaults to loopback. It
-used to share the relay port, which meant only network topology stood between
-the internet and a control plane. See [`docs/operations.md`](docs/operations.md).
+their own port. The admin API defaults to loopback, and binding it anywhere
+else without an `admin_config.auth_token` (or `SAGE_ADMIN_TOKEN`) is refused
+at startup — turning on `shadow_mode` alone stops the gateway answering
+anything, and an admin surface reachable from off-host with no credential is
+the same class of mistake. It used to share the relay port, which meant only
+network topology stood between the internet and a control plane. See
+[`docs/operations.md`](docs/operations.md).
+
+Beyond the per-middleware controls above, the admin API is also where an
+operator reaches for direct intervention: benching one supplier operator for
+one service without touching the endpoints it happens to be serving right now
+(operator drain, keyed on registrable domain so it survives session
+rotation — see package `drain`); clearing a QoS plugin's cached chain state
+(block height, sync status) for a service without touching its reputation
+scores, when that state has drifted from the network's; reloading
+`gateway_config` from the file the gateway booted with, either via
+`POST /admin/reload` or a `SIGHUP` to the process, with a response that
+separates settings applied live from settings that need a restart to take
+effect; and reading back a live summary of a service's recent request shapes
+(method/parameter diversity) from the request-shape sampler, gated by the
+`request_sampler` feature flag above.
 
 **The `/v1` mount point is the gateway's, not the service's.** The router strips it
 before the chain runs. JSON-RPC does not care, but a REST, CometBFT or gRPC

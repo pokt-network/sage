@@ -30,6 +30,12 @@ const (
 	// timed out on it or said it does not serve it, without affecting any
 	// other method on that host. Off passes every relay through unpruned.
 	FlagMethodBlocks = "method_blocks"
+	// FlagRequestSampler gates the Observe middleware's call into the
+	// traffic.Sampler: recording each relay's payloads for request-shape
+	// diversity (see package traffic). Off means every relay skips the
+	// sampler entirely — the admin request-sample routes and gauges then
+	// report nothing for that service, not zeros.
+	FlagRequestSampler = "request_sampler"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -59,6 +65,7 @@ var DefaultFlags = map[string]bool{
 
 	FlagOperatorAwareSelection: true,
 	FlagMethodBlocks:           true,
+	FlagRequestSampler:         true,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

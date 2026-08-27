@@ -93,6 +93,10 @@ func (f *mockFlags) Delete(_ context.Context, flag string, _ domain.ServiceID) e
 	return nil
 }
 
+func (f *mockFlags) DeleteGlobal(ctx context.Context, flag string) error {
+	return f.Delete(ctx, flag, "")
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

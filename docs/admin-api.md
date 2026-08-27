@@ -91,18 +91,25 @@ Reports readiness for every configured service.
 | `PUT` | `/admin/flags/{flag}/{serviceID}` | Toggles a feature flag for one service only. |
 | `GET` | `/admin/reputation/{serviceID}` | Returns every reputation score for a service. |
 | `POST` | `/admin/reputation/reset/{serviceID}/{endpoint...}` | Returns one endpoint to the initial score. |
+| `POST` | `/admin/chain-state/clear/{serviceID}` | Discards the QoS state a service's plugin has learned: block consensus (perceived height, external floor) and its per-endpoint QoS store (block heights, chain-id observations, archival marks — see qos.StateResetter). |
 | `GET` | `/admin/timeline/{serviceID}` | Returns the recent reputation events for every endpoint of a service, newest last. |
 | `GET` | `/admin/timeline/{serviceID}/{endpoint...}` | Returns the reputation events for a single endpoint. |
 | `POST` | `/admin/circuit-breaker/clear/{serviceID}` | Releases every circuit-broken domain for a service and reports how many were cleared. |
 | `GET` | `/admin/circuit-breaker/{serviceID}` | Returns the domains currently circuit-broken for a service, keyed by domain, each with the reason and when the break expires. |
 | `POST` | `/admin/method-blocks/clear/{serviceID}` | Drops every method block for a service. |
 | `GET` | `/admin/method-blocks/{serviceID}` | Lists the hosts currently blocked from receiving a method for a service, with each block's expiry. |
+| `POST` | `/admin/reputation/drain/{serviceID}` | Applies or releases an operator drain for one service. |
+| `GET` | `/admin/reputation/drain/{serviceID}` | Lists the live drains for a service. |
+| `DELETE` | `/admin/reputation/drain/{serviceID}/{domain}` | Releases every RPC-type-scoped drain on one operator for a service. |
 | `GET` | `/admin/tuning` | Returns every knob that can be overridden at runtime, with whatever has been set on it. |
 | `PUT` | `/admin/tuning/{knob}` | Sets a knob globally. |
 | `PUT` | `/admin/tuning/{knob}/{serviceID}` | Sets a knob for one service only. |
 | `DELETE` | `/admin/tuning/{knob}` | Removes the global override for a knob, returning the config file's value to effect. |
 | `DELETE` | `/admin/tuning/{knob}/{serviceID}` | Removes one service's override, leaving the global one (or the config value) in effect for it. |
 | `GET` | `/admin/config` | Returns the gateway's effective runtime configuration: resolved feature flags, registered services and their QoS plugins. |
+| `POST` | `/admin/reload` | Re-reads the config file the gateway started with (`-config`), validates it exactly as startup does, and applies the sections that have a runtime seam: the retry/hedge/timeout knobs, `feature_flags`, `active_health_checks`, `blocked_domains` and the `method_blocks` knobs. |
+| `GET` | `/admin/request-sample` | Returns every service the request-shape sampler has observed, each with its most recently completed traffic summary. |
+| `GET` | `/admin/request-sample/{serviceID}` | Returns one service's request-shape summary plus its top fingerprints for a single window. |
 | `GET` | `/admin/ui` | Serves the admin dashboard. |
 | `GET` | `/{$}` | Sends the admin port's root to the dashboard, because that is what an operator who typed the address into a browser was looking for. |
 
@@ -154,6 +161,20 @@ they happened to name.
 Reach for this when an endpoint was penalised for something since fixed and
 you do not want to wait for probation traffic to rehabilitate it.
 
+### `POST /admin/chain-state/clear/{serviceID}`
+
+Discards the QoS state a service's plugin has
+learned: block consensus (perceived height, external floor) and its
+per-endpoint QoS store (block heights, chain-id observations, archival
+marks — see qos.StateResetter). Reputation, circuit breaker and method
+blocks are untouched; they have their own clear routes.
+
+A plugin that implements qos.StateResetter answers `{"reset": true}`. One
+that does not — it keeps no chain state worth discarding — still answers
+200 with `{"reset": false, "message": ...}`: asking is not a mistake. An
+unregistered serviceID is the one case that is an error: 404, since there
+is nothing to reset and no looser store to silently no-op against.
+
 ### `GET /admin/timeline/{serviceID}`
 
 Returns the recent reputation events for every endpoint of
@@ -201,6 +222,39 @@ Lists the hosts currently blocked from receiving a
 method for a service, with each block's expiry. A block with an empty
 method is a host-level block (every method). An empty array means nothing
 is blocked. The same state is exported as the sage_method_blocks metric.
+
+### `POST /admin/reputation/drain/{serviceID}`
+
+Applies or releases an operator drain for one service.
+
+Body: `{"domain","duration","rpc_type"?,"reason"?,"dry_run"?}`. domain is
+the operator's registrable domain and is required; duration is parsed with
+time.ParseDuration and capped by admin_config.max_drain — a request above
+the ceiling is refused (400), not clamped, so an operator who typed 72h
+learns the limit instead of silently getting a day. duration "0" releases
+any existing drain instead of installing one. A drain that would leave a
+service with no endpoint outside the target operator is refused (409): the
+pool-collapse guard that protects selection everywhere else applies here
+too. dry_run computes matched_endpoints and the last-operator check without
+calling the store. A drain.ErrPropagation from the store (Redis reachable
+from no other replica) still answers 200, with propagation_error set: the
+drain — or, for duration 0, the release — applies on this instance
+regardless, and 500 would describe a local state that did not happen.
+
+### `GET /admin/reputation/drain/{serviceID}`
+
+Lists the live drains for a service. An empty result is an
+empty array, never null.
+
+### `DELETE /admin/reputation/drain/{serviceID}/{domain}`
+
+Releases every RPC-type-scoped drain on one operator for
+a service. PATH's path is kept for operator muscle memory.
+
+Every key that failed only to propagate is still counted as released and its
+error accumulated into one propagation_error string, so the response
+describes the whole operator rather than stopping at the first key Redis
+could not be told about.
 
 ### `GET /admin/tuning`
 
@@ -250,6 +304,74 @@ resolved feature flags, registered services and their QoS plugins.
 It reports what the process is actually running, which is not the same as the
 YAML on disk — defaults have been applied, and flags may have been changed
 through this API since startup.
+
+### `POST /admin/reload`
+
+Re-reads the config file the gateway started with (`-config`),
+validates it exactly as startup does, and applies the sections that have a
+runtime seam: the retry/hedge/timeout knobs, `feature_flags`,
+`active_health_checks`, `blocked_domains` and the `method_blocks` knobs.
+
+The response is the honest account. `applied` names the key paths that took
+effect, as they are written in the file — `gateway_config.defaults.retry_config`,
+`gateway_config.services[eth].timeout_config` — because an operator reading
+it is looking for the line they changed. `needs_restart` names what changed
+and did not take effect: a new service, a new listener, a new signing key, a
+different `chain_id`. `ignored` and `inert` repeat the parse's own
+complaints about the file just read.
+
+`warnings` is the third outcome, and the one worth reading. Validation is
+whole-file and runs first, so a file that would not start the binary is
+refused (400) with nothing changed. After that nothing aborts: once the
+first section has been written the file is partly in effect whatever happens
+next, so a section whose seam fails or is absent in this process is reported
+as a warning naming its own key — still a 200, and the sections after it
+still get their chance. Answering 400 there would tell an operator "nothing
+changed" about a gateway that had changed, and throw away the record of
+which half.
+
+A gateway started from `GATEWAY_CONFIG` has inline YAML rather than a path
+and answers 409 — there is nothing to re-read, which is not the same as a
+file that failed to validate. 501 means this build has no reloader wired at
+all.
+
+Runtime tuning overrides (`/admin/tuning`) survive a reload and still win
+over the reloaded base. Feature flags are different: `feature_flags` in the
+file is an override layer on the compiled defaults, so it is re-applied from
+the file and a flag flipped globally through this API is overwritten by what
+is written down. Per-service flag overrides are left alone — config carries
+global values only, and a deleted line in a file must not revoke a decision
+it never made.
+
+`SIGHUP` does the same thing.
+
+### `GET /admin/request-sample`
+
+Returns every service the request-shape sampler
+has observed, each with its most recently completed traffic summary.
+
+Each entry prefers the previous (complete) window; a service still filling
+its first window has no previous one yet, so its entry falls back to the
+current window instead and says so via "window": "current" — the
+alternative, omitting the service, would make a gateway that just started
+look like it has no traffic at all. Answers 503 if no sampler is
+configured.
+
+### `GET /admin/request-sample/{serviceID}`
+
+Returns one service's request-shape summary plus its
+top fingerprints for a single window.
+
+Query params: `window` (`current` or `previous`, default `previous`) and
+`top` (default 20, capped at 100 regardless of what is asked for; must be a
+positive integer — 0 or negative is rejected rather than passed through as
+"unlimited"). Answers 503 if no sampler is configured, 400 for an
+unrecognised window or a malformed top, and 404 if the sampler has never
+observed the service. A
+known service whose requested window has not completed yet (typically
+`window=previous` on a service still filling its first window) is not a
+404: it answers with a zero-valued summary and an empty top list, since the
+service is real and simply has nothing there yet.
 
 ### `GET /admin/ui`
 

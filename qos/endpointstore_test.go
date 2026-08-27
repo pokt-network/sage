@@ -170,3 +170,23 @@ func TestHeightGetter(t *testing.T) {
 		t.Error("a stored height of 0 must report unknown, not a real height of zero — filtering on it penalizes an endpoint for our own missing data")
 	}
 }
+
+// TestEndpointStore_Clear drops every stored endpoint at once, the way an
+// operator-triggered chain-state reset needs to.
+func TestEndpointStore_Clear(t *testing.T) {
+	s := newTestStore()
+	s.Set("a", epData{BlockHeight: 1})
+	s.Set("b", epData{BlockHeight: 2})
+	if got := s.Count(); got != 2 {
+		t.Fatalf("Count() = %d before Clear, want 2", got)
+	}
+
+	s.Clear()
+
+	if got := s.Count(); got != 0 {
+		t.Fatalf("Count() = %d after Clear, want 0", got)
+	}
+	if _, ok := s.Get("a"); ok {
+		t.Fatal("expected \"a\" gone after Clear")
+	}
+}

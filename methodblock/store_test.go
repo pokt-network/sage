@@ -217,6 +217,43 @@ func TestStore_SweepDropsExpiredHosts(t *testing.T) {
 	}
 }
 
+// SetTTL is the seam a config reload uses to change method_blocks.ttl without
+// a restart. SetTTL(0) must disable marking exactly like WithTTL(0), and a
+// later SetTTL of a positive duration must re-enable it.
+func TestStore_SetTTLDisablesAndReenablesMarking(t *testing.T) {
+	s := New(WithTTL(time.Hour))
+	s.SetTTL(0)
+	if s.Mark("eth", "h.example.com", "eth_getLogs", true) {
+		t.Fatal("Mark must not escalate while TTL is disabled")
+	}
+	if s.Blocked("eth", "h.example.com", "eth_getLogs") {
+		t.Fatal("SetTTL(0) must make Mark a no-op: nothing should be blocked")
+	}
+	if len(s.Active("eth")) != 0 {
+		t.Fatalf("SetTTL(0) must make Mark a no-op, got %+v", s.Active("eth"))
+	}
+
+	s.SetTTL(time.Hour)
+	s.Mark("eth", "h.example.com", "eth_getLogs", true)
+	if !s.Blocked("eth", "h.example.com", "eth_getLogs") {
+		t.Fatal("SetTTL of a positive duration must re-enable marking")
+	}
+}
+
+// SetEscalation changes how many distinct methods escalate a host to a
+// host-level block, effective on the very next Mark call.
+func TestStore_SetEscalationChangesThreshold(t *testing.T) {
+	s := New(WithEscalation(3))
+	s.SetEscalation(2)
+
+	if s.Mark("eth", "dead.example.com", "eth_getLogs", true) {
+		t.Fatal("first mark must not escalate")
+	}
+	if !s.Mark("eth", "dead.example.com", "eth_call", true) {
+		t.Fatal("with escalation set to 2, the second distinct method must escalate")
+	}
+}
+
 func TestStore_ConcurrentAccess(t *testing.T) {
 	s := New()
 	var wg sync.WaitGroup

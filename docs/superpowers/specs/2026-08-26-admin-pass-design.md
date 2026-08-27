@@ -1,7 +1,6 @@
 # Admin pass — operator drain, chain-state reset, config reload, request sampler
 
-Status: design approved 2026-08-26 (Otto: "go with it"). Implementation plan in
-`docs/superpowers/plans/2026-08-26-admin-pass.md`.
+Status: implemented on branch `feat/admin-pass`. Drain with memory/Redis stores at the `AvailableEndpoints` chokepoint, chain-state reset, config reload + SIGHUP with an honest diff, request-shape sampler, and admin UI panels. Beta-checked 2026-08-27 — all checks passed except the last-operator 409 probe, which did not reproduce because beta's `pnf-anvil` session now spans three operators (the refusal is covered by unit tests).
 
 ## 1. Why one pass
 
@@ -183,13 +182,22 @@ Package `traffic`:
   `maxFingerprints` distinct entries a new fingerprint increments an `overflow`
   counter instead of being stored, and the report says so.
 - Hooked from the Observe middleware on the 100% path (before the async queue),
-  behind flag `request_sampler` (default on). Cost: one counter increment per relay,
-  a hash on 1% of relays.
+  behind flag `request_sampler` (default on). Cost on the hot path: a map lookup for
+  the service and a single atomic increment — no lock, because 99 relays in 100 have
+  nothing to record. The sampled hundredth pays, per payload, a gjson lookup for
+  `params`, a JSON compaction of it and one FNV-64 hash; a non-JSON-RPC payload has no
+  `params` to reduce to, so its body is compacted and hashed capped at the first 4 KiB
+  (two such bodies identical in that prefix share a fingerprint). All of that runs
+  before the per-service lock is taken, so sampled relays do not serialise behind each
+  other's hashing.
 - `GET /admin/request-sample` → per-service summary; `GET /admin/request-sample/{serviceID}?window=current|previous&top=20` → the window's summary plus top-N fingerprints.
   Summary fields: `sampled`, `distinct`, `distinct_ratio`, `top1_share`, `overflow`,
   `per_method: {method: {sampled, distinct, distinct_ratio}}`, `window_start`, `window_end`.
 - Gauges (scrape-time collector, `service_id` only): `sage_request_sample_distinct_ratio`
-  and `sage_request_sample_top_share`, read from the previous (complete) window.
+  and `sage_request_sample_top_share`, read from the previous (complete) window. Windows
+  roll when traffic arrives, so a service that goes quiet freezes its windows; a previous
+  window that ended more than two window lengths ago is not reported at all, and the
+  series goes absent rather than describing traffic that stopped.
 
 ## 7. Cross-cutting
 
@@ -206,6 +214,7 @@ Package `traffic`:
   `purroofgroup.com` — `sage_drained_operators` shows it, health checks skip it,
   release restores; reset `pnf-anvil` — heights repopulate within a cycle; reload after
   editing `hedge_delay` — next relay uses it, `needs_restart` names a changed key.
+  The `pocket.network` last-operator check depends on beta's session topology and was not reproducible on 2026-08-27.
 
 ## 8. Open items
 

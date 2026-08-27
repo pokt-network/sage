@@ -44,6 +44,7 @@ type cosmosEndpoint struct {
 //   - qos.DataExtractor
 //   - qos.LifecycleHooks
 //   - qos.MethodNormalizer
+//   - qos.StateResetter
 type Plugin struct {
 	logger            *slog.Logger
 	syncAllowance     uint64
@@ -105,6 +106,7 @@ var (
 	_ qos.HealthChecker      = (*Plugin)(nil)
 	_ qos.DataExtractor      = (*Plugin)(nil)
 	_ qos.LifecycleHooks     = (*Plugin)(nil)
+	_ qos.StateResetter      = (*Plugin)(nil)
 )
 
 // NewPlugin creates a Cosmos QoS plugin for a single service.
@@ -384,4 +386,16 @@ func (p *Plugin) OnEndpointDiscovered(_ domain.ServiceID, endpoint domain.Endpoi
 // OnEndpointEvicted is called when an endpoint is removed from the known set.
 func (p *Plugin) OnEndpointEvicted(_ domain.ServiceID, endpoint domain.EndpointAddr) {
 	p.logger.Debug("cosmos: endpoint evicted", "endpoint", endpoint)
+}
+
+// --- qos.StateResetter ---
+
+// ResetState discards the block consensus and every per-endpoint observation
+// (block height, chain ID) this plugin has learned. It is the admin
+// chain-state reset: nothing else about the plugin's configuration changes,
+// and the next health-check cycle and the next relays repopulate both from
+// scratch.
+func (p *Plugin) ResetState() {
+	p.consensus.Reset()
+	p.store.Clear()
 }

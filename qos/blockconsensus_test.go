@@ -230,3 +230,34 @@ func TestBlockConsensus_ZeroHeightStillIgnored(t *testing.T) {
 		t.Errorf("perceived = %d, want 100 — zero is not an observation", got)
 	}
 }
+
+// TestBlockConsensus_Reset pins what an operator-triggered reset discards: the
+// observation window, the derived perceived height, and the external floor —
+// and that the grace period restarts, so a floor set again right after reset
+// does not apply until a fresh grace window elapses.
+func TestBlockConsensus_Reset(t *testing.T) {
+	bc := NewBlockConsensus(nil, 5)
+	bc.AddObservation("ep1", 100)
+	bc.SetExternalFloor(50)
+	if got := bc.PerceivedBlock(); got != 100 {
+		t.Fatalf("perceived = %d before Reset, want 100", got)
+	}
+
+	bc.Reset()
+
+	if got := bc.PerceivedBlock(); got != 0 {
+		t.Fatalf("PerceivedBlock() = %d after Reset, want 0", got)
+	}
+	if got := bc.externalFloor.Load(); got != 0 {
+		t.Fatalf("externalFloor = %d after Reset, want 0", got)
+	}
+	bc.mu.RLock()
+	n := len(bc.observations)
+	bc.mu.RUnlock()
+	if n != 0 {
+		t.Fatalf("observations = %d after Reset, want 0", n)
+	}
+	if bc.graceStart.Before(time.Now().Add(-time.Second)) {
+		t.Fatalf("graceStart = %v, want restarted to roughly now", bc.graceStart)
+	}
+}

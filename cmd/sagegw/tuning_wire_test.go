@@ -33,9 +33,10 @@ func tuningTestConfig() *config.Config {
 // consult the store, or the admin API accepts changes that never take effect.
 func TestTuningOverridesReachTheMiddlewares(t *testing.T) {
 	cfg := tuningTestConfig()
+	cfgFn := func() *config.Config { return cfg }
 	store := tuning.NewStore()
-	retryFn := newRetryFn(cfg, store)
-	timeoutFn := newTimeoutFn(cfg, store)
+	retryFn := newRetryFn(cfgFn, store)
+	timeoutFn := newTimeoutFn(cfgFn, store)
 
 	// Config values, before anyone overrides anything.
 	if got := retryFn("eth").MaxRetries; got != 4 {

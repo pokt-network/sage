@@ -140,6 +140,16 @@ func (s *EndpointStore[T]) Range(fn func(domain.EndpointAddr, T) bool) {
 	}
 }
 
+// Clear removes every stored endpoint. It exists for an operator-triggered
+// chain-state reset: the store repopulates from the next health-check cycle
+// and the next relays, and an endpoint the store no longer knows is treated
+// as unknown, which callers already let through.
+func (s *EndpointStore[T]) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.endpoints = make(map[domain.EndpointAddr]storedEndpoint[T])
+}
+
 // Count returns the number of stored endpoints.
 func (s *EndpointStore[T]) Count() int {
 	s.mu.RLock()

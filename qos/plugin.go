@@ -118,3 +118,17 @@ type LifecycleHooks interface {
 	OnEndpointDiscovered(serviceID domain.ServiceID, endpoint domain.EndpointAddr)
 	OnEndpointEvicted(serviceID domain.ServiceID, endpoint domain.EndpointAddr)
 }
+
+// StateResetter is implemented by plugins that hold learned chain state — block
+// consensus, per-endpoint heights, chain-id assertions, archival marks — that an
+// operator may need to discard without a restart.
+type StateResetter interface {
+	// ResetState discards everything the plugin has learned for its service:
+	// block consensus (perceived height, external floor) and any per-endpoint
+	// QoS state (heights, chain-id observations, archival marks). Nothing else
+	// is touched, and nothing is unsafe about the moment right after — an
+	// endpoint the store no longer knows is treated as unknown, which
+	// SelectEndpoints already lets through, so the next health-check cycle and
+	// the next relays simply repopulate it.
+	ResetState()
+}

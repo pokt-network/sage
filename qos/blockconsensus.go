@@ -33,6 +33,21 @@ type BlockConsensus struct {
 	gracePeriod   time.Duration
 }
 
+// storeHook, when set, is called with "add" or "reset" immediately before the
+// perceived height is published, while mu is held. It exists for one test —
+// blockconsensus_ordering_test.go — which cannot otherwise wedge itself
+// between the computation and the store to prove the two happen together: the
+// interleaving that used to corrupt a reset is real but too narrow to
+// reproduce reliably by racing goroutines. Nothing outside a test ever sets
+// it; the hot path pays one atomic load, next to the atomic store it guards.
+var storeHook atomic.Pointer[func(string)]
+
+func beforeStoreHook(op string) {
+	if h := storeHook.Load(); h != nil {
+		(*h)(op)
+	}
+}
+
 type blockObs struct {
 	Endpoint  domain.EndpointAddr
 	Height    uint64
@@ -95,9 +110,16 @@ func (bc *BlockConsensus) AddObservation(endpoint domain.EndpointAddr, height ui
 	})
 
 	perceived := bc.computePerceived(now)
-	bc.mu.Unlock()
-
+	// Stored under mu, not after it. The atomic exists so PerceivedBlock() can
+	// read without a lock; it does not make the write orderable against Reset.
+	// With the store outside, a Reset could take mu, clear everything and
+	// publish 0 in the window between this unlock and this store — and then
+	// this store would put the poisoned height straight back, moments after
+	// the operator was told the reset had happened. Writing here costs the hot
+	// path nothing: mu is already held.
+	beforeStoreHook("add")
 	bc.perceived.Store(perceived)
+	bc.mu.Unlock()
 }
 
 // PerceivedBlock returns the current perceived block height (atomic, zero-contention).
@@ -108,6 +130,29 @@ func (bc *BlockConsensus) PerceivedBlock() uint64 {
 // SetExternalFloor sets the external block height floor (e.g., from external block sources).
 func (bc *BlockConsensus) SetExternalFloor(height uint64) {
 	bc.externalFloor.Store(height)
+}
+
+// Reset discards every observation, zeroes the perceived height and the
+// external floor, and restarts the grace window.
+//
+// It exists for an operator to throw away a poisoned perceived height (a
+// supplier that briefly lied, or an external floor set from a since-corrected
+// source) without a restart. Restarting the grace window matters as much as
+// zeroing the floor: without it, a floor set again immediately after Reset
+// would apply on the very next observation instead of waiting out a fresh
+// cold-start window like it would for a plugin that had never seen traffic.
+// Both stores happen under mu for the same reason AddObservation's does: the
+// atomics are there for lock-free reads, and outside the lock a reset and an
+// in-flight observation can interleave so that the height the operator just
+// threw away is the one left standing.
+func (bc *BlockConsensus) Reset() {
+	bc.mu.Lock()
+	bc.observations = bc.observations[:0]
+	bc.graceStart = time.Now()
+	beforeStoreHook("reset")
+	bc.perceived.Store(0)
+	bc.externalFloor.Store(0)
+	bc.mu.Unlock()
 }
 
 // SetSyncAllowance updates the sync allowance used for outlier filtering.

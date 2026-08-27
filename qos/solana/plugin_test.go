@@ -366,3 +366,31 @@ func TestSelectEndpoints_MeasuredStalenessStillFilters(t *testing.T) {
 		t.Errorf("a measurably stale endpoint survived the filter: %v", got)
 	}
 }
+
+// TestResetState pins what an operator-triggered chain-state reset discards:
+// the perceived block height and the per-endpoint QoS store.
+func TestResetState(t *testing.T) {
+	p := solana.NewPlugin(nil, 100)
+
+	addrs := domain.EndpointAddrList{"a", "b"}
+	p.UpdateBlockHeight("a", 300_000_000)
+	p.UpdateBlockHeight("b", 1) // far behind; would be filtered pre-reset
+
+	if got := p.PerceivedBlockHeight(); got == 0 {
+		t.Fatalf("expected nonzero perceived block height before reset, got %d", got)
+	}
+
+	p.ResetState()
+
+	if got := p.PerceivedBlockHeight(); got != 0 {
+		t.Fatalf("PerceivedBlockHeight() = %d after ResetState, want 0", got)
+	}
+
+	selected, err := p.SelectEndpoints(addrs, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(selected) != len(addrs) {
+		t.Fatalf("SelectEndpoints after ResetState = %v, want every endpoint to pass (%v)", selected, addrs)
+	}
+}

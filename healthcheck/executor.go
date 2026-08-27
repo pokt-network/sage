@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -39,11 +41,17 @@ type Executor struct {
 
 	// configured holds health checks declared in YAML. They run in addition to
 	// the plugin's own checks, never instead of them.
-	configured *ConfiguredChecks
+	//
+	// Atomic because a config reload replaces the whole set from the reload's
+	// own goroutine while a check cycle is reading it. A plain field write
+	// there is a data race, and the swap is wholesale — the loop wants one
+	// consistent set per cycle, not a half-updated map.
+	configured atomic.Pointer[ConfiguredChecks]
 
 	// dedupByBackendURL fires one relay per unique backend URL rather than one
 	// per supplier, fanning the result to the other suppliers on that URL.
-	dedupByBackendURL bool
+	// Atomic for the same reason as configured.
+	dedupByBackendURL atomic.Bool
 	// cycle counts completed health-check rounds. It rotates which supplier
 	// represents each backend so no single registration carries every probe.
 	cycle uint64
@@ -71,30 +79,34 @@ func NewExecutor(
 	if workers <= 0 {
 		workers = defaultWorkers
 	}
-	return &Executor{
-		protocol:          protocol,
-		endpoints:         endpoints,
-		sessions:          sessions,
-		qosRegistry:       qosReg,
-		repService:        repSvc,
-		obsQueue:          obsQueue,
-		logger:            logger,
-		interval:          interval,
-		workers:           workers,
-		dedupByBackendURL: true,
+	e := &Executor{
+		protocol:    protocol,
+		endpoints:   endpoints,
+		sessions:    sessions,
+		qosRegistry: qosReg,
+		repService:  repSvc,
+		obsQueue:    obsQueue,
+		logger:      logger,
+		interval:    interval,
+		workers:     workers,
 	}
+	e.dedupByBackendURL.Store(true)
+	return e
 }
 
 // SetBackendURLDedup turns per-backend deduplication on or off. On by default;
 // see HealthCheckConfig.DisableBackendURLDedup for why.
 func (e *Executor) SetBackendURLDedup(enabled bool) {
-	e.dedupByBackendURL = enabled
+	e.dedupByBackendURL.Store(enabled)
 }
 
 // SetConfiguredChecks attaches operator-declared checks. Passing nil, or not
 // calling this at all, leaves only the plugin's checks running.
+//
+// Safe to call while the executor is running: a config reload calls it from
+// its own goroutine, and the swap takes effect on the next cycle.
 func (e *Executor) SetConfiguredChecks(c *ConfiguredChecks) {
-	e.configured = c
+	e.configured.Store(c)
 }
 
 // Start begins the background health check loop. It is safe to call Start
@@ -137,6 +149,11 @@ func (e *Executor) runOnce(ctx context.Context) {
 		return
 	}
 
+	// Read the configured checks once per cycle rather than per service: a
+	// reload landing mid-cycle should change the next round, not half of this
+	// one.
+	configured := e.configured.Load()
+
 	// Semaphore limits concurrent workers.
 	sem := make(chan struct{}, e.workers)
 
@@ -165,7 +182,13 @@ func (e *Executor) runOnce(ctx context.Context) {
 			probe := group.probe(e.cycle)
 			// Plugin checks first: they feed block height and chain ID
 			// tracking, so they must run even when a config adds its own.
-			checks := append(checker.HealthChecks(probe), e.configured.For(serviceID)...)
+			//
+			// slices.Concat, not append: the slice a plugin returns is the
+			// plugin's, and appending to it writes into its backing array
+			// whenever it has spare capacity — one service's configured checks
+			// landing in the array a plugin hands to every service. Concat
+			// always allocates.
+			checks := slices.Concat(checker.HealthChecks(probe), configured.For(serviceID))
 			if len(checks) == 0 {
 				continue
 			}
@@ -176,7 +199,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 				defer safego.Recover(e.logger, "healthcheck.endpoint")
 				defer e.wg.Done()
 				defer func() { <-sem }()
-				e.checkEndpoint(ctx, serviceID, probe, group.endpoints, plugin, checks)
+				e.checkEndpoint(ctx, serviceID, probe, group.endpoints, plugin, checks, configured)
 			}()
 		}
 	}
@@ -204,7 +227,7 @@ func (g backendGroup) probe(cycle uint64) domain.EndpointAddr {
 // With deduplication off, every endpoint becomes its own group and the caller's
 // behavior is unchanged.
 func (e *Executor) groupByBackend(eps domain.EndpointAddrList) []backendGroup {
-	if !e.dedupByBackendURL {
+	if !e.dedupByBackendURL.Load() {
 		groups := make([]backendGroup, 0, len(eps))
 		for _, ep := range eps {
 			groups = append(groups, backendGroup{endpoints: domain.EndpointAddrList{ep}})
@@ -234,6 +257,11 @@ func (e *Executor) groupByBackend(eps domain.EndpointAddrList) []backendGroup {
 
 // checkEndpoint runs all health checks against probe and applies the results to
 // every endpoint sharing its backend (probe included).
+//
+// configured is the cycle's own snapshot of the operator-declared rules,
+// threaded down rather than re-read: the checks being run came from it, so
+// grading their failures against a set that has since been swapped would
+// penalise an endpoint by a rule that is no longer in the file.
 func (e *Executor) checkEndpoint(
 	ctx context.Context,
 	serviceID domain.ServiceID,
@@ -241,9 +269,10 @@ func (e *Executor) checkEndpoint(
 	siblings domain.EndpointAddrList,
 	plugin qos.Plugin,
 	checks []qos.HealthCheck,
+	configured *ConfiguredChecks,
 ) {
 	for _, check := range checks {
-		e.sendCheck(ctx, serviceID, probe, siblings, plugin, check)
+		e.sendCheck(ctx, serviceID, probe, siblings, plugin, check, configured)
 	}
 }
 
@@ -321,6 +350,7 @@ func (e *Executor) sendCheck(
 	siblings domain.EndpointAddrList,
 	plugin qos.Plugin,
 	check qos.HealthCheck,
+	configured *ConfiguredChecks,
 ) {
 	start := time.Now()
 
@@ -391,8 +421,8 @@ func (e *Executor) sendCheck(
 	if e.repService != nil {
 		signal := checkSignal(check.Name, resp.HTTPStatusCode, extractErr, latency)
 		if failed := resp.HTTPStatusCode < 200 || resp.HTTPStatusCode >= 300 || extractErr != nil; failed {
-			if configured, ok := e.configured.SignalFor(check.Name, "health_check: "+check.Name, latency); ok {
-				signal = configured
+			if declared, ok := configured.SignalFor(check.Name, "health_check: "+check.Name, latency); ok {
+				signal = declared
 			}
 		}
 		for _, sibling := range siblings {

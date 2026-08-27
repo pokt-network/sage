@@ -200,6 +200,17 @@ func (p *Plugin) OnEndpointDiscovered(_ domain.ServiceID, _ domain.EndpointAddr)
 // OnEndpointEvicted is called when an endpoint is permanently evicted.
 func (p *Plugin) OnEndpointEvicted(_ domain.ServiceID, _ domain.EndpointAddr) {}
 
+// --- qos.StateResetter --- //
+
+// ResetState discards the block consensus and every per-endpoint observation
+// this plugin has learned. It is the admin chain-state reset: nothing else
+// about the plugin's configuration changes, and the next health-check cycle
+// and the next relays repopulate both from scratch.
+func (p *Plugin) ResetState() {
+	p.consensus.Reset()
+	p.store.Clear()
+}
+
 // --- payload helpers --- //
 
 func epochInfoPayload() domain.Payload {
@@ -231,4 +242,5 @@ var (
 	_ qos.DataExtractor         = (*Plugin)(nil)
 	_ qos.CoalescenceClassifier = (*Plugin)(nil)
 	_ qos.LifecycleHooks        = (*Plugin)(nil)
+	_ qos.StateResetter         = (*Plugin)(nil)
 )

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/internal/safego"
+	"github.com/pokt-network/sage/reload"
 	"github.com/pokt-network/sage/router"
 )
 
@@ -65,6 +67,12 @@ func main() {
 	if err != nil {
 		log.Fatalf(`{"level":"fatal","error":"%v","message":"failed to build application"}`, err)
 	}
+	// Build only takes the already-parsed *config.Config, not the path it came
+	// from, so a reload (which needs to re-read the file) is threaded through
+	// here instead. Empty when config came from GATEWAY_CONFIG rather than
+	// -config: that source is inline YAML, not a path, so there is nothing to
+	// re-read from disk.
+	app.ConfigPath = *configPath
 
 	// Log startup summary
 	services := cfg.Gateway.AllServices()
@@ -187,15 +195,32 @@ func main() {
 		"admin", fmt.Sprintf("http://%s/admin/flags", cfg.Admin.Addr),
 	)
 
-	// Wait for shutdown signal or server error
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	// Wait for shutdown signal or server error. SIGHUP is in the same set but
+	// is not a shutdown: it re-reads the config file, the same way POST
+	// /admin/reload does, and the loop goes back to waiting. Handling it here
+	// rather than in its own goroutine keeps signal handling in one place, and
+	// keeps a reload from racing the shutdown path.
+	// Buffered for four: signal.Notify drops a signal rather than blocking
+	// when the channel is full, and a reload takes long enough (a file read,
+	// a validation pass, several swaps) that a SIGTERM arriving during one
+	// must not be the signal that gets dropped.
+	stop := make(chan os.Signal, 4)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
-	select {
-	case sig := <-stop:
-		logger.Info("Shutdown signal received", "signal", sig.String())
-	case err := <-errCh:
-		logger.Error("Server error", "error", err)
+waiting:
+	for {
+		select {
+		case sig := <-stop:
+			if sig == syscall.SIGHUP {
+				reloadOnSignal(ctx, app, logger)
+				continue waiting
+			}
+			logger.Info("Shutdown signal received", "signal", sig.String())
+			break waiting
+		case err := <-errCh:
+			logger.Error("Server error", "error", err)
+			break waiting
+		}
 	}
 
 	// Graceful shutdown
@@ -226,6 +251,44 @@ func main() {
 	}
 
 	logger.Info("SAGE exited")
+}
+
+// reloadOnSignal performs a SIGHUP reload and says what happened.
+//
+// It never exits. A config file that has been edited into an invalid state is
+// a thing an operator fixes and re-signals; a gateway that killed itself over
+// it would turn a typo into an outage, having been serving traffic perfectly
+// well a moment earlier.
+//
+// needs_restart is logged at WARN rather than INFO on purpose: it is the half
+// of the reload that did NOT happen, and it is the half an operator is most
+// likely to assume did.
+func reloadOnSignal(ctx context.Context, app *App, logger *slog.Logger) {
+	result, err := app.Reload(ctx)
+	switch {
+	case errors.Is(err, reload.ErrNoConfigFile):
+		logger.Warn("SIGHUP ignored: "+reload.ErrNoConfigFile.Error(),
+			"hint", "start with -config <path> for SIGHUP and POST /admin/reload to have a file to re-read")
+		return
+	case err != nil:
+		logger.Error("SIGHUP: config reload refused, nothing changed", "error", err)
+		return
+	}
+
+	logger.Info("SIGHUP: config reloaded", "applied", result.Applied)
+	if len(result.NeedsRestart) > 0 {
+		logger.Warn("config sections changed that a running gateway cannot apply — they are NOT in effect until a restart",
+			"needs_restart", result.NeedsRestart)
+	}
+	for _, warning := range result.Warnings {
+		logger.Warn("config reload: " + warning)
+	}
+	for _, f := range result.Ignored {
+		logger.Warn("config key ignored: SAGE does not implement this setting, and it has no effect", "detail", f)
+	}
+	for _, f := range result.Inert {
+		logger.Warn("config key has no effect: SAGE parses this setting but nothing reads it", "detail", f)
+	}
 }
 
 func loadConfig(path string) (*config.Config, error) {

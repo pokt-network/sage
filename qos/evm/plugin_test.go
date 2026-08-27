@@ -891,3 +891,37 @@ func TestIsArchivalRequest_Earliest(t *testing.T) {
 		t.Fatal("latest must not count as archival")
 	}
 }
+
+// TestResetState pins what an operator-triggered chain-state reset discards:
+// the perceived block height and the per-endpoint QoS store. It is the
+// revert-check for ResetState — make it a no-op and this fails, because
+// PerceivedBlockHeight would still read the pre-reset height and the stale
+// endpoint would still be filtered out of SelectEndpoints.
+func TestResetState(t *testing.T) {
+	p := newTestPlugin(5)
+
+	addrs := domain.EndpointAddrList{"a", "b"}
+	p.UpdateBlockHeight("a", 100)
+	p.UpdateBlockHeight("b", 10) // far behind; would be filtered pre-reset
+
+	if got := p.PerceivedBlockHeight(); got == 0 {
+		t.Fatalf("expected nonzero perceived block height before reset, got %d", got)
+	}
+
+	p.ResetState()
+
+	if got := p.PerceivedBlockHeight(); got != 0 {
+		t.Fatalf("PerceivedBlockHeight() = %d after ResetState, want 0", got)
+	}
+
+	payloads := []domain.Payload{
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`), domain.RPCTypeJSONRPC, "eth_blockNumber"),
+	}
+	selected, err := p.SelectEndpoints(addrs, payloads)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(selected) != len(addrs) {
+		t.Fatalf("SelectEndpoints after ResetState = %v, want every endpoint to pass (%v)", selected, addrs)
+	}
+}

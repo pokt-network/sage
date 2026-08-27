@@ -130,7 +130,9 @@ pre {
   <button data-tab="flags" aria-current="true">Flags</button>
   <button data-tab="tuning">Tuning</button>
   <button data-tab="reputation">Reputation</button>
+  <button data-tab="drain">Drain</button>
   <button data-tab="breakers">Circuit breakers</button>
+  <button data-tab="traffic">Traffic</button>
   <button data-tab="config">Config</button>
 </nav>
 
@@ -185,6 +187,48 @@ pre {
         A reset spans every RPC type: an operator resetting an endpoint means the
         endpoint, not whichever protocol they happened to name.
       </p>
+      <div class="row" style="margin-top:14px; border-top:1px solid var(--line); padding-top:14px">
+        <button class="act danger" id="rep-clear-state">Clear chain state</button>
+        <span class="empty">discards learned block heights, chain-id checks and archival marks for the selected service</span>
+      </div>
+    </div>
+  </section>
+
+  <section data-tab="drain">
+    <div class="card">
+      <h2>Operator drains</h2>
+      <p class="note">
+        A drain benches every endpoint whose URL resolves to the given registrable
+        domain, for one RPC type or all of them, until it expires. Draining the last
+        operator standing for a service is refused (409): selection would have
+        nothing left to pick from.
+      </p>
+      <div class="row" style="margin-bottom:12px">
+        <select id="drain-service"></select>
+        <button class="act" id="drain-load">Load</button>
+      </div>
+      <table id="drain-table"><thead>
+        <tr><th>Domain</th><th>RPC type</th><th>Until</th><th>Reason</th><th></th></tr>
+      </thead><tbody></tbody></table>
+
+      <h3 style="margin-top:18px">Set / release a drain</h3>
+      <p class="note">Duration <code>0</code> releases an existing drain instead of installing one.</p>
+      <div class="row">
+        <input id="drain-domain" class="mono" placeholder="operator domain" size="20">
+        <input id="drain-duration" class="mono" placeholder="duration (e.g. 30m, 0)" size="16">
+        <select id="drain-rpc-type">
+          <option value="">all</option>
+          <option value="json_rpc">json_rpc</option>
+          <option value="rest">rest</option>
+          <option value="comet_bft">comet_bft</option>
+          <option value="websocket">websocket</option>
+          <option value="grpc">grpc</option>
+        </select>
+        <input id="drain-reason" placeholder="reason (optional)" size="20">
+        <label class="row" style="gap:4px"><input type="checkbox" id="drain-dry-run"> dry run</label>
+        <button class="act primary" id="drain-submit">Submit</button>
+      </div>
+      <pre id="drain-result" style="margin-top:12px; display:none"></pre>
     </div>
   </section>
 
@@ -208,6 +252,39 @@ pre {
     </div>
   </section>
 
+  <section data-tab="traffic">
+    <div class="card">
+      <h2>Request shape sampler</h2>
+      <p class="note">
+        A 1-in-N sample of relays per service, fingerprinted by method and compacted
+        params. High distinct_ratio or a low top1_share on a service expected to be
+        repetitive is worth a closer look.
+      </p>
+      <table id="traffic-table"><thead>
+        <tr><th>Service</th><th>Window</th><th>Sampled</th><th>Distinct</th><th>Distinct ratio</th><th>Top1 share</th><th>Overflow</th><th>Method overflow</th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+    <div class="card" id="traffic-detail" style="display:none">
+      <h2 id="traffic-detail-title">—</h2>
+      <div class="row" style="margin-bottom:12px">
+        <select id="traffic-window">
+          <option value="previous">previous</option>
+          <option value="current">current</option>
+        </select>
+        <input id="traffic-top" class="mono" size="4" value="20" placeholder="top">
+        <button class="act" id="traffic-detail-load">Reload</button>
+      </div>
+      <h3>Per method</h3>
+      <table id="traffic-method-table"><thead>
+        <tr><th>Method</th><th>Sampled</th><th>Distinct</th><th>Distinct ratio</th></tr>
+      </thead><tbody></tbody></table>
+      <h3 style="margin-top:16px">Top fingerprints</h3>
+      <table id="traffic-top-table"><thead>
+        <tr><th>Method</th><th>Count</th><th>Share</th><th>Sample</th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+  </section>
+
   <section data-tab="config">
     <div class="card">
       <h2>Effective configuration</h2>
@@ -216,6 +293,16 @@ pre {
         defaults have been applied and flags may have changed since startup.
       </p>
       <pre id="config-dump">…</pre>
+    </div>
+    <div class="card">
+      <h2>Reload</h2>
+      <p class="note">
+        Re-reads the config file this process started with and applies the sections
+        that have a runtime seam. A file that would not boot is refused and nothing
+        changes.
+      </p>
+      <button class="act primary" id="reload-config">Reload config</button>
+      <div id="reload-result" style="margin-top:12px"></div>
     </div>
   </section>
 </main>
@@ -415,6 +502,87 @@ async function resetReputation() {
   }
 }
 
+async function clearChainState() {
+  const serviceID = $("#rep-service").value;
+  if (!serviceID) return toast("service is required", true);
+  try {
+    const res = await api("/admin/chain-state/clear/" + encodeURIComponent(serviceID), { method: "POST" });
+    toast(res.reset ? "chain state cleared for " + serviceID : (res.message || "nothing to clear"));
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// --- drain ---
+
+async function loadDrains() {
+  const serviceID = $("#drain-service").value;
+  if (!serviceID) return;
+  const entries = await api("/admin/reputation/drain/" + encodeURIComponent(serviceID));
+  const tbody = $("#drain-table tbody");
+  tbody.replaceChildren();
+
+  if (entries.length === 0) {
+    tbody.append(el("tr", {}, el("td", { colSpan: 5, className: "empty", textContent: "no active drains" })));
+    return;
+  }
+  for (const entry of entries) {
+    const release = el("button", { className: "act danger", textContent: "Release" });
+    release.addEventListener("click", () => releaseDrain(serviceID, entry.domain));
+    tbody.append(el("tr", {},
+      el("td", { className: "mono", textContent: entry.domain }),
+      el("td", { className: "mono", textContent: entry.rpc_type || "all" }),
+      el("td", { className: "mono", textContent: entry.until }),
+      el("td", { textContent: entry.reason || "—" }),
+      el("td", {}, release),
+    ));
+  }
+}
+
+async function submitDrain() {
+  const serviceID = $("#drain-service").value;
+  const domainName = $("#drain-domain").value.trim();
+  const duration = $("#drain-duration").value.trim();
+  if (!serviceID) return toast("service is required", true);
+  if (!domainName) return toast("domain is required", true);
+  if (!duration) return toast("duration is required", true);
+
+  const body = {
+    domain: domainName,
+    duration: duration,
+    rpc_type: $("#drain-rpc-type").value || undefined,
+    reason: $("#drain-reason").value.trim() || undefined,
+    dry_run: $("#drain-dry-run").checked,
+  };
+
+  const out = $("#drain-result");
+  out.style.display = "";
+  try {
+    const res = await api("/admin/reputation/drain/" + encodeURIComponent(serviceID), {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    out.textContent = JSON.stringify(res, null, 2);
+    toast(res.dry_run ? "dry run: " + res.matched_endpoints + " endpoint(s) matched"
+      : res.released ? "released " + res.domain
+      : "drained " + res.domain + " until " + res.drained_until);
+    if (!res.dry_run) loadDrains();
+  } catch (err) {
+    out.textContent = err.message;
+    toast(err.message, true);
+  }
+}
+
+async function releaseDrain(serviceID, domainName) {
+  try {
+    await api("/admin/reputation/drain/" + encodeURIComponent(serviceID) + "/" + encodeURIComponent(domainName), { method: "DELETE" });
+    toast("released " + domainName);
+    loadDrains();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
 // --- circuit breakers ---
 
 async function loadBreakers() {
@@ -458,13 +626,123 @@ async function loadConfig() {
   $("#config-dump").textContent = JSON.stringify(cfg, null, 2);
 
   services = (cfg.services || []).slice().sort();
-  for (const sel of [$("#rep-service"), $("#cb-service")]) {
+  for (const sel of [$("#rep-service"), $("#cb-service"), $("#drain-service")]) {
     const previous = sel.value;
     sel.replaceChildren();
     for (const id of services) sel.append(el("option", { value: id, textContent: id }));
     if (previous) sel.value = previous;
   }
   $("#conn").textContent = services.length + " service" + (services.length === 1 ? "" : "s");
+}
+
+// --- reload ---
+
+function reloadResultList(label, items) {
+  if (!items || items.length === 0) {
+    return el("p", { className: "note", textContent: label + ": none" });
+  }
+  const list = el("ul", { style: "margin:4px 0 0 18px; padding:0" });
+  for (const item of items) list.append(el("li", { className: "mono", textContent: item }));
+  return el("div", {}, el("strong", { textContent: label }), list);
+}
+
+async function reloadConfig() {
+  const out = $("#reload-result");
+  out.replaceChildren();
+  try {
+    const res = await api("/admin/reload", { method: "POST" });
+    out.append(
+      reloadResultList("applied", res.applied),
+      reloadResultList("needs_restart", res.needs_restart),
+      reloadResultList("warnings", res.warnings),
+      reloadResultList("ignored", res.ignored),
+      reloadResultList("inert", res.inert),
+    );
+    toast("config reloaded");
+    loadConfig();
+  } catch (err) {
+    out.append(el("div", { className: "banner err", textContent: err.message }));
+    toast(err.message, true);
+  }
+}
+
+// --- traffic ---
+
+async function loadTraffic() {
+  const samples = await api("/admin/request-sample");
+  const tbody = $("#traffic-table tbody");
+  tbody.replaceChildren();
+
+  const ids = Object.keys(samples).sort();
+  if (ids.length === 0) {
+    tbody.append(el("tr", {}, el("td", { colSpan: 8, className: "empty", textContent: "no traffic sampled yet" })));
+    return;
+  }
+  for (const id of ids) {
+    const { window: win, summary } = samples[id];
+    const row = el("tr", { style: "cursor:pointer" },
+      el("td", { className: "mono", textContent: id }),
+      el("td", { className: "mono", textContent: win }),
+      el("td", { className: "mono", textContent: String(summary.sampled) }),
+      el("td", { className: "mono", textContent: String(summary.distinct) }),
+      el("td", { className: "mono", textContent: summary.distinct_ratio.toFixed(3) }),
+      el("td", { className: "mono", textContent: summary.top1_share.toFixed(3) }),
+      el("td", { className: "mono", textContent: String(summary.overflow) }),
+      el("td", { className: "mono", textContent: String(summary.method_overflow) }),
+    );
+    row.addEventListener("click", () => loadTrafficDetail(id));
+    tbody.append(row);
+  }
+}
+
+async function loadTrafficDetail(serviceID) {
+  $("#traffic-detail").style.display = "";
+  $("#traffic-detail-title").textContent = serviceID;
+
+  const win = $("#traffic-window").value || "previous";
+  const top = $("#traffic-top").value || "20";
+
+  try {
+    const res = await api("/admin/request-sample/" + encodeURIComponent(serviceID) +
+      "?window=" + encodeURIComponent(win) + "&top=" + encodeURIComponent(top));
+
+    const methodBody = $("#traffic-method-table tbody");
+    methodBody.replaceChildren();
+    const perMethod = res.summary.per_method || {};
+    const methods = Object.keys(perMethod).sort();
+    if (methods.length === 0) {
+      methodBody.append(el("tr", {}, el("td", { colSpan: 4, className: "empty", textContent: "no methods recorded" })));
+    } else {
+      for (const method of methods) {
+        const stats = perMethod[method];
+        methodBody.append(el("tr", {},
+          el("td", { className: "mono", textContent: method }),
+          el("td", { className: "mono", textContent: String(stats.sampled) }),
+          el("td", { className: "mono", textContent: String(stats.distinct) }),
+          el("td", { className: "mono", textContent: stats.distinct_ratio.toFixed(3) }),
+        ));
+      }
+    }
+
+    const topBody = $("#traffic-top-table tbody");
+    topBody.replaceChildren();
+    const top_ = res.top || [];
+    if (top_.length === 0) {
+      topBody.append(el("tr", {}, el("td", { colSpan: 4, className: "empty", textContent: "no fingerprints recorded" })));
+    } else {
+      for (const fp of top_) {
+        topBody.append(el("tr", {},
+          el("td", { className: "mono", textContent: fp.method }),
+          el("td", { className: "mono", textContent: String(fp.count) }),
+          el("td", { className: "mono", textContent: fp.share.toFixed(3) }),
+          // fp.sample is client-supplied payload text; textContent escapes it.
+          el("td", { className: "mono", textContent: fp.sample }),
+        ));
+      }
+    }
+  } catch (err) {
+    toast(err.message, true);
+  }
 }
 
 // --- wiring ---
@@ -485,6 +763,7 @@ document.querySelectorAll("nav button").forEach((button) => {
     document.querySelectorAll("section").forEach((s) => {
       s.toggleAttribute("data-active", s.dataset.tab === button.dataset.tab);
     });
+    if (button.dataset.tab === "traffic") loadTraffic().catch((e) => toast(e.message, true));
   });
 });
 
@@ -497,8 +776,16 @@ $("#token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#save
 $("#refresh").addEventListener("click", refresh);
 $("#rep-load").addEventListener("click", () => loadReputation().catch((e) => toast(e.message, true)));
 $("#rep-reset").addEventListener("click", resetReputation);
+$("#rep-clear-state").addEventListener("click", clearChainState);
+$("#drain-load").addEventListener("click", () => loadDrains().catch((e) => toast(e.message, true)));
+$("#drain-submit").addEventListener("click", submitDrain);
 $("#cb-load").addEventListener("click", () => loadBreakers().catch((e) => toast(e.message, true)));
 $("#cb-clear").addEventListener("click", clearBreakers);
+$("#reload-config").addEventListener("click", reloadConfig);
+$("#traffic-detail-load").addEventListener("click", () => {
+  const title = $("#traffic-detail-title").textContent;
+  if (title && title !== "—") loadTrafficDetail(title);
+});
 
 if (token) $("#token").value = token;
 refresh();

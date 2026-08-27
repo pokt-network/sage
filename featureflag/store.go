@@ -25,6 +25,16 @@ type FlagStore interface {
 
 	// Delete removes a flag globally, or a per-service override if serviceID is non-empty.
 	Delete(ctx context.Context, flag string, serviceID domain.ServiceID) error
+
+	// DeleteGlobal removes only the global value of a flag, leaving every
+	// per-service override in place.
+	//
+	// The narrow half of Delete, and the one a config reload needs. A flag
+	// dropped from feature_flags in the YAML has to stop overriding
+	// DefaultFlags — but config carries global values only, so wiping the
+	// per-service overrides an operator set through the admin API would make a
+	// deleted line in a file revoke a decision it never made.
+	DeleteGlobal(ctx context.Context, flag string) error
 }
 
 // FlagState represents the state of a single feature flag.

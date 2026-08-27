@@ -80,17 +80,37 @@ func New(opts ...Option) *Store {
 	return s
 }
 
+// SetTTL changes how long a mark lasts, effective for every Mark and Blocked
+// call from this point on. Zero or negative disables marking entirely, the
+// same as constructing with WithTTL(0). This is the seam a config reload
+// (POST /admin/reload) uses to change method_blocks.ttl without a restart —
+// see Mark and Blocked, which read ttl under the same lock this takes.
+func (s *Store) SetTTL(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ttl = d
+}
+
+// SetEscalation changes how many distinct supplier-attributed methods must be
+// marked on one host, within one TTL, before the host is blocked for every
+// method. Zero or negative never escalates, the same as WithEscalation(0).
+func (s *Store) SetEscalation(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.escalation = n
+}
+
 // Blocked reports whether host must not receive method for service right
 // now: a live host-level block, or a live mark on exactly this method.
 // Called per candidate per attempt, so it takes only the read lock and
 // allocates nothing.
 func (s *Store) Blocked(service, host, method string) bool {
-	if s.ttl <= 0 {
-		return false
-	}
 	now := time.Now()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.ttl <= 0 {
+		return false
+	}
 	h := s.byService[service][host]
 	if h == nil {
 		return false
@@ -117,14 +137,18 @@ func (s *Store) Blocked(service, host, method string) bool {
 // The flag is per method mark and sticky within its live window: a
 // client-attributed re-mark does not un-count a supplier-attributed one.
 func (s *Store) Mark(service, host, method string, escalates bool) (escalated bool) {
-	if s.ttl <= 0 || host == "" || method == "" {
+	if host == "" || method == "" {
 		return false
 	}
 	now := time.Now()
-	expiry := now.Add(s.ttl)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.ttl <= 0 {
+		return false
+	}
+	expiry := now.Add(s.ttl)
 
 	hosts := s.byService[service]
 	if hosts == nil {

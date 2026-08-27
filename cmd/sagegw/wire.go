@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -15,6 +17,7 @@ import (
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/crossvalidation"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/drain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/healthcheck"
 
@@ -35,6 +38,7 @@ import (
 	"github.com/pokt-network/sage/reputation"
 	"github.com/pokt-network/sage/responsecache"
 	"github.com/pokt-network/sage/router"
+	"github.com/pokt-network/sage/traffic"
 	"github.com/pokt-network/sage/tuning"
 )
 
@@ -56,15 +60,42 @@ type App struct {
 	Admin *router.AdminAPI
 	// Protocol is the Shannon protocol when running against the real network;
 	// nil in mock mode (WS relays are disabled in mock mode).
-	Protocol  *shannon.Protocol
-	RepSvc    reputation.Service
-	ObsQueue  *observe.Queue
-	CrossVal  *crossvalidation.Validator
-	Leader    *healthcheck.LeaderElector
-	HealthExe *healthcheck.Executor
-	Redis     *redis.Client
-	Metrics   *metrics.Recorder
-	Logger    *slog.Logger
+	Protocol *shannon.Protocol
+	RepSvc   reputation.Service
+	ObsQueue *observe.Queue
+	CrossVal *crossvalidation.Validator
+	// Config is the current config snapshot. Build stores the boot config here;
+	// a reload (POST /admin/reload, not yet implemented) swaps it with
+	// Config.Store, and every closure that resolves a per-service knob
+	// (newRetryFn, newTimeoutFn) loads it fresh on each call so the next relay
+	// after a reload sees the new value. A field read once at wire time and
+	// captured in a closure cannot be made reloadable this way — see the
+	// tuning package doc.
+	Config atomic.Pointer[config.Config]
+	// ConfigPath is the -config flag value main started with. Build does not
+	// set it — it has no such flag, only a *config.Config — so main sets it
+	// after Build returns. A reload re-reads from this path; empty means the
+	// config came from GATEWAY_CONFIG as inline YAML, and there is nothing to
+	// re-read (see reload.ErrNoConfigFile).
+	ConfigPath string
+	// reloadMu serialises Reload. Two reloads racing would interleave their
+	// apply steps and both report success.
+	reloadMu sync.Mutex
+	// Flags, MethodBlocks and HealthExe are the runtime seams a reload writes
+	// through. They are held here rather than captured in a closure for the
+	// same reason Config is an atomic pointer: a seam nothing can reach is not
+	// a seam.
+	Flags        featureflag.FlagStore
+	MethodBlocks *methodblock.Store
+	// blockedDomains is the operator domain ban's swap point. Nil under the
+	// mock backend, which hands out endpoints without consulting one — a
+	// reload says so rather than reporting the section applied.
+	blockedDomains blockedDomainSetter
+	Leader         *healthcheck.LeaderElector
+	HealthExe      *healthcheck.Executor
+	Redis          *redis.Client
+	Metrics        *metrics.Recorder
+	Logger         *slog.Logger
 }
 
 // methodBlockLister adapts methodblock.Store to metrics.MethodBlockLister so
@@ -82,6 +113,33 @@ func (l methodBlockLister) ActiveMethodBlocks(serviceID string) []metrics.Method
 	return out
 }
 
+// drainLister adapts drain.Store to metrics.DrainLister so metrics does not
+// import drain (nor the reverse).
+type drainLister struct{ store drain.Store }
+
+// ActiveDrains reports the live operator drains for a service, translated
+// into the metrics package's own type.
+func (l drainLister) ActiveDrains(serviceID string) []metrics.DrainEntry {
+	active := l.store.Active(context.Background(), domain.ServiceID(serviceID))
+	out := make([]metrics.DrainEntry, len(active))
+	for i, e := range active {
+		out[i] = metrics.DrainEntry{Domain: e.Operator, RPCType: string(e.RPCType)}
+	}
+	return out
+}
+
+// trafficSummaryLister adapts traffic.Sampler to metrics.TrafficSummaryLister
+// so metrics does not import traffic (nor the reverse).
+type trafficSummaryLister struct{ sampler *traffic.Sampler }
+
+// PreviousWindow reports serviceID's previous (complete) request-sample
+// window, translated into the metrics package's own return shape. The staleness
+// rule that decides whether there is anything to report lives in the sampler,
+// with the windows it is about.
+func (l trafficSummaryLister) PreviousWindow(serviceID string) (distinctRatio, top1Share float64, ok bool) {
+	return l.sampler.PreviousWindow(domain.ServiceID(serviceID))
+}
+
 // serviceIDsFrom lists every configured service ID. It bounds the service_id
 // metric label — see metrics.NewRecorder.
 func serviceIDsFrom(cfg *config.Config) []domain.ServiceID {
@@ -95,7 +153,15 @@ func serviceIDsFrom(cfg *config.Config) []domain.ServiceID {
 
 // Build constructs the full SAGE application from configuration.
 func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, error) {
+	// Everything a config can be wrong about that this package can check,
+	// before any of it is acted on. The same function guards a reload, so a
+	// file the runtime accepts is a file the binary would boot with.
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
+
 	app := &App{Logger: logger}
+	app.Config.Store(cfg)
 
 	// 1. Redis (optional)
 	var redisClient *redis.Client
@@ -134,6 +200,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	if redisClient != nil {
 		flags = featureflag.NewRedisStore(redisClient, cfg.FeatureFlags)
 	}
+	app.Flags = flags
 
 	// 3. Reputation
 	timeline := reputation.NewTimeline(100)
@@ -151,22 +218,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	if cfg.Gateway.Reputation.InitialScore > 0 {
 		initialScore = float64(cfg.Gateway.Reputation.InitialScore)
 	}
-	// A misspelled granularity must not fall through to the default: it would
-	// silently change what scores are attached to, and nothing downstream could
-	// tell the difference until an incident.
-	keyGranularity := cfg.Gateway.Reputation.KeyGranularity
-	if !reputation.ValidKeyGranularity(keyGranularity) {
-		return nil, fmt.Errorf(
-			"reputation_config.key_granularity %q is not recognised (want one of: %s, %s, %s, %s)",
-			keyGranularity,
-			reputation.KeyPerURL, reputation.KeyPerEndpoint,
-			reputation.KeyPerDomain, reputation.KeyPerSupplier,
-		)
-	}
+	// key_granularity is checked in validateConfig, above: a misspelled value
+	// must not fall through to the default, because it silently changes what
+	// scores attach to.
 	repSvc := reputation.NewService(repStorage, timeline, reputation.ServiceConfig{
 		InitialScore:   initialScore,
 		MaxScore:       100,
-		KeyGranularity: keyGranularity,
+		KeyGranularity: cfg.Gateway.Reputation.KeyGranularity,
 	})
 	repSvc.Start()
 	app.RepSvc = repSvc
@@ -192,37 +250,21 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		}
 		shannonProto.StartBlockPoller(ctx)
 		app.Protocol = shannonProto
+		app.blockedDomains = shannonProto
 		proto = shannonProto
 	}
 
 	// 5. QoS registry
 	qosReg := qos.NewRegistry()
 	for _, svc := range cfg.Gateway.AllServices() {
+		// The plugin configs are built by the same helpers validateConfig used
+		// to check them, so what was validated is what gets constructed.
 		var plugin qos.Plugin
 		switch domain.ServiceType(svc.Type) {
 		case domain.ServiceTypeEVM:
-			evmCfg := evm.Config{
-				SyncAllowance:   svc.SyncAllowance,
-				ExpectedChainID: svc.ChainID,
-			}
-			if err := evmCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %q: %w", svc.ID, err)
-			}
-			plugin = evm.NewPlugin(logger, evmCfg)
+			plugin = evm.NewPlugin(logger, evmConfigFor(svc))
 		case domain.ServiceTypeCosmos:
-			rpcTypes := make([]domain.RPCType, len(svc.RPCTypes))
-			for i, rt := range svc.RPCTypes {
-				rpcTypes[i] = domain.RPCType(rt)
-			}
-			cosmosCfg := cosmos.Config{
-				SyncAllowance:     svc.SyncAllowance,
-				SupportedRPCTypes: rpcTypes,
-				ExpectedChainID:   svc.ChainID,
-			}
-			if err := cosmosCfg.Validate(); err != nil {
-				return nil, fmt.Errorf("service %q: %w", svc.ID, err)
-			}
-			plugin = cosmos.NewPlugin(logger, cosmosCfg)
+			plugin = cosmos.NewPlugin(logger, cosmosConfigFor(svc))
 		case domain.ServiceTypeSolana:
 			plugin = solana.NewPlugin(logger, svc.SyncAllowance)
 		default:
@@ -254,18 +296,39 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		methodblock.WithLogger(logger),
 	)
 	blocks.StartSweep(ctx)
+	app.MethodBlocks = blocks
 	prometheus.MustRegister(metrics.NewMethodBlockCollector(methodBlockLister{blocks}, serviceIDsFrom(cfg)))
+
+	// 6c. Request-shape sampler: per-service traffic diversity, sampled and
+	// windowed — see package traffic. Local memory only, like method blocks.
+	sampler := traffic.New()
+	prometheus.MustRegister(metrics.NewTrafficCollector(trafficSummaryLister{sampler}, serviceIDsFrom(cfg)))
+
+	// 6d. Operator drain store: shared through Redis when available, else
+	// process-local memory — see package drain.
+	//
+	// Only built when there is a Shannon protocol to enforce it. The mock
+	// backend hands out endpoints without consulting a drain store, so a store
+	// wired there would take the request, store the entry and answer
+	// `applied: true` for a drain that benches nothing — the admin API
+	// reporting a bench that is not happening. With no store, the drain routes
+	// answer 503 and say so.
+	var drainStore drain.Store
+	if app.Protocol != nil {
+		if redisClient != nil {
+			redisDrains := drain.NewRedisStore(redisClient, drain.WithLogger(logger))
+			redisDrains.Start(ctx)
+			drainStore = redisDrains
+		} else {
+			drainStore = drain.NewMemoryStore()
+		}
+		app.Protocol.SetDrains(drainStore)
+		prometheus.MustRegister(metrics.NewDrainCollector(drainLister{drainStore}, serviceIDsFrom(cfg)))
+	}
 
 	// A recovered panic is contained, not harmless — surface it as a metric so
 	// it can be alerted on rather than only appearing in logs.
 	prometheus.MustRegister(metrics.NewPanicCollector())
-
-	// blocked_domains is compiled inside the Shannon protocol, where endpoints
-	// are handed out. Validate it here too, so a malformed entry fails at
-	// startup under every backend rather than only the one that reads it.
-	if err := shannon.ValidateBlockedDomains(cfg.Gateway.BlockedDomains); err != nil {
-		return nil, err
-	}
 
 	// 7. Observation pipeline
 	obsHandler := observe.NewDefaultHandler(qosReg, logger)
@@ -333,8 +396,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// last stored. A knob that is NOT read through a closure like this cannot be
 	// made runtime-changeable by registering it — see the tuning package doc.
 	tuningStore := tuning.NewStore()
-	retryFn := newRetryFn(cfg, tuningStore)
-	timeoutFn := newTimeoutFn(cfg, tuningStore)
+	retryFn := newRetryFn(app.Config.Load, tuningStore)
+	timeoutFn := newTimeoutFn(app.Config.Load, tuningStore)
 
 	// 12. Build middleware chain.
 	//
@@ -368,7 +431,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	})
 	mwReg.Register(relay.MWSingleflight, func() relay.Middleware { return middleware.Singleflight(flags) })
 	mwReg.Register(relay.MWObserve, func() relay.Middleware {
-		return middleware.Observe(flags, obsQueue, repSvc)
+		return middleware.Observe(flags, obsQueue, repSvc, sampler)
 	})
 	mwReg.Register(relay.MWCrossValidate, func() relay.Middleware {
 		return middleware.CrossValidate(flags, crossVal)
@@ -411,19 +474,6 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	chain, err := mwReg.BuildChain(order)
 	if err != nil {
 		return nil, fmt.Errorf("build middleware chain: %w", err)
-	}
-
-	// send_relay is the only middleware that actually relays. Without it the
-	// chain parses, selects an endpoint, and hands the request to the registry's
-	// terminal, which errors — a gateway that answers nothing. That is a config
-	// mistake, so say so once at startup rather than once per request forever.
-	//
-	// Checked after BuildChain so that a chain naming something unknown is told
-	// so, rather than being told send_relay is missing — which is true, but is
-	// the consequence rather than the mistake.
-	if !slices.Contains(order, relay.MWSendRelay) {
-		return nil, fmt.Errorf("build middleware chain: %q is missing from the configured chain; "+
-			"without it no request is ever relayed", relay.MWSendRelay)
 	}
 
 	// 13. Health checks
@@ -490,7 +540,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 
 	// 16. Admin API + Router
-	app.Admin = router.NewAdminAPI(flags, repSvc, timeline, cb, blocks, qosReg, tuningStore, logger)
+	//
+	// endpoints is proto, which already satisfies protocol.EndpointProvider
+	// for the relay chain — the same value the middleware chain's
+	// SelectEndpoint and CircuitBreak use.
+	app.Admin = router.NewAdminAPI(flags, repSvc, timeline, cb, blocks, drainStore, proto, cfg.Admin.EffectiveMaxDrain(), qosReg, tuningStore, app, sampler, logger)
 	app.Router = router.New(cfg.Router, chain, proto, wsRelayer, logger)
 
 	return app, nil
@@ -501,10 +555,14 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 //
 // The middlewares call this per request, which is the whole mechanism behind
 // changing a knob without a restart — the next relay reads whatever the admin
-// API last stored. A setting captured once at wire time cannot be made
+// API last stored. cfgFn is App.Config.Load, so a reload that swaps the
+// stored config (App.Config.Store) is picked up the same way: the next call
+// re-reads the pointer rather than a config captured once at wire time. A
+// setting NOT read through a closure like this cannot be made
 // runtime-changeable by registering a knob for it; see the tuning package doc.
-func newRetryFn(cfg *config.Config, store *tuning.Store) func(domain.ServiceID) config.RetryConfig {
+func newRetryFn(cfgFn func() *config.Config, store *tuning.Store) func(domain.ServiceID) config.RetryConfig {
 	return func(serviceID domain.ServiceID) config.RetryConfig {
+		cfg := cfgFn()
 		base := cfg.Gateway.EffectiveDefaults().Retry
 		if svc := cfg.Gateway.GetServiceConfig(string(serviceID)); svc != nil {
 			base = svc.EffectiveRetry(cfg.Gateway.EffectiveDefaults())
@@ -518,8 +576,9 @@ func newRetryFn(cfg *config.Config, store *tuning.Store) func(domain.ServiceID) 
 
 // newTimeoutFn resolves the per-relay timeout for a service, with the same
 // config-then-override layering as newRetryFn.
-func newTimeoutFn(cfg *config.Config, store *tuning.Store) func(domain.ServiceID) time.Duration {
+func newTimeoutFn(cfgFn func() *config.Config, store *tuning.Store) func(domain.ServiceID) time.Duration {
 	return func(serviceID domain.ServiceID) time.Duration {
+		cfg := cfgFn()
 		base := cfg.Gateway.EffectiveDefaults().Timeout.RelayTimeout
 		if svc := cfg.Gateway.GetServiceConfig(string(serviceID)); svc != nil {
 			base = svc.EffectiveTimeout(cfg.Gateway.EffectiveDefaults()).RelayTimeout
