@@ -21,6 +21,7 @@ Hand-written, because reasoning is not generable.
 | [operations.md](operations.md) | running SAGE: exposure, degraded modes, runbook, what to alert on |
 | [middleware.md](middleware.md) | adding a middleware — the main extension seam |
 | [qos-plugins.md](qos-plugins.md) | adding a chain |
+| [next-steps.md](next-steps.md) | the open work queue, for whoever picks up next |
 
 ## Elsewhere in the repo
 
