@@ -499,10 +499,18 @@ func (s *serviceImpl) SelectBest(ctx context.Context, serviceID domain.ServiceID
 	if len(list) == 0 {
 		return ""
 	}
-	// TieredSelector may prepend a probation endpoint; for SelectBest callers
-	// (the HTTP path) we want the healthy pick, which is always the last
-	// element of the returned list.
-	return list[len(list)-1]
+	// The first element is the endpoint to try: the tier-cascade pick, or —
+	// on the configured share of relays — a probation or tier-2 endpoint the
+	// selector put in front of it so that it is measured by traffic. The
+	// healthy pick behind it is what Retry reaches for when the first try
+	// fails; SelectBest does not need to carry it.
+	//
+	// This used to return the LAST element, "the healthy pick", which made
+	// probation.traffic_percent inert on the HTTP path from the day it was
+	// wired: the selector prepended, nothing read the front, and a probation
+	// endpoint earned its way back through health checks alone. The scoring
+	// spec (docs/scoring.md §7.4, §7.7) assumes the share exists; now it does.
+	return list[0]
 }
 
 // SelectSpread selects an endpoint using tier cascade and load-aware

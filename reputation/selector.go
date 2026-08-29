@@ -22,6 +22,18 @@ type SelectorConfig struct {
 	// ProbationPct is the percentage (0-100) of requests that include a
 	// probation endpoint prepended to the healthy list. Default: 10.
 	ProbationPct int
+	// Tier2Pct is the percentage (0-100) of tier-1 selections that instead
+	// try a tier-2 endpoint first, with the tier-1 pick behind it as the
+	// retry fallback. Default: 5.
+	//
+	// Without it tier 2 sees no traffic while tier 1 has a member, and a
+	// tier-2 endpoint is then measured by health-check probes alone: a good
+	// host that took one critical waits a full probe cycle to earn its way
+	// back, and a chronic violator parks at the tier boundary where its
+	// failure rate stops being measured. docs/scoring.md §7.7 has the soak
+	// that showed both. Probation's share is the same mechanism one tier
+	// down.
+	Tier2Pct int
 }
 
 // DefaultSelectorConfig returns a SelectorConfig with default thresholds.
@@ -32,6 +44,7 @@ func DefaultSelectorConfig() SelectorConfig {
 		MinThreshold:       10,
 		ProbationThreshold: 30,
 		ProbationPct:       10,
+		Tier2Pct:           5,
 	}
 }
 
@@ -224,6 +237,14 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 	if count[probationIdx] > 0 && s.cfg.ProbationPct > 0 && rand.IntN(100) < s.cfg.ProbationPct {
 		// Prepend: probation endpoint first, healthy endpoint second.
 		return domain.EndpointAddrList{pick[probationIdx], selected}
+	}
+
+	// Tier-2 trickle: when tier 1 won, a small share of relays try a tier-2
+	// endpoint first so that tier is measured by traffic and not only by
+	// probes. The tier-1 pick stays behind it for Retry. Only when tier 1 won:
+	// if tier 2 is the winning tier it already carries everything.
+	if best == tier1Idx && count[tier2Idx] > 0 && s.cfg.Tier2Pct > 0 && rand.IntN(100) < s.cfg.Tier2Pct {
+		return domain.EndpointAddrList{pick[tier2Idx], selected}
 	}
 
 	return domain.EndpointAddrList{selected}

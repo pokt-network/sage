@@ -13,20 +13,6 @@ since 2026-08-25, nothing to catch up).
 
 None blocking. Recorded so they are not rediscovered from scratch.
 
-- **Decision wanted: does tier 2 carry a trickle?** The 2026-08-29 mock soak
-  (`docs/scoring.md` §7.7, rerun with `./bench/rate-term.sh`) showed a
-  demoted key receives nothing but probes while tier 1 is populated. Two
-  consequences: a chronic violator parks at exactly the tier boundary
-  (`penalty -20`, score 79.997) and its EWMA rate becomes a floor rather than
-  a measurement; and any endpoint's traffic is metered by the additive `-25`
-  with probe-only recovery (four to five probes, ~60–75 s), which in a busy
-  pool gave the 0.065% endpoint 0.05% of relays. Options: a tier-2 traffic
-  share like probation's 10% (measures parked keys by traffic, costs some
-  clients a relay on a known-worse endpoint), a smaller critical cost on a
-  key scoring ≥ 95 (keeps a single blip from benching a 0.065% host, weakens
-  the outage detector by one attempt), or leave it and document the duty
-  cycle as intended. Scoring is Otto's call.
-
 - `AnalysisResult.IsSuccess()` predicate instead of comparing
   `Reason == ReasonSuccess` at call sites.
 - `OnceRecorder` fallback branch has no test.

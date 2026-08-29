@@ -594,6 +594,7 @@ gateway_config:
     tiered_selection:
       tier1_threshold: 90
       tier2_threshold: 60
+      tier2_traffic_percent: 7
       probation:
         threshold: 25
         traffic_percent: 5
@@ -603,6 +604,9 @@ gateway_config:
 `)
 
 	sel := cfg.Gateway.Reputation.SelectorConfig()
+	if sel.Tier2Pct != 7 {
+		t.Errorf("tier2 pct = %d, want 7", sel.Tier2Pct)
+	}
 	if sel.Tier1Threshold != 90 {
 		t.Errorf("tier1 = %v, want 90", sel.Tier1Threshold)
 	}
@@ -701,6 +705,10 @@ func TestReputationConfig_Validation(t *testing.T) {
 		"traffic_percent": {
 			body: "tiered_selection:\n      probation:\n        traffic_percent: 101\n",
 			want: "traffic_percent",
+		},
+		"tier2_traffic_percent": {
+			body: "tiered_selection:\n      tier2_traffic_percent: 101\n",
+			want: "tier2_traffic_percent",
 		},
 		"onset >= full": {
 			body: "chronic_onset_rate: 0.02\n    chronic_full_rate: 0.01\n",
@@ -896,5 +904,25 @@ gateway_config:
 	}
 	if got := cfg.Gateway.Reputation.SelectorConfig().Tier1Threshold; got != 80 {
 		t.Errorf("tier1 = %v, want the default 80 — a threshold under defaults reached the selector", got)
+	}
+}
+
+// The tier-2 trickle has an off switch where probation does not: zero is the
+// default share, and a negative value is "none", so an operator who wants
+// tier 1 to carry everything can say so without picking a number.
+func TestReputationConfig_Tier2TrickleZeroIsDefaultNegativeIsOff(t *testing.T) {
+	def := mustParse(t, "gateway_config:\n  gateway_mode: centralized\n")
+	if got := def.Gateway.Reputation.SelectorConfig().Tier2Pct; got != 5 {
+		t.Errorf("unset tier2_traffic_percent = %d, want the default 5", got)
+	}
+	off := mustParse(t, `
+gateway_config:
+  gateway_mode: centralized
+  reputation_config:
+    tiered_selection:
+      tier2_traffic_percent: -1
+`)
+	if got := off.Gateway.Reputation.SelectorConfig().Tier2Pct; got != 0 {
+		t.Errorf("tier2_traffic_percent -1 = %d, want 0 (off)", got)
 	}
 }

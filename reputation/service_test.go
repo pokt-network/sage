@@ -132,12 +132,57 @@ func TestService_SelectBest(t *testing.T) {
 	ep2 := domain.EndpointAddr("ep2")
 
 	// Push ep1 below Tier 1 (100 → 75 via critical error, -25). ep2 stays
-	// at 100 in Tier 1; the tier cascade picks ep2 deterministically.
+	// at 100 in Tier 1; the tier cascade picks ep2 — on every relay the
+	// tier-2 trickle does not claim, so the trickle is off for this test.
 	_ = svc.RecordSignal(ctx, svcID, ep1, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("fail", 0))
+	svc.selector.cfg.Tier2Pct = 0
 
 	best := svc.SelectBest(ctx, svcID, domain.EndpointAddrList{ep1, ep2}, domain.RPCTypeJSONRPC)
 	if best != ep2 {
 		t.Errorf("expected ep2 (higher tier), got %s", best)
+	}
+}
+
+// SelectBest hands back the endpoint to TRY, which on the configured share of
+// relays is the probation or tier-2 endpoint the selector put first. Until
+// 2026-08-29 it returned the last element, so neither share ever reached the
+// HTTP path; this pins the front.
+func TestService_SelectBest_ReturnsTheFirstTryPick(t *testing.T) {
+	ctx := context.Background()
+	svcID := domain.ServiceID("eth")
+	top := domain.EndpointAddr("top")
+	other := domain.EndpointAddr("other")
+
+	for name, tc := range map[string]struct {
+		configure func(*SelectorConfig)
+		demote    Signal
+		demotions int
+	}{
+		"tier-2 trickle": {
+			configure: func(c *SelectorConfig) { c.Tier2Pct = 100 },
+			demote:    NewCriticalErrorSignal("fail", 0), // 100 → 75, tier 2.
+			demotions: 1,
+		},
+		"probation share": {
+			configure: func(c *SelectorConfig) { c.ProbationPct = 100 },
+			demote:    NewCriticalErrorSignal("fail", 0), // 100 → 25, probation.
+			demotions: 3,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := DefaultServiceConfig()
+			cfg.Selector = DefaultSelectorConfig() // A partial SelectorConfig is taken literally: zero thresholds.
+			tc.configure(&cfg.Selector)
+			svc := newTestService(t, cfg)
+			for range tc.demotions {
+				_ = svc.RecordSignal(ctx, svcID, other, domain.RPCTypeJSONRPC, tc.demote)
+			}
+			_ = svc.RecordSignal(ctx, svcID, top, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0))
+
+			if got := svc.SelectBest(ctx, svcID, domain.EndpointAddrList{top, other}, domain.RPCTypeJSONRPC); got != other {
+				t.Fatalf("SelectBest = %s, want the prepended endpoint %s", got, other)
+			}
+		})
 	}
 }
 

@@ -475,6 +475,12 @@ func (r ReputationConfig) SelectorConfig() reputation.SelectorConfig {
 	if r.TieredSelection.Probation.TrafficPercent > 0 {
 		sel.ProbationPct = r.TieredSelection.Probation.TrafficPercent
 	}
+	switch p := r.TieredSelection.Tier2TrafficPercent; {
+	case p > 0:
+		sel.Tier2Pct = p
+	case p < 0:
+		sel.Tier2Pct = 0
+	}
 	return sel
 }
 
@@ -521,6 +527,13 @@ type TieredSelectionConfig struct {
 	// default (50), and a negative value is a startup error. Should be above
 	// the probation threshold, for the same reason.
 	Tier2Threshold int `yaml:"tier2_threshold"`
+	// Tier2TrafficPercent is the share of relays that try a tier-2 endpoint
+	// first when tier 1 is populated, with the tier-1 pick behind it as the
+	// retry fallback. It is what lets a tier-2 endpoint be measured by traffic
+	// rather than by health-check probes alone (docs/scoring.md §7.7). Zero
+	// means the default (5), a negative value turns the trickle off, and the
+	// value must be at most 100. A SAGE key; PATH has no equivalent.
+	Tier2TrafficPercent int `yaml:"tier2_traffic_percent"`
 	// Probation holds the probation-routing thresholds.
 	Probation ProbationConfig `yaml:"probation"`
 }

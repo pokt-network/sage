@@ -448,7 +448,8 @@ Inert and reported, with the reason: `signal_impacts.{recovery_success,slow_resp
 cooldown SAGE does not have, §4.7). The rate term's three numbers are SAGE keys
 under `reputation_config` because PATH has no equivalent:
 `chronic_half_life_attempts` (0 = 20000, negative = term off),
-`chronic_onset_rate` (0 = 0.0002), `chronic_full_rate` (0 = 0.01).
+`chronic_onset_rate` (0 = 0.0002), `chronic_full_rate` (0 = 0.01), and, from
+§7.7, `tiered_selection.tier2_traffic_percent` (0 = 5, negative = off).
 
 ### 7.7 Mock soak, 2026-08-29: the term demotes, and where it stops
 
@@ -501,7 +502,59 @@ every chronic violator at `-20` and the additive at 100, and that is the term
 working. An operator reading the rate off the admin listing should know it is
 a floor on the true rate once the endpoint is parked.
 
-Not changed by this: the ratio, the half-life, the curve. What it puts on the
-table is a selection question, not a scoring one — whether tier 2 should
+Not changed by this: the ratio, the half-life, the curve. What it put on the
+table was a selection question, not a scoring one — whether tier 2 should
 carry a trickle so that a parked key is measured by traffic rather than by
-probes — and it is recorded in `docs/next-steps.md` rather than decided here.
+probes.
+
+**Decided 2026-08-29: tier 2 carries 5% of first tries**
+(`tiered_selection.tier2_traffic_percent`, `reputation.SelectorConfig.Tier2Pct`).
+When tier 1 wins the cascade, that share of relays tries a uniform tier-2 pick
+first with the tier-1 pick behind it for Retry — probation's mechanism, one
+tier up. Tier 3 is left out: 10–50 is two or three recent criticals, which is
+the outage detector doing its job, and a probe-cycle bench is the right price
+there. The alternative considered — a cheaper critical on a key scoring 95 or
+more — protects a good host from one blip but costs the outage detector its
+first attempt, and does nothing for the parked-at-the-boundary state; it stays
+on the table if the duty cycle is still visible after this. The cost to
+clients is bounded by what tier 2 contains: at the mainnet rates that is a
+0.1–0.3% first-try failure on 5% of relays, one extra retry per ~30k.
+
+**Found while wiring it: probation's share never reached the HTTP path.**
+`TieredSelector.Select` prepended a probation endpoint on 10% of relays as
+designed, and `SelectBest` returned the *last* element of that list, with a
+comment saying so on purpose ("we want the healthy pick"). Both lines date
+from the initial commit. The prepend had a unit test, the reader ignored it,
+and nothing exercised the two together. So `probation.traffic_percent` was
+honoured by config and did nothing — the "same key, different semantics" case
+`docs/path-compat.md` names as the one an operator cannot detect — and §7.4's
+"traffic only through probation's 10%" reasoned from a share that did not
+exist (its conclusion stands for the reason it gives). WebSocket never had a
+share either: `TopTierCandidates` cascades T1 → T2 → T3 → probation.
+`SelectBest` now returns the first element, the endpoint to *try*; Retry is
+the fallback and always was. `TestService_SelectBest_ReturnsTheFirstTryPick`
+pins it for both shares. What changes in production: 10% of first tries go to
+a probation endpoint when one exists. The worst case is a dead host lifted to
+10 by two probes — one failed first attempt, `-25`, out again.
+
+**Soak with the trickle and the fix, same setup, 59 minutes** (stopped once
+stable; 19.8k relays/s, every client response a 200):
+
+| endpoint | injected | attempts | share | rate (EWMA) | penalty | score at full additive |
+|---|---|---|---|---|---|---|
+| spacebelt | 0.216% | 339,682 | 0.26% | 0.233% | -25.1 | 74.9 — tier 2 |
+| rpcgate | 0.065% | 37,318,360 | 28.3% | 0.092% | -15.6 | 84.4 — tier 1 |
+| nodefleet | 0.00003% | 94,092,442 | 71.4% | 0 | 0 | 100 |
+
+Against the first soak: rpcgate went from 0.05% of relays to 28% — a tier-1
+share, its one-blip benches now ending in relays instead of a probe cycle —
+and spacebelt reached the table's steady state (`-23` predicted, `-24` to `-25`
+measured, EWMA reading 0.21–0.24% against 0.216% injected) in three minutes
+rather than parking at `-20.003` forever. The admin listing's rate is a
+measurement again. spacebelt spends most of its time below 50 (additive 75
+after each critical, `-25` on top), where neither share reaches it and probes
+lift it back to tier 2 — so it is demoted *and* kept measured, at 0.23% of
+relays. rpcgate's EWMA wandered 0.06–0.09% over the hour (`-11` to `-16`), which
+at 37M attempts is the term's own noise at a 20k half-life, never near the
+tier line. The duty cycle for good hosts is gone as a first-order effect; the
+cheaper-critical-at-95 idea stays parked.

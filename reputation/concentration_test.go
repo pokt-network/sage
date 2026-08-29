@@ -213,6 +213,7 @@ func TestSelect_ConcentrationCapNeverLeavesTheWinningTier(t *testing.T) {
 
 	cfg := DefaultSelectorConfig()
 	cfg.ProbationPct = 0
+	cfg.Tier2Pct = 0 // The trickle also prepends tier 2, on purpose; this test is about the cap.
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 	sel.SetOperatorCap(OperatorCapConfig{}, func(context.Context, domain.ServiceID) bool { return true })
 

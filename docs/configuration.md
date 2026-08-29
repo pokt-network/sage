@@ -173,6 +173,7 @@ reported as inert.
 | `enabled` | boolean | Parsed and not implemented: tiering always runs. Selection is tiered by construction, so there is no untiered mode to switch back to. |
 | `tier1_threshold` | integer | The minimum score for the best tier. Zero means the default (80) and a negative value is a startup error. Should be above tier2_threshold; a set that does not descend loads and warns rather than failing. |
 | `tier2_threshold` | integer | The minimum score for the second tier. Zero means the default (50), and a negative value is a startup error. Should be above the probation threshold, for the same reason. |
+| `tier2_traffic_percent` | integer | The share of relays that try a tier-2 endpoint first when tier 1 is populated, with the tier-1 pick behind it as the retry fallback. It is what lets a tier-2 endpoint be measured by traffic rather than by health-check probes alone (docs/scoring.md §7.7). Zero means the default (5), a negative value turns the trickle off, and the value must be at most 100. A SAGE key; PATH has no equivalent. |
 
 ##### `gateway_config.reputation_config.tiered_selection.probation`
 

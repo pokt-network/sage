@@ -224,3 +224,65 @@ func TestTieredSelector_UnknownEndpointGoesToTier3(t *testing.T) {
 		t.Errorf("expected unknown endpoint in tier 3, got %v", result)
 	}
 }
+
+func TestTieredSelector_Tier2TricklePrependsWhenTier1Wins(t *testing.T) {
+	scores := map[domain.EndpointAddr]float64{
+		"top":    90,
+		"parked": 79, // Tier 2: one probe under the tier-1 line.
+	}
+	cfg := DefaultSelectorConfig()
+	cfg.Tier2Pct = 100 // Always trickle for determinism.
+	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
+
+	result := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"top", "parked"}, domain.RPCTypeJSONRPC)
+
+	if len(result) != 2 || result[0] != "parked" || result[1] != "top" {
+		t.Fatalf("expected [parked top] (tier-2 first, tier-1 pick behind it), got %v", result)
+	}
+}
+
+func TestTieredSelector_Tier2TrickleShare(t *testing.T) {
+	scores := map[domain.EndpointAddr]float64{"top": 90, "parked": 79}
+	sel := NewTieredSelector(DefaultSelectorConfig(), fixedScoreFn(scores)) // Tier2Pct 5.
+
+	const n = 20000
+	trickled := 0
+	for range n {
+		r := sel.Select(context.Background(), "eth", domain.EndpointAddrList{"top", "parked"}, domain.RPCTypeJSONRPC)
+		if r[0] == "parked" {
+			trickled++
+		}
+	}
+	// 5% of 20000 = 1000, sd ≈ 31.
+	if trickled < 800 || trickled > 1200 {
+		t.Fatalf("tier-2 first on %d/%d selections, want about 5%%", trickled, n)
+	}
+}
+
+func TestTieredSelector_Tier2TrickleOffAndInapplicable(t *testing.T) {
+	ctx := context.Background()
+
+	// Off: a tier-2 endpoint is never tried first.
+	cfg := DefaultSelectorConfig()
+	cfg.Tier2Pct = 0
+	sel := NewTieredSelector(cfg, fixedScoreFn(map[domain.EndpointAddr]float64{"top": 90, "parked": 79}))
+	for range 500 {
+		if r := sel.Select(ctx, "eth", domain.EndpointAddrList{"top", "parked"}, domain.RPCTypeJSONRPC); len(r) != 1 || r[0] != "top" {
+			t.Fatalf("trickle off, expected [top], got %v", r)
+		}
+	}
+
+	// Tier 1 empty: tier 2 is the winning tier and carries everything already,
+	// so the trickle must not double it up.
+	cfg.Tier2Pct = 100
+	sel = NewTieredSelector(cfg, fixedScoreFn(map[domain.EndpointAddr]float64{"a": 70, "b": 60}))
+	if r := sel.Select(ctx, "eth", domain.EndpointAddrList{"a", "b"}, domain.RPCTypeJSONRPC); len(r) != 1 {
+		t.Fatalf("tier 2 winning, expected one pick, got %v", r)
+	}
+
+	// Tier 2 empty: nothing to trickle to, tier-1 pick alone.
+	sel = NewTieredSelector(cfg, fixedScoreFn(map[domain.EndpointAddr]float64{"top": 90, "bad": 40}))
+	if r := sel.Select(ctx, "eth", domain.EndpointAddrList{"top", "bad"}, domain.RPCTypeJSONRPC); len(r) != 1 || r[0] != "top" {
+		t.Fatalf("no tier-2 endpoint, expected [top], got %v", r)
+	}
+}

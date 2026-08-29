@@ -240,6 +240,9 @@ func validateReputation(r ReputationConfig) error {
 	if p := r.TieredSelection.Probation.TrafficPercent; p < 0 || p > 100 {
 		return fmt.Errorf("reputation_config.tiered_selection.probation.traffic_percent must be 0..100, got %d", p)
 	}
+	if p := r.TieredSelection.Tier2TrafficPercent; p > 100 {
+		return fmt.Errorf("reputation_config.tiered_selection.tier2_traffic_percent must be at most 100, got %d", p)
+	}
 	// Defaulted, not Normalized: Normalized repairs an inconsistent pair for
 	// programmatic callers, and reading through it here would turn an operator's
 	// mistake into a silently different curve instead of a refusal.

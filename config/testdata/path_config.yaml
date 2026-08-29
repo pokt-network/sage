@@ -107,6 +107,7 @@ gateway_config:
       enabled: true
       tier1_threshold: 85
       tier2_threshold: 35
+      tier2_traffic_percent: 7
       probation:
         enabled: true
         threshold: 45

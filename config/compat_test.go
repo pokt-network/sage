@@ -192,9 +192,10 @@ func TestConfigCompatibility_Gateway(t *testing.T) {
 		}
 
 		want := TieredSelectionConfig{
-			Enabled:        true,
-			Tier1Threshold: 85,
-			Tier2Threshold: 35,
+			Enabled:             true,
+			Tier1Threshold:      85,
+			Tier2Threshold:      35,
+			Tier2TrafficPercent: 7,
 			Probation: ProbationConfig{
 				Enabled:            true,
 				Threshold:          45,
@@ -210,7 +211,7 @@ func TestConfigCompatibility_Gateway(t *testing.T) {
 		// and the scorer are built from.
 		wantSel := reputation.SelectorConfig{
 			Tier1Threshold: 85, Tier2Threshold: 35, MinThreshold: 5,
-			ProbationThreshold: 45, ProbationPct: 25,
+			ProbationThreshold: 45, ProbationPct: 25, Tier2Pct: 7,
 		}
 		if got := rep.SelectorConfig(); got != wantSel {
 			t.Errorf("SelectorConfig() = %+v, want %+v", got, wantSel)
