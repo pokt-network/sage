@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -26,8 +27,14 @@ const defaultResponseBody = `{"jsonrpc":"2.0","id":1,"result":"0x10d4f3a"}`
 type Mock struct {
 	services  map[domain.ServiceID]struct{}
 	endpoints domain.EndpointAddrList
+	index     map[domain.EndpointAddr]int
 	latency   time.Duration
 	respBody  []byte
+
+	// failureRates[i] is endpoint i's probability of answering an empty-body
+	// 200 instead of respBody. Set once by WithFailureRates before serving;
+	// read concurrently from SendRelay, never written after.
+	failureRates []float64
 }
 
 // New creates a Mock backend serving the given services. endpointCount fake
@@ -51,9 +58,11 @@ func New(serviceIDs []domain.ServiceID, endpointCount int, latency time.Duration
 	// Address format mirrors Shannon: "<supplier>-<url>". Distinct domains so
 	// circuit breaking and supplier affinity treat each endpoint independently.
 	endpoints := make(domain.EndpointAddrList, endpointCount)
+	index := make(map[domain.EndpointAddr]int, endpointCount)
 	for i := range endpoints {
 		endpoints[i] = domain.EndpointAddr(
 			fmt.Sprintf("pokt1mock%03d-https://supplier-%03d.mock.local", i, i))
+		index[endpoints[i]] = i
 	}
 
 	if logger != nil {
@@ -64,12 +73,25 @@ func New(serviceIDs []domain.ServiceID, endpointCount int, latency time.Duration
 	return &Mock{
 		services:  services,
 		endpoints: endpoints,
+		index:     index,
 		latency:   latency,
 		respBody:  []byte(respBody),
 	}
 }
 
-// SendRelay returns the canned response after the configured simulated latency.
+// WithFailureRates makes endpoint i answer an HTTP 200 with an empty body with
+// probability rates[i] — the mainnet empty-response defect, graded critical
+// and supplier-attributed by the heuristic. Endpoints past the end of rates
+// never fail. Rates are taken as given; config validation bounds them to
+// [0, 1]. Must be called before the mock serves relays. Returns m for
+// chaining.
+func (m *Mock) WithFailureRates(rates []float64) *Mock {
+	m.failureRates = rates
+	return m
+}
+
+// SendRelay returns the canned response after the configured simulated
+// latency, or an empty body if this endpoint's failure rate fires.
 func (m *Mock) SendRelay(ctx context.Context, _ domain.ServiceID, endpoint domain.EndpointAddr, _ domain.Payload) (*domain.Response, error) {
 	start := time.Now()
 	if m.latency > 0 {
@@ -79,12 +101,26 @@ func (m *Mock) SendRelay(ctx context.Context, _ domain.ServiceID, endpoint domai
 			return nil, ctx.Err()
 		}
 	}
+	body := m.respBody
+	if m.fails(endpoint) {
+		body = nil
+	}
 	return &domain.Response{
-		Body:           m.respBody,
+		Body:           body,
 		HTTPStatusCode: 200,
 		Latency:        time.Since(start),
 		EndpointAddr:   endpoint,
 	}, nil
+}
+
+// fails rolls endpoint's failure rate. An unknown endpoint, or one with no
+// rate configured, never fails.
+func (m *Mock) fails(endpoint domain.EndpointAddr) bool {
+	i, ok := m.index[endpoint]
+	if !ok || i >= len(m.failureRates) || m.failureRates[i] <= 0 {
+		return false
+	}
+	return rand.Float64() < m.failureRates[i]
 }
 
 // AvailableEndpoints returns a fresh copy of the synthetic endpoint list.

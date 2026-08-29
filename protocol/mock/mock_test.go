@@ -74,3 +74,48 @@ func TestMock_EndpointAddrFormat(t *testing.T) {
 		t.Fatal("endpoints must have distinct domains for circuit breaking")
 	}
 }
+
+func TestMock_FailureRates_EmptyBodyAtRate(t *testing.T) {
+	m := New([]domain.ServiceID{"eth"}, 3, 0, "", nil).WithFailureRates([]float64{0.1, 0})
+	payload := domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	eps, _ := m.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
+
+	const n = 20000
+	empties := make([]int, len(eps))
+	for i, ep := range eps {
+		for range n {
+			resp, err := m.SendRelay(context.Background(), "eth", ep, payload)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp.HTTPStatusCode != 200 {
+				t.Fatalf("a failure must still be an HTTP 200, got %d", resp.HTTPStatusCode)
+			}
+			if len(resp.Body) == 0 {
+				empties[i]++
+			}
+		}
+	}
+
+	// Endpoint 0 at 10%: 2000 ± a wide margin (binomial sd ≈ 42).
+	if empties[0] < 1700 || empties[0] > 2300 {
+		t.Fatalf("endpoint 0 at rate 0.1 produced %d/%d empty bodies", empties[0], n)
+	}
+	// Endpoint 1 has an explicit 0; endpoint 2 is past the end of the list.
+	for i := 1; i < len(eps); i++ {
+		if empties[i] != 0 {
+			t.Fatalf("endpoint %d must never fail, produced %d empty bodies", i, empties[i])
+		}
+	}
+}
+
+func TestMock_FailureRates_UnsetNeverFails(t *testing.T) {
+	m := New([]domain.ServiceID{"eth"}, 1, 0, "", nil)
+	payload := domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	for range 1000 {
+		resp, _ := m.SendRelay(context.Background(), "eth", "pokt1mock000-https://supplier-000.mock.local", payload)
+		if len(resp.Body) == 0 {
+			t.Fatal("no failure rates configured, yet an empty body was served")
+		}
+	}
+}

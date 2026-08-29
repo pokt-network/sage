@@ -368,7 +368,9 @@ rate term by 0.010% — penalty 0; a burst of 6 costs `-0.4` and clears in ~1,10
 clean attempts; 20 in a row cost `-13`. Detection of a spacebelt-rate violator
 takes 12k–22k attempts, which at that supplier's mainnet volume (2M relays/day)
 is under fifteen minutes and at 1 relay/s is six hours: the term is for chronic
-behaviour and is allowed to be slow. Where the two terms disagree the additive
+behaviour and is allowed to be slow. (§7.7: in the running gateway the intake
+is not the supplier's volume but the probe cycle, and the wall time is closer
+to an hour.) Where the two terms disagree the additive
 one is the fast path and the rate term the memory, and neither has state the
 other needs.
 
@@ -447,3 +449,59 @@ cooldown SAGE does not have, §4.7). The rate term's three numbers are SAGE keys
 under `reputation_config` because PATH has no equivalent:
 `chronic_half_life_attempts` (0 = 20000, negative = term off),
 `chronic_onset_rate` (0 = 0.0002), `chronic_full_rate` (0 = 0.01).
+
+### 7.7 Mock soak, 2026-08-29: the term demotes, and where it stops
+
+The rate term had only ever run in the simulation above, because beta has one
+live backend. `bench/rate-term.sh` runs the full chain against the mock
+backend with three endpoints injecting empty-body 200s (critical,
+supplier-attributed) at the mainnet rates, defaults everywhere, retry and
+health checks on, cache/singleflight/hedge off. 75 minutes, 59k relays/s,
+every client response a 200.
+
+| endpoint | injected | attempts | rate (EWMA) | penalty | score at full additive |
+|---|---|---|---|---|---|
+| spacebelt | 0.216% | 28,817 | 0.1415% | -20.0 | 79.997 — tier 2 |
+| rpcgate | 0.065% | 132,125 | 0.081% | -14.3 | 85.7 — tier 1 |
+| nodefleet | 0.00003% | 266,601,952 | 0 | 0 | 100 |
+
+The three verdicts the design was calibrated for hold. Two things the
+simulation did not show, both consequences of the tiers rather than of the
+term:
+
+**The intake of a violator is set by the probe cycle, not by its volume.** One
+critical is `-25`, which leaves tier 1, and tier 2 receives no traffic while
+tier 1 is populated — the snapshots show exactly 4 attempts a minute on a
+tier-2 key, the two probes every 30 s. So an endpoint returns to tier 1 only
+through probes: four of them from 75, five once the rate penalty is past
+`-15`. A 0.216% endpoint therefore takes in one burst of ~460 relays per
+cycle, however much the pool is offered — 560/min early, 300/min once the
+penalty lengthened the recovery — and the first demotion by the rate term
+alone came at 28.7k attempts and 53 minutes. The "fifteen minutes at mainnet
+volume" above assumed the attempts keep flowing; they do not. The same
+mechanism gave rpcgate 0.05% of the pool's relays in a 3-endpoint pool at
+59k/s: it burns its ~1,500 clean attempts in a second and then waits a minute
+for probes. At mainnet rates the bench is a smaller fraction of the cycle (at
+23 relays/s the burst is 67 s against a 60 s bench), but for any endpoint the
+additive term, not the rate term, is what meters traffic to it — a `-25` with
+probe-only recovery is a duty cycle, and the rate term's job is only to make
+the parked state stick.
+
+**The steady state is the boundary, not the table.** Once the penalty reaches
+`-20` a full additive scores 79.997, one probe under tier 1, and the key stops
+receiving anything but probes. Probes are clean attempts, so they decay the
+rate — by 0.28% (relative) per 80 attempts, which at four a minute is a
+three-minute crawl back across the line, a ~460-relay visit to tier 1, one
+critical, and a re-park that the next clean burst has to undo. spacebelt sat
+at `rate 0.1415%, penalty -20.003, score 79.997` for the final 20 minutes. The
+`-23 / -40 / -70` steady states in §7.3 are what the term reports for a key
+whose attempts keep coming — a violator in a pool whose tier 1 has collapsed —
+and are otherwise never displayed: `GET /admin/reputation/{service}` will show
+every chronic violator at `-20` and the additive at 100, and that is the term
+working. An operator reading the rate off the admin listing should know it is
+a floor on the true rate once the endpoint is parked.
+
+Not changed by this: the ratio, the half-life, the curve. What it puts on the
+table is a selection question, not a scoring one — whether tier 2 should
+carry a trickle so that a parked key is measured by traffic rather than by
+probes — and it is recorded in `docs/next-steps.md` rather than decided here.

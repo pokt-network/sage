@@ -400,6 +400,7 @@ Tunes the mock backend.
 | `endpoint_count` | integer | The number of synthetic endpoints advertised per service. Default: 10. |
 | `latency` | duration | The simulated supplier response time per relay. Default: 0. |
 | `response_body` | string | Overrides the canned JSON-RPC response when non-empty. |
+| `failure_rates` | list of number | Injects a chronic fault: FailureRates[i] is the probability that endpoint i answers a relay with an HTTP 200 and an empty body — the mainnet empty-response defect, which the heuristic grades critical and supplier-attributed. Endpoints past the end of the list never fail. Each value must be in [0, 1]. Exists to exercise the chronic-failure rate term (docs/scoring.md §7.3) without a network. Default: none. |
 
 ---
 

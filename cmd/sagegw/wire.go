@@ -245,7 +245,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			cfg.Protocol.Mock.Latency,
 			cfg.Protocol.Mock.ResponseBody,
 			logger,
-		)
+		).WithFailureRates(cfg.Protocol.Mock.FailureRates)
 	} else {
 		shannonProto, err := shannon.New(*cfg, logger)
 		if err != nil {

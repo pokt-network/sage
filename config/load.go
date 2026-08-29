@@ -186,6 +186,11 @@ func validate(cfg *Config) error {
 		}
 	case ProtocolTypeMock:
 		// Mock backend is self-contained — no fullnode/identity required.
+		for i, rate := range cfg.Protocol.Mock.FailureRates {
+			if rate < 0 || rate > 1 {
+				return fmt.Errorf("protocol.mock.failure_rates[%d] must be in [0, 1], got %v", i, rate)
+			}
+		}
 	default:
 		return fmt.Errorf("protocol.type must be %q or %q, got %q",
 			ProtocolTypeShannon, ProtocolTypeMock, cfg.Protocol.Type)

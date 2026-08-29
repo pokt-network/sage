@@ -73,6 +73,7 @@ protocol:
     endpoint_count: 17
     latency: 45ms
     response_body: '{"jsonrpc":"2.0","id":1,"result":"0xfixture"}'
+    failure_rates: [0.00216, 0]
 
 gateway_config:
   gateway_mode: "centralized"

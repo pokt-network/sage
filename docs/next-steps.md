@@ -6,46 +6,26 @@ ordered by priority within each section. Update this file when an item lands
 or a decision changes it; delete items rather than marking them done, so the
 file only ever lists open work.
 
-Last updated: 2026-08-28 (main at `7c65bc5`, PATH `origin/main` unchanged
+Last updated: 2026-08-29 (main at `ce653ee` + uncommitted rate-term soak, PATH `origin/main` unchanged
 since 2026-08-25, nothing to catch up).
 
-## 1. Mainnet-shaped validation of the chronic-failure rate term
-
-The scoring v2 rate term (`docs/scoring.md` §7.3) has never demoted anything
-outside a simulation. Beta cannot exercise it: beta has a single live backend
-and two DNS-dead hosts, so the only failures the term ever saw were floored
-outages, not chronic low-rate violators.
-
-Either:
-
-- run a mainnet config for long enough to see the first demotion, or
-- extend the mock backend (`bench/mock-config.yaml`, `protocol/mock`) to inject
-  a chronic ~0.2% failure rate on one endpoint while the others stay clean, and
-  watch that endpoint drop to tier 2.
-
-The numbers to reproduce are the ones the design was calibrated against, from
-PATH's `EVIDENCE_EMPTY_RESPONSES_2026-08-19.md`: spacebelt 0.216% (must land in
-tier 2), rpcgate 0.065% (must keep tier 1), nodefleet 0.00003% (untouched). A
-6-attempt burst must cost about -0.4, not a demotion. See `docs/scoring.md` §7
-for the penalty curve (0 at or below 0.02%, -40 at 1%, -70 at or above 10%,
-half-life 20k attempts).
-
-## 2. Assess PATH's `feat/ws-stall-watchdog` for port
-
-PATH has an unmerged branch adding a data-staleness watchdog for WebSocket
-subscriptions: a supplier that stays connected but silently stops sending
-frames is detected and the session is rebound. Its sibling
-`feat/ws-session-rebind` is the session-rollover-with-subscription-replay work
-that SAGE deliberately left out of v1 scope.
-
-Decide whether the watchdog stands alone (port it) or depends on the rebind
-(defer with the rebind). Follow the SAGE ↔ PATH sync procedure in
-`CONTRIBUTING.md`; check the branch, not `origin/main`, since neither has
-merged.
-
-## 3. Parked follow-ups from scoring v2
+## 1. Parked follow-ups from scoring v2
 
 None blocking. Recorded so they are not rediscovered from scratch.
+
+- **Decision wanted: does tier 2 carry a trickle?** The 2026-08-29 mock soak
+  (`docs/scoring.md` §7.7, rerun with `./bench/rate-term.sh`) showed a
+  demoted key receives nothing but probes while tier 1 is populated. Two
+  consequences: a chronic violator parks at exactly the tier boundary
+  (`penalty -20`, score 79.997) and its EWMA rate becomes a floor rather than
+  a measurement; and any endpoint's traffic is metered by the additive `-25`
+  with probe-only recovery (four to five probes, ~60–75 s), which in a busy
+  pool gave the 0.065% endpoint 0.05% of relays. Options: a tier-2 traffic
+  share like probation's 10% (measures parked keys by traffic, costs some
+  clients a relay on a known-worse endpoint), a smaller critical cost on a
+  key scoring ≥ 95 (keeps a single blip from benching a 0.065% host, weakens
+  the outage detector by one attempt), or leave it and document the duty
+  cycle as intended. Scoring is Otto's call.
 
 - `AnalysisResult.IsSuccess()` predicate instead of comparing
   `Reason == ReasonSuccess` at call sites.
@@ -61,7 +41,7 @@ None blocking. Recorded so they are not rediscovered from scratch.
   to 1 per backend at the v2 deploy. Intended (ruling F1); dashboards built on
   the old count will show a step.
 
-## 4. Parked follow-ups from the admin pass
+## 2. Parked follow-ups from the admin pass
 
 None blocking.
 
@@ -81,6 +61,47 @@ None blocking.
   would let admin flips survive a reload if that is ever wanted.
 - Metrics help strings for the request-sample gauges do not mention "stale
   window" as a reason a series can be absent.
+
+## WebSocket liveness (decided 2026-08-29, not scheduled)
+
+PATH's `feat/ws-stall-watchdog` was assessed for port. It is not an unmerged
+branch: the single commit on it (`f5b14d65`, 2026-07-19) went into PATH main
+with #522 on 2026-07-20, on top of the session-rebind work. What it does: a
+ticker on the bridge goroutine tracks the last client-facing data frame; when
+the client holds an established subscription and 60 s pass with no data, it
+raises a synthetic disconnect that the rebind path handles by reselecting a
+*different* supplier, and after three such rebinds with no data it closes the
+client with 1012.
+
+Decision: **defer with the rebind.** Every part of it that acts is the rebind
+(the supplier-avoiding reconnect, the replay, the give-up cap over rebinds),
+and every part that decides needs the subscription registry (`HasActiveSubscriptions`
+is what stops it closing an idle but legitimate connection). SAGE has neither
+— `websockets/bridge.go` is one endpoint per bridge for its lifetime, and
+nothing in `protocol/shannon/ws_processor.go` parses `eth_subscribe` — so a
+port is the rebind port plus this, not this alone.
+
+What SAGE does have, and what it lacks, so the next reader does not re-derive
+it:
+
+- A silent-stall's blast radius is bounded by the session: `WSRelayer.watchSessionExpiry`
+  closes the bridge at the session boundary with 1012, and the client's
+  reconnect selects afresh. PATH needed the watchdog *because* rebind had made
+  its connections outlive sessions.
+- SAGE's bridge has **no transport liveness at all**: no ping/pong, no read
+  deadline on either side (`websockets/connection.go` sets a read *limit* and a
+  write deadline only). A half-open upstream TCP socket is noticed by the next
+  write failure or the session boundary, whichever comes first. That is a
+  larger gap than the data-staleness one, and cheaper to close — a read
+  deadline refreshed by a pong handler is ~20 lines and needs no subscription
+  model. Do this first if WS liveness becomes a problem.
+- If a standalone stall detector is ever wanted without the rebind, the shape
+  is: detect (needs per-connection knowledge of an established subscription,
+  chain-specific — `eth_subscribe` result, Solana `*Subscribe`, CometBFT
+  `subscribe`), then record a major signal against the endpoint and close the
+  client with 1012, so the client's reconnect draws a different supplier
+  through reputation. That is PATH's give-up branch alone; it is worth having
+  only if stalls are observed inside a session's lifetime.
 
 ## Standing caveat
 

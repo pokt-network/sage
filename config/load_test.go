@@ -107,6 +107,24 @@ full_node_config:
     host_port: localhost:9090
 `,
 		},
+		{
+			"mock failure rate above 1",
+			`
+protocol:
+  type: mock
+  mock:
+    failure_rates: [0.002, 1.5]
+`,
+		},
+		{
+			"mock failure rate negative",
+			`
+protocol:
+  type: mock
+  mock:
+    failure_rates: [-0.1]
+`,
+		},
 	}
 
 	for _, tt := range tests {

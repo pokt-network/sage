@@ -1,0 +1,41 @@
+# Chronic-failure rate term soak (docs/scoring.md §7.3) against the in-process
+# mock backend. Three endpoints reproduce PATH's mainnet empty-response rates:
+#
+#   endpoint 0  spacebelt  0.216%    must land in tier 2 (penalty ≈ -23)
+#   endpoint 1  rpcgate    0.065%    must keep tier 1   (penalty ≈ -12)
+#   endpoint 2  nodefleet  0.00003%  untouched          (penalty 0)
+#
+#   ./bench/rate-term.sh [duration]
+#
+# Cache, singleflight and hedge are off so every client request is exactly one
+# supplier attempt (plus retries on the empty bodies), which is what the rate
+# term counts. Retry stays on: an empty body is a critical and Retry moving to
+# another endpoint is the production shape. Health checks stay on because they
+# are the only way a benched endpoint earns the four successes that return it
+# to tier 1 — with them off, one critical parks an endpoint for good and the
+# rate term never sees another attempt (see docs/scoring.md §7.3).
+protocol:
+  type: mock
+  mock:
+    endpoint_count: 3
+    latency: 0s
+    failure_rates: [0.00216, 0.00065, 0.0000003]
+
+router_config:
+  port: 3069
+
+logger_config:
+  level: warn
+
+feature_flags:
+  cache: false
+  singleflight: false
+  hedge: false
+
+gateway_config:
+  gateway_mode: centralized
+  services:
+    - id: eth
+      type: evm
+      sync_allowance: 5
+      rpc_types: [json_rpc]

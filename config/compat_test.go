@@ -149,6 +149,9 @@ func TestConfigCompatibility_GlobalSections(t *testing.T) {
 		if cfg.Protocol.Mock.ResponseBody == "" {
 			t.Error("mock response_body is empty")
 		}
+		if got := cfg.Protocol.Mock.FailureRates; len(got) != 2 || got[0] != 0.00216 || got[1] != 0 {
+			t.Errorf("mock failure_rates = %v, want [0.00216 0]", got)
+		}
 	})
 }
 
