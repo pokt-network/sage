@@ -97,6 +97,26 @@ func buildSignal(ctx *relay.Context, relayErr error, latency time.Duration) repu
 		return reputation.Signal{}
 	}
 
+	// A blockchain-attributed verdict that carries no penalty is an endpoint
+	// ANSWERING (docs/scoring.md §2.1). "block not found", "missing trie
+	// node", a pruned height, a Solana program the node has no secondary
+	// index for — the endpoint told the truth about state it does not hold,
+	// promptly, and the chain is why that is not the answer the client
+	// wanted. Those verdicts set ShouldRetry, so the Heuristic middleware
+	// turns them into a relay error on the way out, and without this the
+	// error below would grade a MINOR penalty with "heuristic analysis
+	// suggests retry: …" as its reason — an archival query against a pruned
+	// pool would walk the whole pool down. The signal is a success carrying
+	// the analyzer's own reason, so the timeline says which chain-state
+	// answer it was.
+	//
+	// ShouldPenalize is still honoured: a blockchain-attributed verdict that
+	// DOES carry a penalty (the analyzer decided the endpoint is at fault as
+	// well) falls through unchanged.
+	if res := ctx.HeuristicResult; res != nil && res.Attribution == heuristic.AttrBlockchain && !res.ShouldPenalize {
+		return reputation.NewSuccessSignal(res.Reason, latency)
+	}
+
 	// Check for a heuristic result stored by the Heuristic middleware.
 	if ctx.HeuristicResult != nil && ctx.HeuristicResult.ShouldPenalize {
 		return penaltySignal(*ctx.HeuristicResult, latency)

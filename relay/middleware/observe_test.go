@@ -431,3 +431,41 @@ func TestObserve_DoesNotScoreUnderScoringV2(t *testing.T) {
 		t.Error("under scoring_v2 the score middleware records; Observe must not double-count")
 	}
 }
+
+// With scoring_v2 off this middleware is the scorer, and it must make the same
+// correction the score middleware makes: a blockchain-attributed verdict that
+// carries no penalty is an endpoint answering, even though the Heuristic
+// middleware turned it into a relay error to trigger Retry. Grading that error
+// a minor supplier penalty would walk an archival query down a pruned pool.
+func TestObserve_BlockchainAnswerScoresSuccessOnLegacyPath(t *testing.T) {
+	repSvc := &trackingRepService{}
+	flags := newFlags()
+	queue := observe.NewQueue(observe.QueueConfig{Enabled: false}, nil, nil)
+
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = "supplierA-https://node.example.com"
+		ctx.Response = &domain.Response{HTTPStatusCode: http.StatusOK}
+		ctx.HeuristicResult = &heuristic.AnalysisResult{
+			ShouldRetry:    true,
+			ShouldPenalize: false,
+			Attribution:    heuristic.AttrBlockchain,
+			Reason:         "block_not_found",
+		}
+		return errors.New("heuristic analysis suggests retry: block_not_found")
+	})
+
+	ctx := baseContext()
+	mw := Observe(flags, queue, repSvc, nil)
+	_ = mw(inner).HandleRelay(ctx)
+
+	repSvc.mu.Lock()
+	sig := repSvc.last
+	repSvc.mu.Unlock()
+
+	if sig.Type != reputation.SignalSuccess {
+		t.Fatalf("blockchain-attributed, unpenalised verdict must score success, got %q (%s)", sig.Type, sig.Reason)
+	}
+	if sig.Reason != "block_not_found" {
+		t.Errorf("signal must carry the analyzer's reason, got %q", sig.Reason)
+	}
+}

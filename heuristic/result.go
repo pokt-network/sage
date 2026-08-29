@@ -70,12 +70,18 @@ type AnalysisResult struct {
 }
 
 // ReasonSuccess is the Reason a verdict carries when the response passed every
-// check.
-//
-// It is exported because a caller cannot key on attribution alone to tell an
-// answered request from a client error: this verdict is AttrClient too (see
-// successResult). The score middleware compares against it.
+// check. Callers ask IsSuccess rather than comparing against it.
 const ReasonSuccess = "success"
+
+// IsSuccess reports whether the verdict is the analyzer passing the response.
+//
+// It exists because a caller cannot key on attribution alone to tell an
+// answered request from a client error: the success verdict is AttrClient too
+// (see successResult), so "client-attributed" covers both the request the
+// client got wrong and the one the endpoint answered correctly.
+func (r AnalysisResult) IsSuccess() bool {
+	return r.Reason == ReasonSuccess
+}
 
 // successResult returns an AnalysisResult for a successful response.
 func successResult() AnalysisResult {

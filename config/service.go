@@ -504,11 +504,13 @@ func (r ReputationConfig) RateConfig() reputation.RateConfig {
 	}
 }
 
-// TieredSelectionConfig controls endpoint tiering.
+// TieredSelectionConfig controls endpoint tiering: the score bands, and the
+// traffic shares that reach below the top band.
 //
-// The thresholds here are honoured: they fill in reputation.SelectorConfig,
-// anything left zero taking reputation.DefaultSelectorConfig(). They are
-// global — one TieredSelector serves every service — so the block is read from
+// Every key here except `enabled` is honoured: they fill in
+// reputation.SelectorConfig, anything left zero taking
+// reputation.DefaultSelectorConfig(). They are global — one TieredSelector
+// serves every service — so the block is read from
 // gateway_config.reputation_config and a per-service copy of it changes
 // nothing. Thresholds that do not descend (tier2 at or above tier1, probation
 // at or above tier2) still load — a PATH config in production has them, and

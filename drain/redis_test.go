@@ -42,6 +42,10 @@ type fakeRedis struct {
 	// write issued while the first is stalled provably lands first.
 	setEntered chan struct{}
 	setGate    chan struct{}
+
+	// afterScan, when set, runs after a Scan step has been answered and f.mu
+	// released — the window between a refresh's snapshot and its replace.
+	afterScan func()
 }
 
 func newFakeRedis() *fakeRedis {
@@ -116,7 +120,15 @@ const scanPage = 2
 // contract as Redis, minus the guarantees about keys added mid-iteration. A
 // paging fake rather than a one-shot one is the point: it proves the store
 // actually follows the cursor instead of reading the first page and stopping.
-func (f *fakeRedis) Scan(ctx context.Context, cursor uint64, match string, _ int64) *redis.ScanCmd {
+func (f *fakeRedis) Scan(ctx context.Context, cursor uint64, match string, count int64) *redis.ScanCmd {
+	cmd := f.scan(ctx, cursor, match, count)
+	if f.afterScan != nil {
+		f.afterScan()
+	}
+	return cmd
+}
+
+func (f *fakeRedis) scan(ctx context.Context, cursor uint64, match string, _ int64) *redis.ScanCmd {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -851,4 +863,34 @@ func TestRedisStore_KeyRoundTrip(t *testing.T) {
 
 func TestRedisStore_SatisfiesStore(t *testing.T) {
 	var _ Store = NewRedisStore(nil)
+}
+
+// A Set that lands after a refresh took its snapshot and before it replaced the
+// local map used to be wiped for one tick: the snapshot did not have it, and
+// replaceAll installed the snapshot. The entry is newer than the snapshot and
+// must survive until the next refresh finds it in Redis.
+func TestRedisStore_SetDuringRefreshSurvivesTheReplace(t *testing.T) {
+	fake := newFakeRedis()
+	s := NewRedisStore(fake)
+	entry := Entry{
+		Key:   Key{ServiceID: "eth", Operator: "late.example"},
+		Until: time.Now().Add(time.Minute),
+	}
+	fake.afterScan = func() {
+		fake.afterScan = nil // Once: the Set below writes to Redis too.
+		if err := s.Set(context.Background(), entry); err != nil {
+			t.Errorf("Set: %v", err)
+		}
+	}
+
+	s.refresh(context.Background())
+
+	if !s.Drained("eth", "late.example", domain.RPCTypeJSONRPC) {
+		t.Fatal("a drain set while the refresh was in flight was wiped by the replace")
+	}
+	// The next refresh sees it in Redis and keeps it the ordinary way.
+	s.refresh(context.Background())
+	if !s.Drained("eth", "late.example", domain.RPCTypeJSONRPC) {
+		t.Fatal("drain lost on the refresh after the one it raced")
+	}
 }

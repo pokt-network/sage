@@ -2,7 +2,13 @@ package featureflag
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -152,5 +158,98 @@ func TestRedisStore_DeleteGlobal_KeepsServiceOverrides(t *testing.T) {
 	}
 	if store.IsEnabled(ctx, FlagTracing, "poly") {
 		t.Error("the global/config value survived DeleteGlobal")
+	}
+}
+
+// fakeFlagRedis is the slice of RedisClient GetAll touches, with SCAN paging
+// two keys per step and one key repeated across steps, as a rehash mid-walk
+// can produce.
+type fakeFlagRedis struct {
+	data      map[string]string
+	scanCalls int
+}
+
+func (f *fakeFlagRedis) Get(ctx context.Context, key string) *redis.StringCmd {
+	cmd := redis.NewStringCmd(ctx)
+	v, ok := f.data[key]
+	if !ok {
+		cmd.SetErr(redis.Nil)
+		return cmd
+	}
+	cmd.SetVal(v)
+	return cmd
+}
+
+func (f *fakeFlagRedis) Set(ctx context.Context, key string, value interface{}, _ time.Duration) *redis.StatusCmd {
+	f.data[key] = fmt.Sprint(value)
+	return redis.NewStatusCmd(ctx)
+}
+
+func (f *fakeFlagRedis) Del(ctx context.Context, keys ...string) *redis.IntCmd {
+	for _, k := range keys {
+		delete(f.data, k)
+	}
+	return redis.NewIntCmd(ctx)
+}
+
+func (f *fakeFlagRedis) Scan(ctx context.Context, cursor uint64, match string, _ int64) *redis.ScanCmd {
+	f.scanCalls++
+	prefix := strings.TrimSuffix(match, "*")
+	var all []string
+	for k := range f.data {
+		if strings.HasPrefix(k, prefix) {
+			all = append(all, k)
+		}
+	}
+	sort.Strings(all)
+	start := int(cursor)
+	if start > len(all) {
+		start = len(all)
+	}
+	end := min(start+2, len(all))
+	page := append([]string(nil), all[start:end]...)
+	if start > 0 {
+		page = append(page, all[start-1]) // A repeat from the previous step.
+	}
+	next := uint64(end)
+	if end >= len(all) {
+		next = 0
+	}
+	cmd := redis.NewScanCmd(ctx, nil)
+	cmd.SetVal(page, next)
+	return cmd
+}
+
+// GetAll walks the namespace with SCAN — never KEYS, which blocks the whole
+// server and runs on every replica — following the cursor across pages and
+// ignoring a key the walk repeats.
+func TestRedisStore_GetAllScansTheNamespace(t *testing.T) {
+	fake := &fakeFlagRedis{data: map[string]string{
+		globalKey(FlagHedge):          "0",
+		globalKey(FlagCache):          "1",
+		serviceKey(FlagHedge, "eth"):  "1",
+		serviceKey(FlagRetry, "poly"): "0",
+		"sage:other:namespace":        "1",
+	}}
+	store := NewRedisStore(fake, nil)
+
+	all, err := store.GetAll(context.Background())
+	if err != nil {
+		t.Fatalf("GetAll: %v", err)
+	}
+	if fake.scanCalls < 2 {
+		t.Fatalf("expected the cursor to be followed across pages, got %d Scan call(s)", fake.scanCalls)
+	}
+	if all[FlagHedge].Enabled {
+		t.Error("hedge global key = 0 must read as disabled")
+	}
+	if !all[FlagHedge].ServiceOverrides["eth"] {
+		t.Error("hedge eth override = 1 must read as enabled")
+	}
+	if !all[FlagCache].Enabled {
+		t.Error("cache global key = 1 must read as enabled")
+	}
+	if on, ok := all[FlagRetry].ServiceOverrides["poly"]; !ok || on {
+		t.Errorf("retry poly override = 0 must be present and disabled, got %v/%v", on, ok)
 	}
 }

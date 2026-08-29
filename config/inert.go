@@ -153,6 +153,13 @@ func matchInert(parent, key string) (string, bool) {
 	return "", false
 }
 
+// InertReason reports whether the yaml key under parent is registered as
+// parsed-but-inert, and why. The config reference generator reads it so the
+// docs say what the startup log says.
+func InertReason(parent, key string) (string, bool) {
+	return matchInert(parent, key)
+}
+
 // InertRegistryKeys returns every registered key, for tests and for anything
 // that needs to know the whole set rather than what one config triggered.
 func InertRegistryKeys() []string {

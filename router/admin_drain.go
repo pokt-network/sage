@@ -239,7 +239,7 @@ func (a *AdminAPI) handleReleaseDrain(w http.ResponseWriter, req *http.Request) 
 func (a *AdminAPI) matchedEndpoints(ctx context.Context, serviceID domain.ServiceID, targetDomain string, rpcType domain.RPCType) int {
 	seen := map[domain.EndpointAddr]bool{}
 	matched := 0
-	for addr := range a.liveEndpoints(ctx, serviceID, rpcType) {
+	for addr := range a.registeredEndpoints(ctx, serviceID, rpcType) {
 		if seen[addr] {
 			continue
 		}
@@ -255,6 +255,36 @@ func (a *AdminAPI) matchedEndpoints(ctx context.Context, serviceID domain.Servic
 		}
 	}
 	return matched
+}
+
+// registeredEndpointLister is the optional provider surface that lists
+// registrations before the ban, drain and blacklist are applied. The Shannon
+// protocol implements it; the mock backend, which excludes nothing, does not
+// need to.
+type registeredEndpointLister interface {
+	RegisteredEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error)
+}
+
+// registeredEndpoints is liveEndpoints before exclusions, when the provider
+// can say; otherwise it is liveEndpoints. The dry-run match count reads this
+// so that an operator already drained, banned or blacklisted still counts —
+// zero would say "no such operator" when the truth is "already out".
+func (a *AdminAPI) registeredEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) map[domain.EndpointAddr]struct{} {
+	lister, ok := a.endpoints.(registeredEndpointLister)
+	if !ok {
+		return a.liveEndpoints(ctx, serviceID, rpcType)
+	}
+	out := map[domain.EndpointAddr]struct{}{}
+	for _, rt := range rpcTypesToCheck(rpcType) {
+		endpoints, err := lister.RegisteredEndpoints(ctx, serviceID, rt)
+		if err != nil {
+			continue
+		}
+		for _, addr := range endpoints {
+			out[addr] = struct{}{}
+		}
+	}
+	return out
 }
 
 // lastOperatorStanding reports whether draining targetDomain would leave some

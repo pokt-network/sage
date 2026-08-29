@@ -369,9 +369,26 @@ func (p *Protocol) StopBlockPoller() {
 	p.sessions.StopBlockPoller()
 }
 
-// AvailableEndpoints returns the list of endpoint addresses for the service/rpcType combination,
-// excluding any blacklisted suppliers.
+// AvailableEndpoints returns the endpoint addresses for the service/rpcType
+// combination that may be handed traffic: registrations that serve the RPC
+// type, minus the operator domain ban, the operator drain and the supplier
+// blacklist.
 func (p *Protocol) AvailableEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error) {
+	return p.endpoints(ctx, serviceID, rpcType, true)
+}
+
+// RegisteredEndpoints returns every registration for the service/rpcType
+// combination that serves the RPC type, whether or not it is currently banned,
+// drained or blacklisted. It is what a dry-run drain counts against: an
+// operator already excluded for another reason would otherwise report zero
+// matches, which reads as "no such operator" rather than "already out".
+func (p *Protocol) RegisteredEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error) {
+	return p.endpoints(ctx, serviceID, rpcType, false)
+}
+
+// endpoints is AvailableEndpoints and RegisteredEndpoints: the session's
+// registrations for the RPC type, with the exclusions applied when filtered.
+func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType, filtered bool) (domain.EndpointAddrList, error) {
 	appAddr, err := p.pickApp(serviceID)
 	if err != nil {
 		p.logger.Error("AvailableEndpoints: no app for service",
@@ -413,6 +430,10 @@ func (p *Protocol) AvailableEndpoints(ctx context.Context, serviceID domain.Serv
 			url = u
 		} else {
 			url = ep.PublicURL()
+		}
+		if !filtered {
+			result = append(result, addr)
+			continue
 		}
 		if blockedDomains.IsBlocked(url, rpcType) {
 			blocked++

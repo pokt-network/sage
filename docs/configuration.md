@@ -56,7 +56,7 @@ Controls the HTTP server.
 | `read_timeout` | duration | Bounds reading a request. Default: 30s. |
 | `write_timeout` | duration | Bounds writing a response. Default: 30s. It does not apply to an upgraded WebSocket connection, which is long-lived by definition; WS deadlines live in the websockets package. |
 | `idle_timeout` | duration | Bounds how long a keep-alive connection may sit unused. Default: 120s. |
-| `websocket_message_buffer_size` | integer | **⚠️ Parsed, not implemented.** Parsed and not implemented. WebSocket buffering is fixed in the websockets package; the field exists so a PATH config carrying the key still loads. |
+| `websocket_message_buffer_size` | integer | **⚠️ Parsed, not implemented:** WebSocket buffering is fixed in the websockets package; the field exists so a PATH config carrying the key still loads. |
 | `trusted_proxies` | list of string | Lists the CIDR ranges of proxies in front of the gateway (haproxy, a load balancer, a CDN). X-Forwarded-For is believed only when a request's immediate peer is inside one of these ranges; from any other peer it is client-supplied and ignored when resolving ctx.ClientIP. Empty means trust no proxy, so the client is always the direct peer. That is the un-spoofable default, and the safe zero value: the dangerous mistake is trusting a proxy that is not actually there, which lets a client forge its address — never the reverse. Set this to the addresses SAGE actually sits behind, not to 0.0.0.0/0. |
 
 ## `logger_config`
@@ -102,8 +102,8 @@ Configures the Shannon blockchain full node connection.
 | Key | Type | Description |
 |---|---|---|
 | `rpc_url` | string | The CometBFT RPC endpoint of the Shannon full node, used for block height and chain queries. |
-| `lazy_mode` | boolean | **⚠️ Parsed, not implemented.** Parsed and not implemented. In PATH it selects between caching and per-request session lookups. |
-| `session_rollover_blocks` | integer | **⚠️ Parsed, not implemented.** Parsed and not implemented. SAGE handles session rollover in protocol/shannon rather than from a configured block count. |
+| `lazy_mode` | boolean | **⚠️ Parsed, not implemented:** SAGE always caches sessions; there is no per-request lookup mode to select. In PATH it selects between caching and per-request session lookups. |
+| `session_rollover_blocks` | integer | **⚠️ Parsed, not implemented:** rollover is handled in protocol/shannon from the session's own boundaries. SAGE handles session rollover in protocol/shannon rather than from a configured block count. |
 
 ### `full_node_config.grpc_config`
 
@@ -124,7 +124,7 @@ Controls session caching.
 
 | Key | Type | Description |
 |---|---|---|
-| `session_ttl` | duration | **⚠️ Parsed, not implemented.** Parsed and not implemented. Session lifetime in SAGE follows the protocol's own session boundaries rather than a wall-clock TTL, so there is nothing for this to tune. |
+| `session_ttl` | duration | **⚠️ Parsed, not implemented:** session lifetime follows the protocol's session boundaries, not a wall-clock TTL. Session lifetime in SAGE follows the protocol's own session boundaries rather than a wall-clock TTL, so there is nothing for this to tune. |
 
 ## `gateway_config`
 
@@ -147,12 +147,12 @@ Controls the reputation system.
 
 | Key | Type | Description |
 |---|---|---|
-| `enabled` | boolean | Not read; reputation always runs. Endpoint scoring is how selection works, so there is no meaningful gateway with it switched off. |
-| `storage_type` | string | **⚠️ Parsed, not implemented.** Parsed and not implemented. Storage follows redis_config: Redis when an address is set, in-memory otherwise. |
+| `enabled` | boolean | **⚠️ Parsed, not implemented:** reputation always runs; endpoint scoring is how selection works. reputation always runs. Endpoint scoring is how selection works, so there is no meaningful gateway with it switched off. |
+| `storage_type` | string | **⚠️ Parsed, not implemented:** Storage follows redis_config: Redis when an address is set, in-memory otherwise. |
 | `key_granularity` | string | Selects what a score is attached to: "per-url" (default), "per-endpoint", "per-domain" or "per-supplier". See reputation/key.go for why per-URL is the default. An unrecognised value is a startup error rather than a fallback to the default — silently changing what scores attach to is not something an operator could detect until an incident. |
 | `initial_score` | integer | The score a newly seen endpoint starts at. Default: 100. |
 | `min_threshold` | integer | The score below which an endpoint is not selected at all (the pool-collapse guard still serves the least-bad one). Global: one selector serves every service. There is no per-service copy — ServiceConfig has no reputation_config, so a copy placed under a service lands in Config.Ignored, and a copy under gateway_config.defaults is reported as inert. Zero means the default (10); a negative value is a startup error, not an off switch. |
-| `recovery_timeout` | duration | **⚠️ Parsed, not implemented.** Parsed and not implemented. SAGE has no cooldown mechanism — reputation is a continuous score, and recovery happens through probation traffic rather than by waiting out a timer. |
+| `recovery_timeout` | duration | **⚠️ Parsed, not implemented:** SAGE has no cooldown; recovery happens through probation traffic, not a timer. SAGE has no cooldown mechanism — reputation is a continuous score, and recovery happens through probation traffic rather than by waiting out a timer. |
 | `max_operator_share` | number | Bounds the fraction of a service's endpoint selections any single operator (registrable domain / eTLD+1) may receive; the excess is water-filled across the other operators. Zero means the default (0.50); negative disables the cap. Two-operator pools use MaxOperatorShareTwoOperators instead — see reputation/concentration.go for why. |
 | `max_operator_share_two_operators` | number | The cap for pools holding exactly two operators, where MaxOperatorShare would sit on the infeasibility boundary. Zero means the default (0.65). |
 | `operator_displacement_ceiling` | number | The multiple of its own entitlement an operator may be displaced up to when absorbing another's capped excess. Zero means the default (3.0); negative removes the ceiling. |
@@ -170,7 +170,7 @@ reported as inert.
 
 | Key | Type | Description |
 |---|---|---|
-| `enabled` | boolean | Parsed and not implemented: tiering always runs. Selection is tiered by construction, so there is no untiered mode to switch back to. |
+| `enabled` | boolean | **⚠️ Parsed, not implemented:** tiering always runs. Selection is tiered by construction, so there is no untiered mode to switch back to. |
 | `tier1_threshold` | integer | The minimum score for the best tier. Zero means the default (80) and a negative value is a startup error. Should be above tier2_threshold; a set that does not descend loads and warns rather than failing. |
 | `tier2_threshold` | integer | The minimum score for the second tier. Zero means the default (50), and a negative value is a startup error. Should be above the probation threshold, for the same reason. |
 | `tier2_traffic_percent` | integer | The share of relays that try a tier-2 endpoint first when tier 1 is populated, with the tier-1 pick behind it as the retry fallback. It is what lets a tier-2 endpoint be measured by traffic rather than by health-check probes alone (docs/scoring.md §7.7). Zero means the default (5), a negative value turns the trickle off, and the value must be at most 100. A SAGE key; PATH has no equivalent. |
@@ -181,10 +181,10 @@ Probation holds the probation-routing thresholds.
 
 | Key | Type | Description |
 |---|---|---|
-| `enabled` | boolean | Parsed and not implemented: probation routing always runs. Probation traffic is how an endpoint earns its score back, so there is no mode in which a demoted endpoint is never retried. |
+| `enabled` | boolean | **⚠️ Parsed, not implemented:** probation routing always runs. Probation traffic is how an endpoint earns its score back, so there is no mode in which a demoted endpoint is never retried. |
 | `threshold` | integer | The score below which an endpoint counts as on probation. Zero means the default (30) and a negative value is a startup error. Should be below tier2_threshold and at or above min_threshold; if it is not, the bands overlap, the config still loads, and Config.Warnings says which one ends up empty. |
 | `traffic_percent` | integer | The share of requests a probation endpoint is prepended to, so a recovering endpoint can earn its way back. Zero means the default (10); the value must be 0..100. |
-| `recovery_multiplier` | number | **⚠️ Parsed, not implemented.** Parsed and not implemented. SAGE has no recovery multiplier — a probation endpoint recovers through the traffic it is given, at the same score deltas as everything else. |
+| `recovery_multiplier` | number | **⚠️ Parsed, not implemented:** SAGE has no recovery multiplier; a probation endpoint recovers through the traffic it is given. SAGE has no recovery multiplier — a probation endpoint recovers through the traffic it is given, at the same score deltas as everything else. |
 
 #### `gateway_config.reputation_config.signal_impacts`
 
@@ -197,9 +197,9 @@ SignalImpacts holds the score delta each signal type carries.
 | `major_error` | integer | The score change for an error affecting reliability. Zero means the default (-10). |
 | `critical_error` | integer | The score change for a severe error. Zero means the default (-25). |
 | `fatal_error` | integer | The score change for an error warranting immediate removal from selection. Zero means the default (-50). |
-| `recovery_success` | integer | **⚠️ Parsed, not implemented.** Parsed and not implemented: the signal type was removed. A successful relay from a recovering endpoint is a success like any other (docs/scoring.md §7.2). |
-| `slow_response` | integer | **⚠️ Parsed, not implemented.** Parsed and not implemented: latency does not penalise a score. It is reported instead, as a per-key EWMA in the admin listing (docs/scoring.md §7.2). |
-| `very_slow_response` | integer | **⚠️ Parsed, not implemented.** Parsed and not implemented, for the same reason as slow_response (docs/scoring.md §7.2). |
+| `recovery_success` | integer | **⚠️ Parsed, not implemented:** the signal type was removed; success is success (docs/scoring.md §7.2). the signal type was removed. A successful relay from a recovering endpoint is a success like any other (docs/scoring.md §7.2). |
+| `slow_response` | integer | **⚠️ Parsed, not implemented:** latency does not penalise; it is reported per key in the admin listing (docs/scoring.md §7.2). latency does not penalise a score. It is reported instead, as a per-key EWMA in the admin listing (docs/scoring.md §7.2). |
+| `very_slow_response` | integer | **⚠️ Parsed, not implemented:** latency does not penalise; it is reported per key in the admin listing (docs/scoring.md §7.2). Parsed and not implemented, for the same reason as slow_response (docs/scoring.md §7.2). |
 
 ### `gateway_config.services[]`
 
@@ -211,7 +211,7 @@ Services supports the production config format (gateway_config.services[])
 | `type` | string | Selects the QoS plugin: "evm", "cosmos", "solana", or anything else for the passthrough plugin, which relays and scores but understands nothing about the payload. |
 | `rpc_types` | list of string | Lists the protocols this service is expected to serve ("json_rpc", "rest", "comet_bft", "websocket", "grpc"). Read by the Cosmos plugin, which fronts several protocols on one service. |
 | `sync_allowance` | integer | How many blocks behind the perceived chain head an endpoint may fall and still be selected. Too tight and a healthy pool empties on every block; too loose and clients read stale state. Zero means the plugin's own default, and the plugins do not agree on what that is, because their chains do not. EVM and Cosmos read zero as "no block-height filtering" — a block there is seconds to tens of seconds, so an unset allowance costs a bounded amount of staleness. Solana reads it as 1500 blocks (~10 minutes), because zero there means a strict height >= perceived comparison rather than no comparison, and at ~400ms per block that starves every endpoint except the one that reported last. See qos/solana.defaultSyncAllowance. |
-| `latency_profile` | string | **⚠️ Parsed, not implemented.** Parsed and not implemented. It names an entry in gateway_config.latency_profiles, which is itself not wired. |
+| `latency_profile` | string | **⚠️ Parsed, not implemented:** names an entry in latency_profiles, which nothing reads. It names an entry in gateway_config.latency_profiles, which is itself not wired. |
 | `chain_id` | string | The chain identifier this service is expected to serve, as the chain itself reports it. When set, health checks assert the endpoint agrees; one serving a different chain is ejected rather than left to answer with another chain's data under this service's name. The value is opaque here on purpose. Its format and how it compares are chain semantics, so they belong to the QoS plugin, not to config: EVM reports hex from eth_chainId ("0x1") and must compare numerically, since "0x531" and "0x0531" are the same chain; CometBFT reports a name from /status ("cosmoshub-4") that compares exactly. Validation therefore lives in the plugin's own Config.Validate, called at wire time — still a startup failure, without teaching config about any one chain. Empty disables the assertion — the zero value keeps existing services behaving exactly as before, so this is opt-in per service. |
 | `retry_config` | RetryConfig | Same keys as [`gateway_config.retry_config`](#gateway-config-retry-config). |
 
@@ -245,7 +245,7 @@ UnifiedServices supports the newer format (gateway_config.unified_services{})
 |---|---|---|
 | `defaults` | ServiceDefaults | Same keys as [`gateway_config.defaults`](#gateway-config-defaults). |
 | `services` | list of ServiceConfig | Same keys as [`gateway_config.services[]`](#gateway-config-services). |
-| `latency_profiles` | map of string → LatencyProfile | Same keys as [`gateway_config.latency_profiles.<name>`](#gateway-config-latency-profiles-name). |
+| `latency_profiles` | map of string → LatencyProfile | **⚠️ Parsed, not implemented:** latency has reporting power only — docs/scoring.md §7.2. Same keys as [`gateway_config.latency_profiles.<name>`](#gateway-config-latency-profiles-name). |
 | `middleware_chain` | list of string | The older location for the chain order. The gateway-level gateway_config.middleware_chain wins when both are set; this is read so a config written against the earlier layout keeps working. See GatewayConfig.MiddlewareChain for what the values mean. |
 
 ### `gateway_config.retry_config`
@@ -256,11 +256,11 @@ Retry at gateway level (gateway_config.retry_config in production config)
 |---|---|---|
 | `enabled` | boolean | Not read on its own — retries are on when MaxRetries > 0, so the count is the switch. See IsEnabled. |
 | `max_retries` | integer | How many further endpoints a failed relay may be tried on. Zero disables retry. Each attempt re-selects, so a retry rotates away from the endpoint that failed rather than asking it again. Retrying never escalates to a circuit break on its own; those are independent decisions. See the heuristic package. |
-| `max_retry_latency` | duration | **⚠️ Parsed, not implemented.** Parsed and not implemented. Bound total time with timeout_config.relay_timeout per attempt instead. |
+| `max_retry_latency` | duration | **⚠️ Parsed, not implemented:** bound total retry time with retry_config.max_latency instead. Bound total time with timeout_config.relay_timeout per attempt instead. |
 | `retry_on_5xx` | boolean | Retries when an endpoint answers 5xx. |
-| `retry_on_timeout` | boolean | **⚠️ Parsed, not implemented.** Parsed and not implemented. Whether a failure is retryable is decided by heuristic analysis of the response, not by per-cause switches. |
-| `retry_on_connection` | boolean | **⚠️ Parsed, not implemented.** Parsed and not implemented. See RetryOnTimeout. |
-| `connect_timeout` | duration | **⚠️ Parsed, not implemented.** Parsed and not implemented. |
+| `retry_on_timeout` | boolean | **⚠️ Parsed, not implemented:** retryability is decided by the error's own classification, not per-cause switches. Whether a failure is retryable is decided by heuristic analysis of the response, not by per-cause switches. |
+| `retry_on_connection` | boolean | **⚠️ Parsed, not implemented:** retryability is decided by the error's own classification, not per-cause switches. See RetryOnTimeout. |
+| `connect_timeout` | duration | **⚠️ Parsed, not implemented:** the protocol's HTTP client bounds connection setup. Parsed and not implemented. |
 | `hedge_delay` | duration | How long to wait before racing a second endpoint against an in-flight relay. Zero disables hedging. This is the tail-latency control: set it near the service's p95 so the hedge fires only for requests already running long, and costs a duplicate relay only on those. Set it too low and every request is sent twice. |
 | `max_latency` | duration | The threshold above which a response is treated as slow and penalised in reputation. |
 
@@ -370,7 +370,7 @@ Provides default values for services.
 |---|---|---|
 | `retry_config` | RetryConfig | Same keys as [`gateway_config.retry_config`](#gateway-config-retry-config). |
 | `timeout_config` | TimeoutConfig | Same keys as [`gateway_config.services[].timeout_config`](#gateway-config-services-timeout-config). |
-| `reputation_config` | ReputationConfig | Same keys as [`gateway_config.reputation_config`](#gateway-config-reputation-config). |
+| `reputation_config` | ReputationConfig | **⚠️ Parsed, not implemented:** reputation is configured from gateway_config.reputation_config only; the selector and the scorer are global, so a copy under defaults is read by nothing. Same keys as [`gateway_config.reputation_config`](#gateway-config-reputation-config). |
 
 ## `websocket_config`
 

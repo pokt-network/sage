@@ -127,9 +127,16 @@ func (bc *BlockConsensus) PerceivedBlock() uint64 {
 	return bc.perceived.Load()
 }
 
-// SetExternalFloor sets the external block height floor (e.g., from external block sources).
+// SetExternalFloor sets the external block height floor (e.g., from external
+// block sources).
+//
+// Under mu like every other store, so that a Reset and a floor update cannot
+// interleave: outside the lock, a floor fetched before the operator's reset
+// could land after it and outlive the state the reset was meant to discard.
 func (bc *BlockConsensus) SetExternalFloor(height uint64) {
+	bc.mu.Lock()
 	bc.externalFloor.Store(height)
+	bc.mu.Unlock()
 }
 
 // Reset discards every observation, zeroes the perceived height and the

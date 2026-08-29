@@ -383,6 +383,9 @@ func (s *RedisStore) refresh(ctx context.Context) {
 		return
 	}
 
+	// Taken before the scan: anything Set locally after this instant is newer
+	// than the snapshot and must survive the replace below.
+	began := time.Now()
 	keys, err := s.scanKeys(ctx)
 	if err != nil {
 		s.log().Warn("drain refresh: listing redis keys failed, keeping local drains", "error", err)
@@ -423,7 +426,7 @@ func (s *RedisStore) refresh(ctx context.Context) {
 	}
 
 	s.reconcilePending(ctx, next, now)
-	s.replaceAll(next)
+	s.replaceAll(next, began)
 }
 
 // scanCount is the COUNT hint given to each SCAN cursor step. Drain keys are

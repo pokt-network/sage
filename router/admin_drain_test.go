@@ -591,3 +591,51 @@ func TestAdminDrain_JSONFieldNamesAreSnakeCase(t *testing.T) {
 		}
 	}
 }
+
+// registeredEndpointProvider hands out fewer endpoints than it has registered,
+// the way the Shannon protocol does once a ban, a drain or the blacklist has
+// removed some.
+type registeredEndpointProvider struct {
+	available  domain.EndpointAddrList
+	registered domain.EndpointAddrList
+}
+
+func (p *registeredEndpointProvider) AvailableEndpoints(_ context.Context, _ domain.ServiceID, _ domain.RPCType) (domain.EndpointAddrList, error) {
+	return p.available, nil
+}
+
+func (p *registeredEndpointProvider) RegisteredEndpoints(_ context.Context, _ domain.ServiceID, _ domain.RPCType) (domain.EndpointAddrList, error) {
+	return p.registered, nil
+}
+
+// matched_endpoints counts an operator's registrations whether or not they
+// are currently excluded for another reason. A dry run against an operator
+// that is already drained must say how many endpoints the drain covers, not
+// zero — zero reads as "no such operator".
+func TestAdminDrain_MatchedEndpointsCountsRegistrationsNotSurvivors(t *testing.T) {
+	store := drain.NewMemoryStore()
+	provider := &registeredEndpointProvider{
+		// Already excluded: nothing of example.com is being handed out.
+		available: domain.EndpointAddrList{"pokt1c-https://rpc.other.net"},
+		registered: domain.EndpointAddrList{
+			"pokt1a-https://rpc-1.example.com",
+			"pokt1b-https://rpc-2.example.com",
+			"pokt1c-https://rpc.other.net",
+		},
+	}
+	_, mux := newTestAdminWithDrain(t, store, provider, time.Hour)
+
+	res := doRequest(t, mux, http.MethodPost, "/admin/reputation/drain/eth", `{"domain":"example.com","duration":"30m","dry_run":true}`)
+	if res.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", res.status, res.body)
+	}
+	var out struct {
+		MatchedEndpoints int `json:"matched_endpoints"`
+	}
+	if err := json.Unmarshal(res.body, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.MatchedEndpoints != 2 {
+		t.Fatalf("matched_endpoints = %d, want 2 registrations of example.com", out.MatchedEndpoints)
+	}
+}

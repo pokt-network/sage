@@ -41,13 +41,13 @@ func NewTrafficCollector(lister TrafficSummaryLister, services []domain.ServiceI
 		services: services,
 		distinctRatioDesc: prometheus.NewDesc(
 			"sage_request_sample_distinct_ratio",
-			"Distinct fingerprints divided by sampled requests, for the previous complete request-sample window. Absent when the service has no completed window yet.",
+			"Distinct fingerprints divided by sampled requests, for the previous complete request-sample window. Absent when the service has no completed window yet, or when its last complete window is older than twice the window length — no recent traffic to describe.",
 			[]string{"service_id"},
 			nil,
 		),
 		top1ShareDesc: prometheus.NewDesc(
 			"sage_request_sample_top_share",
-			"Share of sampled requests taken by the single most common request fingerprint, for the previous complete request-sample window. Absent when the service has no completed window yet.",
+			"Share of sampled requests taken by the single most common request fingerprint, for the previous complete request-sample window. Absent when the service has no completed window yet, or when its last complete window is older than twice the window length — no recent traffic to describe.",
 			[]string{"service_id"},
 			nil,
 		),

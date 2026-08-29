@@ -17,11 +17,15 @@ import (
 type MemoryStore struct {
 	mu      sync.RWMutex
 	entries map[Key]Entry
+	// setAt is when each entry was last installed locally. replaceAll keeps
+	// an entry newer than the snapshot it is replacing with, so a Set that
+	// landed while a refresh was in flight is not wiped for one tick.
+	setAt map[Key]time.Time
 }
 
 // NewMemoryStore returns an empty MemoryStore.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{entries: make(map[Key]Entry)}
+	return &MemoryStore{entries: make(map[Key]Entry), setAt: make(map[Key]time.Time)}
 }
 
 // Set installs or refreshes a drain, or releases it when e.Until is not
@@ -30,11 +34,14 @@ func (s *MemoryStore) Set(_ context.Context, e Entry) error {
 	e.Operator = strings.ToLower(e.Operator)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !e.Until.After(time.Now()) {
+	now := time.Now()
+	if !e.Until.After(now) {
 		delete(s.entries, e.Key)
+		delete(s.setAt, e.Key)
 		return nil
 	}
 	s.entries[e.Key] = e
+	s.setAt[e.Key] = now
 	return nil
 }
 
@@ -43,6 +50,7 @@ func (s *MemoryStore) Release(_ context.Context, k Key) error {
 	k.Operator = strings.ToLower(k.Operator)
 	s.mu.Lock()
 	delete(s.entries, k)
+	delete(s.setAt, k)
 	s.mu.Unlock()
 	return nil
 }
@@ -89,12 +97,33 @@ func (s *MemoryStore) Active(_ context.Context, serviceID domain.ServiceID) []En
 // RedisStore's refresh loop uses it to rebuild the cache from Redis: a drain
 // released on another replica is a key that is gone, which only a wholesale
 // replace can express. A nil next clears every drain.
-func (s *MemoryStore) replaceAll(next map[Key]Entry) {
+//
+// since is when the snapshot next was taken. A local entry installed after
+// that is newer than anything the snapshot can know about — a Set that landed
+// while the refresh was on the wire — and is carried over rather than wiped
+// until the next refresh finds it in Redis.
+func (s *MemoryStore) replaceAll(next map[Key]Entry, since time.Time) {
 	if next == nil {
 		next = make(map[Key]Entry)
 	}
+	now := time.Now()
 	s.mu.Lock()
+	for k, at := range s.setAt {
+		if !at.After(since) {
+			continue
+		}
+		if e, ok := s.entries[k]; ok && e.Until.After(now) {
+			if _, replaced := next[k]; !replaced {
+				next[k] = e
+			}
+		}
+	}
 	s.entries = next
+	for k := range s.setAt {
+		if _, ok := next[k]; !ok {
+			delete(s.setAt, k)
+		}
+	}
 	s.mu.Unlock()
 }
 

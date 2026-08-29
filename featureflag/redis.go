@@ -21,7 +21,10 @@ type RedisClient interface {
 	Get(ctx context.Context, key string) *redis.StringCmd
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
-	Keys(ctx context.Context, pattern string) *redis.StringSliceCmd
+	// Scan walks the keyspace a cursor step at a time. Keys is deliberately
+	// not here: KEYS blocks the whole Redis server for as long as the keyspace
+	// takes to walk, and GetAll runs on every replica.
+	Scan(ctx context.Context, cursor uint64, match string, count int64) *redis.ScanCmd
 }
 
 type cacheEntry struct {
@@ -154,7 +157,7 @@ func (s *RedisStore) GetAll(ctx context.Context) (map[string]FlagState, error) {
 	}
 
 	// Scan Redis keys for global and per-service flags.
-	keys, err := s.client.Keys(ctx, keyPrefix+"*").Result()
+	keys, err := s.scanKeys(ctx)
 	if err != nil {
 		return result, fmt.Errorf("redis keys scan: %w", err)
 	}
@@ -183,6 +186,44 @@ func (s *RedisStore) GetAll(ctx context.Context) (map[string]FlagState, error) {
 	}
 
 	return result, nil
+}
+
+// scanCount is the COUNT hint for each SCAN step. Flag keys are few — one per
+// flag set through the admin API, global or per service — so a fleet finishes
+// in one step; the hint bounds the work Redis does per call.
+const scanCount = 256
+
+// scanKeys enumerates the flag namespace with SCAN, following the cursor to
+// completion. Duplicates are dropped: SCAN may return a key twice when the
+// keyspace is rehashed mid-iteration. A failure part-way through is returned
+// rather than salvaged, so GetAll degrades to its defaults plus an error
+// instead of a partial view that looks complete.
+func (s *RedisStore) scanKeys(ctx context.Context) ([]string, error) {
+	var (
+		keys   []string
+		seen   map[string]struct{}
+		cursor uint64
+	)
+	for {
+		page, next, err := s.client.Scan(ctx, cursor, keyPrefix+"*", scanCount).Result()
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range page {
+			if seen == nil {
+				seen = make(map[string]struct{}, len(page))
+			}
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			keys = append(keys, k)
+		}
+		cursor = next
+		if cursor == 0 {
+			return keys, nil
+		}
+	}
 }
 
 // Delete removes a flag key so it falls back to the config override or the

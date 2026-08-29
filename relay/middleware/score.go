@@ -42,7 +42,7 @@ func Score(flags featureflag.FlagStore, repSvc reputation.Service) relay.Middlew
 			if nobodysSignal(ctx.HeuristicResult, err) {
 				return err
 			}
-			sig := attemptSignal(ctx, err, time.Since(start))
+			sig := buildSignal(ctx, err, time.Since(start))
 			if sig.Type == "" {
 				return err
 			}
@@ -87,31 +87,5 @@ func nobodysSignal(res *heuristic.AnalysisResult, relayErr error) bool {
 	if res == nil || res.Attribution != heuristic.AttrClient {
 		return false
 	}
-	return relayErr != nil || res.Reason != heuristic.ReasonSuccess
-}
-
-// attemptSignal grades one attempt. It is buildSignal plus the correction
-// buildSignal cannot make from Observe's position: a blockchain-attributed
-// verdict that carries no penalty is an endpoint ANSWERING (docs/scoring.md
-// §2.1). "block not found", "missing trie node", a pruned height, a Solana
-// program the node has no secondary index for — the endpoint told the truth
-// about state it does not hold, promptly, and the chain is why that is not
-// the answer the client wanted.
-//
-// Those verdicts set ShouldRetry, so the Heuristic middleware turns them into
-// a relay error on the way out and buildSignal grades that error a MINOR
-// penalty with "heuristic analysis suggests retry: …" as its reason — an
-// archival query against a pruned pool would walk the whole pool down. The
-// signal recorded here is a success carrying the analyzer's own reason, so
-// the timeline says which chain-state answer it was.
-//
-// ShouldPenalize is still honoured: a blockchain-attributed verdict that DOES
-// carry a penalty (the analyzer decided the endpoint is at fault as well)
-// falls through to buildSignal unchanged.
-func attemptSignal(ctx *relay.Context, relayErr error, latency time.Duration) reputation.Signal {
-	if res := ctx.HeuristicResult; res != nil &&
-		res.Attribution == heuristic.AttrBlockchain && !res.ShouldPenalize {
-		return reputation.NewSuccessSignal(res.Reason, latency)
-	}
-	return buildSignal(ctx, relayErr, latency)
+	return relayErr != nil || !res.IsSuccess()
 }

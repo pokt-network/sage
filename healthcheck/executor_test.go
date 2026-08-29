@@ -947,3 +947,68 @@ func TestRunOnce_DoesNotWriteIntoThePluginsCheckSlice(t *testing.T) {
 		t.Fatalf("the plugin's backing array was overwritten: backing[1].Name = %q, want the sentinel", got)
 	}
 }
+
+// fanoutRepService is a reputation.Service that is NOT a reputation.OnceRecorder:
+// it forwards everything to a stubRepService except RecordSignalOnce, which it
+// does not have. It stands in for a Service implementation that cannot dedupe
+// by key, so the executor's fallback branch has something to be tested with.
+type fanoutRepService struct{ inner *stubRepService }
+
+func (f *fanoutRepService) RecordSignal(ctx context.Context, svcID domain.ServiceID, ep domain.EndpointAddr, rt domain.RPCType, sig reputation.Signal) error {
+	return f.inner.RecordSignal(ctx, svcID, ep, rt, sig)
+}
+func (f *fanoutRepService) GetScore(ctx context.Context, svcID domain.ServiceID, ep domain.EndpointAddr, rt domain.RPCType) (float64, error) {
+	return f.inner.GetScore(ctx, svcID, ep, rt)
+}
+func (f *fanoutRepService) GetScores(ctx context.Context, svcID domain.ServiceID) (map[string]float64, error) {
+	return f.inner.GetScores(ctx, svcID)
+}
+func (f *fanoutRepService) SelectBest(ctx context.Context, svcID domain.ServiceID, eps domain.EndpointAddrList, rt domain.RPCType) domain.EndpointAddr {
+	return f.inner.SelectBest(ctx, svcID, eps, rt)
+}
+func (f *fanoutRepService) SelectSpread(ctx context.Context, svcID domain.ServiceID, eps domain.EndpointAddrList, rt domain.RPCType, load map[domain.EndpointAddr]int) domain.EndpointAddr {
+	return f.inner.SelectSpread(ctx, svcID, eps, rt, load)
+}
+func (f *fanoutRepService) ResetScore(ctx context.Context, svcID domain.ServiceID, ep domain.EndpointAddr) error {
+	return f.inner.ResetScore(ctx, svcID, ep)
+}
+func (f *fanoutRepService) Vouched(ctx context.Context, svcID domain.ServiceID, ep domain.EndpointAddr, rt domain.RPCType) bool {
+	return f.inner.Vouched(ctx, svcID, ep, rt)
+}
+
+var _ reputation.Service = (*fanoutRepService)(nil)
+
+// A reputation.Service without RecordSignalOnce still gets every sibling
+// graded: the executor falls back to one RecordSignal per registration rather
+// than dropping the probe. The pre-F1 fan-out is the lesser evil.
+func TestRunOnce_FallsBackToFanOutWithoutOnceRecorder(t *testing.T) {
+	exe, _, rep, _ := dedupTestFixture(t)
+	if _, isOnce := reputation.Service(&fanoutRepService{}).(reputation.OnceRecorder); isOnce {
+		t.Fatal("fanoutRepService must not be an OnceRecorder, or this test exercises nothing")
+	}
+	exe.repService = &fanoutRepService{inner: rep}
+
+	exe.runOnce(context.Background())
+	exe.wg.Wait()
+
+	rep.mu.Lock()
+	defer rep.mu.Unlock()
+	if len(rep.onceCalls) != 0 {
+		t.Fatalf("no OnceRecorder, yet RecordSignalOnce was called %d time(s)", len(rep.onceCalls))
+	}
+	if len(rep.signals) != 4 {
+		t.Fatalf("expected one RecordSignal per registration (4), got %d", len(rep.signals))
+	}
+	seen := map[domain.EndpointAddr]bool{}
+	for _, rec := range rep.signals {
+		seen[rec.endpoint] = true
+		if !rec.signal.Probe {
+			t.Errorf("signal for %s must be marked as a probe", rec.endpoint)
+		}
+	}
+	for _, ep := range sharedBackendEndpoints() {
+		if !seen[ep] {
+			t.Errorf("registration %s received no signal", ep)
+		}
+	}
+}

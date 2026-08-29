@@ -6,47 +6,24 @@ ordered by priority within each section. Update this file when an item lands
 or a decision changes it; delete items rather than marking them done, so the
 file only ever lists open work.
 
-Last updated: 2026-08-29 (main at `ce653ee` + uncommitted rate-term soak, PATH `origin/main` unchanged
+Last updated: 2026-08-29 (main at `b1aec0d` + uncommitted parked cleanups, PATH `origin/main` unchanged
 since 2026-08-25, nothing to catch up).
 
-## 1. Parked follow-ups from scoring v2
+## 1. Parked follow-ups
 
-None blocking. Recorded so they are not rediscovered from scratch.
+None blocking. The mechanical items from the scoring v2 and admin passes
+landed on 2026-08-29; what is left needs a decision.
 
-- `AnalysisResult.IsSuccess()` predicate instead of comparing
-  `Reason == ReasonSuccess` at call sites.
-- `OnceRecorder` fallback branch has no test.
-- `TieredSelectionConfig` struct doc wording.
-- `docs/configuration.md` cannot mark `defaults.reputation_config` as inert,
-  because docgen keys on the Go field; the inert status is only stated in
-  `docs/scoring.md`.
-- With the scoring flag off, the legacy path still grades a blockchain-caused
-  retry error as a minor supplier error (the flag-on path records success per
-  the attribution invariant in `CLAUDE.md`).
-- Probe increments of `sage_reputation_attempts_total` dropped from N per URL
-  to 1 per backend at the v2 deploy. Intended (ruling F1); dashboards built on
-  the old count will show a step.
-
-## 2. Parked follow-ups from the admin pass
-
-None blocking.
-
-- `featureflag/redis.go:157` still uses `KEYS` on its refresh loop; apply the
-  same `SCAN` fix the drain store uses (every replica runs this every 5s on a
-  shared Redis).
-- `BlockConsensus.SetExternalFloor` stores outside the consensus lock. Floor
-  only, so it cannot resurrect a reset perceived height, but it is the one
-  remaining store not under the lock after the reset fix.
-- Drain `matched_endpoints` is counted after the filter, so a dry-run
-  under-reports when some matches were already blocked for another reason.
-- A drain `Set` landing mid-refresh can be wiped from the local cache for one
-  tick before the next refresh restores it.
 - `featureflag.MemoryStore` cannot tell config-seeded global flags from
   admin-set ones, so a config reload overwrites admin global flips. This is
   what the reload spec mandates; a tuning-style base/override split for flags
   would let admin flips survive a reload if that is ever wanted.
-- Metrics help strings for the request-sample gauges do not mention "stale
-  window" as a reason a series can be absent.
+- Probe increments of `sage_reputation_attempts_total` dropped from N per URL
+  to 1 per backend at the v2 deploy. Intended (ruling F1); dashboards built on
+  the old count will show a step.
+- Option B from the tier-2 decision (`docs/scoring.md` §7.7): a cheaper
+  critical on a key scoring 95 or more. Parked unless the one-blip duty cycle
+  is still visible with the trickle on.
 
 ## WebSocket liveness (decided 2026-08-29, not scheduled)
 

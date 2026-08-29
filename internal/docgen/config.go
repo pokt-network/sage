@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/pokt-network/sage/config"
 )
 
 // configPreamble is the hand-written framing around the generated tables. It is
@@ -84,6 +86,7 @@ func GenerateConfigReference(root string) (string, error) {
 		var rows [][3]string
 
 		// Leaf fields become a table row; struct fields become a subsection.
+		parentKey := lastKey(path)
 		for _, f := range s.fields {
 			childPath := joinPath(path, f.yamlKey) + pathSuffix(f.typeExpr)
 			c, isStruct := pkg.isStructRef(f.typeExpr)
@@ -92,6 +95,11 @@ func GenerateConfigReference(root string) (string, error) {
 				if !reads.used(parentGoName, f.goName) {
 					unwired = append(unwired, joinPath(path, f.yamlKey))
 					desc = strings.TrimSpace(unwiredMarker + " " + desc)
+				}
+				// The registry marker carries a reason and supersedes the
+				// bare one; the key still lands in the list at the end.
+				if reason, ok := config.InertReason(parentKey, f.yamlKey); ok {
+					desc = inertDesc(reason, strings.TrimPrefix(desc, unwiredMarker+" "))
 				}
 				rows = append(rows, [3]string{
 					"`" + f.yamlKey + "`",
@@ -104,7 +112,7 @@ func GenerateConfigReference(root string) (string, error) {
 				rows = append(rows, [3]string{
 					"`" + f.yamlKey + "`",
 					pkg.typeName(f.typeExpr),
-					fmt.Sprintf("Same keys as [`%s`](#%s).", first, anchor(first)),
+					inertPrefix(parentKey, f.yamlKey) + fmt.Sprintf("Same keys as [`%s`](#%s).", first, anchor(first)),
 				})
 				continue
 			}
@@ -126,6 +134,9 @@ func GenerateConfigReference(root string) (string, error) {
 		for _, c := range children {
 			heading := strings.Repeat("#", min(depth+2, 6))
 			fmt.Fprintf(&b, "\n%s `%s`\n", heading, c.path)
+			if p := inertPrefix(parentKey, lastKey(c.path)); p != "" {
+				b.WriteString("\n" + strings.TrimSpace(p) + "\n")
+			}
 			if doc := prose(c.s, c.doc); doc != "" {
 				b.WriteString("\n")
 				b.WriteString(doc)
@@ -144,6 +155,51 @@ func GenerateConfigReference(root string) (string, error) {
 
 // unwiredMarker flags a key that parses into a field no code reads.
 const unwiredMarker = "**⚠️ Parsed, not implemented.**"
+
+// inertPrefix is the marker for a key the config package's inert registry
+// names: one that parses into a field some code does read — usually because
+// the same struct is live somewhere else — and that SAGE still does not act
+// on at this path. The registry is what the startup log reports from, so the
+// reference and the log agree. Empty when the key is not registered.
+func inertPrefix(parentKey, key string) string {
+	reason, ok := config.InertReason(parentKey, key)
+	if !ok {
+		return ""
+	}
+	return "**⚠️ Parsed, not implemented:** " + mdEscape(reason) + ". "
+}
+
+// inertDesc renders a registry-inert leaf: the marker, the registry's reason,
+// then the doc comment minus the "parsed and not implemented" sentence it
+// opens with (the marker says that) and minus the reason itself when the
+// comment leads with the same words.
+func inertDesc(reason, desc string) string {
+	for _, pre := range []string{
+		"Parsed and not implemented. ",
+		"Parsed and not implemented: ",
+		"Parsed and not implemented; ",
+		"Not read; ",
+	} {
+		if strings.HasPrefix(desc, pre) {
+			desc = strings.TrimSpace(desc[len(pre):])
+			break
+		}
+	}
+	reason = mdEscape(reason)
+	if strings.HasPrefix(strings.ToLower(desc), strings.ToLower(strings.TrimSuffix(reason, "."))) {
+		return "**⚠️ Parsed, not implemented:** " + desc
+	}
+	return "**⚠️ Parsed, not implemented:** " + reason + ". " + desc
+}
+
+// lastKey is the yaml key a path ends in, with the list and map markers
+// stripped: "gateway_config.services[]" is a mapping whose key is services.
+func lastKey(path string) string {
+	if i := strings.LastIndex(path, "."); i >= 0 {
+		path = path[i+1:]
+	}
+	return strings.TrimSuffix(path, "[]")
+}
 
 // unwiredSection explains the marker once, at the end, rather than repeating
 // the reasoning on every affected row.
