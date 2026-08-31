@@ -22,6 +22,7 @@ func TestTieredSelector_Tier1(t *testing.T) {
 	}
 	cfg := DefaultSelectorConfig()
 	cfg.ProbationPct = 0 // Disable probation for determinism.
+	cfg.Tier2Pct = 0     // And tier 2's traffic share: with it, ep3 is a legitimate pick 5% of the time.
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 
 	endpoints := domain.EndpointAddrList{"ep1", "ep2", "ep3"}

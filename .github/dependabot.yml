@@ -24,6 +24,15 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # The builder image tracks go.mod's `go` directive by hand: CI pins
+      # GOTOOLCHAIN=local to the version go.mod names, and the image must
+      # build with the same compiler. A newer minor here would compile the
+      # release with a toolchain CI never ran. Patch bumps are fine.
+      - dependency-name: golang
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
 
   - package-ecosystem: github-actions
     directory: /
