@@ -534,3 +534,32 @@ func TestWSRelayer_OpenRejectsAtCapacity_IsCounted(t *testing.T) {
 		t.Fatalf("rejected = %v, want [eth:capacity]", spy.rejected)
 	}
 }
+
+// untriedFirst is the rebind's selection narrowing: never the endpoint that
+// just died, preferably not its operator either, unless that leaves nothing.
+func TestUntriedFirst(t *testing.T) {
+	a1 := domain.EndpointAddr("s1-https://a.example.com")
+	a2 := domain.EndpointAddr("s2-https://b.example.com")
+	b1 := domain.EndpointAddr("s3-https://a.other.com")
+	all := domain.EndpointAddrList{a1, a2, b1}
+
+	if got := untriedFirst(all, nil, true); len(got) != 3 {
+		t.Fatalf("nothing tried: want all, got %v", got)
+	}
+	got := untriedFirst(all, map[domain.EndpointAddr]bool{a1: true}, true)
+	if len(got) != 1 || got[0] != b1 {
+		t.Fatalf("operator-aware: want only the other operator, got %v", got)
+	}
+	got = untriedFirst(all, map[domain.EndpointAddr]bool{a1: true}, false)
+	if len(got) != 2 {
+		t.Fatalf("not operator-aware: want the two untried, got %v", got)
+	}
+	got = untriedFirst(all, map[domain.EndpointAddr]bool{a1: true, a2: true, b1: true}, true)
+	if len(got) != 3 {
+		t.Fatalf("everything tried: want the full list back, got %v", got)
+	}
+	got = untriedFirst(domain.EndpointAddrList{a1, a2}, map[domain.EndpointAddr]bool{a1: true}, true)
+	if len(got) != 1 || got[0] != a2 {
+		t.Fatalf("only the same operator left: want it anyway, got %v", got)
+	}
+}

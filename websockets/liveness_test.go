@@ -150,6 +150,13 @@ type recordingObserver struct {
 		initiator CloseInitiator
 		code      int
 	}
+	rebinds []string
+}
+
+func (o *recordingObserver) Rebound(r RebindResult) {
+	o.mu.Lock()
+	o.rebinds = append(o.rebinds, string(r))
+	o.mu.Unlock()
 }
 
 func newRecordingObserver() *recordingObserver {

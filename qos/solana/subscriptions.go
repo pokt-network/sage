@@ -3,8 +3,6 @@ package solana
 import (
 	"strings"
 
-	"github.com/tidwall/gjson"
-
 	"github.com/pokt-network/sage/qos"
 )
 
@@ -17,7 +15,8 @@ func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 	method := qos.JSONRPCMethod(data)
 	switch {
 	case strings.HasSuffix(method, "Unsubscribe"):
-		return qos.ClientFrameInfo{Action: qos.SubscriptionUnsubscribe, SubscriptionID: qos.JSONRPCFirstParam(data), Method: method}
+		id, span := qos.JSONRPCFirstParam(data)
+		return qos.ClientFrameInfo{Action: qos.SubscriptionUnsubscribe, SubscriptionID: id, SubscriptionIDSpan: span, Method: method}
 	case strings.HasSuffix(method, "Subscribe"):
 		return qos.ClientFrameInfo{Action: qos.SubscriptionSubscribe, RequestID: qos.JSONRPCRequestID(data), Method: method}
 	}
@@ -29,10 +28,8 @@ func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 // is a "<x>Notification" call with params.subscription.
 func (p *Plugin) ClassifyEndpointFrame(data []byte) qos.EndpointFrameInfo {
 	if method := qos.JSONRPCMethod(data); strings.HasSuffix(method, "Notification") {
-		return qos.EndpointFrameInfo{
-			Kind:           qos.EndpointFrameNotification,
-			SubscriptionID: gjson.GetBytes(data, "params.subscription").Raw,
-		}
+		id, span := qos.JSONRPCPath(data, "params.subscription")
+		return qos.EndpointFrameInfo{Kind: qos.EndpointFrameNotification, SubscriptionID: id, SubscriptionIDSpan: span}
 	}
 	id := qos.JSONRPCRequestID(data)
 	if id == "" {

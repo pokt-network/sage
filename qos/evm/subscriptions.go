@@ -1,8 +1,6 @@
 package evm
 
 import (
-	"github.com/tidwall/gjson"
-
 	"github.com/pokt-network/sage/qos"
 )
 
@@ -13,20 +11,20 @@ func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 	case "eth_subscribe":
 		return qos.ClientFrameInfo{Action: qos.SubscriptionSubscribe, RequestID: qos.JSONRPCRequestID(data), Method: method}
 	case "eth_unsubscribe":
-		return qos.ClientFrameInfo{Action: qos.SubscriptionUnsubscribe, SubscriptionID: qos.JSONRPCFirstParam(data), Method: method}
+		id, span := qos.JSONRPCFirstParam(data)
+		return qos.ClientFrameInfo{Action: qos.SubscriptionUnsubscribe, SubscriptionID: id, SubscriptionIDSpan: span, Method: method}
 	}
 	return qos.ClientFrameInfo{}
 }
 
 // ClassifyEndpointFrame implements qos.SubscriptionClassifier. A subscribe
 // response carries the subscription id as a hex string result; a
-// notification is an eth_subscription call with params.subscription.
+// notification is an eth_subscription call with params.subscription. Ids
+// are raw JSON (quotes included), as the registry requires.
 func (p *Plugin) ClassifyEndpointFrame(data []byte) qos.EndpointFrameInfo {
 	if qos.JSONRPCMethod(data) == "eth_subscription" {
-		return qos.EndpointFrameInfo{
-			Kind:           qos.EndpointFrameNotification,
-			SubscriptionID: gjson.GetBytes(data, "params.subscription").String(),
-		}
+		id, span := qos.JSONRPCPath(data, "params.subscription")
+		return qos.EndpointFrameInfo{Kind: qos.EndpointFrameNotification, SubscriptionID: id, SubscriptionIDSpan: span}
 	}
 	id := qos.JSONRPCRequestID(data)
 	if id == "" {

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/gorilla/websocket"
+	apptypes "github.com/pokt-network/poktroll/x/application/types"
+	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -183,64 +186,23 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	}
 	defer r.connLimiter.Release()
 
-	// Pick an endpoint: tier cascade + load-aware weighted random.
-	endpoints, err := r.deps.Protocol.AvailableEndpoints(ctx, serviceID, domain.RPCTypeWebSocket)
+	// Pick and resolve an endpoint: tier cascade + load-aware weighted
+	// random, then the session, URL and app that go with it. The same path a
+	// rebind takes later, minus the exclusions.
+	target, httpMsg, err := r.resolveEndpoint(ctx, serviceID, nil)
 	if err != nil {
-		logger.Error("ws open: list endpoints", "err", err)
-		http.Error(w, "no websocket endpoints available", http.StatusBadGateway)
-		return fmt.Errorf("ws open: available endpoints: %w", err)
+		logger.Error("ws open: resolve endpoint", "err", err)
+		http.Error(w, httpMsg, http.StatusBadGateway)
+		return fmt.Errorf("ws open: %w", err)
 	}
-	if len(endpoints) == 0 {
-		logger.Warn("ws open: no endpoints advertise websocket")
-		http.Error(w, "no websocket endpoints available", http.StatusBadGateway)
-		return errors.New("ws open: no endpoints for rpc type websocket")
-	}
-	load := r.snapshotLoad()
-	endpointAddr := r.deps.Reputation.SelectSpread(ctx, serviceID, endpoints, domain.RPCTypeWebSocket, load)
-	if endpointAddr == "" {
-		logger.Warn("ws open: selection returned empty")
-		http.Error(w, "no viable websocket endpoint", http.StatusBadGateway)
-		return errors.New("ws open: empty selection")
-	}
+	endpointAddr, ep, url, session, appAddr := target.addr, target.ep, target.url, target.session, target.appAddr
 
-	// Resolve supplier URL and app via the protocol layer.
-	appAddr, err := r.deps.Protocol.pickApp(serviceID)
-	if err != nil {
-		logger.Error("ws open: pick app", "err", err)
-		http.Error(w, "no app configured", http.StatusBadGateway)
-		return fmt.Errorf("ws open: pick app: %w", err)
-	}
-	session, err := r.deps.Protocol.sessions.getSession(ctx, string(serviceID), appAddr)
-	if err != nil {
-		logger.Error("ws open: get session", "err", err)
-		http.Error(w, "session unavailable", http.StatusBadGateway)
-		return fmt.Errorf("ws open: session: %w", err)
-	}
-	sessionEndpoints := r.deps.Protocol.sessions.getOrCreateEndpoints(session)
-	ep, ok := sessionEndpoints[endpointAddr]
-	if !ok {
-		logger.Error("ws open: selected endpoint missing from session",
-			"endpoint", endpointAddr, "session_id", session.SessionId,
-		)
-		http.Error(w, "endpoint resolution failed", http.StatusBadGateway)
-		return fmt.Errorf("ws open: endpoint %q missing from session", endpointAddr)
-	}
-	url, err := ep.GetURL(domain.RPCTypeWebSocket)
-	if err != nil {
-		logger.Error("ws open: endpoint has no ws url", "err", err, "endpoint", endpointAddr)
-		http.Error(w, "endpoint does not support websocket", http.StatusBadGateway)
-		return fmt.Errorf("ws open: ws url: %w", err)
-	}
-	app, err := r.deps.Protocol.getApp(ctx, appAddr)
-	if err != nil {
-		logger.Error("ws open: fetch app for signing", "err", err)
-		http.Error(w, "app unavailable", http.StatusBadGateway)
-		return fmt.Errorf("ws open: fetch app: %w", err)
-	}
-
-	// Increment load counter; guarantee decrement on return.
+	// Increment load counter; guarantee decrement on return — for whichever
+	// endpoint is current by then, since a rebind moves it.
+	var current atomic.Pointer[domain.EndpointAddr]
+	current.Store(&endpointAddr)
 	r.incLoad(endpointAddr)
-	defer r.decLoad(endpointAddr)
+	defer func() { r.decLoad(*current.Load()) }()
 
 	logger = logger.With("endpoint", endpointAddr, "supplier", ep.Supplier(), "url", url)
 	logger.Info("ws open: starting bridge")
@@ -254,20 +216,24 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	frameCh := make(chan wsFrameEvent, wsFrameEventQueueSize)
 
 	subs := r.subscriptionRegistry(serviceID)
-	processor := newWSMessageProcessor(
-		ctx,
-		r.deps.Protocol,
-		session.Header,
-		ep.Supplier(),
-		ep.Addr(),
-		app,
-		func(payload []byte, frameErr error, latency time.Duration) {
-			select {
-			case frameCh <- wsFrameEvent{payload: payload, err: frameErr, latency: latency}:
-			default:
-			}
-		},
-	).withSubscriptions(subs)
+	newProcessor := func(t *wsTarget) *wsMessageProcessor {
+		addr := t.addr
+		return newWSMessageProcessor(
+			ctx,
+			r.deps.Protocol,
+			t.session.Header,
+			t.ep.Supplier(),
+			t.ep.Addr(),
+			t.app,
+			func(payload []byte, frameErr error, latency time.Duration) {
+				select {
+				case frameCh <- wsFrameEvent{endpoint: addr, payload: payload, err: frameErr, latency: latency}:
+				default:
+				}
+			},
+		).withSubscriptions(subs)
+	}
+	processor := newProcessor(target)
 
 	// Pocket relay miners authenticate the WS upgrade via three HTTP headers
 	// set on the initial handshake. Without these the miner treats the
@@ -285,6 +251,33 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	if r.deps.Metrics != nil {
 		bridgeOpts = append(bridgeOpts, websockets.WithObserver(r.deps.Metrics.ForService(serviceID)))
 	}
+	// Endpoint loss is a rebind, not a close: pick another supplier this
+	// bridge has not used, move the load counter, and replay the live
+	// subscriptions through a processor that signs for the new supplier.
+	tried := map[domain.EndpointAddr]bool{endpointAddr: true}
+	bridgeOpts = append(bridgeOpts, websockets.WithEndpointLost(func(ctx context.Context, cause error) (*websocket.Conn, websockets.MessageProcessor, [][]byte, error) {
+		lost := *current.Load()
+		_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, lost, domain.RPCTypeWebSocket,
+			reputation.NewMajorErrorSignal("ws_endpoint_lost:"+cause.Error(), 0))
+
+		next, _, err := r.resolveEndpoint(ctx, serviceID, tried)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		conn, err := websockets.ConnectEndpoint(logger, next.url, supplierHeaders)
+		if err != nil {
+			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, next.addr, domain.RPCTypeWebSocket,
+				reputation.NewMajorErrorSignal("ws_endpoint_unavailable:"+err.Error(), 0))
+			return nil, nil, nil, fmt.Errorf("dial %s: %w", next.addr, err)
+		}
+		tried[next.addr] = true
+		r.decLoad(lost)
+		r.incLoad(next.addr)
+		addr := next.addr
+		current.Store(&addr)
+		logger.Info("ws rebind: endpoint replaced", "from", lost, "to", next.addr, "supplier", next.ep.Supplier())
+		return conn, newProcessor(next), subs.ReplayFrames(), nil
+	}))
 	bridge, err := websockets.StartBridge(ctx, logger, req, w, url, supplierHeaders, processor, bridgeOpts...)
 	if err != nil {
 		// Pre-upgrade error: either the client handshake failed (our fault —
@@ -305,12 +298,12 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 
 	// Drain frame events off the bridge loop until the bridge closes.
 	safego.Go(logger, "websocket.frame.drain", func() {
-		r.drainFrameEvents(serviceID, endpointAddr, frameCh, bridge.Done())
+		r.drainFrameEvents(serviceID, frameCh, bridge.Done())
 	})
 
 	<-bridge.Done()
 
-	r.handleBridgeClose(serviceID, endpointAddr)
+	r.handleBridgeClose(serviceID, *current.Load())
 	logger.Info("ws open: bridge shut down",
 		"active_subscriptions", len(subs.Active()),
 		"untracked_subscribes", subs.Dropped(),
@@ -388,30 +381,32 @@ func (r *WSRelayer) watchSessionExpiry(
 // burst is acceptable; 256 absorbs normal subscription bursts.
 const wsFrameEventQueueSize = 256
 
-// wsFrameEvent carries one endpoint frame's analysis inputs off the bridge loop.
+// wsFrameEvent carries one endpoint frame's analysis inputs off the bridge
+// loop. endpoint is the supplier that sent it: after a rebind, frames from
+// the old and the new supplier can be in the queue together.
 type wsFrameEvent struct {
-	payload []byte
-	err     error
-	latency time.Duration
+	endpoint domain.EndpointAddr
+	payload  []byte
+	err      error
+	latency  time.Duration
 }
 
 // drainFrameEvents consumes frame events until the bridge closes, then drains
 // whatever is still buffered and exits.
 func (r *WSRelayer) drainFrameEvents(
 	serviceID domain.ServiceID,
-	endpointAddr domain.EndpointAddr,
 	ch <-chan wsFrameEvent,
 	done <-chan struct{},
 ) {
 	for {
 		select {
 		case evt := <-ch:
-			r.handleEndpointFrame(serviceID, endpointAddr, evt.payload, evt.err, evt.latency)
+			r.handleEndpointFrame(serviceID, evt.endpoint, evt.payload, evt.err, evt.latency)
 		case <-done:
 			for {
 				select {
 				case evt := <-ch:
-					r.handleEndpointFrame(serviceID, endpointAddr, evt.payload, evt.err, evt.latency)
+					r.handleEndpointFrame(serviceID, evt.endpoint, evt.payload, evt.err, evt.latency)
 				default:
 					return
 				}
@@ -540,4 +535,80 @@ func (r *WSRelayer) decLoad(ep domain.EndpointAddr) {
 		return
 	}
 	v.(*atomic.Int64).Add(-1)
+}
+
+// wsTarget is one resolved supplier: everything Open or a rebind needs to
+// dial it and sign for it.
+type wsTarget struct {
+	addr    domain.EndpointAddr
+	ep      *endpoint
+	url     string
+	session *sessiontypes.Session
+	appAddr string
+	app     *apptypes.Application
+}
+
+// resolveEndpoint picks a WebSocket endpoint for serviceID and resolves its
+// session, URL and signing app. tried names endpoints this connection has
+// already used; they are avoided (operator-aware, like retry) and only fall
+// back in when nothing else advertises WebSocket — a blip on the only host
+// is still worth one reconnect. The second return is the message for the
+// HTTP error Open sends when this fails before the upgrade.
+func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.ServiceID, tried map[domain.EndpointAddr]bool) (*wsTarget, string, error) {
+	endpoints, err := r.deps.Protocol.AvailableEndpoints(ctx, serviceID, domain.RPCTypeWebSocket)
+	if err != nil {
+		return nil, "no websocket endpoints available", fmt.Errorf("available endpoints: %w", err)
+	}
+	if len(endpoints) == 0 {
+		return nil, "no websocket endpoints available", errors.New("no endpoints for rpc type websocket")
+	}
+	candidates := untriedFirst(endpoints, tried, r.deps.Flags.IsEnabled(ctx, featureflag.FlagOperatorAwareSelection, serviceID))
+	load := r.snapshotLoad()
+	addr := r.deps.Reputation.SelectSpread(ctx, serviceID, candidates, domain.RPCTypeWebSocket, load)
+	if addr == "" {
+		return nil, "no viable websocket endpoint", errors.New("empty selection")
+	}
+
+	appAddr, err := r.deps.Protocol.pickApp(serviceID)
+	if err != nil {
+		return nil, "no app configured", fmt.Errorf("pick app: %w", err)
+	}
+	session, err := r.deps.Protocol.sessions.getSession(ctx, string(serviceID), appAddr)
+	if err != nil {
+		return nil, "session unavailable", fmt.Errorf("session: %w", err)
+	}
+	ep, ok := r.deps.Protocol.sessions.getOrCreateEndpoints(session)[addr]
+	if !ok {
+		return nil, "endpoint resolution failed", fmt.Errorf("endpoint %q missing from session %s", addr, session.SessionId)
+	}
+	url, err := ep.GetURL(domain.RPCTypeWebSocket)
+	if err != nil {
+		return nil, "endpoint does not support websocket", fmt.Errorf("ws url for %s: %w", addr, err)
+	}
+	app, err := r.deps.Protocol.getApp(ctx, appAddr)
+	if err != nil {
+		return nil, "app unavailable", fmt.Errorf("fetch app: %w", err)
+	}
+	return &wsTarget{addr: addr, ep: ep, url: url, session: session, appAddr: appAddr, app: app}, "", nil
+}
+
+// untriedFirst narrows endpoints to the ones not in tried, preferring
+// operators not in tried when operatorAware; each narrowing is a
+// preference, dropped when it would leave nothing.
+func untriedFirst(endpoints domain.EndpointAddrList, tried map[domain.EndpointAddr]bool, operatorAware bool) domain.EndpointAddrList {
+	if len(tried) == 0 {
+		return endpoints
+	}
+	untried := endpoints.Exclude(tried)
+	if len(untried) == 0 {
+		return endpoints
+	}
+	if !operatorAware {
+		return untried
+	}
+	operators := make(map[string]bool, len(tried))
+	for ep := range tried {
+		operators[ep.Operator()] = true
+	}
+	return untried.ExcludeOperators(operators)
 }

@@ -64,10 +64,15 @@ is what stops it closing an idle but legitimate connection). SAGE now has the
 registry (2026-08-31: `qos.SubscriptionRegistry`, fed by each plugin's
 `qos.SubscriptionClassifier` from inside `ws_processor.go`, keeping the original
 subscribe frame for a replay; beta-checked on a CometBFT `NewBlock`
-subscription). What it still lacks is the rebind — `websockets/bridge.go` is
-one endpoint per bridge for its lifetime — so the watchdog is now one port
-away, not two. Order: rebind (swap `endpointConn`, replay `Active()`, remap
-ids), then the watchdog on top.
+subscription). The rebind followed the same day
+(`docs/superpowers/specs/2026-08-31-ws-rebind-design.md`): an endpoint loss —
+close, write failure, or the 60 s unresponsive verdict — swaps in a supplier
+this connection has not used, replays the live subscriptions under
+gateway-owned request ids, consumes the acks and rewrites subscription ids
+both ways, up to three times per connection, then 1012. Rebind itself is not
+reproducible on beta (one live host); the bridge tests are the proof. The
+watchdog is now the only piece left: `HasActive()` + `LastData()` on the
+registry, acting through the rebind.
 
 What SAGE does have, and what it lacks, so the next reader does not re-derive
 it:

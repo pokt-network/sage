@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -30,6 +31,10 @@ import (
 )
 
 // MessageProcessor transforms messages before forwarding them across the bridge.
+// A processor that returns (nil, nil) consumes the message: nothing is
+// forwarded and the bridge carries on. That is how a rebind's replay
+// acknowledgements — answers to requests the client never sent — stay out
+// of the client's stream.
 // The protocol layer implements this interface to sign, validate, or observe
 // messages without the bridge needing to know anything about the protocol.
 type MessageProcessor interface {
@@ -65,11 +70,18 @@ type Bridge struct {
 	cancelCtx context.CancelFunc
 	logger    *slog.Logger
 
-	clientConn   *Connection
-	endpointConn *Connection
+	clientConn *Connection
 
-	processor MessageProcessor
-	msgChan   chan message
+	// endpointConn and processor are replaced together by a rebind.
+	// endpointMu serialises that swap against route and the replay writes,
+	// so a client frame that arrives mid-rebind waits rather than hitting a
+	// dead socket; endpointConn is additionally an atomic pointer so
+	// Shutdown and the close-code logic can read it without the lock.
+	endpointMu   sync.RWMutex
+	endpointConn atomic.Pointer[Connection]
+	processor    MessageProcessor
+
+	msgChan chan message
 
 	shutdownOnce sync.Once
 	done         chan struct{}
@@ -80,7 +92,19 @@ type Bridge struct {
 
 	// observer, when non-nil, is told about frames and the close.
 	observer Observer
+
+	// endpointLost, when set, is asked for a replacement when the endpoint
+	// side is lost; rebinds counts how many times it succeeded, against
+	// rebindLimit.
+	endpointLost EndpointLostHandler
+	rebindLimit  int
+	rebinds      int
 }
+
+// defaultRebindLimit is how many endpoints one client connection may burn
+// through before it is told to reconnect. Three: a pool where the third
+// replacement also dies is not a pool a fourth pick will fix.
+const defaultRebindLimit = 3
 
 // BridgeOption tunes a bridge at StartBridge.
 type BridgeOption func(*Bridge)
@@ -148,23 +172,24 @@ func StartBridge(
 	bridgeCtx, cancelCtx := context.WithCancel(ctx)
 
 	b := &Bridge{
-		ctx:          bridgeCtx,
-		cancelCtx:    cancelCtx,
-		logger:       logger,
-		clientConn:   NewConnection(rawClient, SourceClient, logger.With("conn", "client")),
-		endpointConn: NewConnection(rawEndpoint, SourceEndpoint, logger.With("conn", "endpoint")),
-		processor:    processor,
-		msgChan:      make(chan message, 32),
-		done:         make(chan struct{}),
-		pingPeriod:   defaultPingPeriod,
-		pongWait:     defaultPongWait,
+		ctx:         bridgeCtx,
+		cancelCtx:   cancelCtx,
+		logger:      logger,
+		clientConn:  NewConnection(rawClient, SourceClient, logger.With("conn", "client")),
+		processor:   processor,
+		msgChan:     make(chan message, 32),
+		done:        make(chan struct{}),
+		pingPeriod:  defaultPingPeriod,
+		pongWait:    defaultPongWait,
+		rebindLimit: defaultRebindLimit,
 	}
+	b.endpointConn.Store(NewConnection(rawEndpoint, SourceEndpoint, logger.With("conn", "endpoint")))
 	for _, opt := range opts {
 		opt(b)
 	}
 	if b.pongWait > 0 {
 		b.clientConn.setLiveness(b.pongWait)
-		b.endpointConn.setLiveness(b.pongWait)
+		b.endpointConn.Load().setLiveness(b.pongWait)
 	}
 	if b.observer != nil {
 		b.observer.Opened()
@@ -219,7 +244,7 @@ func (b *Bridge) Shutdown(err error) {
 			msg  []byte
 		}{
 			{b.clientConn, clientMsg},
-			{b.endpointConn, endpointMsg},
+			{b.endpointConn.Load(), endpointMsg},
 		} {
 			if c.conn == nil {
 				continue
@@ -245,7 +270,7 @@ func (b *Bridge) Shutdown(err error) {
 func (b *Bridge) run() {
 	b.logger.Info("websocket: bridge started")
 	safego.Go(b.logger, "websocket.read.client", func() { b.readLoop(b.clientConn) })
-	safego.Go(b.logger, "websocket.read.endpoint", func() { b.readLoop(b.endpointConn) })
+	b.startEndpointReadLoop(b.endpointConn.Load())
 	if b.pongWait > 0 && b.pingPeriod > 0 {
 		safego.Go(b.logger, "websocket.ping", b.pingLoop)
 	}
@@ -264,6 +289,10 @@ func (b *Bridge) run() {
 
 // route processes a single message and forwards it to the opposite connection.
 func (b *Bridge) route(msg message) {
+	b.endpointMu.RLock()
+	defer b.endpointMu.RUnlock()
+	endpoint := b.endpointConn.Load()
+
 	switch msg.source {
 	case SourceClient:
 		processed, err := b.processor.ProcessClientMessage(msg.data)
@@ -272,9 +301,17 @@ func (b *Bridge) route(msg message) {
 			b.Shutdown(fmt.Errorf("%w: %w", ErrBridgeMessageProcessing, err))
 			return
 		}
-		if writeErr := b.endpointConn.WriteMessage(msg.messageType, processed); writeErr != nil {
+		if processed == nil {
+			return // Consumed by the processor.
+		}
+		if writeErr := endpoint.WriteMessage(msg.messageType, processed); writeErr != nil {
+			// The endpoint's read loop sees the same dead socket and drives
+			// the rebind; this side only has to not shut the bridge down
+			// underneath it. Without a handler it is the old failure.
 			b.logger.Error("websocket: write to endpoint failed", "err", writeErr)
-			b.Shutdown(fmt.Errorf("%w: write to endpoint: %w", ErrBridgeConnectionFailed, writeErr))
+			if b.endpointLost == nil {
+				b.Shutdown(fmt.Errorf("%w: write to endpoint: %w", ErrBridgeConnectionFailed, writeErr))
+			}
 			return
 		}
 		if b.observer != nil {
@@ -282,11 +319,17 @@ func (b *Bridge) route(msg message) {
 		}
 
 	case SourceEndpoint:
+		if msg.conn != endpoint {
+			return // Read from an endpoint that has since been replaced.
+		}
 		processed, err := b.processor.ProcessEndpointMessage(msg.data)
 		if err != nil {
 			b.logger.Error("websocket: endpoint message processing failed", "err", err)
 			b.Shutdown(fmt.Errorf("%w: %w", ErrBridgeMessageProcessing, err))
 			return
+		}
+		if processed == nil {
+			return // Consumed by the processor.
 		}
 		if writeErr := b.clientConn.WriteMessage(msg.messageType, processed); writeErr != nil {
 			b.logger.Error("websocket: write to client failed", "err", writeErr)
@@ -302,8 +345,8 @@ func (b *Bridge) route(msg message) {
 // closeInitiator reports who ended the bridge: a peer that sent a close
 // frame, else the gateway (a deadline, a processing error, a shutdown).
 func (b *Bridge) closeInitiator() CloseInitiator {
-	if b.endpointConn != nil {
-		if code, _ := b.endpointConn.GetCloseInfo(); code != 0 {
+	if ep := b.endpointConn.Load(); ep != nil {
+		if code, _ := ep.GetCloseInfo(); code != 0 {
 			return InitiatorEndpoint
 		}
 	}
@@ -327,9 +370,12 @@ func (b *Bridge) pingLoop() {
 			return
 		case <-ticker.C:
 			deadline := time.Now().Add(writeWait)
-			for _, c := range []*Connection{b.clientConn, b.endpointConn} {
+			for _, c := range []*Connection{b.clientConn, b.endpointConn.Load()} {
 				if err := c.Ping(deadline); err != nil {
 					b.logger.Warn("websocket: ping failed", "source", c.source, "err", err)
+					if c.source == SourceEndpoint && b.endpointLost != nil {
+						continue // The endpoint read loop drives the rebind.
+					}
 					b.Shutdown(fmt.Errorf("%w: ping %v: %w", ErrBridgeConnectionFailed, c.source, err))
 					return
 				}
@@ -365,22 +411,116 @@ func (b *Bridge) readLoop(conn *Connection) {
 				if b.observer != nil && b.ctx.Err() == nil {
 					b.observer.Unresponsive(conn.source)
 				}
-				b.Shutdown(fmt.Errorf("%w: %v silent for %v", ErrBridgePeerUnresponsive, conn.source, b.pongWait))
+				b.endpointGone(conn, fmt.Errorf("%w: %v silent for %v", ErrBridgePeerUnresponsive, conn.source, b.pongWait))
 				return
 			} else {
 				b.logger.Warn("websocket: read error", "source", conn.source, "err", err)
 			}
-			b.Shutdown(fmt.Errorf("%w: read from %v: %w", ErrBridgeConnectionFailed, conn.source, err))
+			b.endpointGone(conn, fmt.Errorf("%w: read from %v: %w", ErrBridgeConnectionFailed, conn.source, err))
 			return
 		}
 
 		// Send to msgChan, but bail out if the context has been canceled to avoid
 		// sending on a channel that is no longer being drained.
 		select {
-		case b.msgChan <- message{source: conn.source, messageType: msgType, data: data}:
+		case b.msgChan <- message{source: conn.source, messageType: msgType, data: data, conn: conn}:
 		case <-b.ctx.Done():
 			return
 		}
+	}
+}
+
+// startEndpointReadLoop runs a read loop for one endpoint connection. Each
+// endpoint a bridge ever holds gets its own; an old loop ends with its
+// socket, and its last error is ignored because the socket is no longer
+// the bridge's.
+func (b *Bridge) startEndpointReadLoop(conn *Connection) {
+	safego.Go(b.logger, "websocket.read.endpoint", func() { b.readLoop(conn) })
+}
+
+// endpointGone is where a read error goes: a client loss, or an endpoint
+// loss with no handler, shuts the bridge down as before; an endpoint loss
+// with a handler is a rebind.
+func (b *Bridge) endpointGone(conn *Connection, cause error) {
+	if conn.source != SourceEndpoint || b.endpointLost == nil || b.ctx.Err() != nil {
+		b.Shutdown(cause)
+		return
+	}
+	b.rebind(conn, cause)
+}
+
+// rebind replaces a lost endpoint with one the handler supplies, holding the
+// endpoint lock for the whole swap so client frames queue behind it rather
+// than reaching the dead socket. On success the new endpoint's read loop
+// starts and the replay frames are signed and sent; on failure, or past the
+// limit, the bridge closes with the client told to reconnect.
+func (b *Bridge) rebind(lost *Connection, cause error) {
+	b.endpointMu.Lock()
+	if b.endpointConn.Load() != lost {
+		b.endpointMu.Unlock()
+		return // A loop on an endpoint that was already replaced.
+	}
+	if b.rebinds >= b.rebindLimit {
+		b.endpointMu.Unlock()
+		b.logger.Warn("websocket: rebind limit reached, closing", "rebinds", b.rebinds, "cause", cause)
+		b.observe(func(o Observer) { o.Rebound(RebindExhausted) })
+		b.Shutdown(fmt.Errorf("%w: rebind limit %d reached: %w", ErrBridgeEndpointUnavailable, b.rebindLimit, cause))
+		return
+	}
+	b.logger.Warn("websocket: endpoint lost, rebinding", "rebind", b.rebinds+1, "cause", cause)
+
+	raw, processor, replay, err := b.endpointLost(b.ctx, cause)
+	if err != nil {
+		b.endpointMu.Unlock()
+		b.logger.Warn("websocket: rebind failed, closing", "err", err)
+		b.observe(func(o Observer) { o.Rebound(RebindFailed) })
+		b.Shutdown(fmt.Errorf("%w: rebind: %w", ErrBridgeEndpointUnavailable, err))
+		return
+	}
+	if b.ctx.Err() != nil {
+		// Shut down while the handler was dialling: Shutdown closed the old
+		// endpoint, so this one is ours to close.
+		b.endpointMu.Unlock()
+		_ = raw.Close()
+		return
+	}
+	_ = lost.Close()
+	next := NewConnection(raw, SourceEndpoint, b.logger.With("conn", "endpoint"))
+	if b.pongWait > 0 {
+		next.setLiveness(b.pongWait)
+	}
+	b.endpointConn.Store(next)
+	b.processor = processor
+	b.rebinds++
+	b.endpointMu.Unlock()
+
+	b.observe(func(o Observer) { o.Rebound(RebindOK) })
+	b.startEndpointReadLoop(next)
+
+	// Replay under the read lock, like any client frame: a second loss during
+	// the replay is the new loop's to handle.
+	b.endpointMu.RLock()
+	defer b.endpointMu.RUnlock()
+	for _, frame := range replay {
+		wire, err := b.processor.ProcessClientMessage(frame)
+		if err != nil {
+			b.logger.Warn("websocket: replay frame failed to process", "err", err)
+			continue
+		}
+		if wire == nil {
+			continue
+		}
+		if err := next.WriteMessage(websocket.TextMessage, wire); err != nil {
+			b.logger.Warn("websocket: replay write failed", "err", err)
+			return
+		}
+	}
+}
+
+// observe runs fn against the observer when there is one.
+func (b *Bridge) observe(fn func(Observer)) {
+	if b.observer != nil {
+		fn(b.observer)
 	}
 }
 
@@ -481,8 +621,14 @@ func endpointCloseCode(clientCode int) int {
 //  2. Client-initiated close code → propagate to endpoint.
 //  3. Error-type mapping for internal shutdowns.
 func (b *Bridge) determineCloseCode(err error) (int, string) {
-	if b.endpointConn != nil {
-		if code, text := b.endpointConn.GetCloseInfo(); code != 0 {
+	// A rebind that gave up is the bridge's own verdict about the endpoint
+	// side, and it outranks whatever the dead endpoint last said (usually a
+	// 1006 it never sent): the client's remedy is to reconnect, so 1012.
+	if errors.Is(err, ErrBridgeEndpointUnavailable) {
+		return websocket.CloseServiceRestart, "endpoint temporarily unavailable, please reconnect"
+	}
+	if ep := b.endpointConn.Load(); ep != nil {
+		if code, text := ep.GetCloseInfo(); code != 0 {
 			b.logger.Info("websocket: propagating endpoint close code to client", "code", code, "text", text)
 			return code, text
 		}

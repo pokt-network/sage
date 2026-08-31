@@ -170,7 +170,7 @@ func TestWSProcessor_FeedsSubscriptionRegistry(t *testing.T) {
 	if _, err := proc.ProcessEndpointMessage([]byte(`wire`)); err != nil {
 		t.Fatal(err)
 	}
-	if a := subs.Active(); len(a) != 1 || a[0].ID != "0xsub" {
+	if a := subs.Active(); len(a) != 1 || a[0].ID != `"0xsub"` {
 		t.Fatalf("registry did not see both directions: %+v", a)
 	}
 }

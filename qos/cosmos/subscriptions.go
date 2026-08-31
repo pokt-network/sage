@@ -43,7 +43,9 @@ func (p *Plugin) ClassifyEndpointFrame(data []byte) qos.EndpointFrameInfo {
 		return qos.EndpointFrameInfo{Kind: qos.EndpointFrameResponse, RequestID: id}
 	}
 	if result.Get("query").Exists() && result.Get("data").Exists() {
-		return qos.EndpointFrameInfo{Kind: qos.EndpointFrameNotification, SubscriptionID: id}
+		// Events carry the subscription's request id AS their id, so after a
+		// rebind that is the replay id and must be rewritten to the client's.
+		return qos.EndpointFrameInfo{Kind: qos.EndpointFrameNotification, SubscriptionID: id, SubscriptionIDSpan: qos.JSONRPCRequestIDSpan(data)}
 	}
 	// {} — the subscribe acknowledgement. The registry only promotes ids it
 	// has a pending subscribe for, so an empty-object result to some other

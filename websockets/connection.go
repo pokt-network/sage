@@ -56,10 +56,13 @@ const (
 )
 
 // message is an internal envelope routing data through the bridge's msgChan.
+// conn is the connection it was read from, so a frame from an endpoint that
+// has since been replaced is recognised and dropped.
 type message struct {
 	source      MessageSource
 	messageType int
 	data        []byte
+	conn        *Connection
 }
 
 // Connection wraps a gorilla websocket.Conn with:

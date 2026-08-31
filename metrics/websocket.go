@@ -19,6 +19,7 @@ import (
 //	sage_websocket_closes_total{service_id,initiator,code} bridges ended, by who and the client-facing code
 //	sage_websocket_unresponsive_total{service_id,side}     liveness timeouts, by the silent side
 //	sage_websocket_rejected_total{service_id,reason}       upgrades refused before a bridge existed
+//	sage_websocket_rebinds_total{service_id,result}        lost suppliers replaced under a live client
 //
 // Every label is a closed set: service_id is bounded by the configured
 // services (as everywhere else), direction and side are the two ends of a
@@ -32,13 +33,14 @@ type WebSocketMetrics struct {
 	closes       *prometheus.CounterVec
 	unresponsive *prometheus.CounterVec
 	rejected     *prometheus.CounterVec
+	rebinds      *prometheus.CounterVec
 }
 
 // NewWebSocketMetrics builds and registers the WebSocket metrics on the
 // default registry. knownServices bounds the service_id label.
 func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
-	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected)
+	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds)
 	return m
 }
 
@@ -84,6 +86,14 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 				Help:      "WebSocket bridges closed because one side sent nothing — no data, no pong — for a whole pong wait, by service and the silent side (client or endpoint). An endpoint count is a supplier that went away under a live socket.",
 			},
 			[]string{"service_id", "side"},
+		),
+		rebinds: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_rebinds_total",
+				Help:      "Attempts to replace a lost supplier under a live client connection, by service and result: ok (a new supplier took over and the live subscriptions were replayed), failed (no supplier could be reached; the client was told to reconnect), exhausted (the per-connection rebind limit was already spent).",
+			},
+			[]string{"service_id", "result"},
 		),
 		rejected: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -157,4 +167,9 @@ func closeCodeLabel(code int) string {
 		return "application"
 	}
 	return "other"
+}
+
+// Rebound counts one attempt to replace a lost endpoint.
+func (o *webSocketServiceObserver) Rebound(result websockets.RebindResult) {
+	o.m.rebinds.WithLabelValues(o.sid, string(result)).Inc()
 }

@@ -105,8 +105,9 @@ func (p *wsMessageProcessor) ProcessClientMessage(data []byte) ([]byte, error) {
 		return nil, ErrSessionExpired
 	}
 	// Before signing: the registry reads the client's own JSON, not the
-	// relay envelope.
-	p.subs.ObserveClientFrame(data)
+	// relay envelope, and may rewrite an unsubscribe to the id the current
+	// supplier knows.
+	data = p.subs.TranslateClientFrame(data)
 
 	unsigned := &servicetypes.RelayRequest{
 		Meta: servicetypes.RelayRequestMetadata{
@@ -160,9 +161,15 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 
 	latency := time.Since(start)
 	payload := relayResp.Payload
-	p.subs.ObserveEndpointFrame(payload)
 	if p.onEndpointFrame != nil {
 		p.onEndpointFrame(payload, nil, latency)
 	}
-	return payload, nil
+	// After validation, before the client: a replay ack is consumed here
+	// (nil, nil — the bridge forwards nothing), a notification may be
+	// rewritten to the subscription id the client holds.
+	out, forward := p.subs.TranslateEndpointFrame(payload)
+	if !forward {
+		return nil, nil
+	}
+	return out, nil
 }

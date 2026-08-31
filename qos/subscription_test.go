@@ -24,6 +24,9 @@ func (fakeClassifier) ClassifyClientFrame(data []byte) ClientFrameInfo {
 	return ClientFrameInfo{}
 }
 
+// EncodeReplayID: the fake dialect writes ids bare, not as JSON strings.
+func (fakeClassifier) EncodeReplayID(id string) string { return id }
+
 func (fakeClassifier) ClassifyEndpointFrame(data []byte) EndpointFrameInfo {
 	parts := strings.Split(string(data), ":")
 	switch {
@@ -39,11 +42,11 @@ func (fakeClassifier) ClassifyEndpointFrame(data []byte) EndpointFrameInfo {
 
 func TestSubscriptionRegistry_SubscribeBecomesActiveOnResponse(t *testing.T) {
 	r := NewSubscriptionRegistry(fakeClassifier{})
-	r.ObserveClientFrame([]byte("sub:1"))
+	r.TranslateClientFrame([]byte("sub:1"))
 	if r.HasActive() {
 		t.Fatal("a subscribe is not active until the endpoint answers")
 	}
-	r.ObserveEndpointFrame([]byte("ok:1:0xabc"))
+	r.TranslateEndpointFrame([]byte("ok:1:0xabc"))
 	if !r.HasActive() {
 		t.Fatal("a successful subscribe response must make the subscription active")
 	}
@@ -55,14 +58,14 @@ func TestSubscriptionRegistry_SubscribeBecomesActiveOnResponse(t *testing.T) {
 
 func TestSubscriptionRegistry_ErrorResponseOpensNothing(t *testing.T) {
 	r := NewSubscriptionRegistry(fakeClassifier{})
-	r.ObserveClientFrame([]byte("sub:1"))
-	r.ObserveEndpointFrame([]byte("err:1"))
+	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateEndpointFrame([]byte("err:1"))
 	if r.HasActive() {
 		t.Fatal("a failed subscribe must not be active")
 	}
 	// And the pending entry is gone: a later unrelated response with the
 	// same id is not a subscribe answer.
-	r.ObserveEndpointFrame([]byte("ok:1:late"))
+	r.TranslateEndpointFrame([]byte("ok:1:late"))
 	if r.HasActive() {
 		t.Fatal("a response after the subscribe failed must not resurrect it")
 	}
@@ -71,14 +74,14 @@ func TestSubscriptionRegistry_ErrorResponseOpensNothing(t *testing.T) {
 func TestSubscriptionRegistry_UnsubscribeAndUnsubscribeAll(t *testing.T) {
 	r := NewSubscriptionRegistry(fakeClassifier{})
 	for i := 1; i <= 3; i++ {
-		r.ObserveClientFrame([]byte(fmt.Sprintf("sub:%d", i)))
-		r.ObserveEndpointFrame([]byte(fmt.Sprintf("ok:%d:s%d", i, i)))
+		r.TranslateClientFrame([]byte(fmt.Sprintf("sub:%d", i)))
+		r.TranslateEndpointFrame([]byte(fmt.Sprintf("ok:%d:s%d", i, i)))
 	}
-	r.ObserveClientFrame([]byte("unsub:s2"))
+	r.TranslateClientFrame([]byte("unsub:s2"))
 	if n := len(r.Active()); n != 2 {
 		t.Fatalf("after one unsubscribe: %d active, want 2", n)
 	}
-	r.ObserveClientFrame([]byte("unsuball"))
+	r.TranslateClientFrame([]byte("unsuball"))
 	if r.HasActive() {
 		t.Fatal("unsubscribe_all must clear every subscription")
 	}
@@ -86,13 +89,13 @@ func TestSubscriptionRegistry_UnsubscribeAndUnsubscribeAll(t *testing.T) {
 
 func TestSubscriptionRegistry_NotificationMarksData(t *testing.T) {
 	r := NewSubscriptionRegistry(fakeClassifier{})
-	r.ObserveEndpointFrame([]byte("data:ghost"))
+	r.TranslateEndpointFrame([]byte("data:ghost"))
 	if !r.LastData().IsZero() {
 		t.Fatal("data for a subscription that was never established is not data")
 	}
-	r.ObserveClientFrame([]byte("sub:1"))
-	r.ObserveEndpointFrame([]byte("ok:1:s1"))
-	r.ObserveEndpointFrame([]byte("data:s1"))
+	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateEndpointFrame([]byte("ok:1:s1"))
+	r.TranslateEndpointFrame([]byte("data:s1"))
 	if r.LastData().IsZero() {
 		t.Fatal("a notification for a live subscription must update LastData")
 	}
@@ -101,7 +104,7 @@ func TestSubscriptionRegistry_NotificationMarksData(t *testing.T) {
 func TestSubscriptionRegistry_Bounded(t *testing.T) {
 	r := NewSubscriptionRegistry(fakeClassifier{})
 	for i := 0; i < maxTrackedSubscriptions+10; i++ {
-		r.ObserveClientFrame([]byte(fmt.Sprintf("sub:%d", i)))
+		r.TranslateClientFrame([]byte(fmt.Sprintf("sub:%d", i)))
 	}
 	if len(r.pending) != maxTrackedSubscriptions {
 		t.Fatalf("pending = %d, want the cap %d", len(r.pending), maxTrackedSubscriptions)
@@ -113,14 +116,14 @@ func TestSubscriptionRegistry_Bounded(t *testing.T) {
 
 func TestSubscriptionRegistry_NilIsInert(t *testing.T) {
 	var r *SubscriptionRegistry
-	r.ObserveClientFrame([]byte("sub:1"))
-	r.ObserveEndpointFrame([]byte("ok:1:s1"))
+	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateEndpointFrame([]byte("ok:1:s1"))
 	if r.HasActive() || r.Active() != nil || !r.LastData().IsZero() {
 		t.Fatal("a nil registry must observe nothing and report nothing")
 	}
 	inert := NewSubscriptionRegistry(nil)
-	inert.ObserveClientFrame([]byte("sub:1"))
-	inert.ObserveEndpointFrame([]byte("ok:1:s1"))
+	inert.TranslateClientFrame([]byte("sub:1"))
+	inert.TranslateEndpointFrame([]byte("ok:1:s1"))
 	if inert.HasActive() {
 		t.Fatal("a registry with no classifier must stay empty")
 	}
