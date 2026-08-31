@@ -51,3 +51,26 @@ func TestAnalyze_MethodNotFoundStillDoesNotRetry(t *testing.T) {
 		t.Fatalf("-32601 grading changed: %+v", r)
 	}
 }
+
+// The method-unsupported wordings that are NOT also blockchain-error patterns
+// must still produce a MethodBlocking verdict at -32000: a supplier saying
+// "does not exist/is not available" is answering that it cannot serve the
+// method, not failing, and grading it a minor supplier error on every call is
+// the opposite of what the list at methodUnsupportedPatterns promises.
+func TestClassifyServerError_MethodUnsupportedWordingsBlock(t *testing.T) {
+	for _, msg := range []string{
+		"the method debug_tracetransaction does not exist/is not available",
+		"method not supported",
+		"trace_block is not available on this node",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			r := classifyServerError(-32000, msg)
+			if !r.MethodBlocking {
+				t.Fatalf("MethodBlocking = false for %q: %+v", msg, r)
+			}
+			if r.ShouldPenalize || r.Attribution != AttrBlockchain {
+				t.Fatalf("a method the node does not serve is not a supplier fault: %+v", r)
+			}
+		})
+	}
+}

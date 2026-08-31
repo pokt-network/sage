@@ -46,6 +46,9 @@ type fakeRedis struct {
 	// afterScan, when set, runs after a Scan step has been answered and f.mu
 	// released — the window between a refresh's snapshot and its replace.
 	afterScan func()
+	// afterMGet is the same hook one step later: after the values have been
+	// read, so a change made here is invisible to the refresh in flight.
+	afterMGet func()
 }
 
 func newFakeRedis() *fakeRedis {
@@ -169,7 +172,15 @@ func (f *fakeRedis) scan(ctx context.Context, cursor uint64, match string, _ int
 // for as long as the keyspace takes to walk, once per replica per cache TTL.
 // TestRedisStore_RefreshScansTheNamespace pins that.
 
-func (f *fakeRedis) MGet(_ context.Context, keys ...string) *redis.SliceCmd {
+func (f *fakeRedis) MGet(ctx context.Context, keys ...string) *redis.SliceCmd {
+	cmd := f.mget(ctx, keys...)
+	if f.afterMGet != nil {
+		f.afterMGet()
+	}
+	return cmd
+}
+
+func (f *fakeRedis) mget(_ context.Context, keys ...string) *redis.SliceCmd {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.mgetErr != nil {
@@ -892,5 +903,33 @@ func TestRedisStore_SetDuringRefreshSurvivesTheReplace(t *testing.T) {
 	s.refresh(context.Background())
 	if !s.Drained("eth", "late.example", domain.RPCTypeJSONRPC) {
 		t.Fatal("drain lost on the refresh after the one it raced")
+	}
+}
+
+// TestRedisStore_ReleaseDuringRefreshIsNotResurrected is the release-side twin
+// of TestRedisStore_SetDuringRefreshSurvivesTheReplace: a key the scan saw and
+// the admin released after the values were read but before the replace must
+// not come back for one tick.
+func TestRedisStore_ReleaseDuringRefreshIsNotResurrected(t *testing.T) {
+	fake := newFakeRedis()
+	s := NewRedisStore(fake)
+	entry := Entry{
+		Key:   Key{ServiceID: "eth", Operator: "gone.example"},
+		Until: time.Now().Add(time.Minute),
+	}
+	if err := s.Set(context.Background(), entry); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	fake.afterMGet = func() {
+		fake.afterMGet = nil
+		if err := s.Release(context.Background(), entry.Key); err != nil {
+			t.Errorf("Release: %v", err)
+		}
+	}
+
+	s.refresh(context.Background())
+
+	if s.Drained("eth", "gone.example", domain.RPCTypeJSONRPC) {
+		t.Fatal("a drain released while the refresh was in flight was resurrected by the replace")
 	}
 }

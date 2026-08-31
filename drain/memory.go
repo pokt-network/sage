@@ -21,11 +21,20 @@ type MemoryStore struct {
 	// an entry newer than the snapshot it is replacing with, so a Set that
 	// landed while a refresh was in flight is not wiped for one tick.
 	setAt map[Key]time.Time
+	// releasedAt is the other direction: when each key was last released
+	// locally. replaceAll drops an entry released after the snapshot it is
+	// replacing with, so a Release that landed while a refresh was in flight
+	// is not resurrected for one tick. Cleared on every replaceAll.
+	releasedAt map[Key]time.Time
 }
 
 // NewMemoryStore returns an empty MemoryStore.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{entries: make(map[Key]Entry), setAt: make(map[Key]time.Time)}
+	return &MemoryStore{
+		entries:    make(map[Key]Entry),
+		setAt:      make(map[Key]time.Time),
+		releasedAt: make(map[Key]time.Time),
+	}
 }
 
 // Set installs or refreshes a drain, or releases it when e.Until is not
@@ -38,10 +47,12 @@ func (s *MemoryStore) Set(_ context.Context, e Entry) error {
 	if !e.Until.After(now) {
 		delete(s.entries, e.Key)
 		delete(s.setAt, e.Key)
+		s.releasedAt[e.Key] = now
 		return nil
 	}
 	s.entries[e.Key] = e
 	s.setAt[e.Key] = now
+	delete(s.releasedAt, e.Key)
 	return nil
 }
 
@@ -51,6 +62,7 @@ func (s *MemoryStore) Release(_ context.Context, k Key) error {
 	s.mu.Lock()
 	delete(s.entries, k)
 	delete(s.setAt, k)
+	s.releasedAt[k] = time.Now()
 	s.mu.Unlock()
 	return nil
 }
@@ -108,6 +120,12 @@ func (s *MemoryStore) replaceAll(next map[Key]Entry, since time.Time) {
 	}
 	now := time.Now()
 	s.mu.Lock()
+	for k, at := range s.releasedAt {
+		if at.After(since) {
+			delete(next, k)
+		}
+	}
+	clear(s.releasedAt)
 	for k, at := range s.setAt {
 		if !at.After(since) {
 			continue

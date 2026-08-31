@@ -338,8 +338,12 @@ knob can come later through the tuning-override layer if a service needs it.
 
 ## 9. Open items
 
-- Whether `_other` should ever escalate a host on its own: three unknown
-  methods timing out is three marks today. Left as-is; revisit with data.
+- ~~Whether `_other` should ever escalate a host on its own.~~ Decided
+  2026-08-31: `_other` is neither filtered nor marked. It is every
+  uncatalogued method at once, so a mark on it is a mark on all of them, and
+  a client sending one bogus method name per host could divert every
+  legitimate uncatalogued method for every client for a TTL. The bucket
+  bounds keys; it carries no memory.
 - Per-service TTL through the tuning-override layer, if one chain's heavy
   methods need a different memory.
 - Recording the winner's per-method latency (the cache-versus-capacity tell)

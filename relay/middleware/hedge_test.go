@@ -343,3 +343,102 @@ func TestHedge_PanicOnHedgeArmStillLetsPrimaryWin(t *testing.T) {
 		t.Error("no response — the panicking arm took the healthy one with it")
 	}
 }
+
+// TestHedge_BothFail_MergesPrimaryContext: when both arms fail, the primary
+// arm's outcome must be merged back like a win is. Retry sits outside Hedge
+// and excludes ctx.Endpoint on the next attempt; with nothing merged it
+// excludes "" and can draw the same dead endpoint again.
+func TestHedge_BothFail_MergesPrimaryContext(t *testing.T) {
+	var callCount int32
+	handler := relay.HandlerFunc(func(ctx *relay.Context) error {
+		n := atomic.AddInt32(&callCount, 1)
+		if n == 1 {
+			ctx.Endpoint = "primary-ep"
+			time.Sleep(5 * time.Millisecond)
+			return retryableErr("primary failed")
+		}
+		ctx.Endpoint = "hedge-ep"
+		return retryableErr("hedge failed")
+	})
+
+	mw := Hedge(newFlags("hedge"), hedgeCfg(2*time.Millisecond))
+	ctx := baseContext()
+	if err := mw(handler).HandleRelay(ctx); err == nil {
+		t.Fatal("expected error when both arms fail")
+	}
+	if ctx.Endpoint != "primary-ep" {
+		t.Fatalf("both-fail must merge the primary arm's endpoint, got %q", ctx.Endpoint)
+	}
+}
+
+// TestRetry_AfterHedgeBothFail_ExcludesFailedEndpoint is the chain-level
+// version: Retry(Hedge(select-first)) must not re-select the endpoint the
+// primary arm just failed on.
+func TestRetry_AfterHedgeBothFail_ExcludesFailedEndpoint(t *testing.T) {
+	var mu sync.Mutex
+	var picked []domain.EndpointAddr
+	selectFirst := relay.HandlerFunc(func(ctx *relay.Context) error {
+		if len(ctx.Endpoints) == 0 {
+			return nonRetryableErr("no endpoints")
+		}
+		ctx.Endpoint = ctx.Endpoints[0]
+		mu.Lock()
+		picked = append(picked, ctx.Endpoint)
+		mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+		return retryableErr("down")
+	})
+
+	chain := Retry(newFlags("retry", "hedge"), retryCfg(1, 0))(
+		Hedge(newFlags("retry", "hedge"), hedgeCfg(1*time.Millisecond))(selectFirst))
+
+	ctx := baseContext()
+	if err := chain.HandleRelay(ctx); err == nil {
+		t.Fatal("expected the chain to fail")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(picked) < 3 {
+		t.Fatalf("expected primary, hedge and a retry, got picks %v", picked)
+	}
+	first := picked[0]
+	for _, ep := range picked[2:] {
+		if ep == first {
+			t.Fatalf("retry re-selected %q, which the primary arm already failed on; picks: %v", first, picked)
+		}
+	}
+}
+
+// TestHedge_ReturnsWhenRequestContextDone: the arms are detached on purpose
+// (a losing arm must flush its signed relay), but the WAIT must not be. With
+// the request deadline gone nobody is listening; Hedge must return so the
+// timeout middleware can answer, instead of holding the client until the
+// protocol's HTTP client gives up.
+func TestHedge_ReturnsWhenRequestContextDone(t *testing.T) {
+	// Both arms run (the hedge fires at 5ms, well inside the 30ms deadline)
+	// and both outlive the test body; wait for them so nothing leaks.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	slow := relay.HandlerFunc(func(_ *relay.Context) error {
+		defer wg.Done()
+		time.Sleep(300 * time.Millisecond)
+		return retryableErr("too late")
+	})
+	defer wg.Wait()
+
+	chain := Timeout(func(domain.ServiceID) time.Duration { return 30 * time.Millisecond })(
+		Hedge(newFlags("hedge"), hedgeCfg(5*time.Millisecond))(slow))
+
+	ctx := baseContext()
+	start := time.Now()
+	err := chain.HandleRelay(ctx)
+	elapsed := time.Since(start)
+
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("hedge held the request for %v past a 30ms deadline", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected a deadline error, got %v", err)
+	}
+}

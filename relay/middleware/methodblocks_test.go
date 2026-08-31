@@ -113,7 +113,7 @@ func TestMethodBlocks_TimeoutMarksOnlyThatMethod(t *testing.T) {
 		ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true, Reason: "transport_timeout"}
 		return retryableErr("timeout")
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil, nil)(inner)
+	h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), nil, nil)(inner)
 	_ = h.HandleRelay(methodCtx("eth_getLogs", eps))
 
 	if !store.Blocked("eth", eps[0].Domain(), "eth_getLogs") {
@@ -138,7 +138,7 @@ func TestMethodBlocks_FiltersBlockedHostForThatMethodOnly(t *testing.T) {
 		ctx.Response = &domain.Response{HTTPStatusCode: 200}
 		return nil
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil, nil)(inner)
+	h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), nil, nil)(inner)
 
 	_ = h.HandleRelay(methodCtx("eth_getLogs", eps))
 	if len(seen) != 1 || seen[0] != eps[1] {
@@ -168,7 +168,7 @@ func TestMethodBlocks_BypassesWhenNoSurvivorIsVouched(t *testing.T) {
 		seen = ctx.Endpoints
 		return nil
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), rep, events)(inner)
+	h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), rep, events)(inner)
 
 	ctx := methodCtx("eth_getLogs", eps)
 	_ = h.HandleRelay(ctx)
@@ -197,7 +197,7 @@ func TestMethodBlocks_FiltersWhenSurvivorIsVouched(t *testing.T) {
 		seen = ctx.Endpoints
 		return nil
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), rep, events)(inner)
+	h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), rep, events)(inner)
 
 	ctx := methodCtx("eth_getLogs", eps)
 	_ = h.HandleRelay(ctx)
@@ -229,7 +229,7 @@ func TestMethodBlocks_UnknownSurvivorDoesNotAbsorbADiversion(t *testing.T) {
 		seen = ctx.Endpoints
 		return nil
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), rep, events)(inner)
+	h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), rep, events)(inner)
 
 	ctx := methodCtx("eth_getLogs", eps)
 	_ = h.HandleRelay(ctx)
@@ -258,7 +258,7 @@ func TestMethodBlocks_EveryHostBlockedDegradesInsteadOfEmptying(t *testing.T) {
 		seen = ctx.Endpoints
 		return nil
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil, events)(inner)
+	h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), nil, events)(inner)
 
 	ctx := methodCtx("eth_getLogs", eps)
 	_ = h.HandleRelay(ctx)
@@ -282,7 +282,7 @@ func TestMethodBlocks_ThirdMethodEscalatesAndIsCounted(t *testing.T) {
 		ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true, Attribution: heuristic.AttrSupplier}
 		return retryableErr("timeout")
 	})
-	h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil, events)(inner)
+	h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), nil, events)(inner)
 	for _, m := range []string{"a", "b", "c"} {
 		_ = h.HandleRelay(methodCtx(m, eps))
 	}
@@ -315,7 +315,7 @@ func TestMethodBlocks_ClientAttributedMarksDoNotEscalate(t *testing.T) {
 			ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true, Attribution: attr}
 			return retryableErr("failed")
 		})
-		h := MethodBlocks(store, registryWith(t), newFlags("method_blocks"), nil, nil)(inner)
+		h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), nil, nil)(inner)
 		for _, m := range []string{"debug_traceCall", "trace_block", "debug_storageRangeAt"} {
 			_ = h.HandleRelay(methodCtx(m, eps))
 		}
@@ -354,7 +354,7 @@ func TestMethodBlocks_NoNormalizerPassesThrough(t *testing.T) {
 		return retryableErr("timeout")
 	})
 	// Registry with no plugin for "eth".
-	h := MethodBlocks(store, qos.NewRegistry(), newFlags("method_blocks"), nil, nil)(inner)
+	h := MethodBlocks(store, qos.NewRegistry(), nil, newFlags("method_blocks"), nil, nil)(inner)
 	_ = h.HandleRelay(methodCtx("eth_getLogs", eps))
 	if len(seen) != 2 {
 		t.Fatal("without a normalizer nothing may be filtered")
@@ -373,7 +373,7 @@ func TestMethodBlocks_FlagOffPassesThrough(t *testing.T) {
 	store.Mark("eth", eps[0].Domain(), "eth_getLogs", true)
 	var seen domain.EndpointAddrList
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error { seen = ctx.Endpoints; return nil })
-	h := MethodBlocks(store, registryWith(t), newFlags(), nil, nil)(inner)
+	h := MethodBlocks(store, registryWith(t), nil, newFlags(), nil, nil)(inner)
 	_ = h.HandleRelay(methodCtx("eth_getLogs", eps))
 	if len(seen) != 2 {
 		t.Fatal("flag off must not filter")
@@ -438,7 +438,7 @@ func TestMethodBlocks_LosingHedgeArmMarksAndNextHedgeAvoids(t *testing.T) {
 	})
 	cfg := func(domain.ServiceID) config.RetryConfig { return config.RetryConfig{HedgeDelay: hedgeDelay} }
 	chain := Hedge(newFlags("hedge", "method_blocks"), cfg)(
-		MethodBlocks(store, registryWith(t), newFlags("hedge", "method_blocks"), nil, nil)(inner))
+		MethodBlocks(store, registryWith(t), nil, newFlags("hedge", "method_blocks"), nil, nil)(inner))
 
 	// Request 1: primary picks slow, hedge picks a healthy one and wins; the
 	// slow arm finishes later and marks its host.
@@ -481,5 +481,76 @@ func TestMethodBlocks_LosingHedgeArmMarksAndNextHedgeAvoids(t *testing.T) {
 	}
 	if got[0] == got[1] {
 		t.Fatalf("hedge arm did not move off the primary's endpoint: %v", got)
+	}
+}
+
+// stubProvider hands out a fixed endpoint list, standing in for the protocol
+// when nothing upstream (circuit_break with its flag off, or a chain without
+// it) has populated ctx.Endpoints.
+type stubProvider struct{ eps domain.EndpointAddrList }
+
+func (p stubProvider) AvailableEndpoints(context.Context, domain.ServiceID, domain.RPCType) (domain.EndpointAddrList, error) {
+	return p.eps, nil
+}
+
+// TestMethodBlocks_FetchesEndpointsWhenUpstreamDidNot: the filter must not
+// depend on circuit_break having run. With circuit_breaker flagged off (or
+// absent from the chain) nothing populates ctx.Endpoints before this
+// middleware, and a block that only applies to a pre-populated list is a block
+// that silently stops applying the moment an admin flips that flag.
+func TestMethodBlocks_FetchesEndpointsWhenUpstreamDidNot(t *testing.T) {
+	eps := testEndpoints(3)
+	store := methodblock.New()
+	store.Mark("eth", eps[0].Domain(), "eth_getLogs", true)
+
+	var seen domain.EndpointAddrList
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		seen = ctx.Endpoints
+		return nil
+	})
+	h := MethodBlocks(store, registryWith(t), stubProvider{eps}, newFlags("method_blocks"), nil, nil)(inner)
+
+	ctx := methodCtx("eth_getLogs", nil) // nothing upstream populated it
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected the marked host filtered out of a self-fetched list, inner saw %v", seen)
+	}
+	for _, ep := range seen {
+		if ep == eps[0] {
+			t.Fatalf("marked host %s reached selection", eps[0])
+		}
+	}
+}
+
+// TestMethodBlocks_OtherBucketIsNeverMarkedOrFiltered: every uncatalogued
+// method shares qos.MethodOther, so a mark on it is a mark on ALL of them. One
+// client sending a bogus method name to each host would otherwise divert every
+// legitimate uncatalogued method for every client for a TTL.
+func TestMethodBlocks_OtherBucketIsNeverMarkedOrFiltered(t *testing.T) {
+	eps := testEndpoints(3)
+	store := methodblock.New()
+	// A pre-existing mark on the bucket must not filter either.
+	store.Mark("eth", eps[0].Domain(), qos.MethodOther, true)
+
+	var seen domain.EndpointAddrList
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		seen = ctx.Endpoints
+		ctx.Endpoint = eps[1]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true, Attribution: heuristic.AttrClient}
+		return nil
+	})
+	h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), nil, nil)(inner)
+
+	ctx := methodCtx(qos.MethodOther, eps)
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("the _other bucket must not filter; inner saw %v", seen)
+	}
+	if store.Blocked("eth", eps[1].Domain(), qos.MethodOther) {
+		t.Fatal("a MethodBlocking verdict on an uncatalogued method must not mark the _other bucket")
 	}
 }

@@ -298,6 +298,23 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 		}
 	}
 
+	// A method the node does not serve, in a wording that is not also a
+	// blockchain-error pattern (those were handled above). The node answered
+	// correctly about itself; it is not at fault, and it must not receive
+	// that method again for a while.
+	if reportsMethodUnsupported(lowerMsg) {
+		return AnalysisResult{
+			ShouldRetry:        true,
+			ShouldCircuitBreak: false,
+			ShouldPenalize:     false,
+			Attribution:        AttrBlockchain,
+			Confidence:         0.85,
+			Reason:             "method_unsupported",
+			Details:            "method not served by this endpoint (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
+			MethodBlocking:     true,
+		}
+	}
+
 	// Default for server error range: retry but only minor penalty.
 	return AnalysisResult{
 		ShouldRetry:     true,

@@ -5,6 +5,7 @@ import (
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/methodblock"
+	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/reputation"
@@ -52,6 +53,7 @@ const (
 func MethodBlocks(
 	store *methodblock.Store,
 	registry *qos.Registry,
+	endpointProvider protocol.EndpointProvider,
 	flags featureflag.FlagStore,
 	repSvc reputation.Service,
 	events MethodBlockRecorder,
@@ -62,10 +64,30 @@ func MethodBlocks(
 				return next.HandleRelay(ctx)
 			}
 			method := normalizedMethod(registry, ctx)
-			if method == "" {
+			// MethodOther is every uncatalogued method at once: a mark on it
+			// is a mark on all of them, and one client sending a bogus
+			// method name to each host would divert every legitimate
+			// uncatalogued method for every client for a TTL. The bucket
+			// bounds keys; it carries no memory.
+			if method == "" || method == qos.MethodOther {
 				return next.HandleRelay(ctx)
 			}
 			serviceID := string(ctx.ServiceID)
+
+			// Populate ctx.Endpoints if nothing upstream did. circuit_break
+			// fetches too, but only with its own flag on and only when it is
+			// in the chain; a filter that applied only to a list someone else
+			// happened to fetch would silently stop applying the moment an
+			// admin flipped circuit_breaker off. SelectEndpoint skips its own
+			// fetch when the list is already populated.
+			if len(ctx.Endpoints) == 0 && endpointProvider != nil {
+				eps, err := endpointProvider.AvailableEndpoints(ctx.Ctx, ctx.ServiceID, ctx.RPCType)
+				if err == nil {
+					ctx.Endpoints = eps
+				}
+				// On error, leave the list empty — SelectEndpoint retries the
+				// fetch and surfaces the error.
+			}
 
 			if len(ctx.Endpoints) > 0 {
 				filtered := filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool {

@@ -455,7 +455,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		return middleware.CircuitBreak(cb, proto, flags, recorder)
 	})
 	mwReg.Register(relay.MWMethodBlocks, func() relay.Middleware {
-		return middleware.MethodBlocks(blocks, qosReg, flags, repSvc, recorder)
+		return middleware.MethodBlocks(blocks, qosReg, proto, flags, repSvc, recorder)
 	})
 	mwReg.Register(relay.MWSelectEndpoint, func() relay.Middleware {
 		return middleware.SelectEndpoint(repSvc, proto, qosReg, flags)

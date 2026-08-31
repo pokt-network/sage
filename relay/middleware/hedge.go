@@ -77,6 +77,16 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 				mergeContext(ctx, res.ctx)
 				return res.err
 
+			case <-ctx.Ctx.Done():
+				// The arms are detached so a signed relay in flight still
+				// flushes; the WAIT is not. Nobody is listening for the answer
+				// any more (the client hung up, or the Timeout middleware's
+				// deadline passed), and holding here until the protocol's own
+				// HTTP client gave up would make the per-service relay timeout
+				// mean nothing whenever hedging is on. The arm scores itself
+				// when it finishes; there is no winner to merge.
+				return ctx.Ctx.Err()
+
 			case <-timer.C:
 				// Hedge delay elapsed; launch speculative second request.
 			}
@@ -128,6 +138,10 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 
 			for !primaryDone || !hedgeDone {
 				select {
+				case <-ctx.Ctx.Done():
+					// Same as above: stop waiting, let the arms finish detached.
+					return ctx.Ctx.Err()
+
 				case res := <-primaryCh:
 					primaryRes = res
 					primaryDone = true
@@ -156,7 +170,11 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 				}
 			}
 
-			// Both failed — return primary error.
+			// Both failed — return the primary's error, and merge its context
+			// the way a win is merged. Retry sits outside and excludes
+			// ctx.Endpoint on its next attempt; with nothing merged it would
+			// exclude "" and could draw the same dead endpoint again.
+			mergeContext(ctx, primaryRes.ctx)
 			return primaryRes.err
 		})
 	}
