@@ -150,6 +150,13 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- Chain-native REST is routed as REST instead of defaulting to JSON-RPC. A
+  request to a service that declares `rest`, on a path other than a JSON-RPC
+  entry point (`/`, `/jsonrpc`), is classified REST — covering TRON's
+  `/wallet/*`, Pocket's `/poktroll/*` and `/pokt/*`, and any Cosmos chain's
+  REST namespace without a per-chain path table. A JSON-RPC envelope in the
+  body still wins on any chain. Fixes tron 405s and pocket-native 501s seen on
+  the canary. (A REST request still needs a REST-staked supplier to serve it.)
 - `sage_retry_total`, `sage_hedge_total`, `sage_cache_hits_total` and
   `sage_cache_misses_total` are now emitted — they were defined and documented
   but never incremented (no writer), so Prometheus had no series. Retry records

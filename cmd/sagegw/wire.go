@@ -443,7 +443,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWRequestID, func() relay.Middleware { return middleware.RequestID() })
 	mwReg.Register(relay.MWClientIP, func() relay.Middleware { return middleware.ClientIP(trustedProxies) })
 	mwReg.Register(relay.MWMetrics, func() relay.Middleware { return middleware.Metrics(recorder) })
-	mwReg.Register(relay.MWParse, func() relay.Middleware { return middleware.Parse(qosReg) })
+	rpcTypesFn := func(svcID domain.ServiceID) []string {
+		if sc := cfg.Gateway.GetServiceConfig(string(svcID)); sc != nil {
+			return sc.RPCTypes
+		}
+		return nil
+	}
+	mwReg.Register(relay.MWParse, func() relay.Middleware { return middleware.ParseWithServices(qosReg, rpcTypesFn) })
 	mwReg.Register(relay.MWValidate, func() relay.Middleware {
 		return middleware.Validate(cfg.Gateway.AllServices())
 	})

@@ -49,7 +49,18 @@ var cosmosPaths = []string{
 // the QoS plugin, detects the RPC type, and calls plugin.ParseRequest to
 // extract payloads. It sets ctx.ServiceID, ctx.RPCType, ctx.Plugin, and
 // ctx.Payloads.
+// Parse is ParseWithServices with no rpc_types resolver, so an unrecognised
+// path defaults to JSON-RPC (the pre-multi-surface behaviour).
 func Parse(registry *qos.Registry) relay.Middleware {
+	return ParseWithServices(registry, nil)
+}
+
+// ParseWithServices returns the parse middleware. rpcTypes, when non-nil,
+// reports the RPC types a service declares in config, so a request to a
+// REST-capable service on a path that is not a JSON-RPC entry point is
+// classified REST rather than defaulting to JSON-RPC. Nil keeps the old
+// default.
+func ParseWithServices(registry *qos.Registry, rpcTypes func(domain.ServiceID) []string) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			// Extract service ID.
@@ -91,7 +102,7 @@ func Parse(registry *qos.Registry) relay.Middleware {
 			}
 
 			// Detect RPC type.
-			ctx.RPCType = detectRPCType(ctx.HTTPRequest, body)
+			ctx.RPCType = detectRPCType(ctx.HTTPRequest, body, serviceDeclaresREST(rpcTypes, ctx.ServiceID))
 
 			// Parse request via plugin if available.
 			if plugin != nil {
@@ -125,9 +136,22 @@ func Parse(registry *qos.Registry) relay.Middleware {
 	}
 }
 
+// jsonRPCEntryPaths are the paths at which a request is JSON-RPC even on a
+// REST-capable service. Everything else on such a service is that chain's REST
+// (or CometBFT, caught earlier). "/" is the conventional JSON-RPC endpoint;
+// "/jsonrpc" is TRON's, and harmless elsewhere.
+var jsonRPCEntryPaths = map[string]bool{"/": true, "": true, "/jsonrpc": true}
+
 // detectRPCType determines the RPC type from an HTTP request and its
-// already-read body.
-func detectRPCType(req *http.Request, body []byte) domain.RPCType {
+// already-read body. serviceDeclaresREST is whether the target service lists
+// "rest" among its RPC types; when it does, a path-addressed request that is
+// not a JSON-RPC entry point is that chain's native REST surface.
+//
+// The default for an unrecognised request used to be JSON-RPC unconditionally,
+// which is an EVM assumption: it misrouted every chain-native REST namespace
+// (TRON /wallet, Pocket /poktroll) to JSON-RPC suppliers. See
+// docs/design/specs/2026-08-31-rpc-type-classification-design.md.
+func detectRPCType(req *http.Request, body []byte, serviceDeclaresREST bool) domain.RPCType {
 	// WebSocket upgrade.
 	if isWebSocketUpgrade(req) {
 		return domain.RPCTypeWebSocket
@@ -140,42 +164,63 @@ func detectRPCType(req *http.Request, body []byte) domain.RPCType {
 		return domain.RPCTypeGRPC
 	}
 
+	// A JSON-RPC envelope in the body is self-identifying and wins on any
+	// chain, even a REST-capable one: an EVM-compatible Cosmos chain answers
+	// JSON-RPC at its root.
+	if req.Method == http.MethodPost {
+		trimmed := bytes.TrimSpace(body)
+		if len(trimmed) > 0 {
+			if trimmed[0] == '{' && bytes.Contains(trimmed, []byte(`"jsonrpc"`)) {
+				return domain.RPCTypeJSONRPC
+			}
+			// A batch array is a JSON-RPC batch.
+			if trimmed[0] == '[' {
+				return domain.RPCTypeJSONRPC
+			}
+		}
+	}
+
 	path := req.URL.Path
 
-	// CometBFT paths.
+	// CometBFT paths — a distinct surface with well-known paths, checked
+	// before the REST default so a Cosmos chain's /status is not called REST.
 	for _, p := range cometBFTPaths {
 		if path == p || strings.HasPrefix(path, p+"/") {
 			return domain.RPCTypeCometBFT
 		}
 	}
 
-	// Cosmos REST paths.
+	// A REST-capable service, addressed by a path that is not a JSON-RPC entry
+	// point, is that chain's REST surface — /cosmos/, /ibc/, /wallet/,
+	// /poktroll/, and anything else, without a per-chain table.
+	if serviceDeclaresREST && !jsonRPCEntryPaths[path] {
+		return domain.RPCTypeREST
+	}
+
+	// The standard Cosmos REST prefixes still classify REST even when the
+	// service's declared types are unknown (nil resolver): a request that
+	// unmistakably names the Cosmos REST gateway should not become JSON-RPC.
 	for _, p := range cosmosPaths {
 		if strings.HasPrefix(path, p) {
 			return domain.RPCTypeREST
 		}
 	}
 
-	// For POST requests, inspect the body.
-	if req.Method == http.MethodPost {
-		trimmed := bytes.TrimSpace(body)
-		if len(trimmed) > 0 {
-			first := trimmed[0]
-			if first == '{' || first == '[' {
-				// Check for jsonrpc field.
-				if bytes.Contains(trimmed, []byte(`"jsonrpc"`)) {
-					return domain.RPCTypeJSONRPC
-				}
-				// Batch (array) without explicit jsonrpc key — still JSON-RPC batch.
-				if first == '[' {
-					return domain.RPCTypeJSONRPC
-				}
-			}
-		}
-		return domain.RPCTypeJSONRPC
-	}
-
 	return domain.RPCTypeJSONRPC
+}
+
+// serviceDeclaresREST reports whether the service lists "rest" among its RPC
+// types. A nil resolver reports false, which keeps the JSON-RPC default.
+func serviceDeclaresREST(rpcTypes func(domain.ServiceID) []string, svc domain.ServiceID) bool {
+	if rpcTypes == nil {
+		return false
+	}
+	for _, t := range rpcTypes(svc) {
+		if t == "rest" {
+			return true
+		}
+	}
+	return false
 }
 
 // isGRPCContentType reports whether a media type is gRPC in any framing:

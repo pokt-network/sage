@@ -316,3 +316,72 @@ func TestParse_GRPCDetectionDoesNotCatchOtherTransports(t *testing.T) {
 		})
 	}
 }
+
+// A chain's native REST namespace (tron /wallet, pocket /poktroll) is REST
+// when the service declares rest — without enumerating every chain's paths.
+// SAGE used to default these to JSON-RPC and route them to json_rpc suppliers
+// that do not serve them (tron 405, pocket 501 on the mainnet canary).
+func TestParse_RPCTypeDetection_NativeREST(t *testing.T) {
+	rpcTypes := func(svc domain.ServiceID) []string {
+		switch svc {
+		case "tron":
+			return []string{"rest", "json_rpc"}
+		case "pocket":
+			return []string{"json_rpc", "rest", "comet_bft"}
+		case "eth":
+			return []string{"json_rpc"}
+		}
+		return nil
+	}
+	mw := middleware.ParseWithServices(qos.NewRegistry(), rpcTypes)
+
+	cases := []struct {
+		name string
+		req  func() *http.Request
+		want domain.RPCType
+	}{
+		{"tron native REST POST", func() *http.Request {
+			r := newPOSTRequest("/wallet/getnowblock", `{}`)
+			r.Header.Set("Target-Service-Id", "tron")
+			return r
+		}, domain.RPCTypeREST},
+		{"pocket native REST GET", func() *http.Request {
+			r := newGETRequest("/poktroll/session/params")
+			r.Header.Set("Target-Service-Id", "pocket")
+			return r
+		}, domain.RPCTypeREST},
+		{"tron eth_ JSON-RPC at root stays JSON-RPC", func() *http.Request {
+			r := newPOSTRequest("/", `{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`)
+			r.Header.Set("Target-Service-Id", "tron")
+			return r
+		}, domain.RPCTypeJSONRPC},
+		{"tron JSON-RPC entry path /jsonrpc stays JSON-RPC", func() *http.Request {
+			r := newPOSTRequest("/jsonrpc", `{"method":"eth_blockNumber","id":1}`)
+			r.Header.Set("Target-Service-Id", "tron")
+			return r
+		}, domain.RPCTypeJSONRPC},
+		{"ambiguous bare POST at root on a REST service defaults JSON-RPC", func() *http.Request {
+			r := newPOSTRequest("/", `{}`)
+			r.Header.Set("Target-Service-Id", "tron")
+			return r
+		}, domain.RPCTypeJSONRPC},
+		{"EVM path on a json_rpc-only service stays JSON-RPC", func() *http.Request {
+			r := newPOSTRequest("/anything", `{"jsonrpc":"2.0","method":"eth_call","id":1}`)
+			r.Header.Set("Target-Service-Id", "eth")
+			return r
+		}, domain.RPCTypeJSONRPC},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := newCtx(tc.req())
+			var got domain.RPCType
+			h := mw(relay.HandlerFunc(func(c *relay.Context) error { got = c.RPCType; return nil }))
+			if err := h.HandleRelay(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
