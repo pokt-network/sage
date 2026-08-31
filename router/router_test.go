@@ -791,3 +791,67 @@ func TestHandleRelay_TransportError_LogsOnce(t *testing.T) {
 		t.Fatalf("one failed relay logged %d ERROR lines, want 1:\n%s", n, logs.String())
 	}
 }
+
+type mockWarmup struct{ warm bool }
+
+func (m *mockWarmup) Warm() bool { return m.warm }
+
+// /ready gates on warm-up: a fresh pod whose reputation has not warmed returns
+// 503 so it is kept out of the Service until it can select, then 200.
+func TestHandleReady_GatesOnWarmup(t *testing.T) {
+	r := New(config.RouterConfig{Port: 0}, relay.Noop, &mockSessions{ready: true}, nil, discardLogger())
+	r.SetWarmup(&mockWarmup{warm: false})
+	srv := httptest.NewServer(r.mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("/ready before warm = %d, want 503", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	r.SetWarmup(&mockWarmup{warm: true})
+	resp2, err := http.Get(srv.URL + "/ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("/ready when warm = %d, want 200", resp2.StatusCode)
+	}
+	resp2.Body.Close()
+}
+
+// A ready session but no warmup wired (health checks disabled) must not stall:
+// /ready is 200.
+func TestHandleReady_NilWarmupIsReady(t *testing.T) {
+	r := New(config.RouterConfig{Port: 0}, relay.Noop, &mockSessions{ready: true}, nil, discardLogger())
+	srv := httptest.NewServer(r.mux)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/ready with no warmup = %d, want 200", resp.StatusCode)
+	}
+}
+
+// A warm pod whose session is not ready is still not ready.
+func TestHandleReady_SessionNotReady(t *testing.T) {
+	r := New(config.RouterConfig{Port: 0}, relay.Noop, &mockSessions{ready: false}, nil, discardLogger())
+	r.SetWarmup(&mockWarmup{warm: true})
+	srv := httptest.NewServer(r.mux)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("/ready with cold session = %d, want 503", resp.StatusCode)
+	}
+}

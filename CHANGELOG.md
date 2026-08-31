@@ -150,6 +150,13 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- Readiness (`/ready`) now gates on reputation warm-up, not just a session
+  existing. A fresh or rolled pod is 503 on `/ready` until health-check
+  results (the leader's first probe cycle, or a follower's `sage:probes`
+  stream replay) have covered the configured services, so it is not put into
+  the Service while selection is still blind — which served ~90s of failures
+  per pod on every roll. Point the readinessProbe and a startupProbe there;
+  `/healthz` stays the session-only check for PATH parity.
 - Chain-native REST is routed as REST instead of defaulting to JSON-RPC. A
   request to a service that declares `rest`, on a path other than a JSON-RPC
   entry point (`/`, `/jsonrpc`), is classified REST — covering TRON's

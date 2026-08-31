@@ -28,6 +28,13 @@ type WebSocketOpener interface {
 	Open(ctx context.Context, serviceID domain.ServiceID, req *http.Request, w http.ResponseWriter) error
 }
 
+// Warmup reports whether the gateway can steer endpoint selection yet — i.e.
+// health-check results have populated reputation for the configured services.
+// A nil Warmup on the Router means not gated (always ready).
+type Warmup interface {
+	Warm() bool
+}
+
 // Router is the main HTTP server. It dispatches requests to the relay chain
 // or admin API and owns the http.Server lifecycle.
 type Router struct {
@@ -36,8 +43,14 @@ type Router struct {
 	chain     relay.Handler
 	sessions  protocol.SessionManager
 	wsRelayer WebSocketOpener // optional; if nil, WS upgrade requests 503
-	logger    *slog.Logger
+	// warmup gates /ready: nil means not gated. Set via SetWarmup at wire time.
+	warmup Warmup
+	logger *slog.Logger
 }
+
+// SetWarmup installs the readiness warm-up gate consulted by /ready. Wire time
+// only; nil leaves /ready ungated (session readiness alone).
+func (r *Router) SetWarmup(w Warmup) { r.warmup = w }
 
 // New creates a Router and registers all routes.
 // wsRelayer may be nil — in that case, WebSocket upgrade requests receive a
@@ -320,15 +333,29 @@ func (r *Router) handleLive(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 }
 
-// handleReadyAll reports readiness for every configured service.
+// handleReadyAll is the readiness endpoint. Unlike /healthz (a session exists)
+// it reflects the ability to SERVE: it is 503 until the session layer is ready
+// AND the warm-up gate reports reputation has warmed for the configured
+// services. A fresh or rolled pod would otherwise be put into the Service
+// while selection is still blind, serving failures until it warmed. Point the
+// Kubernetes readinessProbe (and a startupProbe with a generous
+// failureThreshold) here.
 func (r *Router) handleReadyAll(w http.ResponseWriter, req *http.Request) {
+	warm := r.warmup == nil || r.warmup.Warm()
+	ready := warm && r.sessions.IsReady(req.Context())
+
 	services := r.sessions.ConfiguredServices()
 	result := make(map[string]bool, len(services))
 	for svc := range services {
-		result[string(svc)] = true
+		result[string(svc)] = ready
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ready":    true,
+	status := http.StatusOK
+	if !ready {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, map[string]any{
+		"ready":    ready,
+		"warm":     warm,
 		"services": result,
 	})
 }

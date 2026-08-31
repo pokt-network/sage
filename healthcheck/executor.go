@@ -65,6 +65,18 @@ type Executor struct {
 	source   ProbeSource
 	recorder ResultRecorder
 
+	// warm tracks readiness: the pod can steer selection once it has applied
+	// health-check results (leader probes or follower stream) for enough of
+	// the configured services. Before that a fresh pod selects blind and
+	// returns failures until it warms, so readiness must gate on this rather
+	// than on a session existing. warmMu guards coveredServices; warm is the
+	// latched result read on the hot readiness path without a lock.
+	warmMu           sync.Mutex
+	coveredServices  map[domain.ServiceID]struct{}
+	warm             atomic.Bool
+	warmThresholdSet bool
+	warmThreshold    int
+
 	// now is the clock the schedule reads; tests move it.
 	now func() time.Time
 	// lastRun is when each (service, backend, check) was last scheduled. Only
@@ -104,17 +116,18 @@ func NewExecutor(
 		workers = defaultWorkers
 	}
 	e := &Executor{
-		protocol:    protocol,
-		endpoints:   endpoints,
-		sessions:    sessions,
-		qosRegistry: qosReg,
-		repService:  repSvc,
-		obsQueue:    obsQueue,
-		logger:      logger,
-		interval:    interval,
-		workers:     workers,
-		now:         time.Now,
-		lastRun:     make(map[probeKey]time.Time),
+		protocol:        protocol,
+		endpoints:       endpoints,
+		sessions:        sessions,
+		qosRegistry:     qosReg,
+		repService:      repSvc,
+		obsQueue:        obsQueue,
+		logger:          logger,
+		interval:        interval,
+		workers:         workers,
+		now:             time.Now,
+		lastRun:         make(map[probeKey]time.Time),
+		coveredServices: make(map[domain.ServiceID]struct{}),
 	}
 	e.dedupByBackendURL.Store(true)
 	return e
@@ -499,10 +512,62 @@ func (e *Executor) probe(ctx context.Context, serviceID domain.ServiceID, ep dom
 	return result
 }
 
+// Warm reports whether the executor has applied results for enough of the
+// configured services that reputation can steer endpoint selection. It is the
+// readiness signal: a pod is not put into rotation until it is warm, so a
+// fresh or rolled pod does not take traffic while it would still select blind.
+//
+// The threshold is 75% of the configured services, so the handful with no
+// suppliers on the network (which never produce a result) cannot hold
+// readiness down forever. With no configured services there is nothing to wait
+// for and it reads warm immediately.
+func (e *Executor) Warm() bool {
+	if e.warm.Load() {
+		return true
+	}
+	e.warmMu.Lock()
+	defer e.warmMu.Unlock()
+	e.ensureWarmThresholdLocked()
+	if e.warmThreshold == 0 || len(e.coveredServices) >= e.warmThreshold {
+		e.warm.Store(true)
+		return true
+	}
+	return false
+}
+
+// ensureWarmThresholdLocked computes the warm threshold once, from the
+// configured service count. Called under warmMu.
+func (e *Executor) ensureWarmThresholdLocked() {
+	if e.warmThresholdSet {
+		return
+	}
+	n := len(e.sessions.ConfiguredServices())
+	// ceil(0.75 * n); 0 stays 0 (warm immediately).
+	e.warmThreshold = (n*3 + 3) / 4
+	e.warmThresholdSet = true
+}
+
+// markCovered records that a result has been applied for a service and latches
+// warm once the threshold is met.
+func (e *Executor) markCovered(svc domain.ServiceID) {
+	if e.warm.Load() {
+		return
+	}
+	e.warmMu.Lock()
+	e.coveredServices[svc] = struct{}{}
+	e.ensureWarmThresholdLocked()
+	warm := e.warmThreshold == 0 || len(e.coveredServices) >= e.warmThreshold
+	e.warmMu.Unlock()
+	if warm {
+		e.warm.Store(true)
+	}
+}
+
 // applyResult lands one probe's knowledge on this replica: the reputation
 // signal, the block height on every sibling, the observation. Identical for
 // a result this replica probed and one it received, which is the point.
 func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
+	e.markCovered(r.ServiceID)
 	if e.recorder != nil {
 		e.recorder.RecordHealthCheckResult(r.ServiceID, string(r.Source))
 	}

@@ -55,7 +55,7 @@ reaches the supplier as `/status`, not `/v1/status`.
 | `GET` | `/healthz` | Returns 200 when the protocol layer is ready, 503 otherwise. |
 | `GET` | `/livez` | Answers 200 unconditionally: the process is up and serving. |
 | `GET` | `/ready/{service}` | Checks whether a specific service is configured and ready. |
-| `GET` | `/ready` | Reports readiness for every configured service. |
+| `GET` | `/ready` | The readiness endpoint. |
 
 ### `POST /v1`, `POST /v1/{path...}`
 
@@ -87,7 +87,13 @@ Checks whether a specific service is configured and ready.
 
 ### `GET /ready`
 
-Reports readiness for every configured service.
+The readiness endpoint. Unlike /healthz (a session exists)
+it reflects the ability to SERVE: it is 503 until the session layer is ready
+AND the warm-up gate reports reputation has warmed for the configured
+services. A fresh or rolled pod would otherwise be put into the Service
+while selection is still blind, serving failures until it warmed. Point the
+Kubernetes readinessProbe (and a startupProbe with a generous
+failureThreshold) here.
 
 ## Admin routes
 

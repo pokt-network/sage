@@ -1159,3 +1159,51 @@ func TestRunOnce_DueToleratesTickJitter(t *testing.T) {
 		t.Fatalf("sent %d probes, want 2 (one per tick)", len(relayer.calls))
 	}
 }
+
+// Readiness must reflect the ability to select, not just that a session
+// exists. The executor is warm once it has applied health-check results
+// (leader probes or follower stream) for enough of the configured services
+// that reputation can steer selection — before that a fresh pod would serve
+// blind and return failures until it warmed.
+func TestExecutor_WarmAfterResultsCoverServices(t *testing.T) {
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{
+		"eth": {}, "poly": {}, "base": {}, "solana": {},
+	}}
+	reg := qos.NewRegistry()
+	rep := &stubRepService{}
+	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{}, sessions, reg, rep, nil,
+		defaultInterval, 4, slog.Default())
+
+	if exec.Warm() {
+		t.Fatal("must not be warm before any result is applied")
+	}
+	ok := &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"result":"0x1"}`)}
+	_ = ok
+	apply := func(svc domain.ServiceID) {
+		exec.applyResult(context.Background(), ProbeResult{
+			ServiceID: svc, Endpoint: "supplierA-https://n.example.com",
+			StatusCode: 200, Body: []byte(`{"result":"0x1"}`), Source: ResultSourceProbe,
+		})
+	}
+	// Threshold is 75% of 4 services = 3. Two is not enough.
+	apply("eth")
+	apply("poly")
+	if exec.Warm() {
+		t.Fatalf("2 of 4 services covered should not be warm")
+	}
+	apply("base")
+	if !exec.Warm() {
+		t.Fatalf("3 of 4 (75%%) covered should be warm")
+	}
+}
+
+// With no configured services the executor is warm immediately — there is
+// nothing to wait for, and a readiness gate must not stall.
+func TestExecutor_WarmWhenNoServices(t *testing.T) {
+	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{},
+		&stubSessionManager{services: map[domain.ServiceID]struct{}{}}, qos.NewRegistry(),
+		&stubRepService{}, nil, defaultInterval, 4, slog.Default())
+	if !exec.Warm() {
+		t.Fatal("no configured services must read as warm, not stall readiness")
+	}
+}

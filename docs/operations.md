@@ -82,7 +82,11 @@ containers:
       httpGet: {path: /livez, port: relay}
       periodSeconds: 10
     readinessProbe:
-      httpGet: {path: /healthz, port: relay}
+      httpGet: {path: /ready, port: relay}
+    startupProbe:
+      httpGet: {path: /ready, port: relay}
+      failureThreshold: 30   # 30 x 10s = 5 min, covers a from-cold leader's first probe cycle
+      periodSeconds: 10
       periodSeconds: 5
     lifecycle:
       preStop: {exec: {command: ["sleep", "5"]}}
@@ -91,8 +95,17 @@ volumes:
     secret: {secretName: sage-config}   # it holds signing keys
 ```
 
-- **Liveness is `/livez`, readiness is `/healthz`** (or `/health`; the two
-  are the same check, `/healthz` is PATH's spelling). `/healthz` answers 503
+- **Liveness is `/livez`, readiness is `/ready`.** `/livez` is 200 whenever the
+  process serves. `/ready` is 503 until the session layer is ready AND the
+  pod's reputation has warmed — health-check results (the leader's first probe
+  cycle, or a follower's stream replay) have covered the configured services,
+  so selection can steer away from bad suppliers. Gate the readinessProbe and a
+  startupProbe on `/ready`: a fresh or rolled pod that took traffic on session
+  readiness alone served failures for the ~90s until reputation warmed. A
+  follower warms in seconds from the `sage:probes` stream; a pod that boots as
+  leader waits up to one probe interval, which is what the startupProbe's
+  failureThreshold covers. `/healthz` (or `/health`; `/healthz` is PATH's
+  spelling) stays the session-only check and answers 503
   until the protocol layer has a session, and again whenever the full node
   is unreachable — right for taking a pod out of the Service, wrong for
   restarting it, which is what a liveness probe on it would do during a
