@@ -74,6 +74,7 @@ var coalescableMethods = map[string]bool{
 //   - qos.ResponseFormatValidator
 //   - qos.LifecycleHooks
 //   - qos.StateResetter
+//   - qos.SubscriptionClassifier
 type Plugin struct {
 	logger          *slog.Logger
 	store           *qos.EndpointStore[evmEndpoint]

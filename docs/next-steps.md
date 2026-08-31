@@ -29,6 +29,16 @@ From the 2026-08-31 end-to-end read (see the standing caveat below), verified
 but not fixed (the SYN-blackhole grading and the drain SCAN cost from the same
 list were fixed the same day):
 
+- `healthcheck.LeaderElector` is wired and elects (Redis `SET NX`, 30 s TTL,
+  hand-over in ~6 s on graceful stop — verified with two replicas on
+  2026-08-31), but **nothing reads `IsLeader()`**: `Executor.runOnce` has no
+  gate, so every replica probes every supplier. That is not an oversight to
+  fix with one `if`: reputation is write-behind only (`reputation.Storage`
+  is never read back), so a non-leader that stopped probing would be blind
+  to dead hosts until client traffic found them. Either share reputation
+  (read-through, or leader publishes and followers subscribe) and then gate
+  probes on the leader, or delete the elector so the log stops claiming a
+  role that changes nothing. Decision, not code.
 - A config reload applies `feature_flags` through `FlagStore.Set`, which on
   the Redis store writes the fleet-wide global key — one replica's file edit
   reaches every replica, and a global flip an admin set through the API is
@@ -50,10 +60,14 @@ client with 1012.
 Decision: **defer with the rebind.** Every part of it that acts is the rebind
 (the supplier-avoiding reconnect, the replay, the give-up cap over rebinds),
 and every part that decides needs the subscription registry (`HasActiveSubscriptions`
-is what stops it closing an idle but legitimate connection). SAGE has neither
-— `websockets/bridge.go` is one endpoint per bridge for its lifetime, and
-nothing in `protocol/shannon/ws_processor.go` parses `eth_subscribe` — so a
-port is the rebind port plus this, not this alone.
+is what stops it closing an idle but legitimate connection). SAGE now has the
+registry (2026-08-31: `qos.SubscriptionRegistry`, fed by each plugin's
+`qos.SubscriptionClassifier` from inside `ws_processor.go`, keeping the original
+subscribe frame for a replay; beta-checked on a CometBFT `NewBlock`
+subscription). What it still lacks is the rebind — `websockets/bridge.go` is
+one endpoint per bridge for its lifetime — so the watchdog is now one port
+away, not two. Order: rebind (swap `endpointConn`, replay `Active()`, remap
+ids), then the watchdog on top.
 
 What SAGE does have, and what it lacks, so the next reader does not re-derive
 it:
@@ -62,13 +76,15 @@ it:
   closes the bridge at the session boundary with 1012, and the client's
   reconnect selects afresh. PATH needed the watchdog *because* rebind had made
   its connections outlive sessions.
-- SAGE's bridge has **no transport liveness at all**: no ping/pong, no read
-  deadline on either side (`websockets/connection.go` sets a read *limit* and a
-  write deadline only). A half-open upstream TCP socket is noticed by the next
-  write failure or the session boundary, whichever comes first. That is a
-  larger gap than the data-staleness one, and cheaper to close — a read
-  deadline refreshed by a pong handler is ~20 lines and needs no subscription
-  model. Do this first if WS liveness becomes a problem.
+- ~~SAGE's bridge has no transport liveness at all.~~ Closed 2026-08-31: the
+  bridge pings both peers every 20 s and declares a side gone after 60 s with
+  no data and no pong (`websockets/connection.go`, `WithLiveness`); the
+  client gets 1012 so its reconnect draws a fresh supplier. Same day: the WS
+  path got its first metrics — `sage_websocket_connections`, `_frames_total`,
+  `_bytes_total`, `_closes_total{initiator,code}`, `_unresponsive_total{side}`,
+  `_rejected_total{reason}`. Beta-checked with a 90 s `tm.event='NewBlock'`
+  subscription (30 s gaps between frames): pongs kept it open, counters and
+  gauge correct, client close counted as 1000.
 - If a standalone stall detector is ever wanted without the rebind, the shape
   is: detect (needs per-connection knowledge of an established subscription,
   chain-specific — `eth_subscribe` result, Solana `*Subscribe`, CometBFT

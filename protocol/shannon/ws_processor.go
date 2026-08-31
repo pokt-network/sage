@@ -12,6 +12,7 @@ import (
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/qos"
 )
 
 // ErrSessionExpired is returned by wsMessageProcessor.ProcessClientMessage
@@ -47,6 +48,16 @@ type wsMessageProcessor struct {
 	// onEndpointFrame is invoked after ProcessEndpointMessage successfully
 	// validates + unwraps a supplier frame. Nil-safe.
 	onEndpointFrame frameCallback
+
+	// subs tracks the connection's subscriptions from the frames that cross
+	// it. Nil-safe; set by withSubscriptions.
+	subs *qos.SubscriptionRegistry
+}
+
+// withSubscriptions attaches the subscription registry the frames feed.
+func (p *wsMessageProcessor) withSubscriptions(subs *qos.SubscriptionRegistry) *wsMessageProcessor {
+	p.subs = subs
+	return p
 }
 
 // newWSMessageProcessor creates a processor ready to be handed to
@@ -93,6 +104,9 @@ func (p *wsMessageProcessor) ProcessClientMessage(data []byte) ([]byte, error) {
 	if !p.sessionActive.Load() {
 		return nil, ErrSessionExpired
 	}
+	// Before signing: the registry reads the client's own JSON, not the
+	// relay envelope.
+	p.subs.ObserveClientFrame(data)
 
 	unsigned := &servicetypes.RelayRequest{
 		Meta: servicetypes.RelayRequestMetadata{
@@ -146,6 +160,7 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 
 	latency := time.Since(start)
 	payload := relayResp.Payload
+	p.subs.ObserveEndpointFrame(payload)
 	if p.onEndpointFrame != nil {
 		p.onEndpointFrame(payload, nil, latency)
 	}

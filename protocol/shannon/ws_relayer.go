@@ -18,6 +18,7 @@ import (
 
 	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/observe"
+	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/reputation"
 	"github.com/pokt-network/sage/websockets"
 )
@@ -60,6 +61,25 @@ type WSRelayerDeps struct {
 	// negative disables the cap; callers should pass the already-resolved value
 	// (see config.WebSocketConfig.EffectiveMaxConcurrentConnections).
 	MaxConcurrentConnections int
+
+	// Metrics receives bridge lifecycle events. Optional: nil records
+	// nothing, which is what the tests want and what production must never
+	// wire (see wire.go).
+	Metrics WSMetrics
+
+	// QoS resolves the service's plugin. A plugin that implements
+	// qos.SubscriptionClassifier gives the bridge a subscription registry —
+	// the knowledge a rebind and a stall watchdog need. Optional: nil, or a
+	// plugin without the interface, means no tracking.
+	QoS *qos.Registry
+}
+
+// WSMetrics is what the relayer needs from the metrics package: a per-service
+// observer for each bridge, and a counter for the upgrades it refuses before
+// a bridge exists. metrics.WebSocketMetrics satisfies it.
+type WSMetrics interface {
+	ForService(serviceID domain.ServiceID) websockets.Observer
+	Rejected(serviceID domain.ServiceID, reason string)
 }
 
 // WSRelayer is the only public entry point for opening WebSocket bridges in
@@ -155,6 +175,9 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		logger.Warn("ws open: at connection capacity, rejecting",
 			"active_connections", r.connLimiter.Active(),
 		)
+		if r.deps.Metrics != nil {
+			r.deps.Metrics.Rejected(serviceID, "capacity")
+		}
 		http.Error(w, "too many concurrent websocket connections", http.StatusServiceUnavailable)
 		return errors.New("ws open: concurrent connection limit reached")
 	}
@@ -230,6 +253,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	// frame itself.
 	frameCh := make(chan wsFrameEvent, wsFrameEventQueueSize)
 
+	subs := r.subscriptionRegistry(serviceID)
 	processor := newWSMessageProcessor(
 		ctx,
 		r.deps.Protocol,
@@ -243,7 +267,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 			default:
 			}
 		},
-	)
+	).withSubscriptions(subs)
 
 	// Pocket relay miners authenticate the WS upgrade via three HTTP headers
 	// set on the initial handshake. Without these the miner treats the
@@ -257,7 +281,11 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	}
 
 	// Start the bridge. After upgrade succeeds, errors surface via close codes.
-	bridge, err := websockets.StartBridge(ctx, logger, req, w, url, supplierHeaders, processor)
+	var bridgeOpts []websockets.BridgeOption
+	if r.deps.Metrics != nil {
+		bridgeOpts = append(bridgeOpts, websockets.WithObserver(r.deps.Metrics.ForService(serviceID)))
+	}
+	bridge, err := websockets.StartBridge(ctx, logger, req, w, url, supplierHeaders, processor, bridgeOpts...)
 	if err != nil {
 		// Pre-upgrade error: either the client handshake failed (our fault —
 		// no supplier penalty) or the endpoint dial failed (supplier
@@ -283,8 +311,21 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	<-bridge.Done()
 
 	r.handleBridgeClose(serviceID, endpointAddr)
-	logger.Info("ws open: bridge shut down")
+	logger.Info("ws open: bridge shut down",
+		"active_subscriptions", len(subs.Active()),
+		"untracked_subscribes", subs.Dropped(),
+	)
 	return nil
+}
+
+// subscriptionRegistry builds the registry for one bridge from the service's
+// plugin, or an inert one when nothing can classify this chain's frames.
+func (r *WSRelayer) subscriptionRegistry(serviceID domain.ServiceID) *qos.SubscriptionRegistry {
+	if r.deps.QoS == nil {
+		return qos.NewSubscriptionRegistry(nil)
+	}
+	classifier, _ := r.deps.QoS.Get(serviceID).(qos.SubscriptionClassifier)
+	return qos.NewSubscriptionRegistry(classifier)
 }
 
 // watchSessionExpiry closes the bridge once its own session has ended, so the

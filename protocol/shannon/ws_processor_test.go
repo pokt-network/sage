@@ -13,6 +13,8 @@ import (
 	sdk "github.com/pokt-network/shannon-sdk"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/qos"
+	"github.com/pokt-network/sage/qos/evm"
 )
 
 // countingSigner tracks signRelayRequest calls so we can assert signing
@@ -151,5 +153,24 @@ func TestWSProcessor_ProcessEndpointMessage_ValidationFailure_Blacklists(t *test
 	}
 	if !p.bl.IsBlacklisted("eth", "pokt1bad") {
 		t.Error("supplier should be blacklisted after validation failure")
+	}
+}
+
+// The registry must see the client's own JSON before signing and the
+// supplier's payload after validation — never the relay envelopes.
+func TestWSProcessor_FeedsSubscriptionRegistry(t *testing.T) {
+	_, proc, _, fn := buildProcessorFixture()
+	subs := qos.NewSubscriptionRegistry(&evm.Plugin{})
+	proc.withSubscriptions(subs)
+
+	if _, err := proc.ProcessClientMessage([]byte(`{"jsonrpc":"2.0","id":9,"method":"eth_subscribe","params":["newHeads"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	fn.validateResponse = &servicetypes.RelayResponse{Payload: []byte(`{"jsonrpc":"2.0","id":9,"result":"0xsub"}`)}
+	if _, err := proc.ProcessEndpointMessage([]byte(`wire`)); err != nil {
+		t.Fatal(err)
+	}
+	if a := subs.Active(); len(a) != 1 || a[0].ID != "0xsub" {
+		t.Fatalf("registry did not see both directions: %+v", a)
 	}
 }

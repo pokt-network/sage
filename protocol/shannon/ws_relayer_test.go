@@ -495,3 +495,42 @@ func TestWSRelayer_NoCapConfigured(t *testing.T) {
 		}
 	}
 }
+
+type spyWSMetrics struct {
+	mu       sync.Mutex
+	rejected []string
+}
+
+func (s *spyWSMetrics) ForService(domain.ServiceID) websockets.Observer { return nil }
+func (s *spyWSMetrics) Rejected(sid domain.ServiceID, reason string) {
+	s.mu.Lock()
+	s.rejected = append(s.rejected, string(sid)+":"+reason)
+	s.mu.Unlock()
+}
+
+// A refusal at the cap must be counted: it is the one WS failure that leaves
+// no bridge, no close code and no log line a dashboard can see.
+func TestWSRelayer_OpenRejectsAtCapacity_IsCounted(t *testing.T) {
+	spy := &spyWSMetrics{}
+	r := NewWSRelayer(WSRelayerDeps{
+		Protocol:                 &Protocol{logger: newTestLogger()},
+		Reputation:               &spyRepSvc{},
+		Observe:                  newDisabledQueue(),
+		Flags:                    featureflag.NewMemoryStore(map[string]bool{wsFeatureFlag: true}),
+		Logger:                   newTestLogger(),
+		MaxConcurrentConnections: 1,
+		Metrics:                  spy,
+	})
+	if !r.connLimiter.Acquire() {
+		t.Fatal("could not take the first slot")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws", nil)
+	if err := r.Open(context.Background(), "eth", req, httptest.NewRecorder()); err == nil {
+		t.Fatal("Open must fail at capacity")
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.rejected) != 1 || spy.rejected[0] != "eth:capacity" {
+		t.Fatalf("rejected = %v, want [eth:capacity]", spy.rejected)
+	}
+}

@@ -42,6 +42,7 @@ Callers type-assert and skip the feature when it is absent.
 | `LifecycleHooks` | react to session and endpoint changes |
 | `MethodNormalizer` | name a payload's method from a bounded catalogue, for method-aware state and metric labels |
 | `StateResetter` | discard learned chain state (block consensus, per-endpoint heights, archival marks) via the admin chain-state reset route, without a restart |
+| `SubscriptionClassifier` | read WebSocket frames and say which open, close or feed a subscription, so `qos.SubscriptionRegistry` can track what is live on a bridge (the knowledge a rebind and a stall watchdog need); the id lives in different places per chain (EVM: hex result / `params.subscription`; Solana: integer result / `<x>Notification`; CometBFT: the request id itself) |
 
 A new method on the core `Plugin` interface is a compile error in every existing
 plugin, and forces four chains to stub out a feature one of them needed. That is

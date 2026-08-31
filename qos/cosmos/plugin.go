@@ -45,6 +45,7 @@ type cosmosEndpoint struct {
 //   - qos.LifecycleHooks
 //   - qos.MethodNormalizer
 //   - qos.StateResetter
+//   - qos.SubscriptionClassifier
 type Plugin struct {
 	logger            *slog.Logger
 	syncAllowance     uint64
