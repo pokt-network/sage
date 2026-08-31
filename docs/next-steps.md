@@ -11,6 +11,28 @@ cadence knobs and `rpc_type_fallbacks` landed from its first hour of metrics
 and logs. PATH `origin/main` at `274e9791`, 2026-08-25).
 
 
+
+## Latency-aware selection (parked — acceptable for now)
+
+The mainnet-canary p50 sits ~40ms vs PATH ~30ms. It is NOT gateway overhead —
+eth's in-cluster whole-chain p50 is 25ms; selection reads an in-memory cache
+and signing/validation use the same shannon-sdk. The cause is that selection
+is latency-agnostic by design: latency is report-only in scoring
+(docs/scoring.md), so a slow-but-healthy supplier scores the same as a fast one
+and gets equal tier-1 traffic. Measured on the canary: 100 eth suppliers took
+client traffic, all score 100, per-supplier send latency 10ms–555ms, ~equal
+traffic each — so the slow ones drag p50 up. PATH weights toward faster
+suppliers.
+
+Decision (2026-08-31): tolerable for now, do not reverse the report-only
+stance. Later, close most of the gap cheaply with **a soft latency ceiling plus
+a within-tier tiebreak**: keep latency OUT of the score (no instability), but
+order selection within tier 1 by the per-key latency EWMA (already tracked),
+and/or demote suppliers above the tier's p90 latency out of the front of tier 1
+even when they succeed. This shifts traffic to the fast suppliers without
+penalizing the slow-but-working ones in the score. Prototype the tiebreak in
+the selector (reputation/selector) when picked up.
+
 ## Session rollover grace period (committed next, after 397a949 boundary read)
 
 `397a949` coalesced session refresh (singleflight) and should end the boundary
