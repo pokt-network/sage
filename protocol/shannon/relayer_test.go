@@ -50,6 +50,10 @@ func (m *mockRelayFullNode) GetCurrentBlockHeight(_ context.Context) (int64, err
 	return m.height, nil
 }
 
+func (m *mockRelayFullNode) GetSharedParams(_ context.Context) (*sharedtypes.Params, error) {
+	return &sharedtypes.Params{}, nil
+}
+
 func (m *mockRelayFullNode) ValidateRelayResponse(_ string, _ []byte) (*servicetypes.RelayResponse, error) {
 	return m.validateResponse, m.validateErr
 }

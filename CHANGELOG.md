@@ -150,7 +150,15 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
-- Session refresh is coalesced. At a session boundary every in-flight relay
+- Session refresh is coalesced, and sessions are served through their protocol
+  grace period. SAGE expired a session the instant the chain height reached its
+  end and forced a synchronous refresh — a grace window too early: the protocol
+  keeps relays for a session valid for GracePeriodEndOffsetBlocks (an on-chain
+  shared parameter) after its end. SAGE now reads that offset and keeps serving
+  a session through end+grace while refreshing the next one in the background,
+  so no relay blocks at the boundary and every relay is signed against a session
+  the chain still honours. Below the coalescing that removed the boundary
+  stampede: At a session boundary every in-flight relay
   for a service saw its cached session as expired and independently called the
   full node's GetSession; because num_blocks_per_session aligns every service
   to one boundary, this stampeded the node with hundreds of redundant calls at

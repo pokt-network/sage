@@ -43,6 +43,10 @@ func (m *stubFullNode) GetCurrentBlockHeight(_ context.Context) (int64, error) {
 	return m.height, nil
 }
 
+func (m *stubFullNode) GetSharedParams(_ context.Context) (*sharedtypes.Params, error) {
+	return &sharedtypes.Params{}, nil
+}
+
 func (m *stubFullNode) ValidateRelayResponse(_ string, _ []byte) (*servicetypes.RelayResponse, error) {
 	return &servicetypes.RelayResponse{}, nil
 }
@@ -338,5 +342,69 @@ func TestGetSession_CoalescesConcurrentRefresh(t *testing.T) {
 	defer fn.mu.Unlock()
 	if fn.calls > 2 {
 		t.Fatalf("GetSession called %d times for 50 concurrent refreshes; the herd is not coalesced", fn.calls)
+	}
+}
+
+// Within the protocol grace period (sessionEnd .. sessionEnd+grace) relays for
+// the just-ended session are still valid, so getSession keeps serving the
+// cached session and refreshes the next one in the BACKGROUND — no relay
+// blocks at the boundary. SAGE previously expired at sessionEnd exactly, a
+// grace-window too early, forcing a synchronous refresh.
+func TestGetSession_ServesThroughGraceAndRefreshesInBackground(t *testing.T) {
+	newSession := &sessiontypes.Session{SessionId: "s2",
+		Header: &sessiontypes.SessionHeader{SessionId: "s2", ServiceId: "eth", SessionEndBlockHeight: 200}}
+	fn := &countingFullNode{stubFullNode: stubFullNode{session: newSession}, delay: 20 * time.Millisecond}
+	sm := newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+	sm.SetGraceBlocks(10)
+
+	expired := &sessiontypes.Session{SessionId: "s1",
+		Header: &sessiontypes.SessionHeader{SessionId: "s1", ServiceId: "eth", SessionEndBlockHeight: 100}}
+	sm.sessionCache.Store(sessionCacheKey("eth", "pokt1app"), expired)
+	sm.latestBlockHeight.Store(105) // 100 < 105 < 100+10: in grace
+
+	// The call returns the CACHED (still-valid) session immediately, without
+	// waiting on a fetch.
+	got, err := sm.getSession(context.Background(), "eth", "pokt1app")
+	if err != nil || got.SessionId != "s1" {
+		t.Fatalf("in grace, expected the cached session s1 served without blocking, got %v err=%v", got, err)
+	}
+
+	// A background refresh replaces the cache with the new session.
+	deadline := time.After(2 * time.Second)
+	for {
+		if v, ok := sm.sessionCache.Load(sessionCacheKey("eth", "pokt1app")); ok && v.(*sessiontypes.Session).SessionId == "s2" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("background refresh never cached the new session s2")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	fn.mu.Lock()
+	calls := fn.calls
+	fn.mu.Unlock()
+	if calls == 0 {
+		t.Fatal("expected a background GetSession during grace, got none")
+	}
+}
+
+// Past the grace period the session is truly expired and getSession refreshes
+// synchronously.
+func TestGetSession_PastGraceRefreshesSynchronously(t *testing.T) {
+	newSession := &sessiontypes.Session{SessionId: "s2",
+		Header: &sessiontypes.SessionHeader{SessionId: "s2", ServiceId: "eth", SessionEndBlockHeight: 200}}
+	fn := &countingFullNode{stubFullNode: stubFullNode{session: newSession}}
+	sm := newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+	sm.SetGraceBlocks(10)
+
+	expired := &sessiontypes.Session{SessionId: "s1",
+		Header: &sessiontypes.SessionHeader{SessionId: "s1", ServiceId: "eth", SessionEndBlockHeight: 100}}
+	sm.sessionCache.Store(sessionCacheKey("eth", "pokt1app"), expired)
+	sm.latestBlockHeight.Store(120) // 120 > 100+10: past grace
+
+	got, err := sm.getSession(context.Background(), "eth", "pokt1app")
+	if err != nil || got.SessionId != "s2" {
+		t.Fatalf("past grace, expected a synchronous refresh to s2, got %v err=%v", got, err)
 	}
 }

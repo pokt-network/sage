@@ -13,6 +13,7 @@ import (
 
 	apptypes "github.com/pokt-network/poktroll/x/application/types"
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
+	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 	sdk "github.com/pokt-network/shannon-sdk"
 	sdktypes "github.com/pokt-network/shannon-sdk/types"
@@ -37,6 +38,7 @@ type fullNodeIface interface {
 	GetSession(ctx context.Context, serviceID string, appAddr string) (*sessiontypes.Session, error)
 	GetApp(ctx context.Context, appAddr string) (*apptypes.Application, error)
 	GetCurrentBlockHeight(ctx context.Context) (int64, error)
+	GetSharedParams(ctx context.Context) (*sharedtypes.Params, error)
 	ValidateRelayResponse(supplierAddr string, responseBz []byte) (*servicetypes.RelayResponse, error)
 	AccountClient() *sdk.AccountClient
 }

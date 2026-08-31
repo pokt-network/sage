@@ -49,6 +49,18 @@ type sessionManager struct {
 	latestBlockHeight atomic.Int64
 	stopPoller        chan struct{}
 
+	// graceBlocks is the protocol grace period (GracePeriodEndOffsetBlocks from
+	// on-chain shared params): the number of blocks after a session's end
+	// during which relays for it are still valid. SAGE keeps serving a session
+	// through end+graceBlocks and refreshes the next one in the background, so
+	// no relay blocks at the boundary and every relay is signed against a
+	// session the chain still honours. Zero disables grace (refresh at end).
+	graceBlocks atomic.Int64
+	// bgRefreshing marks a (service, app) whose next session is already being
+	// fetched in the background during grace, so getSession schedules one
+	// goroutine per boundary rather than one per request.
+	bgRefreshing sync.Map // "serviceID:appAddr" → struct{}
+
 	// refreshGroup coalesces concurrent refreshes of the same session. At a
 	// boundary every in-flight relay for a service sees the cached session as
 	// expired, and because num_blocks_per_session aligns every service to one
@@ -78,6 +90,15 @@ func newSessionManager(fullNode fullNodeIface, services map[domain.ServiceID]str
 	}
 }
 
+// SetGraceBlocks installs the protocol grace period. Wire time, from the
+// on-chain shared params (GracePeriodEndOffsetBlocks).
+func (sm *sessionManager) SetGraceBlocks(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	sm.graceBlocks.Store(n)
+}
+
 // LatestBlockHeight returns the newest chain head the block poller has seen,
 // or 0 before the first successful poll. A failed poll leaves the previous
 // height in place, so 0 only ever means "not yet polled".
@@ -95,6 +116,7 @@ func (sm *sessionManager) LatestBlockHeight() int64 {
 func (sm *sessionManager) StartBlockPoller(ctx context.Context) {
 	// Fetch once synchronously so the first relay doesn't hit a cold cache.
 	sm.pollBlockHeight(ctx)
+	sm.loadGracePeriod(ctx)
 
 	go func() {
 		ticker := time.NewTicker(blockPollInterval)
@@ -115,6 +137,22 @@ func (sm *sessionManager) StartBlockPoller(ctx context.Context) {
 	sm.logger.Info("block height poller started",
 		"interval", blockPollInterval.String(),
 	)
+}
+
+// loadGracePeriod reads the on-chain grace period (GracePeriodEndOffsetBlocks)
+// once at startup. On failure it stays at zero — the coalesced hard cutover,
+// which is correct if less smooth. The value changes rarely (a governance
+// param), so it is not re-polled.
+func (sm *sessionManager) loadGracePeriod(ctx context.Context) {
+	params, err := sm.fullNode.GetSharedParams(ctx)
+	if err != nil || params == nil {
+		sm.logger.Warn("session grace period: shared params unavailable, grace disabled",
+			"error", err)
+		return
+	}
+	grace := int64(params.GetGracePeriodEndOffsetBlocks())
+	sm.SetGraceBlocks(grace)
+	sm.logger.Info("session grace period loaded", "grace_period_end_offset_blocks", grace)
 }
 
 // StopBlockPoller stops the background block height poller.
@@ -211,21 +249,52 @@ func (sm *sessionManager) getSession(ctx context.Context, serviceID string, appA
 	if cached, ok := sm.sessionCache.Load(key); ok {
 		session := cached.(*sessiontypes.Session)
 		currentHeight := sm.latestBlockHeight.Load()
+		end := session.Header.SessionEndBlockHeight
+		graceEnd := end + sm.graceBlocks.Load()
 
-		// Session is still valid if current height hasn't reached its end.
-		if currentHeight < session.Header.SessionEndBlockHeight {
+		switch {
+		case currentHeight < end:
+			// Before the session's end: valid, nothing to do.
 			return session, nil
-		}
 
-		sm.logger.Info("session expired, refreshing",
-			"service_id", serviceID,
-			"session_id", session.SessionId,
-			"session_end_height", session.Header.SessionEndBlockHeight,
-			"current_height", currentHeight,
-		)
+		case currentHeight <= graceEnd:
+			// In the protocol grace period: relays for this session are still
+			// valid (GracePeriodEndOffsetBlocks). Keep serving it and fetch the
+			// next session in the background so nothing blocks at the boundary.
+			sm.scheduleBackgroundRefresh(serviceID, appAddr)
+			return session, nil
+
+		default:
+			// Past grace: the session is truly expired, refresh synchronously.
+			sm.logger.Info("session expired past grace, refreshing",
+				"service_id", serviceID,
+				"session_id", session.SessionId,
+				"session_end_height", end,
+				"grace_end_height", graceEnd,
+				"current_height", currentHeight,
+			)
+		}
 	}
 
 	return sm.refreshSession(ctx, serviceID, appAddr)
+}
+
+// scheduleBackgroundRefresh fetches the next session off the request path
+// during the grace period. One goroutine per (service, app) per boundary: the
+// bgRefreshing marker drops requests that arrive while a refresh is already in
+// flight, and refreshSession itself coalesces the actual GetSession.
+func (sm *sessionManager) scheduleBackgroundRefresh(serviceID, appAddr string) {
+	key := sessionCacheKey(serviceID, appAddr)
+	if _, inFlight := sm.bgRefreshing.LoadOrStore(key, struct{}{}); inFlight {
+		return
+	}
+	safego.Go(sm.logger, "shannon.session.bg_refresh", func() {
+		defer sm.bgRefreshing.Delete(key)
+		if _, err := sm.refreshSession(context.Background(), serviceID, appAddr); err != nil {
+			sm.logger.Debug("session background refresh failed",
+				"service_id", serviceID, "app_addr", appAddr, "error", err)
+		}
+	})
 }
 
 // sessionFetchTimeout bounds one coalesced GetSession. It is detached from the
