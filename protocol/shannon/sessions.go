@@ -253,14 +253,18 @@ func (sm *sessionManager) getSession(ctx context.Context, serviceID string, appA
 		graceEnd := end + sm.graceBlocks.Load()
 
 		switch {
-		case currentHeight < end:
-			// Before the session's end: valid, nothing to do.
+		case currentHeight <= end:
+			// Up to and including the session's last block, this IS the current
+			// session — nothing newer exists to switch to yet.
 			return session, nil
 
 		case currentHeight <= graceEnd:
-			// In the protocol grace period: relays for this session are still
-			// valid (GracePeriodEndOffsetBlocks). Keep serving it and fetch the
-			// next session in the background so nothing blocks at the boundary.
+			// Past the end, within the protocol grace period: the next session
+			// now exists and relays for this one are still valid
+			// (GracePeriodEndOffsetBlocks). Switch to the new session as soon as
+			// it is fetched — refresh it in the background — while serving this
+			// one so nothing blocks at the boundary. Once the refresh lands, the
+			// cache holds the new session and later calls take the case above.
 			sm.scheduleBackgroundRefresh(serviceID, appAddr)
 			return session, nil
 

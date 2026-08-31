@@ -408,3 +408,29 @@ func TestGetSession_PastGraceRefreshesSynchronously(t *testing.T) {
 		t.Fatalf("past grace, expected a synchronous refresh to s2, got %v err=%v", got, err)
 	}
 }
+
+// At the session's exact end block the session is still the current one — the
+// next session does not exist on chain yet — so getSession serves it with no
+// refresh. The switch happens at end+1, when the new session is queryable.
+func TestGetSession_AtEndBlockServesCurrentNoRefresh(t *testing.T) {
+	fn := &countingFullNode{stubFullNode: stubFullNode{session: &sessiontypes.Session{SessionId: "s2",
+		Header: &sessiontypes.SessionHeader{SessionId: "s2", ServiceId: "eth", SessionEndBlockHeight: 200}}}}
+	sm := newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+	sm.SetGraceBlocks(10)
+	cur := &sessiontypes.Session{SessionId: "s1",
+		Header: &sessiontypes.SessionHeader{SessionId: "s1", ServiceId: "eth", SessionEndBlockHeight: 100}}
+	sm.sessionCache.Store(sessionCacheKey("eth", "pokt1app"), cur)
+	sm.latestBlockHeight.Store(100) // exactly at end
+
+	got, err := sm.getSession(context.Background(), "eth", "pokt1app")
+	if err != nil || got.SessionId != "s1" {
+		t.Fatalf("at end block expected the current session s1, got %v err=%v", got, err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	fn.mu.Lock()
+	calls := fn.calls
+	fn.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("no refresh should fire at the end block; got %d GetSession calls", calls)
+	}
+}
