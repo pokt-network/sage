@@ -251,15 +251,19 @@ type ServiceConfig struct {
 
 	ExternalBlockSources []ExternalBlockSource `yaml:"external_block_sources"`
 
-	// NOTE: PATH's rpc_type_fallbacks has no field here on purpose. It was
-	// declared and read by nothing — dead config describing a fallback SAGE does
-	// not implement. SAGE's fallback for an unclassifiable request is fixed, not
-	// configurable: detectRPCType defaults to JSON-RPC (relay/middleware/parse.go).
-	// A PATH config carrying the key is now reported at startup via Config.Ignored
-	// rather than parsing into a field that does nothing. If a configurable
-	// per-service fallback is ever wanted, add it as a live field then — do not
-	// resurrect a dead one. (Not to be confused with the planned per-service
-	// allowed-methods allowlist, which is a separate, live feature.)
+	// RPCTypeFallbacks maps a requested RPC type onto the one to relay through
+	// when a supplier has not staked the requested one, e.g.
+	// `comet_bft: json_rpc`. The request is sent unchanged to the fallback
+	// type's URL; nothing is translated. It exists because relay miners
+	// commonly serve CometBFT's HTTP and JSON-RPC surfaces from one port, so a
+	// supplier staked for json_rpc only can answer a comet_bft `/status` — and
+	// on mainnet many still are, so without the mapping those suppliers are
+	// invisible to comet_bft traffic and to the cosmos health check.
+	//
+	// Same key and semantics as PATH's, so a PATH config carries over. One hop
+	// only: a fallback's own fallback is not consulted. Both sides must name a
+	// known RPC type and differ; that is validated at load.
+	RPCTypeFallbacks map[string]string `yaml:"rpc_type_fallbacks"`
 }
 
 // ServiceDefaults provides default values for services.
@@ -602,17 +606,30 @@ type SignalImpactsConfig struct {
 
 // HealthCheckConfig controls active health checks.
 //
-// NOTE: PATH's active_health_checks.external has no field here on purpose. It
-// declared a URL to fetch health check rules from, and nothing read it — a
-// config key that reads to an operator as "my fleet-wide rules are live" while
-// no rule was ever fetched. A PATH config carrying it is now reported at
-// startup via Config.Ignored instead of parsing into a field that does nothing.
+// NOTE: PATH's active_health_checks.external has no field here on purpose.
+// PATH fetches a fleet-wide rule file from that URL (it did not when SAGE
+// forked; it does as of PATH 2026-08). SAGE does not: the plugin's own checks
+// cover what the file's block-number, chain-id and status rows do, with a real
+// chain-id comparison and sync tracked by block consensus, and the file's
+// per-service `check_interval: 10s` rows are most of PATH's probe volume. A
+// PATH config carrying the key is reported at startup via Config.Ignored
+// rather than parsing into a field that does nothing; see docs/path-compat.md.
 // If remote rules are wanted later, add them as a live feature then.
 type HealthCheckConfig struct {
 	// Enabled turns active health checking on. Checks probe endpoints on a
 	// schedule rather than waiting for client traffic to reveal a problem, and
 	// are what keep block height and chain ID tracking current.
 	Enabled bool `yaml:"enabled"`
+
+	// Interval is how often every backend of every service is probed. Zero
+	// means 30s. Each probe is a paid relay against the app's stake, and the
+	// cost is linear in it: at 30s a gateway with 60 services and ~1,500
+	// distinct backend URLs spends roughly 60 probe relays a second with no
+	// client traffic at all. A per-service `local[].check_interval` overrides
+	// it for that service; a check may also carry a slower cadence of its own
+	// (the EVM chain-id check probes every 5m, since a chain id does not
+	// change), which is never made faster by this.
+	Interval time.Duration `yaml:"interval"`
 
 	// DisableBackendURLDedup turns off per-backend deduplication, restoring one
 	// health-check relay per supplier.
@@ -639,13 +656,16 @@ type HealthCheckConfig struct {
 }
 
 // ServiceHealthChecks is the set of configured checks for one service.
-//
-// CheckInterval is deliberately absent: PATH allows a per-service interval, the
-// executor runs one global loop, and declaring the field would parse a value
-// SAGE never honours. It is reported at startup instead.
 type ServiceHealthChecks struct {
 	// ServiceID is the service these checks apply to.
 	ServiceID string `yaml:"service_id"`
+	// CheckInterval is this service's probe cadence, overriding the global
+	// `interval`. It applies to the plugin's checks as well as the ones listed
+	// here, and it applies whether or not `enabled` is set — it is the
+	// service's cadence, not a property of the check list. Same key as PATH's;
+	// note PATH configs commonly carry `10s`, which against a 30s global
+	// triples that service's probe spend. Zero means the global interval.
+	CheckInterval time.Duration `yaml:"check_interval"`
 	// Enabled must be set for the checks to run, mirroring the PATH configs
 	// this parses — they spell out `enabled: true` on every block. A block with
 	// checks and no `enabled` is warned about at startup rather than quietly

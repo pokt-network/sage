@@ -176,3 +176,28 @@ func TestConfiguredChecks_NilIsSafe(t *testing.T) {
 		t.Error("SignalFor on nil should report no configured signal")
 	}
 }
+
+func TestConfiguredChecks_IntervalFor(t *testing.T) {
+	cfg := config.HealthCheckConfig{
+		Local: []config.ServiceHealthChecks{
+			{ServiceID: "eth", Enabled: true, CheckInterval: 90 * time.Second},
+			// Interval applies whether or not the block's checks are enabled:
+			// it is the service's cadence, not a property of the check list.
+			{ServiceID: "pocket", Enabled: false, CheckInterval: 5 * time.Minute},
+		},
+	}
+	checks, _ := BuildConfiguredChecks(cfg)
+	if got := checks.IntervalFor("eth"); got != 90*time.Second {
+		t.Errorf("IntervalFor(eth) = %v, want 90s", got)
+	}
+	if got := checks.IntervalFor("pocket"); got != 5*time.Minute {
+		t.Errorf("IntervalFor(pocket) = %v, want 5m", got)
+	}
+	if got := checks.IntervalFor("poly"); got != 0 {
+		t.Errorf("IntervalFor(unconfigured) = %v, want 0", got)
+	}
+	var nilChecks *ConfiguredChecks
+	if got := nilChecks.IntervalFor("eth"); got != 0 {
+		t.Errorf("nil IntervalFor = %v, want 0", got)
+	}
+}

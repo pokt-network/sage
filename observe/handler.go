@@ -2,10 +2,16 @@ package observe
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/pokt-network/sage/qos"
 )
+
+// ErrExtract wraps a plugin's failure to parse an observed body. The queue
+// treats it as data rather than as a handler failure.
+var ErrExtract = errors.New("extract data from observation")
 
 // DefaultHandler processes observations by routing extracted data back to QoS plugins.
 // For each observation it:
@@ -44,13 +50,17 @@ func (h *DefaultHandler) HandleObservation(ctx context.Context, obs Observation)
 
 	extracted, err := extractor.ExtractData(obs.EndpointAddr, obs.RequestBody, obs.ResponseBody)
 	if err != nil {
-		h.logger.Error("failed to extract data from observation",
+		// Debug: an unparseable body is the observed endpoint's failing, and
+		// whoever submitted the observation has already graded it. Reported
+		// at error level it was two lines per failed probe on an otherwise
+		// healthy canary.
+		h.logger.Debug("failed to extract data from observation",
 			"error", err,
 			"service_id", obs.ServiceID,
 			"endpoint_addr", obs.EndpointAddr,
 			"source", obs.Source,
 		)
-		return err
+		return fmt.Errorf("%w: %w", ErrExtract, err)
 	}
 
 	if extracted == nil || extracted.BlockHeight == nil {

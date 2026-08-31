@@ -316,27 +316,6 @@ func TestHealthChecks_DefaultCometBFT(t *testing.T) {
 	}
 }
 
-func TestHealthChecks_JSONRPCEndpointUsesJSONRPCPayload(t *testing.T) {
-	p := newPlugin(10)
-	ep := endpointAddr("pokt1abc-https://node.example.com")
-
-	// Mark endpoint as JSON-RPC only.
-	p.store.Update(ep, func(e *cosmosEndpoint) {
-		e.RPCType = domain.RPCTypeJSONRPC
-	})
-
-	checks := p.HealthChecks(ep)
-	if len(checks) != 1 {
-		t.Fatalf("expected 1 health check, got %d", len(checks))
-	}
-	if checks[0].Name != "comet_bft_status_jsonrpc" {
-		t.Errorf("expected comet_bft_status_jsonrpc, got %q", checks[0].Name)
-	}
-	if len(checks[0].Payload.Bytes()) == 0 {
-		t.Error("expected JSON body in JSON-RPC status payload")
-	}
-}
-
 // --- CometBFT method / path detection tests --- //
 
 func TestIsCometBFTMethod(t *testing.T) {

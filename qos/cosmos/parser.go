@@ -1,7 +1,6 @@
 package cosmos
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -236,21 +235,6 @@ func cometBFTStatusPayload() domain.Payload {
 	// CometBFT /status is a GET request with no body.
 	return domain.NewPayload(nil, domain.RPCTypeCometBFT, "status").
 		WithHTTP("/status", http.MethodGet)
-}
-
-// buildCometBFTJSONRPCPayload builds a JSON-RPC status payload for endpoints that
-// only accept JSON-RPC POST (i.e., CometBFT JSON-RPC POST mode).
-func buildCometBFTJSONRPCPayload() (domain.Payload, error) {
-	body, err := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  "status",
-		"params":  []interface{}{},
-		"id":      1,
-	})
-	if err != nil {
-		return domain.Payload{}, fmt.Errorf("cosmos: marshalling status payload: %w", err)
-	}
-	return domain.NewPayload(body, domain.RPCTypeCometBFT, "status"), nil
 }
 
 // isRPCTypeSupported returns true if rpcType is in the supported set.

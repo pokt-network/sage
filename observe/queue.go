@@ -2,6 +2,7 @@ package observe
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand"
 	"sync"
@@ -133,7 +134,11 @@ func (q *Queue) handle(ctx context.Context, obs Observation) {
 		}
 	}()
 	if err := q.handler.HandleObservation(ctx, obs); err != nil {
-		q.logger.Error("failed to handle observation",
+		level := slog.LevelError
+		if errors.Is(err, ErrExtract) {
+			level = slog.LevelDebug
+		}
+		q.logger.Log(ctx, level, "failed to handle observation",
 			"error", err,
 			"service_id", obs.ServiceID,
 		)

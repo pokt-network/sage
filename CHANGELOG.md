@@ -120,6 +120,15 @@ the source of truth for the design and the reasoning behind it.
   relays (each is paid for from the app's stake); every result goes through the
   `sage:probes` Redis stream and every replica applies it, so followers carry
   the same reputation and block heights without spending a relay.
+- **Probe cadence knobs**: `active_health_checks.interval` (30 s unless set)
+  and PATH's per-service `local[].check_interval`, now honoured; the EVM
+  chain-id check runs every 5 minutes instead of every cycle (a chain id does
+  not change), which halves an EVM service's probe spend on its own. Every
+  probe is a paid relay: one idle pod on the mainnet config was spending ~58
+  a second.
+- **`rpc_type_fallbacks`** is live, with PATH's key and one-hop semantics: a
+  request whose RPC type the supplier has not staked goes to the mapped type's
+  URL. Mainnet cosmos suppliers are still catching up on `comet_bft` stakes.
 - **Kubernetes probes**: `/healthz` (PATH's spelling of `/health`, readiness)
   and `/livez` (process liveness); on-demand container images from any branch
   (`image.yml`), tagged `<branch>-<sha7>` and `<sha7>`.
@@ -138,6 +147,13 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- The cosmos health check reached json_rpc-only suppliers as `comet_bft` and
+  graded them `minor_error` every cycle for a mismatch on SAGE's side (the
+  plugin's JSON-RPC variant keyed on a store field nothing wrote). The
+  fallback above is the fix; the dead variant is gone.
+- Log noise from an idle canary: an unparseable probe body no longer logs two
+  ERROR lines per relay; a service with no suppliers reports the session
+  failure once, then again only when it changes or recovers.
 - `TestTieredSelector_Tier1` no longer fails one run in twenty.
 
 ### Added — config & compatibility

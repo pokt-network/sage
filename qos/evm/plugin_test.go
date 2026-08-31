@@ -925,3 +925,22 @@ func TestResetState(t *testing.T) {
 		t.Fatalf("SelectEndpoints after ResetState = %v, want every endpoint to pass (%v)", selected, addrs)
 	}
 }
+
+// The chain id cannot legitimately change, so asking for it every cycle buys
+// nothing after the first answer. It keeps a slow cadence of its own; the
+// block number stays on the service's.
+func TestHealthChecks_ChainIDIsSlowCadence(t *testing.T) {
+	p := newTestPlugin(100)
+	for _, c := range p.HealthChecks("supplier-https://node.example.com") {
+		switch c.Name {
+		case "eth_chainId":
+			if c.Interval < 5*time.Minute {
+				t.Errorf("eth_chainId interval = %v, want >= 5m", c.Interval)
+			}
+		case "eth_blockNumber":
+			if c.Interval != 0 {
+				t.Errorf("eth_blockNumber interval = %v, want 0 (service cadence)", c.Interval)
+			}
+		}
+	}
+}

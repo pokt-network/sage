@@ -6,8 +6,9 @@ ordered by priority within each section. Update this file when an item lands
 or a decision changes it; delete items rather than marking them done, so the
 file only ever lists open work.
 
-Last updated: 2026-08-31 (main at `9d41d9f` + hedge/drain fixes from the end-to-end read, PATH
-`origin/main` unchanged since 2026-08-25, nothing to catch up).
+Last updated: 2026-08-31 (mainnet canary up, one pod, no external traffic; probe
+cadence knobs and `rpc_type_fallbacks` landed from its first hour of metrics
+and logs. PATH `origin/main` at `274e9791`, 2026-08-25).
 
 ## 1. Parked follow-ups
 
@@ -24,6 +25,21 @@ landed on 2026-08-29; what is left needs a decision.
 - Option B from the tier-2 decision (`docs/scoring.md` §7.7): a cheaper
   critical on a key scoring 95 or more. Parked unless the one-blip duty cycle
   is still visible with the trickle on.
+
+From the mainnet canary (2026-08-31), parked rather than done:
+
+- **Traffic-informed probing.** A backend that served client relays within the
+  last interval was graded by them (every attempt scores); probing it too buys
+  a second copy of a fact the score middleware already has. Skipping those
+  backends would cut probe spend roughly in proportion to traffic coverage,
+  and it needs nothing new — the reputation store knows the last attempt time
+  per key. Not done because the canary has no traffic yet to measure against.
+- **PATH's `active_health_checks.external` rule file.** Not fetched, by
+  decision (`docs/path-compat.md`). What it has that the plugins do not:
+  archival `eth_getBalance` probes on 22 EVM services and a websocket
+  `eth_blockNumber`. Revisit if the canary shows archival routing is missed;
+  if honoured, treat the file's `check_interval` as never faster than the
+  global `interval`.
 
 From the 2026-08-31 end-to-end read (see the standing caveat below), verified
 but not fixed (the SYN-blackhole grading and the drain SCAN cost from the same

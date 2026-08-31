@@ -1,6 +1,7 @@
 package observe_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -180,5 +181,24 @@ func TestDefaultHandler_PluginExtractOnly_NoUpdate(t *testing.T) {
 	// Should not error — UpdateBlockHeight simply not called.
 	if err := h.HandleObservation(context.Background(), obs); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A body the plugin cannot parse is graded and counted by whoever submitted
+// the observation; the queue reporting it as an error on every failed probe
+// was two ERROR lines per relay on a canary with nothing else wrong.
+func TestQueue_ExtractFailureIsNotAnError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	plugin := &fakePlugin{extractErr: errors.New("no result field in response")}
+	q := observe.NewQueue(observe.QueueConfig{Enabled: true, WorkerCount: 1, QueueSize: 8},
+		observe.NewDefaultHandler(newRegistry("eth", plugin), logger), logger)
+	q.Start(context.Background())
+	obs := makeObs("eth", "pokt1supplier-https://rpc.example.com")
+	obs.Source = observe.SourceHealthCheck
+	q.Submit(obs)
+	q.Stop()
+	if buf.Len() != 0 {
+		t.Fatalf("extract failure logged at warn or above:\n%s", buf.String())
 	}
 }

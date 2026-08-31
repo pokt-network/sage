@@ -24,6 +24,7 @@ import (
 // mockRelayFullNode stubs fullNodeIface for relay testing.
 type mockRelayFullNode struct {
 	session          *sessiontypes.Session
+	sessionErr       error
 	app              *apptypes.Application
 	height           int64
 	validateResponse *servicetypes.RelayResponse
@@ -31,6 +32,9 @@ type mockRelayFullNode struct {
 }
 
 func (m *mockRelayFullNode) GetSession(_ context.Context, _ string, _ string) (*sessiontypes.Session, error) {
+	if m.sessionErr != nil {
+		return nil, m.sessionErr
+	}
 	return m.session, nil
 }
 

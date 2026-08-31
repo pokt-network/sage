@@ -386,7 +386,9 @@ from principle 3 — the additive term has already removed the endpoint from
 selection, and charging the same fact to the chronic term as well is the second
 power the principle forbids. The arithmetic that makes it more than a
 principle: a dead host answers nothing but health checks, two checks every 30
-seconds is 5,760 criticals a day, and 5,760 attempts at the 20k half-life take
+seconds (the cadence when this was measured; the chain-id check moved to every
+5 minutes on 2026-08-31, which lowers the figure, not the conclusion) is 5,760
+criticals a day, and 5,760 attempts at the 20k half-life take
 the rate to 0.18 — the `-70` cap. Getting back to tier 1 from the cap needs the
 rate to fall by a factor of ~130, seven half-lives, 140,000 attempts; at
 probe-only volume that is **24 days** of the host being perfectly healthy and
@@ -473,7 +475,8 @@ term:
 **The intake of a violator is set by the probe cycle, not by its volume.** One
 critical is `-25`, which leaves tier 1, and tier 2 receives no traffic while
 tier 1 is populated — the snapshots show exactly 4 attempts a minute on a
-tier-2 key, the two probes every 30 s. So an endpoint returns to tier 1 only
+tier-2 key, the two probes every 30 s at the time (the chain-id one now runs
+every 5 minutes, so the intake is nearer 2 a minute). So an endpoint returns to tier 1 only
 through probes: four of them from 75, five once the rate penalty is past
 `-15`. A 0.216% endpoint therefore takes in one burst of ~460 relays per
 cycle, however much the pool is offered — 560/min early, 300/min once the

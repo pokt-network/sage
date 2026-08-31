@@ -271,27 +271,14 @@ func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
 
 // HealthChecks returns health check payloads for the given endpoint.
 // The Cosmos plugin always issues a CometBFT /status check to obtain block height.
-func (p *Plugin) HealthChecks(endpoint domain.EndpointAddr) []qos.HealthCheck {
-	ep, ok := p.store.Get(endpoint)
-
-	// If endpoint is known and only supports plain JSON-RPC (not native CometBFT HTTP),
-	// use a JSON-RPC POST status request instead of the GET-style payload.
-	if ok && ep.RPCType == domain.RPCTypeJSONRPC {
-		jsonPayload, err := buildCometBFTJSONRPCPayload()
-		if err != nil {
-			p.logger.Error("cosmos: failed to build JSON-RPC status payload", "error", err)
-			// Fall through to default.
-		} else {
-			return []qos.HealthCheck{
-				{
-					Name:    "comet_bft_status_jsonrpc",
-					Payload: jsonPayload,
-				},
-			}
-		}
-	}
-
-	// Default: CometBFT HTTP GET /status.
+//
+// Always the CometBFT HTTP GET /status. A supplier staked for json_rpc only
+// still receives it, through the service's rpc_type_fallbacks mapping
+// (config.ServiceConfig): relay miners serve both surfaces from one port, so
+// the GET works there. There used to be a JSON-RPC variant here selected on a
+// store field nothing wrote, so it never ran; the fallback is the live
+// version of that idea.
+func (p *Plugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck {
 	return []qos.HealthCheck{
 		{
 			Name:    "comet_bft_status",

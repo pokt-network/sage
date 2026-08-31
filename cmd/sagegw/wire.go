@@ -140,9 +140,10 @@ func (l trafficSummaryLister) PreviousWindow(serviceID string) (distinctRatio, t
 	return l.sampler.PreviousWindow(domain.ServiceID(serviceID))
 }
 
-// healthCheckInterval is how often the leader probes every backend. It is
-// also what sizes a booting follower's replay window (two intervals).
-const healthCheckInterval = 30 * time.Second
+// defaultHealthCheckInterval is how often the leader probes every backend when
+// active_health_checks.interval is unset. The effective interval also sizes
+// a booting follower's replay window (two intervals).
+const defaultHealthCheckInterval = 30 * time.Second
 
 // serviceIDsFrom lists every configured service ID. It bounds the service_id
 // metric label — see metrics.NewRecorder.
@@ -509,11 +510,22 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	leader.Start(ctx)
 	app.Leader = leader
 
+	healthCheckInterval := cfg.Gateway.HealthChecks.Interval
+	if healthCheckInterval <= 0 {
+		healthCheckInterval = defaultHealthCheckInterval
+	}
 	healthExe := healthcheck.NewExecutor(
 		proto, proto, proto,
 		qosReg, repSvc, obsQueue,
 		healthCheckInterval, 4, logger,
 	)
+	logger.Info("health checks: probe interval", "interval", healthCheckInterval)
+	for _, svc := range cfg.Gateway.HealthChecks.Local {
+		if svc.CheckInterval > 0 && svc.CheckInterval < healthCheckInterval {
+			logger.Warn("health checks: service probes faster than the global interval; each probe is a paid relay",
+				"service_id", svc.ServiceID, "check_interval", svc.CheckInterval, "interval", healthCheckInterval)
+		}
+	}
 
 	// Health checks declared in YAML, in addition to the plugin's own. A rule
 	// that could not be built is skipped and said out loud — a check silently

@@ -205,6 +205,35 @@ func validate(cfg *Config) error {
 	if err := validateReputation(cfg.Gateway.Reputation); err != nil {
 		return err
 	}
+	if err := validateRPCTypeFallbacks(cfg.Gateway.AllServices()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// knownRPCTypes is what a config may name where an RPC type is expected.
+var knownRPCTypes = map[string]bool{
+	"json_rpc": true, "rest": true, "comet_bft": true, "websocket": true, "grpc": true,
+}
+
+// validateRPCTypeFallbacks refuses a fallback that cannot be followed: an
+// unknown type on either side, or a type mapped onto itself. Either would be a
+// mapping the protocol silently never applies, which reads as "the fallback is
+// on" in the file while every affected supplier stays invisible.
+func validateRPCTypeFallbacks(services []ServiceConfig) error {
+	for _, svc := range services {
+		for from, to := range svc.RPCTypeFallbacks {
+			if !knownRPCTypes[from] {
+				return fmt.Errorf("service %q rpc_type_fallbacks: unknown rpc type %q", svc.ID, from)
+			}
+			if !knownRPCTypes[to] {
+				return fmt.Errorf("service %q rpc_type_fallbacks: %s falls back to unknown rpc type %q", svc.ID, from, to)
+			}
+			if from == to {
+				return fmt.Errorf("service %q rpc_type_fallbacks: %s falls back to itself", svc.ID, from)
+			}
+		}
+	}
 	return nil
 }
 

@@ -148,6 +148,7 @@ gateway_config:
     disable_backend_url_dedup: false
     local:
       - service_id: eth
+        check_interval: 30s
         enabled: true
         checks:
           - name: eth_blockNumber
@@ -236,6 +237,8 @@ gateway_config:
   # One service per QoS type, so every plugin's config shape is exercised.
   services:
     - id: eth
+      rpc_type_fallbacks:
+        comet_bft: json_rpc
       type: evm
       rpc_types: ["json_rpc", "websocket"]
       sync_allowance: 25

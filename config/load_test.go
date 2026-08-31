@@ -1,10 +1,12 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pokt-network/sage/reputation"
 )
@@ -259,9 +261,10 @@ gateway_config:
 	joined := strings.Join(cfg.Ignored, "\n")
 	// "local" is deliberately absent from this list: configured health checks
 	// are implemented, so reporting them would be the false alarm this test
-	// guards against. "external" replaced it — it declared a rules URL nothing
-	// ever fetched, and was retired rather than left parsing into a dead field.
-	for _, want := range []string{"coordination", "external", "check_interval"} {
+	// guards against, and so is "check_interval", honoured per service since
+	// 2026-08-31. "external" is PATH's remote rule file, which SAGE does not
+	// fetch (config.HealthCheckConfig says why).
+	for _, want := range []string{"coordination", "external"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("ignored keys must mention %q; got:\n%s", want, joined)
 		}
@@ -924,5 +927,92 @@ gateway_config:
 `)
 	if got := off.Gateway.Reputation.SelectorConfig().Tier2Pct; got != 0 {
 		t.Errorf("tier2_traffic_percent -1 = %d, want 0 (off)", got)
+	}
+}
+
+func TestLoadFromFile_HealthCheckIntervals(t *testing.T) {
+	yaml := `
+full_node_config:
+  rpc_url: http://localhost:26657
+  grpc_config:
+    host_port: localhost:9090
+gateway_config:
+  gateway_mode: centralized
+  active_health_checks:
+    enabled: true
+    interval: 45s
+    local:
+      - service_id: eth
+        check_interval: 90s
+        enabled: true
+  services:
+    - id: eth
+      type: evm
+      rpc_types: [json_rpc]
+`
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFromFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Gateway.HealthChecks.Interval; got != 45*time.Second {
+		t.Errorf("active_health_checks.interval = %v, want 45s", got)
+	}
+	if got := cfg.Gateway.HealthChecks.Local[0].CheckInterval; got != 90*time.Second {
+		t.Errorf("local[0].check_interval = %v, want 90s", got)
+	}
+	for _, k := range cfg.Ignored {
+		if strings.Contains(k, "check_interval") || strings.Contains(k, "interval") {
+			t.Errorf("interval key reported as ignored: %q", k)
+		}
+	}
+}
+
+func TestLoadFromFile_RPCTypeFallbacks(t *testing.T) {
+	base := `
+full_node_config:
+  rpc_url: http://localhost:26657
+  grpc_config:
+    host_port: localhost:9090
+gateway_config:
+  gateway_mode: centralized
+  services:
+    - id: kava
+      type: cosmos
+      rpc_types: [json_rpc, rest, comet_bft]
+      rpc_type_fallbacks:
+        comet_bft: %s
+`
+	load := func(t *testing.T, fallback string) (*Config, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(fmt.Sprintf(base, fallback)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return LoadFromFile(path)
+	}
+
+	cfg, err := load(t, "json_rpc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := cfg.Gateway.GetServiceConfig("kava")
+	if svc == nil || svc.RPCTypeFallbacks["comet_bft"] != "json_rpc" {
+		t.Fatalf("rpc_type_fallbacks not parsed: %+v", svc)
+	}
+	for _, k := range cfg.Ignored {
+		if strings.Contains(k, "rpc_type_fallbacks") {
+			t.Errorf("live key reported as ignored: %q", k)
+		}
+	}
+
+	if _, err := load(t, "carrier_pigeon"); err == nil {
+		t.Error("unknown fallback rpc type must be a startup error")
+	}
+	if _, err := load(t, "comet_bft"); err == nil {
+		t.Error("a type falling back to itself must be a startup error")
 	}
 }

@@ -321,9 +321,18 @@ func (p *Plugin) HealthChecks(endpoint domain.EndpointAddr) []qos.HealthCheck {
 		{
 			Name:    "eth_chainId",
 			Payload: domain.NewPayload(chainIDBody, domain.RPCTypeJSONRPC, "eth_chainId"),
+			// A chain id does not change; the check exists to catch a backend
+			// serving another chain under this service's name, and once every
+			// few minutes catches that as well as every cycle does. Probing it
+			// every cycle was half of every EVM service's probe spend.
+			Interval: chainIDCheckInterval,
 		},
 	}
 }
+
+// chainIDCheckInterval is how often the chain-id check is repeated per
+// backend. A new backend is checked on the first cycle it appears regardless.
+const chainIDCheckInterval = 5 * time.Minute
 
 // --- qos.DataExtractor ---
 

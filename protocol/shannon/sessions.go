@@ -47,6 +47,13 @@ type sessionManager struct {
 	// Used to decide when a cached session has expired.
 	latestBlockHeight atomic.Int64
 	stopPoller        chan struct{}
+
+	// lastFetchErr remembers, per (serviceID, appAddr), the text of the last
+	// failed session fetch, so the same failure is reported once rather than
+	// every cycle. A service with no suppliers on the network fails every
+	// refresh for as long as that lasts; the first failure is an error, the
+	// repeats are debug, recovery is info and clears the entry.
+	lastFetchErr sync.Map // "serviceID:appAddr" → string
 }
 
 // newSessionManager creates a session manager for the given services and full node.
@@ -212,13 +219,24 @@ func (sm *sessionManager) getSession(ctx context.Context, serviceID string, appA
 // refreshSession fetches a fresh session from the full node and updates the cache.
 func (sm *sessionManager) refreshSession(ctx context.Context, serviceID string, appAddr string) (*sessiontypes.Session, error) {
 	session, err := sm.fullNode.GetSession(ctx, serviceID, appAddr)
+	key := sessionCacheKey(serviceID, appAddr)
 	if err != nil {
-		sm.logger.Error("getSession: full node returned error",
-			"service_id", serviceID,
-			"app_addr", appAddr,
-			"error", err,
-		)
+		if prev, seen := sm.lastFetchErr.Load(key); seen && prev.(string) == err.Error() {
+			sm.logger.Debug("getSession: full node returned error (repeat)",
+				"service_id", serviceID, "app_addr", appAddr, "error", err)
+		} else {
+			sm.lastFetchErr.Store(key, err.Error())
+			sm.logger.Error("getSession: full node returned error",
+				"service_id", serviceID,
+				"app_addr", appAddr,
+				"error", err,
+			)
+		}
 		return nil, fmt.Errorf("getSession: %w", err)
+	}
+	if _, failed := sm.lastFetchErr.LoadAndDelete(key); failed {
+		sm.logger.Info("getSession: full node answers again",
+			"service_id", serviceID, "app_addr", appAddr)
 	}
 
 	sm.logger.Info("session fetched",

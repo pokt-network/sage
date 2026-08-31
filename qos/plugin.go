@@ -65,6 +65,12 @@ type HealthChecker interface {
 type HealthCheck struct {
 	Payload domain.Payload
 	Name    string
+	// Interval is the check's own minimum spacing per backend, for a fact that
+	// does not change between cycles (a chain id). Zero means the service's
+	// cadence. It only ever slows a check down: the executor runs it at the
+	// longer of this and the service's interval, and always on the first cycle
+	// a backend is seen.
+	Interval time.Duration
 }
 
 // DataExtractor is implemented by plugins that extract structured data from responses.

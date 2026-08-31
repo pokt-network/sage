@@ -35,11 +35,12 @@ type stubRelayer struct {
 type relayCall struct {
 	serviceID domain.ServiceID
 	endpoint  domain.EndpointAddr
+	check     string
 }
 
-func (s *stubRelayer) SendRelay(_ context.Context, svcID domain.ServiceID, ep domain.EndpointAddr, _ domain.Payload) (*domain.Response, error) {
+func (s *stubRelayer) SendRelay(_ context.Context, svcID domain.ServiceID, ep domain.EndpointAddr, payload domain.Payload) (*domain.Response, error) {
 	s.mu.Lock()
-	s.calls = append(s.calls, relayCall{serviceID: svcID, endpoint: ep})
+	s.calls = append(s.calls, relayCall{serviceID: svcID, endpoint: ep, check: payload.Method()})
 	s.mu.Unlock()
 	return s.response, s.err
 }
@@ -795,9 +796,12 @@ func TestRunOnce_RotatesTheProbingSupplier(t *testing.T) {
 	exe, relayer, _, _ := dedupTestFixture(t)
 
 	probed := map[domain.EndpointAddr]bool{}
+	now := time.Unix(1_000_000, 0)
+	exe.now = func() time.Time { return now }
 	for i := 0; i < 3; i++ {
 		exe.runOnce(context.Background())
 		exe.wg.Wait()
+		now = now.Add(defaultInterval)
 	}
 
 	relayer.mu.Lock()
@@ -1024,5 +1028,134 @@ func TestRunOnce_FallsBackToFanOutWithoutOnceRecorder(t *testing.T) {
 		if !seen[ep] {
 			t.Errorf("registration %s received no signal", ep)
 		}
+	}
+}
+
+// A check may declare its own minimum spacing. It runs on the first cycle it
+// is seen and then not again until that much time has passed, while the
+// checks without one keep the service's cadence.
+func TestRunOnce_CheckIntervalIsMinimumSpacing(t *testing.T) {
+	relayer := &stubRelayer{response: &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"result":"0x1"}`)}}
+	eps := &stubEndpointProvider{endpoints: domain.EndpointAddrList{"supplierA-https://node1.example.com"}}
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}}}
+	fast := domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	slow := domain.NewPayload([]byte(`{"method":"eth_chainId"}`), domain.RPCTypeJSONRPC, "eth_chainId")
+	plugin := &checkOnlyPlugin{checks: []qos.HealthCheck{
+		{Name: "block", Payload: fast},
+		{Name: "chain", Payload: slow, Interval: 5 * time.Minute},
+	}}
+	reg := qos.NewRegistry()
+	_ = reg.Register("eth", plugin)
+
+	exec := newTestExecutor(relayer, eps, sessions, reg, &stubRepService{})
+	now := time.Unix(1_000_000, 0)
+	exec.now = func() time.Time { return now }
+
+	sent := func() []string {
+		exec.wg.Wait()
+		relayer.mu.Lock()
+		defer relayer.mu.Unlock()
+		var names []string
+		for _, c := range relayer.calls {
+			names = append(names, c.check)
+		}
+		relayer.calls = nil
+		return names
+	}
+
+	exec.runOnce(context.Background())
+	if got := sent(); len(got) != 2 {
+		t.Fatalf("first cycle: sent %v, want both checks", got)
+	}
+
+	now = now.Add(defaultInterval)
+	exec.runOnce(context.Background())
+	if got := sent(); len(got) != 1 || got[0] != "eth_blockNumber" {
+		t.Fatalf("second cycle: sent %v, want only the un-spaced check", got)
+	}
+
+	now = now.Add(5 * time.Minute)
+	exec.runOnce(context.Background())
+	if got := sent(); len(got) != 2 {
+		t.Fatalf("after the spacing elapsed: sent %v, want both checks", got)
+	}
+}
+
+// A service with its own check_interval is left alone until it is due; the
+// executor's tick is the shortest interval in play so the fastest service is
+// still served on time.
+func TestRunOnce_ServiceIntervalSkipsUndueService(t *testing.T) {
+	relayer := &stubRelayer{response: &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"result":"0x1"}`)}}
+	eps := &stubEndpointProvider{endpoints: domain.EndpointAddrList{"supplierA-https://node1.example.com"}}
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}, "pocket": {}}}
+	payload := domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "check")
+	plugin := &checkOnlyPlugin{checks: []qos.HealthCheck{{Name: "check", Payload: payload}}}
+	reg := qos.NewRegistry()
+	_ = reg.Register("eth", plugin)
+	_ = reg.Register("pocket", plugin)
+
+	exec := newTestExecutor(relayer, eps, sessions, reg, &stubRepService{})
+	exec.SetConfiguredChecks(&ConfiguredChecks{intervals: map[domain.ServiceID]time.Duration{
+		"pocket": 2 * time.Minute,
+		"eth":    10 * time.Second,
+	}})
+	now := time.Unix(1_000_000, 0)
+	exec.now = func() time.Time { return now }
+
+	if got := exec.tick(); got != 10*time.Second {
+		t.Fatalf("tick = %v, want the shortest interval (10s)", got)
+	}
+
+	sentTo := func() map[domain.ServiceID]int {
+		exec.wg.Wait()
+		relayer.mu.Lock()
+		defer relayer.mu.Unlock()
+		out := map[domain.ServiceID]int{}
+		for _, c := range relayer.calls {
+			out[c.serviceID]++
+		}
+		relayer.calls = nil
+		return out
+	}
+
+	exec.runOnce(context.Background())
+	if got := sentTo(); got["eth"] != 1 || got["pocket"] != 1 {
+		t.Fatalf("first cycle: %v, want one probe per service", got)
+	}
+	now = now.Add(10 * time.Second)
+	exec.runOnce(context.Background())
+	if got := sentTo(); got["eth"] != 1 || got["pocket"] != 0 {
+		t.Fatalf("at 10s: %v, want eth only", got)
+	}
+	now = now.Add(110 * time.Second)
+	exec.runOnce(context.Background())
+	if got := sentTo(); got["eth"] != 1 || got["pocket"] != 1 {
+		t.Fatalf("at 120s: %v, want both", got)
+	}
+}
+
+// Ticks land a hair before the nominal due time (the ticker fires at 30.000s
+// while the last run was stamped a few microseconds after the previous tick).
+// A check must not slip a whole tick for that.
+func TestRunOnce_DueToleratesTickJitter(t *testing.T) {
+	relayer := &stubRelayer{response: &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"result":"0x1"}`)}}
+	eps := &stubEndpointProvider{endpoints: domain.EndpointAddrList{"supplierA-https://node1.example.com"}}
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}}}
+	payload := domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "check")
+	reg := qos.NewRegistry()
+	_ = reg.Register("eth", &checkOnlyPlugin{checks: []qos.HealthCheck{{Name: "check", Payload: payload}}})
+
+	exec := newTestExecutor(relayer, eps, sessions, reg, &stubRepService{})
+	now := time.Unix(1_000_000, 0)
+	exec.now = func() time.Time { return now }
+
+	exec.runOnce(context.Background())
+	now = now.Add(defaultInterval - 50*time.Millisecond)
+	exec.runOnce(context.Background())
+	exec.wg.Wait()
+	relayer.mu.Lock()
+	defer relayer.mu.Unlock()
+	if len(relayer.calls) != 2 {
+		t.Fatalf("sent %d probes, want 2 (one per tick)", len(relayer.calls))
 	}
 }

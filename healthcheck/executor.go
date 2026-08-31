@@ -65,8 +65,23 @@ type Executor struct {
 	source   ProbeSource
 	recorder ResultRecorder
 
+	// now is the clock the schedule reads; tests move it.
+	now func() time.Time
+	// lastRun is when each (service, backend, check) was last scheduled. Only
+	// runOnce touches it, and runOnce is called from one goroutine, so no
+	// lock. Rebuilt every cycle from the backends seen, so a backend that
+	// leaves the session takes its entries with it.
+	lastRun map[probeKey]time.Time
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+}
+
+// probeKey identifies one check against one backend of one service.
+type probeKey struct {
+	service domain.ServiceID
+	backend string
+	check   string
 }
 
 // NewExecutor constructs an Executor. Interval and worker count fall back to
@@ -98,9 +113,39 @@ func NewExecutor(
 		logger:      logger,
 		interval:    interval,
 		workers:     workers,
+		now:         time.Now,
+		lastRun:     make(map[probeKey]time.Time),
 	}
 	e.dedupByBackendURL.Store(true)
 	return e
+}
+
+// tick is how often the loop wakes: the shortest cadence in play, so the
+// fastest service is served on time while everything else waits for its own
+// interval. Re-read every cycle because a reload can change the per-service
+// intervals.
+func (e *Executor) tick() time.Duration {
+	tick := e.interval
+	if s := e.configured.Load().shortestInterval(); s > 0 && s < tick {
+		tick = s
+	}
+	return tick
+}
+
+// due reports whether a probe should run this cycle and stamps it if so.
+//
+// The tolerance of half a tick is deliberate: the ticker fires at 30.000s
+// while the previous run was stamped a few microseconds after the tick before
+// it, so an exact comparison would find 29.9999s elapsed and slip the probe
+// by a whole tick. Half a tick still rounds to the nearest tick.
+func (e *Executor) due(key probeKey, interval, tick time.Duration, now time.Time, next map[probeKey]time.Time) bool {
+	last, seen := e.lastRun[key]
+	if seen && now.Sub(last) < interval-tick/2 {
+		next[key] = last
+		return false
+	}
+	next[key] = now
+	return true
 }
 
 // SetBackendURLDedup turns per-backend deduplication on or off. On by default;
@@ -140,7 +185,8 @@ func (e *Executor) Start(ctx context.Context) {
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
-		ticker := time.NewTicker(e.interval)
+		tick := e.tick()
+		ticker := time.NewTicker(tick)
 		defer ticker.Stop()
 		for {
 			select {
@@ -149,6 +195,10 @@ func (e *Executor) Start(ctx context.Context) {
 				// loop would contain the panic and still leave the ticker
 				// dead, which is a stopped health checker that logged once.
 				safego.Run(e.logger, "healthcheck.cycle", func() { e.runOnce(ctx) })
+				if t := e.tick(); t != tick {
+					tick = t
+					ticker.Reset(tick)
+				}
 			case <-ctx.Done():
 				return
 			}
@@ -205,6 +255,11 @@ func (e *Executor) runOnce(ctx context.Context) {
 	// reload landing mid-cycle should change the next round, not half of this
 	// one.
 	configured := e.configured.Load()
+	now := e.now()
+	tick := e.tick()
+	// next replaces lastRun at the end of the cycle, holding only the probes
+	// seen this cycle.
+	next := make(map[probeKey]time.Time, len(e.lastRun))
 
 	// Semaphore limits concurrent workers.
 	sem := make(chan struct{}, e.workers)
@@ -220,9 +275,17 @@ func (e *Executor) runOnce(ctx context.Context) {
 			continue
 		}
 
+		// The service's cadence: its own check_interval, else the global one.
+		serviceInterval := configured.IntervalFor(serviceID)
+		if serviceInterval <= 0 {
+			serviceInterval = e.interval
+		}
+
 		eps, err := e.endpoints.AvailableEndpoints(ctx, serviceID, domain.RPCTypeJSONRPC)
 		if err != nil {
-			e.logger.Warn("healthcheck: failed to get endpoints",
+			// Debug: the protocol reports the cause once when it changes; a
+			// service with no suppliers would otherwise say so every cycle.
+			e.logger.Debug("healthcheck: failed to get endpoints",
 				"service_id", serviceID,
 				"error", err,
 			)
@@ -240,7 +303,18 @@ func (e *Executor) runOnce(ctx context.Context) {
 			// whenever it has spare capacity — one service's configured checks
 			// landing in the array a plugin hands to every service. Concat
 			// always allocates.
-			checks := slices.Concat(checker.HealthChecks(probe), configured.For(serviceID))
+			all := slices.Concat(checker.HealthChecks(probe), configured.For(serviceID))
+
+			// Keep the checks that are due on this backend. A check's own
+			// interval only ever slows it down: it runs at the longer of its
+			// spacing and the service's cadence.
+			checks := make([]qos.HealthCheck, 0, len(all))
+			for _, check := range all {
+				interval := max(check.Interval, serviceInterval)
+				if e.due(probeKey{serviceID, group.key, check.Name}, interval, tick, now, next) {
+					checks = append(checks, check)
+				}
+			}
 			if len(checks) == 0 {
 				continue
 			}
@@ -256,11 +330,15 @@ func (e *Executor) runOnce(ctx context.Context) {
 		}
 	}
 
+	e.lastRun = next
 	e.cycle++
 }
 
 // backendGroup is the set of endpoints sharing one backend URL.
 type backendGroup struct {
+	// key names the backend for scheduling: its URL, or the endpoint address
+	// when the group is a single unparseable or undeduplicated endpoint.
+	key       string
 	endpoints domain.EndpointAddrList
 }
 
@@ -282,7 +360,7 @@ func (e *Executor) groupByBackend(eps domain.EndpointAddrList) []backendGroup {
 	if !e.dedupByBackendURL.Load() {
 		groups := make([]backendGroup, 0, len(eps))
 		for _, ep := range eps {
-			groups = append(groups, backendGroup{endpoints: domain.EndpointAddrList{ep}})
+			groups = append(groups, backendGroup{key: string(ep), endpoints: domain.EndpointAddrList{ep}})
 		}
 		return groups
 	}
@@ -294,7 +372,7 @@ func (e *Executor) groupByBackend(eps domain.EndpointAddrList) []backendGroup {
 		if err != nil || url == "" {
 			// An address we cannot parse gets its own group rather than being
 			// lumped in with every other unparseable one.
-			groups = append(groups, backendGroup{endpoints: domain.EndpointAddrList{ep}})
+			groups = append(groups, backendGroup{key: string(ep), endpoints: domain.EndpointAddrList{ep}})
 			continue
 		}
 		if idx, ok := byURL[url]; ok {
@@ -302,7 +380,7 @@ func (e *Executor) groupByBackend(eps domain.EndpointAddrList) []backendGroup {
 			continue
 		}
 		byURL[url] = len(groups)
-		groups = append(groups, backendGroup{endpoints: domain.EndpointAddrList{ep}})
+		groups = append(groups, backendGroup{key: url, endpoints: domain.EndpointAddrList{ep}})
 	}
 	return groups
 }

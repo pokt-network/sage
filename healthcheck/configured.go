@@ -21,6 +21,10 @@ import (
 // config adds probes, it does not take them away.
 type ConfiguredChecks struct {
 	byService map[domain.ServiceID][]qos.HealthCheck
+	// intervals is each service's own probe cadence (local[].check_interval),
+	// kept whether or not the block's checks are enabled: it is the service's
+	// cadence, not a property of the check list.
+	intervals map[domain.ServiceID]time.Duration
 	// signals maps a check name to the penalty its failure carries, since
 	// qos.HealthCheck has nowhere to put one.
 	signals map[string]string
@@ -33,6 +37,7 @@ type ConfiguredChecks struct {
 func BuildConfiguredChecks(cfg config.HealthCheckConfig) (*ConfiguredChecks, []string) {
 	out := &ConfiguredChecks{
 		byService: make(map[domain.ServiceID][]qos.HealthCheck),
+		intervals: make(map[domain.ServiceID]time.Duration),
 		signals:   make(map[string]string),
 	}
 
@@ -41,6 +46,9 @@ func BuildConfiguredChecks(cfg config.HealthCheckConfig) (*ConfiguredChecks, []s
 		if svc.ServiceID == "" {
 			warnings = append(warnings, "health check block with no service_id was skipped")
 			continue
+		}
+		if svc.CheckInterval > 0 {
+			out.intervals[domain.ServiceID(svc.ServiceID)] = svc.CheckInterval
 		}
 		if svc.IsDeclaredButOff() {
 			warnings = append(warnings, fmt.Sprintf(
@@ -119,6 +127,29 @@ func parseCheckRPCType(name string) (domain.RPCType, error) {
 	default:
 		return "", fmt.Errorf("unknown type %q", name)
 	}
+}
+
+// IntervalFor returns the service's own probe cadence, or 0 when it runs at the
+// global interval.
+func (c *ConfiguredChecks) IntervalFor(serviceID domain.ServiceID) time.Duration {
+	if c == nil {
+		return 0
+	}
+	return c.intervals[serviceID]
+}
+
+// shortestInterval is the smallest per-service cadence, or 0 when none is set.
+func (c *ConfiguredChecks) shortestInterval() time.Duration {
+	if c == nil {
+		return 0
+	}
+	var min time.Duration
+	for _, d := range c.intervals {
+		if d > 0 && (min == 0 || d < min) {
+			min = d
+		}
+	}
+	return min
 }
 
 // For returns the configured checks for a service, or nil.

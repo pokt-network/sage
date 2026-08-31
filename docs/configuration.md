@@ -214,6 +214,7 @@ Services supports the production config format (gateway_config.services[])
 | `latency_profile` | string | **⚠️ Parsed, not implemented:** names an entry in latency_profiles, which nothing reads. It names an entry in gateway_config.latency_profiles, which is itself not wired. |
 | `chain_id` | string | The chain identifier this service is expected to serve, as the chain itself reports it. When set, health checks assert the endpoint agrees; one serving a different chain is ejected rather than left to answer with another chain's data under this service's name. The value is opaque here on purpose. Its format and how it compares are chain semantics, so they belong to the QoS plugin, not to config: EVM reports hex from eth_chainId ("0x1") and must compare numerically, since "0x531" and "0x0531" are the same chain; CometBFT reports a name from /status ("cosmoshub-4") that compares exactly. Validation therefore lives in the plugin's own Config.Validate, called at wire time — still a startup failure, without teaching config about any one chain. Empty disables the assertion — the zero value keeps existing services behaving exactly as before, so this is opt-in per service. |
 | `retry_config` | RetryConfig | Same keys as [`gateway_config.retry_config`](#gateway-config-retry-config). |
+| `rpc_type_fallbacks` | map of string → string | Maps a requested RPC type onto the one to relay through when a supplier has not staked the requested one, e.g. `comet_bft: json_rpc`. The request is sent unchanged to the fallback type's URL; nothing is translated. It exists because relay miners commonly serve CometBFT's HTTP and JSON-RPC surfaces from one port, so a supplier staked for json_rpc only can answer a comet_bft `/status` — and on mainnet many still are, so without the mapping those suppliers are invisible to comet_bft traffic and to the cosmos health check. Same key and semantics as PATH's, so a PATH config carries over. One hop only: a fallback's own fallback is not consulted. Both sides must name a known RPC type and differ; that is validated at load. |
 
 #### `gateway_config.services[].timeout_config`
 
@@ -290,16 +291,20 @@ everything else. See MethodBlocksConfig.
 
 Controls active health checks.
 
-NOTE: PATH's active_health_checks.external has no field here on purpose. It
-declared a URL to fetch health check rules from, and nothing read it — a
-config key that reads to an operator as "my fleet-wide rules are live" while
-no rule was ever fetched. A PATH config carrying it is now reported at
-startup via Config.Ignored instead of parsing into a field that does nothing.
+NOTE: PATH's active_health_checks.external has no field here on purpose.
+PATH fetches a fleet-wide rule file from that URL (it did not when SAGE
+forked; it does as of PATH 2026-08). SAGE does not: the plugin's own checks
+cover what the file's block-number, chain-id and status rows do, with a real
+chain-id comparison and sync tracked by block consensus, and the file's
+per-service `check_interval: 10s` rows are most of PATH's probe volume. A
+PATH config carrying the key is reported at startup via Config.Ignored
+rather than parsing into a field that does nothing; see docs/path-compat.md.
 If remote rules are wanted later, add them as a live feature then.
 
 | Key | Type | Description |
 |---|---|---|
 | `enabled` | boolean | Turns active health checking on. Checks probe endpoints on a schedule rather than waiting for client traffic to reveal a problem, and are what keep block height and chain ID tracking current. |
+| `interval` | duration | How often every backend of every service is probed. Zero means 30s. Each probe is a paid relay against the app's stake, and the cost is linear in it: at 30s a gateway with 60 services and ~1,500 distinct backend URLs spends roughly 60 probe relays a second with no client traffic at all. A per-service `local[].check_interval` overrides it for that service; a check may also carry a slower cadence of its own (the EVM chain-id check probes every 5m, since a chain id does not change), which is never made faster by this. |
 | `disable_backend_url_dedup` | boolean | Turns off per-backend deduplication, restoring one health-check relay per supplier. Deduplication is on by default because the thing a check measures is the backend, not the registration pointing at it: several staked suppliers routinely front one URL, and probing each of them asks the same machine the same question several times per cycle. That is 2.5-3x the relay volume for no extra information, and it dilutes the signal — a backend probed once per cycle shows an outage immediately, one probed through five suppliers shows five samples of the same moment. The flag is negative-sense on purpose: the zero value has to be the behavior we want, and an operator disabling a default needs to say so in the config rather than leave a field unset. |
 
 #### `gateway_config.active_health_checks.local[]`
@@ -313,6 +318,7 @@ endpoint selection without saying so.
 | Key | Type | Description |
 |---|---|---|
 | `service_id` | string | The service these checks apply to. |
+| `check_interval` | duration | This service's probe cadence, overriding the global `interval`. It applies to the plugin's checks as well as the ones listed here, and it applies whether or not `enabled` is set — it is the service's cadence, not a property of the check list. Same key as PATH's; note PATH configs commonly carry `10s`, which against a 30s global triples that service's probe spend. Zero means the global interval. |
 | `enabled` | boolean | Must be set for the checks to run, mirroring the PATH configs this parses — they spell out `enabled: true` on every block. A block with checks and no `enabled` is warned about at startup rather than quietly doing nothing. |
 
 ##### `gateway_config.active_health_checks.local[].checks[]`

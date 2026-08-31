@@ -78,7 +78,10 @@ type Protocol struct {
 	// metrics records supplier-attributable events (blacklists, relay miner
 	// errors). Never nil — see SetMetrics.
 	metrics supplierMetrics
-	logger  *slog.Logger
+	// rpcFallbacks is the per-service rpc_type_fallbacks mapping, consulted by
+	// endpointURL wherever a relay is addressed. Nil when no service sets one.
+	rpcFallbacks rpcFallbackTable
+	logger       *slog.Logger
 }
 
 // New constructs a Protocol from the given configuration.
@@ -130,9 +133,10 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 		gatewayAddr: cfg.Gateway.GatewayAddress,
 		ownedApps:   ownedApps,
 		httpClient:  httpClient,
-		grpc:        newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
-		metrics:     noopSupplierMetrics{},
-		logger:      logger.With("component", "shannon_protocol"),
+		grpc:         newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
+		metrics:      noopSupplierMetrics{},
+		rpcFallbacks: buildRPCFallbacks(cfg.Gateway.AllServices()),
+		logger:       logger.With("component", "shannon_protocol"),
 	}
 	p.blockedDomains.Store(blockedDomains)
 	return p, nil
@@ -183,7 +187,7 @@ func (p *Protocol) SendRelay(
 			fmt.Sprintf("endpoint %s not found in session", endpointAddr), nil, false)
 	}
 
-	url, err := ep.GetURL(payload.RPCType())
+	url, err := p.endpointURL(serviceID, ep, payload.RPCType())
 	if err != nil {
 		p.logger.Error("SendRelay: endpoint does not support RPC type",
 			"component", "shannon",
@@ -401,7 +405,11 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 
 	endpoints, err := p.sessions.getEndpoints(ctx, string(serviceID), appAddr)
 	if err != nil {
-		p.logger.Error("AvailableEndpoints: failed to get session endpoints",
+		// Debug, not error: the session manager already reported the cause
+		// once, and this path runs every health-check cycle for every service
+		// — a service with no suppliers on the network would otherwise log
+		// the same failure twice every 30 seconds for as long as it lasts.
+		p.logger.Debug("AvailableEndpoints: failed to get session endpoints",
 			"component", "shannon",
 			"service_id", serviceID,
 			"app_addr", appAddr,
@@ -423,7 +431,7 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 	for addr, ep := range endpoints {
 		url := ""
 		if rpcType != domain.RPCTypeUnknown {
-			u, err := ep.GetURL(rpcType)
+			u, err := p.endpointURL(serviceID, ep, rpcType)
 			if err != nil {
 				continue
 			}
