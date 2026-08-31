@@ -1,8 +1,6 @@
 # SAGE — Supplier-Aware Gateway Engine
 
-SAGE is a blockchain gateway that routes client RPC requests through the Pocket Network's Shannon protocol to decentralized supplier endpoints. It replaces PATH, reducing 43,000 lines to ~14,000 while adding 14 new capabilities.
-
-**Detailed design plan**: [SAGE Architecture Plan](../../.claude/plans/polymorphic-singing-turtle.md)
+SAGE is a blockchain gateway that routes client RPC requests through the Pocket Network's Shannon protocol to decentralized supplier endpoints. It is a restructured successor to PATH: the same protocol surface, a fraction of the code, and the operational machinery PATH lacked (see `docs/path-compat.md` for what diverges on purpose).
 
 ---
 

@@ -4,7 +4,7 @@ Status: **decided 2026-08-27, implemented**. §1–§2 record what the code did 
 the 2026-08-21 audit, with the places the implementation has since moved marked
 inline; §3–§6 the model; §7 the decisions and the data they rest on. The
 implementation contract is
-`docs/superpowers/specs/2026-08-27-scoring-v2-design.md`.
+`docs/design/specs/2026-08-27-scoring-v2-design.md`.
 
 `ARCHITECTURE.md` describes reputation as the thing that learns from relays and
 steers selection away from bad endpoints. That is the intent. This document

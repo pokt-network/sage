@@ -1,14 +1,12 @@
 # Method-Aware Blocks Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** A host that cannot answer method M stops receiving M for a bounded time and keeps receiving every other method; transport errors are graded so a dead host reaches the circuit breaker and a client hang-up penalises nobody.
 
 **Architecture:** A transport-error classifier in `heuristic/` gives every failed attempt an `AnalysisResult`; a `MethodBlocking` flag on that result (timeouts, `-32601`, "api not supported") feeds a new chain-agnostic `methodblock.Store` (host × method × expiry, escalation to host-level at 3 methods); a new `method_blocks` middleware inside Retry/Hedge prunes `ctx.Endpoints` before selection and marks after the attempt; plugins contribute only a bounded method vocabulary through the optional `qos.MethodNormalizer` interface.
 
 **Tech Stack:** Go (version per `go.mod`), stdlib + testify only, `tidwall/gjson`, Prometheus client. All tests run under `-short -race`.
 
-**Spec:** `docs/superpowers/specs/2026-08-26-method-aware-blocks-design.md` — read it first; every task below argues from it.
+**Spec:** `docs/design/specs/2026-08-26-method-aware-blocks-design.md` — read it first; every task below argues from it.
 
 ## Global Constraints
 
@@ -2800,7 +2798,7 @@ three methods inside a TTL block the host outright."
 ### Task 14: Memory and hand-off notes
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-08-26-method-aware-blocks-design.md` (status line → implemented, commit range)
+- Modify: `docs/design/specs/2026-08-26-method-aware-blocks-design.md` (status line → implemented, commit range)
 - Modify (outside repo): the memory files `project_sage_catchup_pending.md` and `design_method_scoped_exclusion.md` — mark implemented, list what the beta validation must show (spec §8).
 
 - [ ] **Step 1: Update the spec status line and commit** (`docs: mark method-aware blocks spec implemented`).

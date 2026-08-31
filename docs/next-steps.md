@@ -30,7 +30,7 @@ but not fixed (the SYN-blackhole grading and the drain SCAN cost from the same
 list were fixed the same day):
 
 - ~~`LeaderElector` elects and nothing reads it.~~ Closed 2026-08-31: probe
-  once, apply everywhere (`docs/superpowers/specs/2026-08-31-probe-once-design.md`).
+  once, apply everywhere (`docs/design/specs/2026-08-31-probe-once-design.md`).
   Only the leader sends probe relays; it publishes every result to the
   `sage:probes` Redis stream and every replica applies them, so followers
   have the same reputation and block heights without spending a relay. The
@@ -63,7 +63,7 @@ registry (2026-08-31: `qos.SubscriptionRegistry`, fed by each plugin's
 `qos.SubscriptionClassifier` from inside `ws_processor.go`, keeping the original
 subscribe frame for a replay; beta-checked on a CometBFT `NewBlock`
 subscription). The rebind followed the same day
-(`docs/superpowers/specs/2026-08-31-ws-rebind-design.md`): an endpoint loss —
+(`docs/design/specs/2026-08-31-ws-rebind-design.md`): an endpoint loss —
 close, write failure, or the 60 s unresponsive verdict — swaps in a supplier
 this connection has not used, replays the live subscriptions under
 gateway-owned request ids, consumes the acks and rewrites subscription ids

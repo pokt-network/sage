@@ -1,14 +1,12 @@
 # Admin Pass Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** Land the four parked admin capabilities on one trust footing: operator drain (fleet-wide via Redis when present), chain-state reset, config reload with an honest diff, and a request-shape sampler.
 
 **Architecture:** A `drain` package (memory + Redis stores, flag-store pattern) consulted at `shannon.AvailableEndpoints` beside `blocked_domains`; an optional `qos.StateResetter` plugin interface; a `reload` orchestration in `cmd/sagegw` that re-loads and diffs the config and pushes each section through its existing runtime seam (`atomic.Pointer[config.Config]` for the `configFn` closures, flag store, `SetConfiguredChecks`, new `SetBlockedDomains`, new method-block setters); a `traffic` sampler hooked from the Observe middleware. Every route behind the existing bearer auth; docgen regenerates the three references.
 
 **Tech Stack:** Go (per `go.mod`), stdlib + testify, `go-redis/v9` (already a dependency), `tidwall/gjson`, Prometheus client.
 
-**Spec:** `docs/superpowers/specs/2026-08-26-admin-pass-design.md` — binding; read it first.
+**Spec:** `docs/design/specs/2026-08-26-admin-pass-design.md` — binding; read it first.
 
 ## Global Constraints
 

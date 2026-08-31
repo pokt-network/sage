@@ -54,9 +54,10 @@ the source of truth for the design and the reasoning behind it.
 - **Health checks** (`/health`, `/ready`) and a config-driven health-check runner.
 - **Observation pipeline** — async and sampled (10% of relays, 100% of health
   checks), publishing to `observe.Queue` off the hot path.
-- **Redis optional**: with it, reputation, flags, and circuit-breaker state are
-  shared across instances; without it, SAGE runs local-only and degrades
-  gracefully.
+- **Redis optional**: with it, feature flags, operator drains and health-probe
+  results are shared across replicas and only the elected leader sends probe
+  relays; without it, SAGE runs local-only and degrades gracefully. Reputation,
+  method blocks and circuit breakers are per replica by design.
 - **Admin API** for runtime inspection and per-service toggles; supplier health
   timeline exposed as a per-endpoint ring buffer.
 - **`client_ip` middleware** — trusted-proxy-aware `X-Forwarded-For`, exposed as
@@ -87,6 +88,57 @@ the source of truth for the design and the reasoning behind it.
   never evicts, and supplier registrations rotate every session.
   `sage_endpoint_reputation_scores_dropped` reports truncation, so a trimmed
   scrape reads as trimmed rather than as complete.
+
+### Added — August 2026, after the beta validation
+
+- **Method-aware blocks** (`method_blocks`): per-host, per-method memory at
+  selection. A host that timed out on a method, or said it does not serve it,
+  stops receiving that method for a TTL and keeps everything else; three
+  supplier-attributed marks escalate to a host-wide block. Transport errors are
+  graded on the way out (`heuristic.AnalyzeTransportError`), so a dead host
+  reaches the circuit breaker and a client hang-up is nobody's signal — with
+  the fact "never connected" observed through `httptrace`, not inferred from
+  the error's shape.
+- **Scoring v2**: one reputation signal per attempt (retry and hedge losers
+  included; batches collapse to worst-of per endpoint), and a chronic-failure
+  rate term beside the additive score. PATH's `signal_impacts`,
+  `tiered_selection` and `min_threshold` keys are honoured; inconsistent
+  thresholds warn, impossible ones refuse.
+- **Admin pass**: bearer-token auth (`admin_config.auth_token` /
+  `SAGE_ADMIN_TOKEN`, mandatory off loopback); **operator drain** (service ×
+  operator × RPC type, Redis-shared, one HASH); **chain-state reset**;
+  **config reload** (`POST /admin/reload`, `SIGHUP`) with an honest
+  applied / needs-restart / warnings report; a **request-shape sampler**;
+  runtime **tuning knobs**; an admin UI.
+- **WebSocket**: ping/pong liveness on both sides; the first WS metrics; a
+  **subscription registry** (EVM, Solana, CometBFT) that translates ids across
+  suppliers; **rebind** — a lost, stalled (60 s of silence) or session-expired
+  supplier is replaced under the live client connection with its subscriptions
+  replayed; `POST /admin/websocket/rebind/{service}` forces it, for a drill or
+  after a drain.
+- **Probe once, apply everywhere**: only the elected leader sends health-check
+  relays (each is paid for from the app's stake); every result goes through the
+  `sage:probes` Redis stream and every replica applies it, so followers carry
+  the same reputation and block heights without spending a relay.
+- **Kubernetes probes**: `/healthz` (PATH's spelling of `/health`, readiness)
+  and `/livez` (process liveness); on-demand container images from any branch
+  (`image.yml`), tagged `<branch>-<sha7>` and `<sha7>`.
+
+### Fixed — August 2026
+
+- `timeout` now runs after `parse`, so per-service `timeout_config` and the
+  `timeout.relay_timeout` tuning override apply (they resolved for service `""`
+  before). A pinned `middleware_chain` in the old order is refused at startup.
+- Hedge: a both-arms-fail no longer hides the failed endpoint from Retry, and
+  the wait honours the request deadline (arms stay detached to flush).
+- Retry does not start an attempt with less than a fifth of the deadline
+  budget left.
+- Drain refresh is one `HGETALL`, not a `SCAN` of the whole keyspace every
+  tick; a release racing a refresh is not resurrected.
+- The `_other` method bucket is never marked or filtered; three
+  method-unsupported wordings that were unreachable now produce the block
+  they were listed for.
+- `TestTieredSelector_Tier1` no longer fails one run in twenty.
 
 ### Added — config & compatibility
 
