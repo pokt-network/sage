@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	apptypes "github.com/pokt-network/poktroll/x/application/types"
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
@@ -280,5 +282,61 @@ func TestSessionManager_LateSessionDoesNotEvictNewer(t *testing.T) {
 
 	if _, ok := sm.endpointCache.Load("current"); !ok {
 		t.Error("a late session evicted the current one")
+	}
+}
+
+// countingFullNode counts GetSession calls and delays each, so a thundering
+// herd shows up as a call count > 1.
+type countingFullNode struct {
+	stubFullNode
+	mu    sync.Mutex
+	calls int
+	delay time.Duration
+}
+
+func (m *countingFullNode) GetSession(_ context.Context, _ string, _ string) (*sessiontypes.Session, error) {
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
+	time.Sleep(m.delay)
+	return m.session, nil
+}
+
+// At a session boundary every concurrent relay for a service sees the cached
+// session as expired and refreshes. Because num_blocks_per_session aligns all
+// services to one boundary, this is a fleet-wide stampede of full-node
+// GetSession calls that overruns the node and hangs relays to the 10s timeout.
+// The refresh must coalesce: one GetSession per (service, app), its result
+// shared with everyone waiting.
+func TestGetSession_CoalescesConcurrentRefresh(t *testing.T) {
+	newSession := &sessiontypes.Session{
+		SessionId: "s2",
+		Header:    &sessiontypes.SessionHeader{SessionId: "s2", ServiceId: "eth", SessionEndBlockHeight: 200},
+	}
+	fn := &countingFullNode{stubFullNode: stubFullNode{session: newSession}, delay: 50 * time.Millisecond}
+	sm := newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+
+	// Seed an expired session and a height past its end.
+	expired := &sessiontypes.Session{SessionId: "s1", Header: &sessiontypes.SessionHeader{SessionId: "s1", ServiceId: "eth", SessionEndBlockHeight: 100}}
+	sm.sessionCache.Store(sessionCacheKey("eth", "pokt1app"), expired)
+	sm.latestBlockHeight.Store(150)
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, err := sm.getSession(context.Background(), "eth", "pokt1app")
+			if err != nil || s.SessionId != "s2" {
+				t.Errorf("expected the refreshed session s2, got %v err=%v", s, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	fn.mu.Lock()
+	defer fn.mu.Unlock()
+	if fn.calls > 2 {
+		t.Fatalf("GetSession called %d times for 50 concurrent refreshes; the herd is not coalesced", fn.calls)
 	}
 }

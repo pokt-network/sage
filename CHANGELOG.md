@@ -150,6 +150,16 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- Session refresh is coalesced. At a session boundary every in-flight relay
+  for a service saw its cached session as expired and independently called the
+  full node's GetSession; because num_blocks_per_session aligns every service
+  to one boundary, this stampeded the node with hundreds of redundant calls at
+  once, which overran it and hung relays to the 10s relay timeout — a ~1-2 min
+  stall with a 35-50%% error spike every ~20 min, which PATH (grace-period
+  rollover) does not have. A singleflight now runs one GetSession per
+  (service, app) per boundary and shares the result; the fetch is detached from
+  the caller's context so a relay hitting its deadline does not abort the
+  shared refresh.
 - Readiness (`/ready`) now gates on reputation warm-up, not just a session
   existing. A fresh or rolled pod is 503 on `/ready` until health-check
   results (the leader's first probe cycle, or a follower's `sage:probes`

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/internal/safego"
@@ -47,6 +48,15 @@ type sessionManager struct {
 	// Used to decide when a cached session has expired.
 	latestBlockHeight atomic.Int64
 	stopPoller        chan struct{}
+
+	// refreshGroup coalesces concurrent refreshes of the same session. At a
+	// boundary every in-flight relay for a service sees the cached session as
+	// expired, and because num_blocks_per_session aligns every service to one
+	// boundary, without this they stampede the full node with one GetSession
+	// per relay across all services at once — which overruns the node and
+	// hangs relays to the relay timeout. With it, one GetSession per
+	// (service, app) runs and its result is shared with everyone waiting.
+	refreshGroup singleflight.Group
 
 	// failing marks each (serviceID, appAddr) whose last session fetch failed,
 	// so a failure is reported once rather than every cycle. A service with no
@@ -218,8 +228,33 @@ func (sm *sessionManager) getSession(ctx context.Context, serviceID string, appA
 	return sm.refreshSession(ctx, serviceID, appAddr)
 }
 
-// refreshSession fetches a fresh session from the full node and updates the cache.
+// sessionFetchTimeout bounds one coalesced GetSession. It is detached from the
+// caller's context so one relay hitting its deadline does not abort the shared
+// fetch that its peers are waiting on.
+const sessionFetchTimeout = 15 * time.Second
+
+// refreshSession fetches a fresh session from the full node and updates the
+// cache, coalescing concurrent callers for the same (service, app) so the full
+// node sees one GetSession per boundary rather than one per relay.
 func (sm *sessionManager) refreshSession(ctx context.Context, serviceID string, appAddr string) (*sessiontypes.Session, error) {
+	key := sessionCacheKey(serviceID, appAddr)
+	v, err, _ := sm.refreshGroup.Do(key, func() (interface{}, error) {
+		// A relay that reaches its deadline while waiting must not cancel the
+		// shared fetch, so the fetch runs on a detached, independently bounded
+		// context. The winner populates the cache for everyone.
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionFetchTimeout)
+		defer cancel()
+		return sm.doRefreshSession(fetchCtx, serviceID, appAddr)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*sessiontypes.Session), nil
+}
+
+// doRefreshSession is the uncoalesced fetch-and-store, run once per boundary
+// under refreshGroup.
+func (sm *sessionManager) doRefreshSession(ctx context.Context, serviceID string, appAddr string) (*sessiontypes.Session, error) {
 	session, err := sm.fullNode.GetSession(ctx, serviceID, appAddr)
 	key := sessionCacheKey(serviceID, appAddr)
 	if err != nil {
