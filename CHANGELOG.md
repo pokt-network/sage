@@ -150,6 +150,14 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- Each relay attempt is bounded to a share of the request deadline, so a
+  supplier that accepts the connection but never responds ("awaiting headers")
+  cannot consume the whole timeout and starve the retry that would reach a
+  healthy one. On the mainnet canary this was the robinhood 502 baseline —
+  a few relayminer hosts blackholed and every relay to them hung the full 5s.
+  The last attempt runs unbounded; a request with no deadline is unaffected;
+  the hedge race already honours the request context, so a hedged attempt's
+  wait is bounded too while its detached arms still finish and self-score.
 - Session refresh is coalesced, and sessions are served through their protocol
   grace period. SAGE expired a session the instant the chain height reached its
   end and forced a synchronous refresh — a grace window too early: the protocol

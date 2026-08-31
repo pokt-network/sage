@@ -492,3 +492,63 @@ func TestRetry_RolloverReasonLabel(t *testing.T) {
 		t.Fatalf("expected one 'rollover' reason, got %v", rec.reasons)
 	}
 }
+
+// blackholeThenOK hangs the first attempt until its context deadline (a
+// supplier that accepts the connection but never responds), then succeeds.
+type blackholeThenOK struct {
+	calls          int
+	firstBudget    time.Duration
+	secondBudget   time.Duration
+}
+
+func (h *blackholeThenOK) HandleRelay(ctx *relay.Context) error {
+	h.calls++
+	if dl, ok := ctx.Ctx.Deadline(); ok {
+		if h.calls == 1 {
+			h.firstBudget = time.Until(dl)
+		} else {
+			h.secondBudget = time.Until(dl)
+		}
+	}
+	if h.calls == 1 {
+		<-ctx.Ctx.Done() // blackhole: hang until this attempt's deadline
+		return retryableErr("attempt deadline exceeded")
+	}
+	ctx.Endpoint = ctx.Endpoints[0]
+	ctx.Response = &domain.Response{HTTPStatusCode: 200}
+	return nil
+}
+
+// A blackholing supplier must not consume the whole request deadline. Each
+// attempt gets a share of the remaining budget, so a hang on the first leaves
+// room to retry a healthy supplier — the mainnet robinhood 502s were all
+// "awaiting headers" timeouts that ate the full 5s and starved the retry.
+func TestRetry_PerAttemptTimeoutLeavesRoomToRetry(t *testing.T) {
+	h := &blackholeThenOK{}
+	mw := Retry(newFlags("retry"), retryCfg(1, 0)) // 2 attempts
+	deadline := 400 * time.Millisecond
+	ctx := baseContext()
+	c, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	ctx.Ctx = c
+
+	start := time.Now()
+	err := h2(mw, h).HandleRelay(ctx)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("expected recovery on the second attempt, got %v", err)
+	}
+	if h.calls != 2 {
+		t.Fatalf("expected 2 attempts, got %d", h.calls)
+	}
+	if h.firstBudget >= deadline-50*time.Millisecond {
+		t.Errorf("first attempt got the full budget %v (want a narrowed share of %v)", h.firstBudget, deadline)
+	}
+	if elapsed >= deadline+100*time.Millisecond {
+		t.Errorf("took %v, expected to finish within the request deadline %v", elapsed, deadline)
+	}
+}
+
+// h2 wires a middleware around a plain handler for the test.
+func h2(mw relay.Middleware, h relay.Handler) relay.Handler { return mw(h) }

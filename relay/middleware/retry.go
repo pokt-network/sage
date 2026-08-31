@@ -56,6 +56,19 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			var lastErr error
 			maxAttempts := cfg.MaxRetries + 1
 
+			// runAttempt runs one attempt under a per-attempt deadline (see
+			// perAttemptContext), restoring ctx.Ctx afterwards so retry
+			// bookkeeping and the caller see the original request context.
+			runAttempt := func(attemptsLeft int) error {
+				attemptCtx, cancel := perAttemptContext(ctx.Ctx, attemptsLeft)
+				defer cancel()
+				saved := ctx.Ctx
+				ctx.Ctx = attemptCtx
+				err := next.HandleRelay(ctx)
+				ctx.Ctx = saved
+				return err
+			}
+
 			for attempt := 0; attempt < maxAttempts; attempt++ {
 				if attempt > 0 {
 					// Nobody is waiting for a retry once the request context is
@@ -102,7 +115,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 								slog.String("service_id", string(ctx.ServiceID)),
 								slog.Int("attempt", attempt))
 						}
-						err := next.HandleRelay(ctx)
+						err := runAttempt(maxAttempts - attempt)
 						if err == nil {
 							return nil
 						}
@@ -167,7 +180,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					}
 				}
 
-				err := next.HandleRelay(ctx)
+				err := runAttempt(maxAttempts - attempt)
 				if err == nil {
 					return nil
 				}
@@ -202,6 +215,28 @@ func budgetForRetry(ctx context.Context, start time.Time) bool {
 		return true
 	}
 	return time.Until(deadline) >= deadline.Sub(start)/retryBudgetFraction
+}
+
+// perAttemptContext bounds a single attempt to an equal share of the request's
+// remaining deadline, so a slow or blackholing supplier cannot consume the
+// whole budget and starve the attempt that would reach a healthy one. The last
+// attempt (attemptsLeft <= 1) and a request with no deadline run unbounded —
+// never cap the final try, and never invent a deadline where none exists.
+//
+// It only bites a supplier slower than the service's per-attempt expectation
+// (relay_timeout / attempts); a healthy supplier answers well inside it. The
+// hedge race honours ctx.Ctx.Done(), so this bounds a hedged attempt's WAIT
+// too — the detached arms still finish and self-score.
+func perAttemptContext(parent context.Context, attemptsLeft int) (context.Context, context.CancelFunc) {
+	dl, ok := parent.Deadline()
+	if !ok || attemptsLeft <= 1 {
+		return context.WithCancel(parent)
+	}
+	remaining := time.Until(dl)
+	if remaining <= 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, remaining/time.Duration(attemptsLeft))
 }
 
 // retryReason is the coarse label sage_retry_total carries. It stays low
