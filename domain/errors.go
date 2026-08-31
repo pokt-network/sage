@@ -30,6 +30,14 @@ const (
 // not a gateway-made failure. The router tells the two apart by this.
 var ErrRetryVerdict = errors.New("heuristic verdict: retry")
 
+// ErrEndpointsStale is the cause carried when a selected endpoint is not in the
+// session current at send time — the session rolled over between selection and
+// send. It is nobody's fault: no relay reached the supplier, and the client
+// did nothing wrong. Retry keys on it to reselect from the fresh session
+// instead of trying the same stale list's other members, and scoring keys on
+// it to record no signal.
+var ErrEndpointsStale = errors.New("endpoints stale: session rolled over")
+
 // ClientMessage is what may be shown to the caller of a relay.
 //
 // Error() renders the whole cause chain, which is right for a log line and

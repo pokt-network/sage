@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -63,6 +64,40 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					// last error is the honest answer.
 					if !budgetForRetry(ctx.Ctx, start) {
 						return lastErr
+					}
+
+					// A session rollover between selection and send leaves the
+					// whole endpoint list from the old session — its other
+					// members are stale too. Drop the list so the inner chain
+					// (SelectEndpoint) refetches from the fresh session, and
+					// reset the exclusion bookkeeping, which was keyed on the
+					// old pool. Everything else about a retry is the same.
+					if errors.Is(lastErr, domain.ErrEndpointsStale) {
+						ctx.Endpoints = nil
+						ctx.Endpoint = ""
+						ctx.Response = nil
+						ctx.Err = nil
+						ctx.HeuristicResult = nil
+						triedEndpoints = nil
+						triedOperators = nil
+						pool = nil
+						if ctx.Logger != nil {
+							ctx.Logger.Info("retrying relay after session rollover",
+								slog.String("service_id", string(ctx.ServiceID)),
+								slog.Int("attempt", attempt))
+						}
+						err := next.HandleRelay(ctx)
+						if err == nil {
+							return nil
+						}
+						lastErr = err
+						if !domain.IsRetryable(err) {
+							return err
+						}
+						if cfg.MaxLatency > 0 && time.Since(start) >= cfg.MaxLatency {
+							return err
+						}
+						continue
 					}
 
 					// Exclude the endpoint we just tried.

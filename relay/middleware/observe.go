@@ -2,8 +2,11 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
+
+	"github.com/pokt-network/sage/domain"
 
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
@@ -91,6 +94,13 @@ func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputatio
 // It consults the heuristic result (if present) to determine severity;
 // otherwise it falls back to HTTP status code heuristics.
 func buildSignal(ctx *relay.Context, relayErr error, latency time.Duration) reputation.Signal {
+	// A session rollover between selection and send is nobody's signal: no
+	// relay reached the supplier, so there is nothing to grade for or against
+	// it, and it is not an attempt for the chronic-rate term either.
+	if errors.Is(relayErr, domain.ErrEndpointsStale) {
+		return reputation.Signal{}
+	}
+
 	// A failure the client caused is nobody's signal. successResult also
 	// carries AttrClient, but with no error, so key on both.
 	if relayErr != nil && ctx.HeuristicResult != nil && ctx.HeuristicResult.Attribution == heuristic.AttrClient {

@@ -177,14 +177,22 @@ func (p *Protocol) SendRelay(
 
 	ep, ok := endpoints[endpointAddr]
 	if !ok {
-		p.logger.Error("SendRelay: endpoint not found in session",
+		// The session rolled over between selection and send: the endpoint was
+		// picked from the previous session's list and this one no longer has
+		// it. Not a client or supplier fault — no relay was sent — so it is
+		// retryable and carries ErrEndpointsStale, which tells Retry to
+		// reselect from the fresh session rather than try this list's other
+		// (equally stale) members. Warn, not Error: it is an expected race at
+		// every session boundary, roughly one per second under load.
+		p.logger.Warn("SendRelay: endpoint not in current session (rollover), reselecting",
 			"component", "shannon",
 			"service_id", serviceID,
 			"endpoint_addr", endpointAddr,
 			"session_id", session.SessionId,
 		)
-		return nil, domain.NewRelayError(domain.ErrValidation,
-			fmt.Sprintf("endpoint %s not found in session", endpointAddr), nil, false)
+		return nil, domain.NewRelayError(domain.ErrTransport,
+			fmt.Sprintf("endpoint %s not in current session after rollover", endpointAddr),
+			domain.ErrEndpointsStale, true)
 	}
 
 	url, err := p.endpointURL(serviceID, ep, payload.RPCType())

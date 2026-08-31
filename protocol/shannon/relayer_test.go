@@ -1,6 +1,7 @@
 package shannon
 
 import (
+	"errors"
 	"context"
 	"io"
 	"log/slog"
@@ -338,6 +339,16 @@ func TestSendRelay_EndpointNotFound(t *testing.T) {
 	_, err := p.SendRelay(context.Background(), "eth", "nonexistent-endpoint", domain.NewPayload(nil, domain.RPCTypeJSONRPC, ""))
 	if err == nil {
 		t.Fatal("expected error for unknown endpoint")
+	}
+	// An endpoint that is not in the current session is the session having
+	// rolled over between selection and send, not a client or supplier fault:
+	// retryable, and carrying the sentinel so Retry reselects from the fresh
+	// session rather than trying this list's other (also stale) members.
+	if !domain.IsRetryable(err) {
+		t.Errorf("endpoint-not-in-session must be retryable, got %v", err)
+	}
+	if !errors.Is(err, domain.ErrEndpointsStale) {
+		t.Errorf("expected ErrEndpointsStale sentinel, got %v", err)
 	}
 }
 

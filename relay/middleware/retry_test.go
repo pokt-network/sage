@@ -415,3 +415,45 @@ func TestRetry_RetriesWhenBudgetRemains(t *testing.T) {
 		t.Fatalf("expected 3 attempts with budget to spare, got %d", n)
 	}
 }
+
+// A session rollover between selection and send leaves the whole endpoint
+// list pointing at the old session. Retrying its OTHER members is futile —
+// they are stale too. The stale signal must refetch: clear ctx.Endpoints so
+// the inner chain reselects from the fresh session.
+func TestRetry_StaleEndpointsForcesRefetch(t *testing.T) {
+	th := &staleThenOKHandler{}
+	mw := Retry(newFlags("retry"), retryCfg(2, 0))
+	h := mw(th)
+
+	ctx := baseContext()
+	ctx.Endpoints = domain.EndpointAddrList{"pokt1old-https://old.example.com", "pokt1old2-https://old2.example.com"}
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatalf("stale-session error should recover after refetch, got %v", err)
+	}
+	if !th.refetched {
+		t.Error("inner chain never saw a cleared endpoint list — the stale list was reused")
+	}
+}
+
+// staleThenOKHandler fails the first attempt with a stale-endpoints error, and
+// on the next attempt expects ctx.Endpoints to have been cleared (so the real
+// SelectEndpoint would refetch); it then stands in for that refetch.
+type staleThenOKHandler struct {
+	calls     int
+	refetched bool
+}
+
+func (h *staleThenOKHandler) HandleRelay(ctx *relay.Context) error {
+	h.calls++
+	if h.calls == 1 {
+		ctx.Endpoint = ctx.Endpoints[0]
+		return domain.NewRelayError(domain.ErrEndpoint, "relay send failed",
+			domain.NewRelayError(domain.ErrTransport, "endpoint not in session", domain.ErrEndpointsStale, true), true)
+	}
+	if len(ctx.Endpoints) == 0 {
+		h.refetched = true
+		ctx.Endpoints = domain.EndpointAddrList{"pokt1fresh-https://fresh.example.com"}
+	}
+	ctx.Endpoint = ctx.Endpoints[0]
+	return nil
+}
