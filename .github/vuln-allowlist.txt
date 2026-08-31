@@ -20,7 +20,10 @@
 # and someone re-reviews, which is the intended behaviour rather than a
 # standing exception nobody rechecks.
 
-GO-2026-5932  # x/crypto/openpgp is unmaintained with no fix. Reached only by ring-go's package init (armor.init) — SAGE never calls openpgp.
-GO-2023-1821  # cosmos-sdk x/crisis. No fix exists. Chain-side module semantics reached only by package init; a gateway evaluates no consensus logic.
-GO-2023-1881  # cosmos-sdk x/crisis, same reasoning as GO-2023-1821.
-GO-2024-2584  # cosmos-sdk slashing evasion, in x/staking/keeper.Slash and x/auth/vesting. Validator consensus logic; SAGE stakes nothing and runs no keeper.
+# Removed on 2026-08-31: GO-2026-5932 (x/crypto/openpgp), GO-2023-1821 and
+# GO-2023-1881 (cosmos-sdk x/crisis), GO-2024-2584 (cosmos-sdk slashing). All
+# four stopped being reported by govulncheck v1.7.0 in binary mode after the
+# 2026-08-31 dependency bump (x/crypto 0.55.0 among them); CI printed them as
+# stale on 40890c9. The cosmos ones are still in the module graph through the
+# shannon-sdk, so they may return — if they do, CI fails and someone
+# re-reviews, which is the intended behaviour.
