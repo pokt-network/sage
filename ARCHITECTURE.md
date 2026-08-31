@@ -382,7 +382,7 @@ verbatim by the relay miner.
 | `json_rpc` | HTTP POST at the supplier root; the body is the whole request |
 | `rest` | HTTP, path-addressed |
 | `comet_bft` | HTTP, path-addressed, or JSON-RPC method names over POST |
-| `websocket` | Bidirectional bridge, including subscriptions; ping/pong liveness on both sides (60 s silence = gone); a lost supplier is replaced under the live client connection and its subscriptions replayed (up to 3×, then 1012) |
+| `websocket` | Bidirectional bridge, including subscriptions; ping/pong liveness on both sides (60 s silence = gone); a lost, stalled (60 s no data) or session-expired supplier is replaced under the live client connection and its subscriptions replayed (3 loss-rebinds, then 1012) |
 | `grpc` | A **gRPC call** to the miner's relay service — see below |
 
 ### gRPC

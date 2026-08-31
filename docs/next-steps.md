@@ -46,7 +46,7 @@ list were fixed the same day):
   every replica runs the same file; the tuning-style base/override split in
   the first item above is the fix if that stops being true.
 
-## WebSocket liveness (decided 2026-08-29, not scheduled)
+## WebSocket liveness (closed 2026-08-31)
 
 PATH's `feat/ws-stall-watchdog` was assessed for port. It is not an unmerged
 branch: the single commit on it (`f5b14d65`, 2026-07-19) went into PATH main
@@ -71,8 +71,11 @@ this connection has not used, replays the live subscriptions under
 gateway-owned request ids, consumes the acks and rewrites subscription ids
 both ways, up to three times per connection, then 1012. Rebind itself is not
 reproducible on beta (one live host); the bridge tests are the proof. The
-watchdog is now the only piece left: `HasActive()` + `LastData()` on the
-registry, acting through the rebind.
+watchdog followed the same day (60 s of silence on live subscriptions →
+the rebind path, `sage_websocket_stalls_total`), and session rollover became
+a rebind too — beta showed the relay miner closing its socket at the
+boundary. `POST /admin/websocket/rebind/{service}` forces it for a drill or
+after a drain. The WS liveness item is closed.
 
 What SAGE does have, and what it lacks, so the next reader does not re-derive
 it:

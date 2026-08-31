@@ -150,7 +150,12 @@ type SubscriptionRegistry struct {
 	pending  map[string]pendingSubscription // request id → the subscribe awaiting its response
 	active   map[string]Subscription        // client-facing subscription id → live subscription
 	lastData time.Time
-	dropped  int // subscribe frames not tracked because a table was full
+	// lastActivity is the later of the last notification and the last
+	// subscribe ack (including a replay ack): what a stall watchdog measures
+	// from, so a subscription just established is not stalled before its
+	// first event could arrive.
+	lastActivity time.Time
+	dropped      int // subscribe frames not tracked because a table was full
 
 	// Rebind state. toClient maps the current supplier's id to the client's
 	// where they differ; replay maps a gateway-owned replay request id to
@@ -253,21 +258,25 @@ func (r *SubscriptionRegistry) TranslateEndpointFrame(data []byte) (out []byte, 
 			r.dropped++
 			return data, true
 		}
+		now := time.Now()
 		r.active[info.SubscriptionID] = Subscription{
 			ID:         info.SubscriptionID,
 			EndpointID: info.SubscriptionID,
 			Method:     p.method,
 			Request:    p.request,
-			Since:      time.Now(),
+			Since:      now,
 		}
+		r.lastActivity = now
 		return data, true
 	case EndpointFrameNotification:
 		if clientID, mapped := r.toClient[info.SubscriptionID]; mapped {
 			r.lastData = time.Now()
+			r.lastActivity = r.lastData
 			return spliceSpan(data, info.SubscriptionIDSpan, clientID), true
 		}
 		if sub, live := r.active[info.SubscriptionID]; live && sub.EndpointID == sub.ID {
 			r.lastData = time.Now()
+			r.lastActivity = r.lastData
 		}
 	}
 	return data, true
@@ -291,6 +300,7 @@ func (r *SubscriptionRegistry) completeReplay(clientID string, info EndpointFram
 		r.toClient[sub.EndpointID] = sub.ID
 	}
 	r.active[clientID] = sub
+	r.lastActivity = time.Now()
 }
 
 // forget drops one subscription and its id mapping. Caller holds mu.
@@ -387,6 +397,18 @@ func (r *SubscriptionRegistry) LastData() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.lastData
+}
+
+// LastActivity is the later of the last notification for a live
+// subscription and the last subscribe acknowledgement; zero if neither has
+// happened. A stall watchdog measures silence from here.
+func (r *SubscriptionRegistry) LastActivity() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastActivity
 }
 
 // Dropped counts subscribe frames that were forwarded but not tracked because

@@ -151,7 +151,10 @@ type recordingObserver struct {
 		code      int
 	}
 	rebinds []string
+	stalls  int
 }
+
+func (o *recordingObserver) Stalled() { o.mu.Lock(); o.stalls++; o.mu.Unlock() }
 
 func (o *recordingObserver) Rebound(r RebindResult) {
 	o.mu.Lock()

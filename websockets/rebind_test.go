@@ -243,3 +243,69 @@ func TestBridge_ClientLossDoesNotRebind(t *testing.T) {
 	<-b.Done()
 	require.Equal(t, int32(0), called.Load())
 }
+
+// TestBridge_ReplaceEndpointRebinds: an operator-requested replacement goes
+// through the same rebind path as a loss, and the client sees nothing.
+func TestBridge_ReplaceEndpointRebinds(t *testing.T) {
+	first := newEchoServer(t)
+	defer first.Close()
+	second, received := newRecordingEchoServer(t)
+	defer second.Close()
+	handler := func(_ context.Context, cause error) (*websocket.Conn, MessageProcessor, [][]byte, error) {
+		require.ErrorIs(t, cause, ErrBridgeReplaceRequested)
+		conn, err := ConnectEndpoint(newTestLogger(), wsURL(second), nil)
+		return conn, &passthroughProcessor{}, [][]byte{[]byte("replay")}, err
+	}
+	srv, bridges := startBridgeServer(t, wsURL(first), WithEndpointLost(handler))
+	defer srv.Close()
+	client := dialTestServer(t, srv)
+	defer client.Close()
+	b := <-bridges
+
+	b.ReplaceEndpoint(ErrBridgeReplaceRequested)
+	require.Eventually(t, func() bool { return len(received()) == 1 }, 2*time.Second, 5*time.Millisecond)
+	require.NoError(t, client.WriteMessage(websocket.TextMessage, []byte("after")))
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		_, got, err := client.ReadMessage()
+		require.NoError(t, err)
+		if string(got) == "after" {
+			break
+		}
+	}
+}
+
+// A session rollover is a planned replacement, not a dying pool: it must not
+// eat the rebind budget that guards against the latter.
+func TestBridge_SessionRolloverDoesNotCountTowardLimit(t *testing.T) {
+	first := newEchoServer(t)
+	defer first.Close()
+	var servers []*httptest.Server
+	for i := 0; i < 3; i++ {
+		s := newEchoServer(t)
+		defer s.Close()
+		servers = append(servers, s)
+	}
+	var n atomic.Int32
+	handler := func(context.Context, error) (*websocket.Conn, MessageProcessor, [][]byte, error) {
+		i := int(n.Add(1)) - 1
+		conn, err := ConnectEndpoint(newTestLogger(), wsURL(servers[i%len(servers)]), nil)
+		return conn, &passthroughProcessor{}, nil, err
+	}
+	srv, bridges := startBridgeServer(t, wsURL(first), WithEndpointLost(handler), WithRebindLimit(1))
+	defer srv.Close()
+	client := dialTestServer(t, srv)
+	defer client.Close()
+	b := <-bridges
+
+	for i := 0; i < 3; i++ {
+		b.ReplaceEndpoint(ErrBridgeSessionExpired)
+		require.Eventually(t, func() bool { return int(n.Load()) == i+1 }, 2*time.Second, 5*time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case <-b.Done():
+		t.Fatal("three session rollovers must not exhaust a limit of one")
+	default:
+	}
+}

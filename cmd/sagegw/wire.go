@@ -564,6 +564,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// for the relay chain — the same value the middleware chain's
 	// SelectEndpoint and CircuitBreak use.
 	app.Admin = router.NewAdminAPI(flags, repSvc, timeline, cb, blocks, drainStore, proto, cfg.Admin.EffectiveMaxDrain(), qosReg, tuningStore, app, sampler, logger)
+	// The WS relayer also answers the admin rebind route. Type-asserted
+	// rather than typed: wsRelayer is the router's opener interface, nil
+	// under the mock backend, and the rebinder is the same object.
+	if rb, ok := wsRelayer.(router.WSRebinder); ok {
+		app.Admin.SetWebSocketRebinder(rb)
+	}
 	app.Router = router.New(cfg.Router, chain, proto, wsRelayer, logger)
 
 	return app, nil

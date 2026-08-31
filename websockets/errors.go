@@ -32,4 +32,12 @@ var (
 	// pong — for a whole pong wait. The socket may still look open; the peer
 	// behind it is gone.
 	ErrBridgePeerUnresponsive = errors.New("peer unresponsive")
+	// ErrBridgeStalled indicates the stall detector fired: the client holds
+	// established subscriptions and the endpoint has delivered nothing for
+	// them in too long. The socket is alive; the data is not.
+	ErrBridgeStalled = errors.New("subscriptions stalled")
+	// ErrBridgeReplaceRequested indicates an operator asked for the endpoint
+	// to be replaced (the admin rebind route), for a drill or to move live
+	// connections off a supplier being benched.
+	ErrBridgeReplaceRequested = errors.New("endpoint replacement requested")
 )

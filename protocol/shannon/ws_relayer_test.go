@@ -251,7 +251,11 @@ func startExpiryBridges(t *testing.T, r *WSRelayer, endHeight int64, procs *sync
 		}
 		procs.Store(seq.Add(1)-1, proc)
 
-		go r.watchSessionExpiry(endHeight, proc, bridge, newTestLogger())
+		var end atomic.Int64
+		end.Store(endHeight)
+		var cur atomic.Pointer[wsMessageProcessor]
+		cur.Store(proc)
+		go r.watchSessionExpiry(&end, &cur, bridge, newTestLogger())
 		<-bridge.Done()
 	}))
 	t.Cleanup(gw.Close)

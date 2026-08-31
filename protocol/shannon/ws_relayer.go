@@ -30,6 +30,15 @@ const (
 	// wsFeatureFlag gates WS relays per-service. Default off.
 	wsFeatureFlag = "websocket_relays"
 
+	// wsStallTimeout is how long a connection with established subscriptions
+	// may receive nothing before its supplier is replaced. A minute: longer
+	// than any chain's block time by a wide margin, so a quiet-but-honest
+	// subscription (a logs filter that rarely matches) is not what fires it
+	// — a supplier whose feed silently stopped is. wsStallCheckInterval is
+	// the poll.
+	wsStallTimeout       = 60 * time.Second
+	wsStallCheckInterval = 5 * time.Second
+
 	// wsExpiryCheckInterval is how often a bridge asks whether its own session
 	// has ended. The block poller only refreshes the height every
 	// blockPollInterval (10s), so checking faster than that just re-reads the
@@ -104,6 +113,15 @@ type WSRelayer struct {
 	// wait seconds.
 	expiryCheck time.Duration
 
+	// stallTimeout is how long a bridge with live subscriptions may go
+	// without a notification before it is rebound; stallCheck is how often
+	// that is polled. Fields so tests need not wait a minute.
+	stallTimeout time.Duration
+	stallCheck   time.Duration
+
+	// live tracks every open bridge by service, for RebindService.
+	live sync.Map // *websockets.Bridge → domain.ServiceID
+
 	// connLimiter caps concurrent live bridges. Nil means no cap; every method
 	// on it is nil-safe.
 	//
@@ -142,10 +160,12 @@ func NewWSRelayer(deps WSRelayerDeps) *WSRelayer {
 		deps.CloseObservationSampleRate = 1.0
 	}
 	return &WSRelayer{
-		deps:        deps,
-		chainHeight: deps.Protocol.LatestBlockHeight,
-		expiryCheck: wsExpiryCheckInterval,
-		connLimiter: websockets.NewConnectionLimiter(deps.MaxConcurrentConnections),
+		deps:         deps,
+		chainHeight:  deps.Protocol.LatestBlockHeight,
+		expiryCheck:  wsExpiryCheckInterval,
+		stallTimeout: wsStallTimeout,
+		stallCheck:   wsStallCheckInterval,
+		connLimiter:  websockets.NewConnectionLimiter(deps.MaxConcurrentConnections),
 	}
 }
 
@@ -204,6 +224,13 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	r.incLoad(endpointAddr)
 	defer func() { r.decLoad(*current.Load()) }()
 
+	// The session the bridge is signing under moves with a rebind; the
+	// expiry watcher follows it, so a rollover becomes a rebind onto the
+	// next session rather than a close.
+	var sessionEnd atomic.Int64
+	sessionEnd.Store(session.Header.SessionEndBlockHeight)
+	var currentProc atomic.Pointer[wsMessageProcessor]
+
 	logger = logger.With("endpoint", endpointAddr, "supplier", ep.Supplier(), "url", url)
 	logger.Info("ws open: starting bridge")
 
@@ -234,6 +261,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		).withSubscriptions(subs)
 	}
 	processor := newProcessor(target)
+	currentProc.Store(processor)
 
 	// Pocket relay miners authenticate the WS upgrade via three HTTP headers
 	// set on the initial handshake. Without these the miner treats the
@@ -251,6 +279,18 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	if r.deps.Metrics != nil {
 		bridgeOpts = append(bridgeOpts, websockets.WithObserver(r.deps.Metrics.ForService(serviceID)))
 	}
+	// Data-staleness is an endpoint loss the socket does not report: live
+	// subscriptions and nothing delivered for them in wsStallTimeout while
+	// pings are still answered. Handled exactly like a dead socket — the
+	// rebind below — so the same replay and the same limit apply.
+	bridgeOpts = append(bridgeOpts, websockets.WithStallDetector(func() bool {
+		if !subs.HasActive() {
+			return false
+		}
+		last := subs.LastActivity()
+		return !last.IsZero() && time.Since(last) > r.stallTimeout
+	}, r.stallCheck))
+
 	// Endpoint loss is a rebind, not a close: pick another supplier this
 	// bridge has not used, move the load counter, and replay the live
 	// subscriptions through a processor that signs for the new supplier.
@@ -275,8 +315,14 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		r.incLoad(next.addr)
 		addr := next.addr
 		current.Store(&addr)
-		logger.Info("ws rebind: endpoint replaced", "from", lost, "to", next.addr, "supplier", next.ep.Supplier())
-		return conn, newProcessor(next), subs.ReplayFrames(), nil
+		proc := newProcessor(next)
+		currentProc.Store(proc)
+		sessionEnd.Store(next.session.Header.SessionEndBlockHeight)
+		logger.Info("ws rebind: endpoint replaced",
+			"from", lost, "to", next.addr, "supplier", next.ep.Supplier(),
+			"session_end_height", next.session.Header.SessionEndBlockHeight,
+		)
+		return conn, proc, subs.ReplayFrames(), nil
 	}))
 	bridge, err := websockets.StartBridge(ctx, logger, req, w, url, supplierHeaders, processor, bridgeOpts...)
 	if err != nil {
@@ -291,9 +337,12 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		return fmt.Errorf("ws open: start bridge: %w", err)
 	}
 
+	r.live.Store(bridge, serviceID)
+	defer r.live.Delete(bridge)
+
 	// Watch for session expiry in a goroutine; trigger graceful close.
 	safego.Go(logger, "websocket.session.expiry", func() {
-		r.watchSessionExpiry(session.Header.SessionEndBlockHeight, processor, bridge, logger)
+		r.watchSessionExpiry(&sessionEnd, &currentProc, bridge, logger)
 	})
 
 	// Drain frame events off the bridge loop until the bridge closes.
@@ -342,8 +391,8 @@ func (r *WSRelayer) subscriptionRegistry(serviceID domain.ServiceID) *qos.Subscr
 // The goroutine exits when the bridge closes for any reason, so it cannot
 // outlive its connection.
 func (r *WSRelayer) watchSessionExpiry(
-	endHeight int64,
-	processor *wsMessageProcessor,
+	sessionEnd *atomic.Int64,
+	current *atomic.Pointer[wsMessageProcessor],
 	bridge *websockets.Bridge,
 	logger *slog.Logger,
 ) {
@@ -354,22 +403,53 @@ func (r *WSRelayer) watchSessionExpiry(
 	ticker := time.NewTicker(r.expiryCheck)
 	defer ticker.Stop()
 
+	// The end height the watcher last acted on. A rebind that did not move
+	// the session (a stale session cache, say) leaves it where it was, and
+	// then the only honest outcome is the close — never a second rebind onto
+	// the same retired session.
+	var actedOn int64
+
 	for {
 		select {
 		case <-bridge.Done():
 			return
 		case <-ticker.C:
 			height := r.chainHeight()
-			if height < endHeight {
+			end := sessionEnd.Load()
+			if height < end {
+				continue
+			}
+			if end != actedOn && bridge.CanRebind() {
+				actedOn = end
+				logger.Info("ws session ended, rebinding onto the next session",
+					"session_end_height", end, "current_height", height,
+				)
+				// Synchronous: back here the endpoint is swapped and
+				// sessionEnd moved, or the bridge is closed. A rebind that
+				// lands on the same retired session leaves end == actedOn,
+				// and the next tick takes the close below.
+				bridge.ReplaceEndpoint(websockets.ErrBridgeSessionExpired)
+				select {
+				case <-bridge.Done():
+					// Nothing to rebind to: retire the processor so nothing
+					// still in flight is signed against an ended session.
+					if p := current.Load(); p != nil {
+						p.sessionActive.Store(false)
+					}
+					return
+				default:
+				}
 				continue
 			}
 			logger.Info("ws session ended, closing bridge so the client reconnects",
-				"session_end_height", endHeight, "current_height", height,
+				"session_end_height", end, "current_height", height,
 			)
 			// Deactivate before Shutdown: stops new client frames being signed
 			// against a session the chain has retired, while supplier frames
 			// still in flight drain out to the client.
-			processor.sessionActive.Store(false)
+			if p := current.Load(); p != nil {
+				p.sessionActive.Store(false)
+			}
 			bridge.Shutdown(websockets.ErrBridgeSessionExpired)
 			return
 		}
@@ -611,4 +691,23 @@ func untriedFirst(endpoints domain.EndpointAddrList, tried map[domain.EndpointAd
 		operators[ep.Operator()] = true
 	}
 	return untried.ExcludeOperators(operators)
+}
+
+// RebindService asks every live bridge for serviceID to replace its supplier,
+// as if the supplier had been lost: a new one is selected (avoiding the ones
+// each connection has used), the live subscriptions are replayed, and the
+// client sees nothing. It returns how many bridges were asked. This is the
+// admin rebind route — a drill, or the way to move live connections off an
+// operator that was just drained, which selection alone never touches.
+func (r *WSRelayer) RebindService(serviceID domain.ServiceID) int {
+	n := 0
+	r.live.Range(func(key, value any) bool {
+		if value.(domain.ServiceID) != serviceID {
+			return true
+		}
+		key.(*websockets.Bridge).ReplaceEndpoint(websockets.ErrBridgeReplaceRequested)
+		n++
+		return true
+	})
+	return n
 }

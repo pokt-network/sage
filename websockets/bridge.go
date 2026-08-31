@@ -99,6 +99,11 @@ type Bridge struct {
 	endpointLost EndpointLostHandler
 	rebindLimit  int
 	rebinds      int
+
+	// stalled, when set, is polled every stallPeriod; true means the
+	// endpoint is delivering nothing the client is waiting for.
+	stalled     func() bool
+	stallPeriod time.Duration
 }
 
 // defaultRebindLimit is how many endpoints one client connection may burn
@@ -274,6 +279,9 @@ func (b *Bridge) run() {
 	if b.pongWait > 0 && b.pingPeriod > 0 {
 		safego.Go(b.logger, "websocket.ping", b.pingLoop)
 	}
+	if b.stalled != nil && b.stallPeriod > 0 {
+		safego.Go(b.logger, "websocket.stall", b.stallLoop)
+	}
 
 	for {
 		select {
@@ -384,6 +392,55 @@ func (b *Bridge) pingLoop() {
 	}
 }
 
+// stallLoop polls the stall detector. A stall is an endpoint loss the socket
+// did not report: the same path as one it did.
+func (b *Bridge) stallLoop() {
+	ticker := time.NewTicker(b.stallPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-ticker.C:
+			if !b.stalled() {
+				continue
+			}
+			b.logger.Warn("websocket: subscriptions stalled, replacing endpoint")
+			b.observe(func(o Observer) { o.Stalled() })
+			b.ReplaceEndpoint(ErrBridgeStalled)
+		}
+	}
+}
+
+// ReplaceEndpoint treats the current endpoint as lost for the given cause:
+// a rebind when a handler is installed, otherwise a close with the client
+// told to reconnect. Safe to call from any goroutine; a bridge already
+// shutting down ignores it.
+func (b *Bridge) ReplaceEndpoint(cause error) {
+	if b.ctx.Err() != nil {
+		return
+	}
+	if b.endpointLost == nil {
+		b.Shutdown(fmt.Errorf("%w: %w", ErrBridgeEndpointUnavailable, cause))
+		return
+	}
+	// Synchronous: the rebind runs here, and returns once the endpoint is
+	// swapped or the bridge is closed. The old endpoint's read loop then
+	// fails on its closed socket and finds its endpoint already replaced.
+	b.rebind(b.endpointConn.Load(), cause)
+}
+
+// CanRebind reports whether an endpoint loss would be met with a rebind
+// rather than a close: a handler is installed and the limit is not spent.
+func (b *Bridge) CanRebind() bool {
+	if b.endpointLost == nil {
+		return false
+	}
+	b.endpointMu.RLock()
+	defer b.endpointMu.RUnlock()
+	return b.rebinds < b.rebindLimit
+}
+
 // readLoop continuously reads from conn and sends messages to msgChan.
 // It exits when the connection closes (error from ReadMessage) or when the
 // bridge context is canceled. On read error the close code is captured and
@@ -491,7 +548,11 @@ func (b *Bridge) rebind(lost *Connection, cause error) {
 	}
 	b.endpointConn.Store(next)
 	b.processor = processor
-	b.rebinds++
+	if !errors.Is(cause, ErrBridgeSessionExpired) {
+		// A session rollover is a planned move, not evidence of a dying
+		// pool; only losses count toward the limit.
+		b.rebinds++
+	}
 	b.endpointMu.Unlock()
 
 	b.observe(func(o Observer) { o.Rebound(RebindOK) })
@@ -651,6 +712,9 @@ func (b *Bridge) determineCloseCode(err error) (int, string) {
 
 	case errors.Is(err, ErrBridgeEndpointUnavailable):
 		return websocket.CloseServiceRestart, "endpoint temporarily unavailable, please reconnect"
+
+	case errors.Is(err, ErrBridgeStalled), errors.Is(err, ErrBridgeReplaceRequested):
+		return websocket.CloseServiceRestart, "endpoint replaced, please reconnect"
 
 	case errors.Is(err, ErrBridgePeerUnresponsive):
 		// 1012 to the client: reconnecting draws a fresh supplier through

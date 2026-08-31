@@ -32,8 +32,19 @@ type AdminAPI struct {
 	tuning      *tuning.Store
 	reloader    Reloader
 	sampler     *traffic.Sampler
+	wsRebinder  WSRebinder
 	logger      *slog.Logger
 }
+
+// WSRebinder replaces the supplier under every live WebSocket connection of
+// a service. shannon.WSRelayer satisfies it.
+type WSRebinder interface {
+	RebindService(serviceID domain.ServiceID) int
+}
+
+// SetWebSocketRebinder installs the relayer the WebSocket rebind route acts
+// through. Without one the route answers 501.
+func (a *AdminAPI) SetWebSocketRebinder(r WSRebinder) { a.wsRebinder = r }
 
 // NewAdminAPI constructs an AdminAPI.
 //
@@ -118,6 +129,9 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Config dump and reload
 	mux.HandleFunc("GET /admin/config", a.handleGetConfig)
 	mux.HandleFunc("POST /admin/reload", a.handleReload)
+
+	// WebSocket
+	mux.HandleFunc("POST /admin/websocket/rebind/{serviceID}", a.handleWebSocketRebind)
 
 	// Request-shape sampler
 	mux.HandleFunc("GET /admin/request-sample", a.handleListRequestSamples)

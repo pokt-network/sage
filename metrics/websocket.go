@@ -20,6 +20,7 @@ import (
 //	sage_websocket_unresponsive_total{service_id,side}     liveness timeouts, by the silent side
 //	sage_websocket_rejected_total{service_id,reason}       upgrades refused before a bridge existed
 //	sage_websocket_rebinds_total{service_id,result}        lost suppliers replaced under a live client
+//	sage_websocket_stalls_total{service_id}                subscriptions with no data for the stall timeout
 //
 // Every label is a closed set: service_id is bounded by the configured
 // services (as everywhere else), direction and side are the two ends of a
@@ -34,13 +35,14 @@ type WebSocketMetrics struct {
 	unresponsive *prometheus.CounterVec
 	rejected     *prometheus.CounterVec
 	rebinds      *prometheus.CounterVec
+	stalls       *prometheus.CounterVec
 }
 
 // NewWebSocketMetrics builds and registers the WebSocket metrics on the
 // default registry. knownServices bounds the service_id label.
 func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
-	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds)
+	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls)
 	return m
 }
 
@@ -94,6 +96,14 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 				Help:      "Attempts to replace a lost supplier under a live client connection, by service and result: ok (a new supplier took over and the live subscriptions were replayed), failed (no supplier could be reached; the client was told to reconnect), exhausted (the per-connection rebind limit was already spent).",
 			},
 			[]string{"service_id", "result"},
+		),
+		stalls: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_stalls_total",
+				Help:      "Times the stall watchdog fired on a WebSocket bridge, by service: the client held established subscriptions and the supplier delivered nothing for them for the stall timeout, under a socket that still answered pings. Each one is followed by a rebind attempt (or a 1012 without one).",
+			},
+			[]string{"service_id"},
 		),
 		rejected: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -172,4 +182,9 @@ func closeCodeLabel(code int) string {
 // Rebound counts one attempt to replace a lost endpoint.
 func (o *webSocketServiceObserver) Rebound(result websockets.RebindResult) {
 	o.m.rebinds.WithLabelValues(o.sid, string(result)).Inc()
+}
+
+// Stalled counts one stall-watchdog verdict.
+func (o *webSocketServiceObserver) Stalled() {
+	o.m.stalls.WithLabelValues(o.sid).Inc()
 }

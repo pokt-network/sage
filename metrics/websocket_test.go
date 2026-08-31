@@ -28,7 +28,7 @@ func newIsolatedWebSocketMetrics(t *testing.T) (*WebSocketMetrics, *prometheus.R
 	t.Helper()
 	reg := prometheus.NewRegistry()
 	m := newWebSocketMetrics([]domain.ServiceID{"eth"})
-	reg.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds)
+	reg.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls)
 	return m, reg
 }
 

@@ -52,15 +52,26 @@ between. Three healthy suppliers behind the pool do the client no good.
    request id is the subscription id and the replay id is what events then
    carry).
 
-4. **Sessions are unchanged.** The bridge still closes at its original
-   session's end (`watchSessionExpiry`); a rebind uses whatever session is
-   current. That keeps the bound PATH lost when its connections outlived
-   sessions — the reason PATH then needed a watchdog.
+4. **Session rollover is a rebind.** (Changed the same day, after beta
+   showed the relay miner closing its socket at the session boundary and
+   the bridge rebinding into the new session only to be closed by its own
+   watcher.) `watchSessionExpiry` follows the CURRENT session's end height,
+   which the rebind handler moves forward; at the boundary it asks the
+   bridge to replace its endpoint with `ErrBridgeSessionExpired`, which
+   resolves a fresh session and does not count toward the rebind limit. A
+   rebind that fails to advance the session (a stale cache) falls back to
+   the close with 1012. Connections now outlive sessions, which is exactly
+   why the stall watchdog (5) ships alongside.
 
 ## Not in this change
 
-- The stall watchdog (data-staleness). It has everything it needs now:
-  `HasActive()`, `LastData()`, and a rebind to act through.
+- ~~The stall watchdog.~~ Shipped alongside: `WithStallDetector` polls the
+  registry every 5 s; live subscriptions with no data (and no subscribe
+  ack) for 60 s count as an endpoint loss and take the rebind path.
+  `sage_websocket_stalls_total`.
+- Also added: `POST /admin/websocket/rebind/{service}` — every live bridge
+  of the service replaces its supplier. A drill, and the companion to
+  drain (which only affects new selections).
 - Rebinding on the client's request, or on reputation changes.
 
 ## Checks

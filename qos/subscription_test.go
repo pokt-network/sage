@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeClassifier speaks a tiny dialect: client frames "sub:<id>",
@@ -138,5 +139,26 @@ func TestJSONRPCRequestID_RawKeepsStringAndNumberDistinct(t *testing.T) {
 	}
 	if got := JSONRPCRequestID([]byte(`{"method":"x"}`)); got != "" {
 		t.Fatalf("missing id = %q, want empty", got)
+	}
+}
+
+// LastActivity is what a stall watchdog measures from: the later of the last
+// notification and the last subscribe acknowledgement, so a subscription that
+// was just established is not "stalled" before its first event could arrive.
+func TestSubscriptionRegistry_LastActivity(t *testing.T) {
+	r := NewSubscriptionRegistry(fakeClassifier{})
+	if !r.LastActivity().IsZero() {
+		t.Fatal("nothing has happened yet")
+	}
+	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateEndpointFrame([]byte("ok:1:s1"))
+	established := r.LastActivity()
+	if established.IsZero() {
+		t.Fatal("an ack is activity")
+	}
+	time.Sleep(2 * time.Millisecond)
+	r.TranslateEndpointFrame([]byte("data:s1"))
+	if !r.LastActivity().After(established) {
+		t.Fatal("a notification must move LastActivity forward")
 	}
 }

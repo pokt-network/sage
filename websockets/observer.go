@@ -2,6 +2,7 @@ package websockets
 
 import (
 	"context"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -26,6 +27,9 @@ type Observer interface {
 	Closed(initiator CloseInitiator, code int)
 	// Rebound is called after each attempt to replace a lost endpoint.
 	Rebound(result RebindResult)
+	// Stalled is called when the stall detector fires: subscriptions are
+	// established and nothing has arrived for them in too long.
+	Stalled()
 }
 
 // RebindResult is the outcome of one attempt to replace a lost endpoint.
@@ -84,4 +88,16 @@ func WithEndpointLost(h EndpointLostHandler) BridgeOption {
 // Past it the next loss closes the bridge. Default defaultRebindLimit.
 func WithRebindLimit(n int) BridgeOption {
 	return func(b *Bridge) { b.rebindLimit = n }
+}
+
+// WithStallDetector installs a data-staleness check, polled every period.
+// When it reports true the endpoint is treated as lost: a rebind with a
+// handler installed, 1012 to the client without one. The detector decides
+// what "stalled" means — typically "has live subscriptions and no data for
+// a while" from a subscription registry — so the bridge stays chain-agnostic.
+func WithStallDetector(stalled func() bool, period time.Duration) BridgeOption {
+	return func(b *Bridge) {
+		b.stalled = stalled
+		b.stallPeriod = period
+	}
 }

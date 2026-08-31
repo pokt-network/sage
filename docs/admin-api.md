@@ -108,6 +108,7 @@ Reports readiness for every configured service.
 | `DELETE` | `/admin/tuning/{knob}/{serviceID}` | Removes one service's override, leaving the global one (or the config value) in effect for it. |
 | `GET` | `/admin/config` | Returns the gateway's effective runtime configuration: resolved feature flags, registered services and their QoS plugins. |
 | `POST` | `/admin/reload` | Re-reads the config file the gateway started with (`-config`), validates it exactly as startup does, and applies the sections that have a runtime seam: the retry/hedge/timeout knobs, `feature_flags`, `active_health_checks`, `blocked_domains` and the `method_blocks` knobs. |
+| `POST` | `/admin/websocket/rebind/{serviceID}` | Replaces the supplier under every live WebSocket connection of a service, without closing any client. |
 | `GET` | `/admin/request-sample` | Returns every service the request-shape sampler has observed, each with its most recently completed traffic summary. |
 | `GET` | `/admin/request-sample/{serviceID}` | Returns one service's request-shape summary plus its top fingerprints for a single window. |
 | `GET` | `/admin/ui` | Serves the admin dashboard. |
@@ -352,6 +353,24 @@ global values only, and a deleted line in a file must not revoke a decision
 it never made.
 
 `SIGHUP` does the same thing.
+
+### `POST /admin/websocket/rebind/{serviceID}`
+
+Replaces the supplier under every live WebSocket
+connection of a service, without closing any client. Each bridge selects
+a supplier it has not used yet (falling back to any if that leaves
+nothing), replays its live subscriptions to it, and keeps serving; the
+client keeps its socket and its subscription ids. Bridges that cannot be
+rebound — no reachable supplier, or their per-connection rebind limit is
+spent — close with 1012 so the client reconnects.
+
+Two uses: a drill, and moving live connections off an operator that was
+just drained (`POST /admin/reputation/drain/...` affects new selections
+only; existing sockets stay where they are until this is called).
+
+Answers `{"service_id", "bridges"}` with how many live bridges were asked;
+zero is a valid answer for a service with no WebSocket clients. 501 when
+this build has no WebSocket relayer wired.
 
 ### `GET /admin/request-sample`
 
