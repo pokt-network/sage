@@ -150,6 +150,11 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- On a JSON-RPC request, a 4xx whose body is not a JSON-RPC envelope (an HTML
+  404 page, an empty body) is graded as the supplier's HTTP layer, not the
+  client's mistake: retried elsewhere, minor penalty, method-blocked on that
+  host. A mainnet supplier answered 74% of its solana JSON-RPC posts with a
+  404 page and both gateways passed it through; PATH still does.
 - A retry verdict with no better attempt behind it now delivers the upstream's
   own response (the chain's `execution reverted`, the node's `block not
   found`) instead of a gateway-made `-32603`; a failed relay logs one ERROR

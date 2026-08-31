@@ -416,3 +416,39 @@ func TestErrorAttribution_String(t *testing.T) {
 		}
 	}
 }
+
+// A JSON-RPC server reports a client's mistake inside a JSON-RPC envelope. A
+// 4xx with something else in the body — an HTML 404 page, nothing at all — is
+// the supplier's HTTP layer answering for a backend that never saw the
+// request. One mainnet supplier answered 74% of its solana JSON-RPC posts with
+// a 404 page; graded as the client's fault it was passed through unretried.
+func TestAnalyze_4xxWithoutEnvelopeOnJSONRPC_IsSupplierFault(t *testing.T) {
+	page := []byte(`<!DOCTYPE html><html><head><title>404 Not Found</title></head><body>nginx</body></html>`)
+
+	got := Analyze(page, 404, domain.RPCTypeJSONRPC)
+	if !got.ShouldRetry || !got.ShouldPenalize || got.Attribution != AttrSupplier || !got.MethodBlocking {
+		t.Errorf("HTML 404 on JSON-RPC: retry=%v penalize=%v attribution=%v methodBlocking=%v reason=%s; want retry, penalize, supplier, method-blocking",
+			got.ShouldRetry, got.ShouldPenalize, got.Attribution, got.MethodBlocking, got.Reason)
+	}
+	if got.ShouldCircuitBreak {
+		t.Error("a 4xx page must not circuit-break on its own")
+	}
+
+	got = Analyze(nil, 404, domain.RPCTypeJSONRPC)
+	if !got.ShouldRetry || got.Attribution != AttrSupplier {
+		t.Errorf("empty 404 on JSON-RPC: retry=%v attribution=%v; want retry, supplier", got.ShouldRetry, got.Attribution)
+	}
+
+	// The same page on REST is the client asking for a path that does not
+	// exist — that is what a REST 404 means.
+	got = Analyze(page, 404, domain.RPCTypeREST)
+	if got.ShouldRetry || got.Attribution != AttrClient {
+		t.Errorf("HTML 404 on REST: retry=%v attribution=%v; want no retry, client", got.ShouldRetry, got.Attribution)
+	}
+
+	// A JSON-RPC error envelope with a 4xx status stays the client's.
+	got = Analyze([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"invalid request"}}`), 400, domain.RPCTypeJSONRPC)
+	if got.ShouldRetry || got.Attribution != AttrClient {
+		t.Errorf("JSON-RPC error with 400: retry=%v attribution=%v; want no retry, client", got.ShouldRetry, got.Attribution)
+	}
+}

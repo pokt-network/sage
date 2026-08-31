@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/pokt-network/sage/domain"
 )
 
@@ -28,7 +30,7 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 	}
 
 	// Tier 0: HTTP status code.
-	if result, done := analyzeTier0(httpStatusCode); done {
+	if result, done := analyzeTier0(httpStatusCode, response, rpcType); done {
 		return result
 	}
 
@@ -62,7 +64,7 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 }
 
 // analyzeTier0 checks HTTP status codes.
-func analyzeTier0(statusCode int) (AnalysisResult, bool) {
+func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (AnalysisResult, bool) {
 	switch {
 	case statusCode >= 500:
 		return AnalysisResult{
@@ -86,6 +88,25 @@ func analyzeTier0(statusCode int) (AnalysisResult, bool) {
 			Confidence:         0.95,
 			Reason:             "http_429",
 			Details:            "rate limited",
+		}, true
+
+	// A JSON-RPC server reports a client's mistake inside a JSON-RPC
+	// envelope, whatever status it puts on it. A 4xx carrying anything else —
+	// an HTML 404 page, an empty body — is the supplier's HTTP layer answering
+	// for a backend that never saw the request: a misrouted vhost, a proxy
+	// with no upstream. That is the supplier's, and another supplier will
+	// answer; the host should not see this method again for a while.
+	case statusCode >= 400 && statusCode < 500 && rpcType == domain.RPCTypeJSONRPC && !gjson.ValidBytes(response):
+		return AnalysisResult{
+			ShouldRetry:        true,
+			ShouldCircuitBreak: false,
+			ShouldPenalize:     true,
+			PenaltySeverity:    SeverityMinor,
+			MethodBlocking:     true,
+			Attribution:        AttrSupplier,
+			Confidence:         0.85,
+			Reason:             "http_4xx_page",
+			Details:            fmt.Sprintf("HTTP %d with no JSON-RPC body on a JSON-RPC request", statusCode),
 		}, true
 
 	case statusCode >= 400 && statusCode < 500:
