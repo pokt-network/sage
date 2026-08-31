@@ -12,6 +12,40 @@ and logs. PATH `origin/main` at `274e9791`, 2026-08-25).
 
 
 
+
+## Explore next (raised 2026-09-01)
+
+- **Dynamic blocked_domains from the admin UI** (no redeploy to ban a domain).
+  Machinery mostly exists: the operator-drain is already dynamic + Redis-shared
+  + admin-driven, keyed (service, operator-domain, rpc_type) — draining
+  `nodefleet.net` for `websocket` mitigates the WS 1011s today without a deploy
+  (per-service, TTL semantics). The clean version is a small admin endpoint
+  `POST /admin/blocked-domains` calling the existing `SetBlockedDomains`
+  (already runtime-swappable via reload) + Redis persistence for a permanent,
+  global, fleet-wide ban from the UI. Immediate use: ban nodefleet WS.
+
+- **Consume PATH probe/reputation instead of running our own health checks.**
+  Goal: two gateways probing the same suppliers pay twice; share one probe
+  spend. Metrics comparison already exists (taiji dashboard) but is observability,
+  not routing input. To actually skip SAGE probes, PATH must PUBLISH its
+  probe results (an API or a cross-gateway stream, like SAGE's own sage:probes).
+  Catch: PATH and SAGE score differently (scoring v2 diverged) — SAGE can consume
+  PATH's raw probe *results* (answered/latency) and apply its own scoring, NOT
+  import PATH's scores wholesale. Concrete question: can PATH expose a
+  probe/health-result feed SAGE subscribes to? If yes, `healthcheck.Executor`
+  gains an external result source (it already has a ProbeSource seam for the
+  Redis stream — same shape).
+
+- **WS reputation is cold (the 1011 root cause).** WS bind uses SelectSpread +
+  penalises lost endpoints, but at 1% WS volume across a 2763-endpoint pool
+  (78% nodefleet, dead since July) it never warms — untried score-100 nodefleet
+  endpoints get picked and instantly fail. HTTP avoids this via volume + probes,
+  but probes don't cover the websocket rpc_type and reputation is keyed per
+  (service, supplier, rpc_type) so HTTP's dead-nodefleet knowledge doesn't reach
+  WS. Fixes: (a) ban nodefleet WS via blocked_domains/drain now; (b) share
+  operator/domain reputation across rpc_types so HTTP steers WS; (c) probe WS.
+
+
 ## Latency-aware selection (parked — acceptable for now)
 
 The mainnet-canary p50 sits ~40ms vs PATH ~30ms. It is NOT gateway overhead —
