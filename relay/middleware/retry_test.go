@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -362,5 +363,55 @@ func TestRetry_ResetsHeuristicResultPerAttempt(t *testing.T) {
 	}
 	if ctx.HeuristicResult != nil {
 		t.Fatalf("HeuristicResult leaked from attempt 1 into attempt 2: %+v", ctx.HeuristicResult)
+	}
+}
+
+// TestRetry_SkipsAttemptWithNoBudgetLeft: attempts share the request deadline
+// (timeout sits outside retry). A retry started with a sliver of that budget
+// left cannot succeed and, when the deadline fires on it, is graded
+// transport_timeout against an endpoint that had no real chance — a major
+// penalty and a method mark for time a different host consumed. Retry must not
+// start an attempt the budget cannot cover.
+func TestRetry_SkipsAttemptWithNoBudgetLeft(t *testing.T) {
+	budget := 200 * time.Millisecond
+	failErr := retryableErr("slow 502")
+	var calls int32
+	slowFail := relay.HandlerFunc(func(_ *relay.Context) error {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(170 * time.Millisecond) // eats 85% of the budget, then fails retryably
+		return failErr
+	})
+
+	deadlineCtx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	ctx := baseContext()
+	ctx.Ctx = deadlineCtx
+
+	err := Retry(newFlags("retry"), retryCfg(2, 0))(slowFail).HandleRelay(ctx)
+	if err != failErr {
+		t.Fatalf("expected the last attempt's own error, got %v", err)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("expected no retry with 15%% of the budget left, got %d attempts", n)
+	}
+}
+
+// The mirror: with most of the budget left a retry still happens.
+func TestRetry_RetriesWhenBudgetRemains(t *testing.T) {
+	failErr := retryableErr("fast 502")
+	var calls int32
+	fastFail := relay.HandlerFunc(func(_ *relay.Context) error {
+		atomic.AddInt32(&calls, 1)
+		return failErr
+	})
+
+	deadlineCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ctx := baseContext()
+	ctx.Ctx = deadlineCtx
+
+	_ = Retry(newFlags("retry"), retryCfg(2, 0))(fastFail).HandleRelay(ctx)
+	if n := atomic.LoadInt32(&calls); n != 3 {
+		t.Fatalf("expected 3 attempts with budget to spare, got %d", n)
 	}
 }

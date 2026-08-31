@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
@@ -51,6 +52,16 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					// error — and each of those is a failure recorded against a
 					// supplier for something the supplier did not do.
 					if ctx.Ctx.Err() != nil {
+						return lastErr
+					}
+					// Attempts share the request deadline (timeout sits outside
+					// retry). An attempt started with a sliver of it left cannot
+					// succeed, and when the deadline fires on it the heuristic
+					// grades it transport_timeout — a major penalty and a method
+					// mark against an endpoint that had no real chance, for time
+					// an earlier host consumed. Below a fifth of the budget the
+					// last error is the honest answer.
+					if !budgetForRetry(ctx.Ctx, start) {
 						return lastErr
 					}
 
@@ -124,4 +135,20 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			return lastErr
 		})
 	}
+}
+
+// retryBudgetFraction is the share of the request's deadline budget that must
+// remain for another attempt to be started. A fifth: enough for a warm relay
+// on any sane relay_timeout, small enough that one slow host does not forfeit
+// the retry outright.
+const retryBudgetFraction = 5
+
+// budgetForRetry reports whether enough of the request deadline remains to
+// start another attempt. A context with no deadline always has budget.
+func budgetForRetry(ctx context.Context, start time.Time) bool {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return true
+	}
+	return time.Until(deadline) >= deadline.Sub(start)/retryBudgetFraction
 }
