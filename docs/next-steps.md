@@ -26,20 +26,9 @@ landed on 2026-08-29; what is left needs a decision.
   is still visible with the trickle on.
 
 From the 2026-08-31 end-to-end read (see the standing caveat below), verified
-but not fixed:
+but not fixed (the SYN-blackhole grading and the drain SCAN cost from the same
+list were fixed the same day):
 
-- `drain.RedisStore.refresh` runs `SCAN MATCH sage:drain:*` over the whole
-  keyspace every 5 s on every replica; MATCH filters, it does not index, so
-  the cost scales with everything else in that Redis. Measured 2026-08-31
-  against a Docker Redis holding 500k unrelated keys: one refresh tick is
-  ~1,950 SCAN calls and ~158 ms of Redis CPU, 23,400 SCANs/min from ONE
-  replica, versus one 5 µs MGET for the drain itself. Fix: keep the drains
-  in one HASH (as `reputation/redis.go` does) and refresh with one HGETALL;
-  expiry then comes from the payload's `until` (already checked on read)
-  plus an HDEL of expired fields on refresh. No migration needed — no
-  deployment has Redis drains yet. `local/beta-redis-config.yaml` +
-  `docker run --name sage-redis -p 127.0.0.1:6379:6379 redis:7-alpine` is
-  the harness.
 - A config reload applies `feature_flags` through `FlagStore.Set`, which on
   the Redis store writes the fleet-wide global key — one replica's file edit
   reaches every replica, and a global flip an admin set through the API is

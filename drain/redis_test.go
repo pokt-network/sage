@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -15,58 +14,58 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// fakeRedis is an in-memory stand-in for the four commands drain.RedisClient
-// names. featureflag's tests exercise their store with a nil client, so there
-// was no fake to reuse; this one is deliberately minimal — Scan understands a
-// trailing-star prefix pattern and nothing else, which is the only pattern the
-// store issues.
+// fakeRedis is an in-memory stand-in for the three hash commands
+// drain.RedisClient names, keyed by field: the store only ever touches one
+// hash, so the hash key itself is checked and otherwise ignored.
 type fakeRedis struct {
 	mu   sync.Mutex
 	data map[string]string
-	ttl  map[string]time.Duration
 
-	setErr  error // when non-nil, every Set fails with it
-	scanErr error // when non-nil, every Scan fails with it
-	mgetErr error // when non-nil, every MGet fails with it
-	delErr  error // when non-nil, every Del fails with it
+	hsetErr    error // when non-nil, every HSet fails with it
+	hgetallErr error // when non-nil, every HGetAll fails with it
+	hdelErr    error // when non-nil, every HDel fails with it
 
-	// scanCalls counts the Scan calls, so a test can tell a refresh that
-	// enumerated the namespace from one that did nothing.
-	scanCalls int
+	// hgetallCalls counts the HGetAll calls, so a test can pin that a refresh
+	// is one round trip however many drains there are.
+	hgetallCalls int
 
-	// setEntered/setGate let a test hold one Set on the wire: Set signals
+	// setEntered/setGate let a test hold one HSet on the wire: HSet signals
 	// setEntered and then blocks until setGate is closed. Both are read before
-	// f.mu is taken, so a Del issued meanwhile is not serialized behind the
+	// f.mu is taken, so an HDel issued meanwhile is not serialized behind the
 	// blocked write — that serialization would hide the very race under test.
-	// The gate is one-shot: it catches the first Set and disarms, so a second
+	// The gate is one-shot: it catches the first HSet and disarms, so a second
 	// write issued while the first is stalled provably lands first.
 	setEntered chan struct{}
 	setGate    chan struct{}
 
-	// afterScan, when set, runs after a Scan step has been answered and f.mu
+	// afterHGetAll, when set, runs after HGetAll has been answered and f.mu
 	// released — the window between a refresh's snapshot and its replace.
-	afterScan func()
-	// afterMGet is the same hook one step later: after the values have been
-	// read, so a change made here is invisible to the refresh in flight.
-	afterMGet func()
+	afterHGetAll func()
 }
 
 func newFakeRedis() *fakeRedis {
-	return &fakeRedis{data: make(map[string]string), ttl: make(map[string]time.Duration)}
+	return &fakeRedis{data: make(map[string]string)}
 }
 
-// blockSet arms the gate that holds the next Set on the wire, and clears setErr
-// so that write succeeds. The returned channels are (entered, gate).
+// blockSet arms the gate that holds the next HSet on the wire, and clears
+// hsetErr so that write succeeds. The returned channels are (entered, gate).
 func (f *fakeRedis) blockSet() (chan struct{}, chan struct{}) {
 	entered, gate := make(chan struct{}, 1), make(chan struct{})
 	f.mu.Lock()
-	f.setErr = nil
+	f.hsetErr = nil
 	f.setEntered, f.setGate = entered, gate
 	f.mu.Unlock()
 	return entered, gate
 }
 
-func (f *fakeRedis) Set(_ context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
+func (f *fakeRedis) checkKey(t string) {
+	if t != hashKey {
+		panic("fakeRedis: unexpected hash key " + t)
+	}
+}
+
+func (f *fakeRedis) HSet(_ context.Context, key string, values ...interface{}) *redis.IntCmd {
+	f.checkKey(key)
 	f.mu.Lock()
 	entered, gate := f.setEntered, f.setGate
 	f.setEntered, f.setGate = nil, nil
@@ -81,146 +80,93 @@ func (f *fakeRedis) Set(_ context.Context, key string, value interface{}, expira
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.setErr != nil {
-		return redis.NewStatusResult("", f.setErr)
+	if f.hsetErr != nil {
+		return redis.NewIntResult(0, f.hsetErr)
 	}
-	var s string
-	switch v := value.(type) {
-	case string:
-		s = v
-	case []byte:
-		s = string(v)
-	default:
-		s = fmt.Sprint(v)
-	}
-	f.data[key] = s
-	f.ttl[key] = expiration
-	return redis.NewStatusResult("OK", nil)
-}
-
-func (f *fakeRedis) Del(_ context.Context, keys ...string) *redis.IntCmd {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.delErr != nil {
-		return redis.NewIntResult(0, f.delErr)
+	if len(values)%2 != 0 {
+		panic("fakeRedis: HSet wants field/value pairs")
 	}
 	var n int64
-	for _, k := range keys {
+	for i := 0; i < len(values); i += 2 {
+		field := values[i].(string)
+		var s string
+		switch v := values[i+1].(type) {
+		case string:
+			s = v
+		case []byte:
+			s = string(v)
+		default:
+			s = fmt.Sprint(v)
+		}
+		if _, exists := f.data[field]; !exists {
+			n++
+		}
+		f.data[field] = s
+	}
+	return redis.NewIntResult(n, nil)
+}
+
+func (f *fakeRedis) HDel(_ context.Context, key string, fields ...string) *redis.IntCmd {
+	f.checkKey(key)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.hdelErr != nil {
+		return redis.NewIntResult(0, f.hdelErr)
+	}
+	var n int64
+	for _, k := range fields {
 		if _, ok := f.data[k]; ok {
 			delete(f.data, k)
-			delete(f.ttl, k)
 			n++
 		}
 	}
 	return redis.NewIntResult(n, nil)
 }
 
-// scanPage is how many keys the fake hands back per Scan call.
-const scanPage = 2
-
-// Scan walks the matching keys in sorted order, handing out scanPage of them
-// per call and returning the index of the next one as the cursor — the same
-// contract as Redis, minus the guarantees about keys added mid-iteration. A
-// paging fake rather than a one-shot one is the point: it proves the store
-// actually follows the cursor instead of reading the first page and stopping.
-func (f *fakeRedis) Scan(ctx context.Context, cursor uint64, match string, count int64) *redis.ScanCmd {
-	cmd := f.scan(ctx, cursor, match, count)
-	if f.afterScan != nil {
-		f.afterScan()
+func (f *fakeRedis) HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd {
+	f.checkKey(key)
+	cmd := f.hgetall(ctx)
+	if f.afterHGetAll != nil {
+		f.afterHGetAll()
 	}
 	return cmd
 }
 
-func (f *fakeRedis) scan(ctx context.Context, cursor uint64, match string, _ int64) *redis.ScanCmd {
+func (f *fakeRedis) hgetall(ctx context.Context) *redis.MapStringStringCmd {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-
-	cmd := redis.NewScanCmd(ctx, nil)
-	f.scanCalls++
-	if f.scanErr != nil {
-		cmd.SetErr(f.scanErr)
+	f.hgetallCalls++
+	cmd := redis.NewMapStringStringCmd(ctx)
+	if f.hgetallErr != nil {
+		cmd.SetErr(f.hgetallErr)
 		return cmd
 	}
-
-	prefix := strings.TrimSuffix(match, "*")
-	var all []string
-	for k := range f.data {
-		if strings.HasPrefix(k, prefix) {
-			all = append(all, k)
-		}
+	out := make(map[string]string, len(f.data))
+	for k, v := range f.data {
+		out[k] = v
 	}
-	sort.Strings(all)
-
-	start := int(cursor)
-	if start > len(all) {
-		start = len(all)
-	}
-	end := start + scanPage
-	if end > len(all) {
-		end = len(all)
-	}
-	next := uint64(end)
-	if end >= len(all) {
-		next = 0
-	}
-	cmd.SetVal(all[start:end], next)
+	cmd.SetVal(out)
 	return cmd
 }
 
-// Keys is deliberately absent: drain.RedisClient no longer names it, and the
-// refresh loop must never reach for it again — KEYS blocks the whole server
-// for as long as the keyspace takes to walk, once per replica per cache TTL.
-// TestRedisStore_RefreshScansTheNamespace pins that.
-
-func (f *fakeRedis) MGet(ctx context.Context, keys ...string) *redis.SliceCmd {
-	cmd := f.mget(ctx, keys...)
-	if f.afterMGet != nil {
-		f.afterMGet()
-	}
-	return cmd
-}
-
-func (f *fakeRedis) mget(_ context.Context, keys ...string) *redis.SliceCmd {
+// put writes a field as if another replica had done it.
+func (f *fakeRedis) put(field, value string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.mgetErr != nil {
-		return redis.NewSliceResult(nil, f.mgetErr)
-	}
-	out := make([]interface{}, 0, len(keys))
-	for _, k := range keys {
-		if v, ok := f.data[k]; ok {
-			out = append(out, v)
-		} else {
-			out = append(out, nil) // Redis reports a missing key as a nil element.
-		}
-	}
-	return redis.NewSliceResult(out, nil)
+	f.data[field] = value
 }
 
-// put writes a value as if another replica had done it.
-func (f *fakeRedis) put(key, value string) {
+func (f *fakeRedis) get(field string) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.data[key] = value
-}
-
-func (f *fakeRedis) get(key string) (string, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	v, ok := f.data[key]
+	v, ok := f.data[field]
 	return v, ok
 }
 
-func (f *fakeRedis) expiry(key string) time.Duration {
+func (f *fakeRedis) hgetallCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.ttl[key]
-}
-
-func (f *fakeRedis) scanCallCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.scanCalls
+	return f.hgetallCalls
 }
 
 func (f *fakeRedis) len() int {
@@ -234,10 +180,9 @@ func (f *fakeRedis) wipe() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.data = make(map[string]string)
-	f.ttl = make(map[string]time.Duration)
 }
 
-func TestRedisStore_SetWritesKeyValueAndExpiry(t *testing.T) {
+func TestRedisStore_SetWritesFieldAndValue(t *testing.T) {
 	fake := newFakeRedis()
 	s := NewRedisStore(fake)
 	until := time.Now().Add(30 * time.Minute)
@@ -251,7 +196,7 @@ func TestRedisStore_SetWritesKeyValueAndExpiry(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 
-	const wantKey = "sage:drain:eth:slow.example:websocket"
+	const wantKey = "eth:slow.example:websocket"
 	raw, ok := fake.get(wantKey)
 	if !ok {
 		t.Fatalf("no key %q in redis; have %d keys", wantKey, fake.len())
@@ -271,11 +216,9 @@ func TestRedisStore_SetWritesKeyValueAndExpiry(t *testing.T) {
 		t.Errorf("reason = %q, want %q", got.Reason, "flaky")
 	}
 
-	// The Redis key expires with the drain, so a replica that never sees the
-	// release still stops honoring it on time.
-	if d := fake.expiry(wantKey); (d-time.Until(until)).Abs() > 5*time.Second || d <= 0 {
-		t.Errorf("expiration = %v, want ~%v", d, time.Until(until))
-	}
+	// No per-field TTL exists in a hash: the until IN the value is what every
+	// replica checks on read, and refresh deletes expired fields. See
+	// TestRedisStore_RefreshDeletesExpiredFields.
 }
 
 func TestRedisStore_UnscopedDrainUsesAllSegment(t *testing.T) {
@@ -288,7 +231,7 @@ func TestRedisStore_UnscopedDrainUsesAllSegment(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if _, ok := fake.get("sage:drain:eth:slow.example:all"); !ok {
+	if _, ok := fake.get("eth:slow.example:all"); !ok {
 		t.Fatal(`an unscoped drain must use the "all" segment`)
 	}
 }
@@ -336,7 +279,7 @@ func TestRedisStore_ReleaseDeletesBoth(t *testing.T) {
 
 func TestRedisStore_PropagationFailureStillDrainsLocally(t *testing.T) {
 	fake := newFakeRedis()
-	fake.setErr = errors.New("connection refused")
+	fake.hsetErr = errors.New("connection refused")
 	s := NewRedisStore(fake)
 
 	err := s.Set(context.Background(), Entry{
@@ -365,7 +308,7 @@ func TestRedisStore_ReleasePropagationFailureStillReleasesLocally(t *testing.T) 
 	if err := s.Set(ctx, Entry{Key: k, Until: time.Now().Add(time.Minute)}); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	fake.delErr = errors.New("connection refused")
+	fake.hdelErr = errors.New("connection refused")
 
 	if err := s.Release(ctx, k); !errors.Is(err, ErrPropagation) {
 		t.Fatalf("Release error = %v, want one wrapping ErrPropagation", err)
@@ -377,7 +320,7 @@ func TestRedisStore_ReleasePropagationFailureStillReleasesLocally(t *testing.T) 
 
 func TestRedisStore_PendingDrainSurvivesRefresh(t *testing.T) {
 	fake := newFakeRedis()
-	fake.setErr = errors.New("connection refused")
+	fake.hsetErr = errors.New("connection refused")
 	s := NewRedisStore(fake)
 	ctx := context.Background()
 
@@ -407,7 +350,7 @@ func TestRedisStore_PendingDrainSurvivesRefresh(t *testing.T) {
 
 func TestRedisStore_PendingDrainPropagatesWhenRedisRecovers(t *testing.T) {
 	fake := newFakeRedis()
-	fake.setErr = errors.New("connection refused")
+	fake.hsetErr = errors.New("connection refused")
 	s := NewRedisStore(fake)
 	ctx := context.Background()
 	e := Entry{
@@ -419,10 +362,10 @@ func TestRedisStore_PendingDrainPropagatesWhenRedisRecovers(t *testing.T) {
 		t.Fatalf("Set error = %v, want one wrapping ErrPropagation", err)
 	}
 
-	fake.setErr = nil // redis comes back
+	fake.hsetErr = nil // redis comes back
 	s.refresh(ctx)
 
-	raw, ok := fake.get("sage:drain:eth:slow.example:json_rpc")
+	raw, ok := fake.get("eth:slow.example:json_rpc")
 	if !ok {
 		t.Fatal("the refresh must retry the write that failed, not just hold the drain locally")
 	}
@@ -439,7 +382,7 @@ func TestRedisStore_PendingDrainPropagatesWhenRedisRecovers(t *testing.T) {
 
 func TestRedisStore_ReleaseClearsAPendingDrain(t *testing.T) {
 	fake := newFakeRedis()
-	fake.setErr = errors.New("connection refused")
+	fake.hsetErr = errors.New("connection refused")
 	s := NewRedisStore(fake)
 	ctx := context.Background()
 	k := Key{ServiceID: "eth", Operator: "slow.example", RPCType: domain.RPCTypeJSONRPC}
@@ -454,7 +397,7 @@ func TestRedisStore_ReleaseClearsAPendingDrain(t *testing.T) {
 		t.Fatalf("pendingCount = %d, want the released entry gone", s.pendingCount())
 	}
 
-	fake.setErr = nil
+	fake.hsetErr = nil
 	s.refresh(ctx)
 
 	if s.Drained("eth", "slow.example", domain.RPCTypeJSONRPC) {
@@ -467,7 +410,7 @@ func TestRedisStore_ReleaseClearsAPendingDrain(t *testing.T) {
 
 func TestRedisStore_ExpiredPendingDrainIsDropped(t *testing.T) {
 	fake := newFakeRedis()
-	fake.setErr = errors.New("connection refused")
+	fake.hsetErr = errors.New("connection refused")
 	s := NewRedisStore(fake)
 	ctx := context.Background()
 
@@ -479,7 +422,7 @@ func TestRedisStore_ExpiredPendingDrainIsDropped(t *testing.T) {
 	}
 
 	time.Sleep(40 * time.Millisecond)
-	fake.setErr = nil
+	fake.hsetErr = nil
 	s.refresh(ctx)
 
 	if s.pendingCount() != 0 {
@@ -495,7 +438,7 @@ func TestRedisStore_ExpiredPendingDrainIsDropped(t *testing.T) {
 
 func TestRedisStore_SetPropagatingLaterClearsPending(t *testing.T) {
 	fake := newFakeRedis()
-	fake.setErr = errors.New("connection refused")
+	fake.hsetErr = errors.New("connection refused")
 	s := NewRedisStore(fake)
 	ctx := context.Background()
 	k := Key{ServiceID: "eth", Operator: "slow.example", RPCType: domain.RPCTypeJSONRPC}
@@ -504,7 +447,7 @@ func TestRedisStore_SetPropagatingLaterClearsPending(t *testing.T) {
 		t.Fatalf("Set error = %v, want one wrapping ErrPropagation", err)
 	}
 
-	fake.setErr = nil
+	fake.hsetErr = nil
 	if err := s.Set(ctx, Entry{Key: k, Until: time.Now().Add(2 * time.Minute)}); err != nil {
 		t.Fatalf("second Set: %v", err)
 	}
@@ -537,7 +480,7 @@ func TestRedisStore_EncodingFailureIsNotAPropagationError(t *testing.T) {
 
 func TestRedisStore_ReleaseBeatsAnInFlightRetry(t *testing.T) {
 	fake := newFakeRedis()
-	fake.setErr = errors.New("connection refused")
+	fake.hsetErr = errors.New("connection refused")
 	s := NewRedisStore(fake)
 	ctx := context.Background()
 	k := Key{ServiceID: "eth", Operator: "slow.example", RPCType: domain.RPCTypeJSONRPC}
@@ -570,7 +513,7 @@ func TestRedisStore_ReleaseBeatsAnInFlightRetry(t *testing.T) {
 	close(gate)
 	<-done
 
-	if _, ok := fake.get("sage:drain:eth:slow.example:json_rpc"); ok {
+	if _, ok := fake.get("eth:slow.example:json_rpc"); ok {
 		t.Error("a write that raced a release must be undone, not left to win in redis")
 	}
 	if s.Drained("eth", "slow.example", domain.RPCTypeJSONRPC) {
@@ -583,7 +526,7 @@ func TestRedisStore_ReleaseBeatsAnInFlightRetry(t *testing.T) {
 
 func TestRedisStore_NewerSetBeatsAnInFlightRetry(t *testing.T) {
 	fake := newFakeRedis()
-	fake.setErr = errors.New("connection refused")
+	fake.hsetErr = errors.New("connection refused")
 	s := NewRedisStore(fake)
 	ctx := context.Background()
 	k := Key{ServiceID: "eth", Operator: "slow.example", RPCType: domain.RPCTypeJSONRPC}
@@ -629,7 +572,7 @@ func TestRedisStore_NewerSetBeatsAnInFlightRetry(t *testing.T) {
 
 	// One more tick and redis agrees with this instance again.
 	s.refresh(ctx)
-	raw, ok := fake.get("sage:drain:eth:slow.example:json_rpc")
+	raw, ok := fake.get("eth:slow.example:json_rpc")
 	if !ok || !strings.Contains(raw, "new") {
 		t.Fatalf("redis holds %q, want the newer drain rewritten over the stale one", raw)
 	}
@@ -643,7 +586,7 @@ func TestRedisStore_RefreshAdoptsAnotherReplicasDrain(t *testing.T) {
 	s := NewRedisStore(fake)
 	until := time.Now().Add(time.Minute)
 	body, _ := json.Marshal(map[string]any{"until": until, "reason": "set elsewhere"})
-	fake.put("sage:drain:eth:other.example:all", string(body))
+	fake.put("eth:other.example:all", string(body))
 
 	s.refresh(context.Background())
 
@@ -681,10 +624,10 @@ func TestRedisStore_RefreshSkipsExpiredAndMalformedEntries(t *testing.T) {
 	s := NewRedisStore(fake)
 	past, _ := json.Marshal(map[string]any{"until": time.Now().Add(-time.Minute)})
 	live, _ := json.Marshal(map[string]any{"until": time.Now().Add(time.Minute)})
-	fake.put("sage:drain:eth:expired.example:all", string(past))
-	fake.put("sage:drain:eth:garbage.example:all", "not json")
-	fake.put("sage:drain:eth:short", string(live)) // malformed key
-	fake.put("sage:drain:eth:good.example:all", string(live))
+	fake.put("eth:expired.example:all", string(past))
+	fake.put("eth:garbage.example:all", "not json")
+	fake.put("eth:short", string(live)) // malformed key
+	fake.put("eth:good.example:all", string(live))
 
 	s.refresh(context.Background())
 
@@ -699,16 +642,14 @@ func TestRedisStore_RefreshSkipsExpiredAndMalformedEntries(t *testing.T) {
 	}
 }
 
-// TestRedisStore_RefreshScansTheNamespace pins the enumeration command. KEYS
-// walks the whole keyspace and blocks the server while it does; the refresh
-// loop runs on every replica every cache TTL, so the drain feature was
-// charging every other user of that Redis for its own bookkeeping. SCAN is
-// cursored and yields, and the fake pages deliberately small so a store that
-// read one page and stopped would leave the tail un-drained.
-//
-// drain.RedisClient no longer names Keys at all, so the compiler is the first
-// line of this defence and this test is the second.
-func TestRedisStore_RefreshScansTheNamespace(t *testing.T) {
+// TestRedisStore_RefreshIsOneHGetAll pins the read command. The previous
+// layout, one key per drain, had to be enumerated with SCAN over the whole
+// keyspace; measured against a Redis holding 500k unrelated keys that was
+// ~1,950 SCAN calls and ~158 ms of Redis CPU per refresh tick per replica.
+// One HGETALL costs what the drains cost, and drain.RedisClient no longer
+// names SCAN or KEYS at all, so the compiler is the first line of this defence
+// and this test is the second.
+func TestRedisStore_RefreshIsOneHGetAll(t *testing.T) {
 	fake := newFakeRedis()
 	body, err := json.Marshal(payload{Until: time.Now().Add(time.Minute)})
 	if err != nil {
@@ -716,24 +657,39 @@ func TestRedisStore_RefreshScansTheNamespace(t *testing.T) {
 	}
 	operators := []string{"a.example", "b.example", "c.example", "d.example", "e.example"}
 	for _, op := range operators {
-		fake.put(keyPrefix+"eth:"+op+":all", string(body))
+		fake.put("eth:"+op+":all", string(body))
 	}
-	// Something else's key in the same Redis: the scan pattern must exclude it.
-	fake.put("sage:flags:global", "{}")
 
 	s := NewRedisStore(fake)
 	s.refresh(context.Background())
 
-	if got := fake.scanCallCount(); got == 0 {
-		t.Fatal("refresh issued no SCAN: the namespace must be enumerated with SCAN, never KEYS")
-	} else if got != 3 {
-		t.Errorf("SCAN calls = %d, want 3 (5 keys at %d per page): the cursor must be followed to 0", got, scanPage)
+	if got := fake.hgetallCallCount(); got != 1 {
+		t.Fatalf("HGETALL calls = %d, want exactly 1 for %d drains", got, len(operators))
 	}
-
 	for _, op := range operators {
 		if !s.Drained("eth", op, domain.RPCTypeJSONRPC) {
-			t.Errorf("%s is not drained: the scan lost a key", op)
+			t.Errorf("%s is not drained: the read lost a field", op)
 		}
+	}
+}
+
+// A hash field cannot expire on its own. Refresh must delete the fields whose
+// until has passed, or the hash holds every drain ever set.
+func TestRedisStore_RefreshDeletesExpiredFields(t *testing.T) {
+	fake := newFakeRedis()
+	past, _ := json.Marshal(payload{Until: time.Now().Add(-time.Minute)})
+	live, _ := json.Marshal(payload{Until: time.Now().Add(time.Minute)})
+	fake.put("eth:expired.example:all", string(past))
+	fake.put("eth:live.example:all", string(live))
+
+	s := NewRedisStore(fake)
+	s.refresh(context.Background())
+
+	if _, still := fake.get("eth:expired.example:all"); still {
+		t.Error("an expired field must be deleted from the hash on refresh")
+	}
+	if _, kept := fake.get("eth:live.example:all"); !kept {
+		t.Error("a live field must be left alone")
 	}
 }
 
@@ -748,17 +704,10 @@ func TestRedisStore_RefreshKeepsLocalStateOnRedisError(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 
-	fake.scanErr = errors.New("redis down")
+	fake.hgetallErr = errors.New("redis down")
 	s.refresh(ctx)
 	if !s.Drained("eth", "slow.example", domain.RPCTypeJSONRPC) {
-		t.Fatal("a Scan failure must not un-drain what is already benched")
-	}
-
-	fake.scanErr = nil
-	fake.mgetErr = errors.New("redis down")
-	s.refresh(ctx)
-	if !s.Drained("eth", "slow.example", domain.RPCTypeJSONRPC) {
-		t.Fatal("an MGet failure must not un-drain what is already benched")
+		t.Fatal("an HGETALL failure must not un-drain what is already benched")
 	}
 }
 
@@ -777,7 +726,7 @@ func waitDrained(t *testing.T, s *RedisStore, operator, msg string) {
 func TestRedisStore_StartRefreshesImmediately(t *testing.T) {
 	fake := newFakeRedis()
 	body, _ := json.Marshal(map[string]any{"until": time.Now().Add(time.Minute)})
-	fake.put("sage:drain:eth:other.example:all", string(body))
+	fake.put("eth:other.example:all", string(body))
 
 	// A TTL far longer than the test: only an immediate first refresh can make
 	// this pass. A pod that boots into a fleet with a live drain must not route
@@ -801,7 +750,7 @@ func TestRedisStore_StartKeepsRefreshingOnTheTicker(t *testing.T) {
 	// Written well after the initial refresh, so only a later tick can see it.
 	time.Sleep(20 * time.Millisecond)
 	body, _ := json.Marshal(map[string]any{"until": time.Now().Add(time.Minute)})
-	fake.put("sage:drain:eth:other.example:all", string(body))
+	fake.put("eth:other.example:all", string(body))
 
 	waitDrained(t, s, "other.example", "Start's refresh loop never picked up a peer's drain")
 }
@@ -857,17 +806,17 @@ func TestRedisStore_KeyRoundTrip(t *testing.T) {
 		{ServiceID: "poly", Operator: "a.b.example", RPCType: ""},
 		{ServiceID: "xrplevm-testnet", Operator: "node.example.co.uk", RPCType: domain.RPCTypeWebSocket},
 	} {
-		got, ok := parseRedisKey(redisKey(k))
+		got, ok := parseRedisField(redisField(k))
 		if !ok {
-			t.Fatalf("parseRedisKey(%q) failed", redisKey(k))
+			t.Fatalf("parseRedisField(%q) failed", redisField(k))
 		}
 		if got != k {
 			t.Errorf("round trip of %+v gave %+v", k, got)
 		}
 	}
-	for _, bad := range []string{"", "sage:drain:", "sage:drain:eth:op", "other:prefix:a:b:c", "sage:drain:eth:op:all:extra"} {
-		if _, ok := parseRedisKey(bad); ok {
-			t.Errorf("parseRedisKey(%q) must reject a malformed key", bad)
+	for _, bad := range []string{"", ":", "eth:op", "other:prefix:a:b:c", "eth:op:all:extra", ":op:all"} {
+		if _, ok := parseRedisField(bad); ok {
+			t.Errorf("parseRedisField(%q) must reject a malformed key", bad)
 		}
 	}
 }
@@ -887,8 +836,8 @@ func TestRedisStore_SetDuringRefreshSurvivesTheReplace(t *testing.T) {
 		Key:   Key{ServiceID: "eth", Operator: "late.example"},
 		Until: time.Now().Add(time.Minute),
 	}
-	fake.afterScan = func() {
-		fake.afterScan = nil // Once: the Set below writes to Redis too.
+	fake.afterHGetAll = func() {
+		fake.afterHGetAll = nil // Once: the Set below writes to Redis too.
 		if err := s.Set(context.Background(), entry); err != nil {
 			t.Errorf("Set: %v", err)
 		}
@@ -920,8 +869,8 @@ func TestRedisStore_ReleaseDuringRefreshIsNotResurrected(t *testing.T) {
 	if err := s.Set(context.Background(), entry); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	fake.afterMGet = func() {
-		fake.afterMGet = nil
+	fake.afterHGetAll = func() {
+		fake.afterHGetAll = nil
 		if err := s.Release(context.Background(), entry.Key); err != nil {
 			t.Errorf("Release: %v", err)
 		}

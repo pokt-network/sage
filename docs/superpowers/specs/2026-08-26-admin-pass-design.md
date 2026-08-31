@@ -85,10 +85,13 @@ type Store interface {
 
 `MemoryStore` holds a `sync.RWMutex` map keyed by `Key`; expiry is lazy on read.
 `RedisStore` wraps the memory store as a cache with a short TTL (the flag store's
-`cacheEntry` pattern): writes go to Redis (`sage:drain:<service>:<operator>:<rpc>` with
-the drain's own expiry) AND to local memory; `Drained` reads local memory; a refresh
-goroutine (`safego`) pulls the service's keys from Redis every cache TTL so a drain
-set on another replica arrives within seconds. A Redis write failure is returned to
+`cacheEntry` pattern): writes go to Redis AND to local memory; `Drained` reads local memory; a refresh
+goroutine (`safego`) re-reads Redis every cache TTL so a drain set on another
+replica arrives within seconds. Layout (since 2026-08-31): one HASH `sage:drain`,
+field `<service>:<operator>:<rpc-or-all>`, value `{until, reason}`; refresh is one
+`HGETALL` and deletes fields whose `until` has passed. The original one-key-per-drain
+layout with per-key TTL needed `SCAN` over the whole keyspace every tick, measured at
+~1,950 calls / ~158 ms Redis CPU per tick per replica against 500k unrelated keys. A Redis write failure is returned to
 the caller as a `propagation_error` while the local drain still applies — PATH's
 "this pod only" honesty.
 

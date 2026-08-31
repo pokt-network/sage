@@ -16,11 +16,22 @@ import (
 )
 
 const (
-	// keyPrefix namespaces drain keys: sage:drain:<service>:<operator>:<rpc>.
-	keyPrefix = "sage:drain:"
+	// hashKey is the one Redis HASH every drain lives in, as a field
+	// <service>:<operator>:<rpc-or-all>. One key, not one per drain: the
+	// refresh loop runs on every replica every cache TTL, and a per-drain key
+	// namespace had to be enumerated with SCAN over the WHOLE keyspace —
+	// MATCH filters, it does not index — which against a Redis holding 500k
+	// unrelated keys measured ~1,950 SCAN calls and ~158 ms of Redis CPU per
+	// tick per replica. One HGETALL costs what the drains cost.
+	//
+	// The price is per-key TTL: a hash field cannot expire on its own. Expiry
+	// is the payload's own until, checked on every read, and refresh deletes
+	// fields it finds expired, so the hash does not grow with every drain
+	// ever set.
+	hashKey = "sage:drain"
 
-	// allRPCTypes is the key segment standing in for an empty RPCType. An
-	// empty segment would make the key ambiguous with a trailing colon, and
+	// allRPCTypes is the field segment standing in for an empty RPCType. An
+	// empty segment would make the field ambiguous with a trailing colon, and
 	// no domain.RPCType is spelled "all", so there is nothing to collide with.
 	allRPCTypes = "all"
 
@@ -41,23 +52,17 @@ const (
 // either propagates or expires. "This pod only" is a promise, not a caveat.
 var ErrPropagation = errors.New("drain did not propagate to redis")
 
-// RedisClient is the subset of redis.Cmdable that RedisStore uses.
+// RedisClient is the subset of redis.Cmdable that RedisStore uses: the three
+// hash commands, nothing keyspace-wide. It is declared here rather than shared
+// with featureflag.RedisClient because the two need different commands; an
+// interface is cheaper to declare twice than to widen for a consumer that does
+// not need the extra method.
 //
-// It is declared here rather than shared with featureflag.RedisClient because
-// the two need different commands: this store enumerates its own key space
-// (Scan + MGet) and never issues a single-key Get. An interface is cheaper to
-// declare twice than to widen for a consumer that does not need the extra
-// method.
-//
-// Scan rather than Keys: the refresh loop runs on every replica every cache
-// TTL, and KEYS walks the entire keyspace in one blocking pass — on a Redis
-// shared with anything else, that is a server-wide stall every few seconds,
-// caused by the drain feature and paid for by whatever else uses that Redis.
+// No SCAN and no KEYS on purpose — see hashKey.
 type RedisClient interface {
-	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
-	Del(ctx context.Context, keys ...string) *redis.IntCmd
-	Scan(ctx context.Context, cursor uint64, match string, count int64) *redis.ScanCmd
-	MGet(ctx context.Context, keys ...string) *redis.SliceCmd
+	HSet(ctx context.Context, key string, values ...interface{}) *redis.IntCmd
+	HDel(ctx context.Context, key string, fields ...string) *redis.IntCmd
+	HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd
 }
 
 var _ RedisClient = (*redis.Client)(nil)
@@ -175,10 +180,10 @@ func (s *RedisStore) Start(ctx context.Context) {
 	})
 }
 
-// Set installs or refreshes a drain locally and then in Redis, with the Redis
-// key expiring when the drain does — a replica that never sees the release
-// still stops honoring it on time. An Until that has passed is a release, here
-// as in MemoryStore.
+// Set installs or refreshes a drain locally and then in Redis. The value
+// carries the drain's own until, which every replica checks on read, so one
+// that never sees the release still stops honoring it on time. An Until that
+// has passed is a release, here as in MemoryStore.
 //
 // A Redis failure returns an error wrapping ErrPropagation and parks the entry
 // as pending: the local drain applies for its full duration, and the refresh
@@ -205,23 +210,22 @@ func (s *RedisStore) Set(ctx context.Context, e Entry) error {
 	return err
 }
 
-// propagate writes one entry to Redis with the drain's own expiry. A Redis
-// failure wraps ErrPropagation; an encoding failure does not, because no amount
-// of retrying will fix it.
+// propagate writes one entry to Redis. A Redis failure wraps ErrPropagation; an
+// encoding failure does not, because no amount of retrying will fix it.
 //
-// It is the only place that writes a drain key, and it is always bracketed by
-// a begin (beginSet, or takePending for a retry) and finishWrite — that pair is
-// what lets a write overtaken while it was on the wire notice and undo itself.
+// It is the only place that writes a drain field, and it is always bracketed
+// by a begin (beginSet, or takePending for a retry) and finishWrite — that pair
+// is what lets a write overtaken while it was on the wire notice and undo
+// itself.
 func (s *RedisStore) propagate(ctx context.Context, e Entry) error {
-	ttl := time.Until(e.Until)
-	if ttl <= 0 {
+	if time.Until(e.Until) <= 0 {
 		return nil
 	}
 	value, err := json.Marshal(payload{Until: e.Until, Reason: e.Reason})
 	if err != nil {
-		return fmt.Errorf("encoding drain %s: %w", redisKey(e.Key), err)
+		return fmt.Errorf("encoding drain %s: %w", redisField(e.Key), err)
 	}
-	if err := s.client.Set(ctx, redisKey(e.Key), value, ttl).Err(); err != nil {
+	if err := s.client.HSet(ctx, hashKey, redisField(e.Key), value).Err(); err != nil {
 		return fmt.Errorf("%w: %v", ErrPropagation, err)
 	}
 	return nil
@@ -317,9 +321,9 @@ func (s *RedisStore) finishWrite(ctx context.Context, e Entry, gen uint64, write
 	s.keysMu.Unlock()
 
 	if compensate {
-		if err := s.client.Del(ctx, redisKey(e.Key)).Err(); err != nil {
+		if err := s.client.HDel(ctx, hashKey, redisField(e.Key)).Err(); err != nil {
 			s.log().Warn("drain: could not undo a write that raced a release",
-				"key", redisKey(e.Key), "error", err)
+				"key", redisField(e.Key), "error", err)
 		}
 	}
 	return live, keep
@@ -341,8 +345,8 @@ func (s *RedisStore) pendingCount() int {
 
 // Release removes the drain locally and in Redis. A Redis failure returns an
 // error wrapping ErrPropagation: the operator's own instance has stopped
-// draining, but peers will keep the operator benched until the key's own expiry
-// runs out.
+// draining, but peers will keep the operator benched until the drain's own
+// until runs out.
 func (s *RedisStore) Release(ctx context.Context, k Key) error {
 	k.Operator = strings.ToLower(k.Operator)
 	if err := s.MemoryStore.Release(ctx, k); err != nil {
@@ -360,66 +364,57 @@ func (s *RedisStore) Release(ctx context.Context, k Key) error {
 }
 
 func (s *RedisStore) del(ctx context.Context, k Key) error {
-	if err := s.client.Del(ctx, redisKey(k)).Err(); err != nil {
+	if err := s.client.HDel(ctx, hashKey, redisField(k)).Err(); err != nil {
 		return fmt.Errorf("%w: %v", ErrPropagation, err)
 	}
 	return nil
 }
 
-// refresh rebuilds the local map from a Scan of the drain namespace plus one
-// MGet, then lays the pending (local-only) drains back on top.
+// refresh rebuilds the local map from one HGETALL of the drain hash, then lays
+// the pending (local-only) drains back on top.
 //
 // It replaces the map rather than merging into it, which is the whole point: a
-// release performed on another replica shows up as a key that is simply gone,
-// and merging would keep the drain alive here forever. Pending entries are the
-// one exception, and they are an exception this instance owns rather than one
-// inferred from a missing key — see reconcilePending.
+// release performed on another replica shows up as a field that is simply
+// gone, and merging would keep the drain alive here forever. Pending entries
+// are the one exception, and they are an exception this instance owns rather
+// than one inferred from a missing field — see reconcilePending.
 //
 // A Redis error leaves the local map alone. An unreachable Redis must not
 // un-bench an operator an admin deliberately benched — degrading to a stale
 // drain is safe, degrading to no drain is not.
+//
+// Fields whose until has passed are deleted on the way through. Hash fields
+// have no TTL of their own, and without this the hash would hold every drain
+// ever set; the delete is best-effort, because a field that stays is only
+// skipped again next tick.
 func (s *RedisStore) refresh(ctx context.Context) {
 	if s.client == nil {
 		return
 	}
 
-	// Taken before the scan: anything Set locally after this instant is newer
+	// Taken before the read: anything Set locally after this instant is newer
 	// than the snapshot and must survive the replace below.
 	began := time.Now()
-	keys, err := s.scanKeys(ctx)
+	all, err := s.client.HGetAll(ctx, hashKey).Result()
 	if err != nil {
-		s.log().Warn("drain refresh: listing redis keys failed, keeping local drains", "error", err)
+		s.log().Warn("drain refresh: reading redis failed, keeping local drains", "error", err)
 		return
 	}
 
-	var values []interface{}
-	if len(keys) > 0 {
-		values, err = s.client.MGet(ctx, keys...).Result()
-		if err != nil {
-			s.log().Warn("drain refresh: reading redis values failed, keeping local drains", "error", err)
-			return
-		}
-	}
-
 	now := time.Now()
-	next := make(map[Key]Entry, len(keys))
-	for i, key := range keys {
-		if i >= len(values) {
-			break
-		}
-		raw, ok := values[i].(string)
+	next := make(map[Key]Entry, len(all))
+	var expired []string
+	for field, raw := range all {
+		k, ok := parseRedisField(field)
 		if !ok {
-			continue // nil: the key expired between the Keys and the MGet.
-		}
-		k, ok := parseRedisKey(key)
-		if !ok {
-			continue
+			continue // Written by a future version, or garbage: skipped, not guessed at.
 		}
 		var p payload
 		if err := json.Unmarshal([]byte(raw), &p); err != nil {
 			continue // One malformed value must not cost the other drains.
 		}
 		if !p.Until.After(now) {
+			expired = append(expired, field)
 			continue
 		}
 		next[k] = Entry{Key: k, Until: p.Until, Reason: p.Reason}
@@ -427,47 +422,10 @@ func (s *RedisStore) refresh(ctx context.Context) {
 
 	s.reconcilePending(ctx, next, now)
 	s.replaceAll(next, began)
-}
 
-// scanCount is the COUNT hint given to each SCAN cursor step. Drain keys are
-// few — one per benched operator per service — so this is about bounding the
-// work Redis does per call, not about the round trips: a fleet with a handful
-// of drains finishes in one.
-const scanCount = 256
-
-// scanKeys enumerates the drain namespace with SCAN, following the cursor to
-// completion. Duplicates are dropped: SCAN may return a key twice when the
-// keyspace is rehashed mid-iteration, and MGetting the same key twice would
-// be pointless work.
-//
-// A failure part-way through is returned rather than salvaged. A partial view
-// of the namespace is worse than no view: refresh replaces the local map, so
-// half a scan would silently un-bench every operator whose key happened to sit
-// after the failing cursor step.
-func (s *RedisStore) scanKeys(ctx context.Context) ([]string, error) {
-	var (
-		keys   []string
-		seen   map[string]struct{}
-		cursor uint64
-	)
-	for {
-		page, next, err := s.client.Scan(ctx, cursor, keyPrefix+"*", scanCount).Result()
-		if err != nil {
-			return nil, err
-		}
-		for _, k := range page {
-			if seen == nil {
-				seen = make(map[string]struct{}, len(page))
-			}
-			if _, dup := seen[k]; dup {
-				continue
-			}
-			seen[k] = struct{}{}
-			keys = append(keys, k)
-		}
-		cursor = next
-		if cursor == 0 {
-			return keys, nil
+	if len(expired) > 0 {
+		if err := s.client.HDel(ctx, hashKey, expired...).Err(); err != nil {
+			s.log().Debug("drain refresh: could not delete expired fields", "count", len(expired), "error", err)
 		}
 	}
 }
@@ -492,7 +450,7 @@ func (s *RedisStore) reconcilePending(ctx context.Context, next map[Key]Entry, n
 		err := s.propagate(ctx, r.entry)
 		if err != nil {
 			s.log().Warn("drain refresh: retrying a drain that failed to propagate",
-				"key", redisKey(r.entry.Key), "error", err)
+				"key", redisField(r.entry.Key), "error", err)
 		}
 		if live, keep := s.finishWrite(ctx, r.entry, r.gen, err); keep && live.Until.After(now) {
 			next[live.Key] = live
@@ -538,31 +496,27 @@ func (s *RedisStore) log() *slog.Logger {
 	return s.logger
 }
 
-// payload is the JSON stored at a drain key. The key carries the service,
-// operator and RPC type, so the value only has to carry what the key cannot.
+// payload is the JSON stored in a drain field. The field carries the service,
+// operator and RPC type, so the value only has to carry what the field cannot.
 type payload struct {
 	Until  time.Time `json:"until"`
 	Reason string    `json:"reason,omitempty"`
 }
 
-// redisKey renders k as sage:drain:<service>:<operator>:<rpc-or-all>.
-func redisKey(k Key) string {
+// redisField renders k as <service>:<operator>:<rpc-or-all>.
+func redisField(k Key) string {
 	rpc := string(k.RPCType)
 	if rpc == "" {
 		rpc = allRPCTypes
 	}
-	return keyPrefix + string(k.ServiceID) + ":" + strings.ToLower(k.Operator) + ":" + rpc
+	return string(k.ServiceID) + ":" + strings.ToLower(k.Operator) + ":" + rpc
 }
 
-// parseRedisKey is redisKey's inverse. It reports false for anything that does
-// not have exactly the three expected segments — a key written by a future
-// version, or by something else sharing the namespace, is skipped rather than
-// guessed at.
-func parseRedisKey(key string) (Key, bool) {
-	if !strings.HasPrefix(key, keyPrefix) {
-		return Key{}, false
-	}
-	parts := strings.Split(key[len(keyPrefix):], ":")
+// parseRedisField is redisField's inverse. It reports false for anything that
+// does not have exactly the three expected segments — a field written by a
+// future version is skipped rather than guessed at.
+func parseRedisField(field string) (Key, bool) {
+	parts := strings.Split(field, ":")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return Key{}, false
 	}
