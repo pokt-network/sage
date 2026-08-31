@@ -28,6 +28,16 @@ landed on 2026-08-29; what is left needs a decision.
 
 From the mainnet canary (2026-08-31), parked rather than done:
 
+- **`blocked_suppliers` and `endpoint_policy`.** Two PATH keys the canary
+  config carries that SAGE parses and ignores. `blocked_suppliers` (a list of
+  supplier operator addresses per service; the config bans one on `poly`) has
+  no SAGE equivalent — `blocked_domains` keys on URL domain and the drain on
+  operator domain — so that supplier is eligible on the canary.
+  `endpoint_policy` (`require_https`, `require_domain`) would reject plain
+  `http://` and raw-IP stakes; none exist on mainnet today (0 of 686 endpoint
+  URLs in the canary's first log). Both land as fields plus a filter next to
+  the blacklist in `protocol/shannon/relayer.go endpoints()`. Next image.
+
 - **Traffic-informed probing.** A backend that served client relays within the
   last interval was graded by them (every attempt scores); probing it too buys
   a second copy of a fact the score middleware already has. Skipping those
