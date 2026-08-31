@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -178,9 +179,19 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 	ctx := relay.NewContext(req.Context(), req, r.logger, rw)
 
 	if err := r.chain.HandleRelay(ctx); err != nil {
-		r.logger.Error("relay chain error", "service", ctx.ServiceID, "endpoint", ctx.Endpoint, "error", err)
-		r.writeRelayError(rw, ctx, err)
-		return
+		// A retry verdict with a response in hand is not a failure to
+		// deliver: no further attempt did better, so the upstream's own
+		// answer stands — the chain's `execution reverted`, the node's
+		// `block not found`. Replacing it with a gateway-made -32603 hid the
+		// real error from the client on ~1% of a canary's requests.
+		if ctx.Response != nil && errors.Is(err, domain.ErrRetryVerdict) {
+			r.logger.Info("relay: delivering the last upstream response after a retry verdict",
+				"service", ctx.ServiceID, "endpoint", ctx.Endpoint, "verdict", err)
+		} else {
+			r.logger.Error("relay chain error", "service", ctx.ServiceID, "endpoint", ctx.Endpoint, "error", err)
+			r.writeRelayError(rw, ctx, err)
+			return
+		}
 	}
 
 	// If the chain wrote the response itself (via ctx.Writer.Write) we are done.
@@ -264,8 +275,6 @@ func encodeGRPCWebTrailers(code int, message string) []byte {
 // wrote — a deep failure like a send error — this is the write that answers the
 // client.
 func (r *Router) writeRelayError(rw relay.ResponseWriter, ctx *relay.Context, err error) {
-	r.logger.Error("relay error", "service", ctx.ServiceID, "error", err)
-
 	if ctx.RPCType == domain.RPCTypeJSONRPC || isJSONRPCRequest(ctx) {
 		var id json.RawMessage = []byte("null")
 		if len(ctx.Payloads) > 0 {

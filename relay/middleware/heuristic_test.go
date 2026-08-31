@@ -2,6 +2,7 @@ package middleware_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/pokt-network/sage/domain"
@@ -232,5 +233,23 @@ func TestHeuristic_ClientCancelIsAttributedToClient(t *testing.T) {
 	_ = h.HandleRelay(ctx)
 	if ctx.HeuristicResult == nil || ctx.HeuristicResult.Attribution != heuristic.AttrClient {
 		t.Fatalf("result = %+v, want AttrClient", ctx.HeuristicResult)
+	}
+}
+
+// The retry verdict is an error only to make Retry go again; whoever is left
+// holding it with a response in hand must be able to tell it from a failure
+// that has nothing to deliver.
+func TestHeuristic_RetryVerdict_IsIdentifiable(t *testing.T) {
+	flags := newMockFlags(map[string]bool{"heuristic": true})
+	handler := middleware.Heuristic(flags)(relay.Noop)
+
+	ctx := newCtx(newPOSTRequest("/v1", ""))
+	ctx.ServiceID = "eth"
+	ctx.RPCType = domain.RPCTypeJSONRPC
+	ctx.Response = &domain.Response{Body: []byte(`Internal Server Error`), HTTPStatusCode: 500}
+
+	err := handler.HandleRelay(ctx)
+	if !errors.Is(err, domain.ErrRetryVerdict) {
+		t.Fatalf("retry verdict must wrap domain.ErrRetryVerdict, got %v", err)
 	}
 }

@@ -147,6 +147,11 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- A retry verdict with no better attempt behind it now delivers the upstream's
+  own response (the chain's `execution reverted`, the node's `block not
+  found`) instead of a gateway-made `-32603`; a failed relay logs one ERROR
+  line, not two. Found on the mainnet canary's first hour of traffic: ~1% of
+  requests, invisible in `sage_relay_total`, which recorded the upstream 200.
 - The cosmos health check reached json_rpc-only suppliers as `comet_bft` and
   graded them `minor_error` every cycle for a mismatch on SAGE's side (the
   plugin's JSON-RPC variant keyed on a store field nothing wrote). The

@@ -68,7 +68,7 @@ func Heuristic(flags featureflag.FlagStore) relay.Middleware {
 				relayErr := domain.NewRelayError(
 					domain.ErrEndpoint,
 					"heuristic analysis suggests retry: "+result.Reason,
-					nil,
+					domain.ErrRetryVerdict,
 					true,
 				)
 				ctx.Err = relayErr

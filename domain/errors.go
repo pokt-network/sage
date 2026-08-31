@@ -22,6 +22,14 @@ const (
 	ErrCapability                  // archival not supported, etc.
 )
 
+// ErrRetryVerdict is the cause carried by the error the heuristic middleware
+// returns when a response came back but is worth trying another supplier for.
+// It is an error only so that Retry goes again: a response exists, and if no
+// further attempt does better, that response — the chain's own `execution
+// reverted`, the node's `block not found` — is what the client should get,
+// not a gateway-made failure. The router tells the two apart by this.
+var ErrRetryVerdict = errors.New("heuristic verdict: retry")
+
 // ClientMessage is what may be shown to the caller of a relay.
 //
 // Error() renders the whole cause chain, which is right for a log line and

@@ -738,3 +738,56 @@ func TestHealthzAliasAndLivez(t *testing.T) {
 		t.Errorf("/healthz = %d, want 200 once ready", resp.StatusCode)
 	}
 }
+
+// When the heuristic asked for a retry and none succeeded, the client gets the
+// upstream's own answer — the chain's `execution reverted`, the node's
+// `block not found` — not a gateway-made internal error. PATH delivers the last
+// endpoint response in this case; a canary showed SAGE replacing it with
+// -32603 on ~1% of requests, invisibly (the metric recorded the 200).
+func TestHandleRelay_RetryVerdictExhausted_DeliversUpstreamResponse(t *testing.T) {
+	upstream := `{"jsonrpc":"2.0","id":42,"error":{"code":3,"message":"execution reverted","data":"0x08c379a0"}}`
+	chain := &mockChain{
+		response: &domain.Response{HTTPStatusCode: 200, Body: []byte(upstream)},
+		err:      domain.NewRelayError(domain.ErrEndpoint, "heuristic analysis suggests retry: blockchain_error", domain.ErrRetryVerdict, true),
+	}
+	var logs bytes.Buffer
+	r := New(config.RouterConfig{Port: 0}, chain, &mockSessions{ready: true}, nil,
+		slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	srv := httptest.NewServer(r.mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/v1", "application/json",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":42}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != upstream {
+		t.Fatalf("got %d %q, want 200 with the upstream body verbatim", resp.StatusCode, body)
+	}
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("delivering the upstream's answer is not an error:\n%s", logs.String())
+	}
+}
+
+// A failure that leaves no response to deliver is still an error to the
+// client — and one ERROR line, not two for the same relay.
+func TestHandleRelay_TransportError_LogsOnce(t *testing.T) {
+	chain := &mockChain{err: domain.NewRelayError(domain.ErrTransport, "dial failed", nil, true)}
+	var logs bytes.Buffer
+	r := New(config.RouterConfig{Port: 0}, chain, &mockSessions{ready: true}, nil,
+		slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError})))
+	srv := httptest.NewServer(r.mux)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/v1", "application/json",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if n := strings.Count(logs.String(), "level=ERROR"); n != 1 {
+		t.Fatalf("one failed relay logged %d ERROR lines, want 1:\n%s", n, logs.String())
+	}
+}
