@@ -185,7 +185,11 @@ func (p *Protocol) handleValidationFailure(
 		p.supplierMetricsRecorder().RecordSupplierBlacklist(serviceID, reason)
 	}
 
-	return domain.NewRelayError(validationErrorKind(err), "relay response validation failed: "+reason, err, true)
+	// The client-facing message is deliberately generic: reason (e.g.
+	// "unmarshal_error") and the underlying err are internal and already in
+	// the log line above. domain.ClientMessage returns Kind + Message, so a
+	// clean Message here keeps the reason out of the client's response.
+	return domain.NewRelayError(validationErrorKind(err), "upstream response failed verification", err, true)
 }
 
 // trackRelayMinerError surfaces the miner's own error report, if any.

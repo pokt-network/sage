@@ -150,6 +150,15 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- A non-2xx status from the relay miner (503 overload, its own 500, 413) is
+  graded as a retryable endpoint error instead of being unmarshalled as a
+  RelayResponse — which failed and blacklisted the supplier for 15 minutes over
+  a transient miner error. The supplier now stays in the pool with a recoverable
+  score penalty, and retry reaches another one. Blacklisting is reserved for a
+  2xx response whose body is genuinely an invalid/unsigned RelayResponse.
+- The client-facing message for a relay-response verification failure is now a
+  generic "protocol error: upstream response failed verification" rather than
+  leaking the internal reason ("unmarshal_error"); the reason stays in the log.
 - Hedge returns a retryable error when its wait ends on a deadline, so the
   per-attempt timeout below actually recovers on a hedged relay. Hedge is on
   for every service, and it returned a raw context.DeadlineExceeded (not

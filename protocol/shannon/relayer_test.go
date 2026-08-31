@@ -528,3 +528,55 @@ func TestAvailableEndpoints_ExcludesBlockedDomain(t *testing.T) {
 		t.Errorf("SendRelay error = %v, want it to name the blocked domain", err)
 	}
 }
+
+// A non-2xx status from the relay MINER is the miner erroring (overload, its
+// own 500) before it produced a signed RelayResponse — the body is an error
+// page, not a RelayResponse. SAGE used to try to unmarshal it, fail, and
+// blacklist the supplier for 15 minutes as "unmarshal_error", over a transient
+// miner error. It must instead be a retryable endpoint error, no blacklist,
+// and the client must not see internal detail.
+func TestSendRelay_MinerHTTPError_NotBlacklisted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("<html>503 Service Temporarily Unavailable</html>"))
+	}))
+	defer server.Close()
+
+	supplierAddr := "pokt1miner503"
+	session := buildRelayTestSession(supplierAddr, server.URL)
+	fnMock := &mockRelayFullNode{session: session, height: 200}
+	sm := newSessionManager(fnMock, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+	rec := &recordingMetrics{}
+	p := &Protocol{
+		fullNode:   fnMock,
+		sessions:   sm,
+		signer:     &mockSigner{},
+		bl:         newBlacklist(),
+		ownedApps:  map[domain.ServiceID][]string{"eth": {"pokt1app"}},
+		httpClient: server.Client(),
+		metrics:    rec,
+		logger:     newTestLogger(),
+	}
+	var addr domain.EndpointAddr
+	for a := range sm.getOrCreateEndpoints(session) {
+		addr = a
+	}
+	payload := domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+
+	_, err := p.SendRelay(context.Background(), "eth", addr, payload)
+	if err == nil {
+		t.Fatal("expected an error for a 503 from the miner")
+	}
+	if !domain.IsRetryable(err) {
+		t.Errorf("a miner 503 must be retryable, got %v", err)
+	}
+	if p.bl.IsBlacklisted("eth", supplierAddr) {
+		t.Error("a miner 503 must not blacklist the supplier")
+	}
+	if len(rec.blacklists) != 0 {
+		t.Errorf("no blacklist should be recorded, got %v", rec.blacklists)
+	}
+	if msg := domain.ClientMessage(err); strings.Contains(msg, "unmarshal") || strings.Contains(msg, "503") {
+		t.Errorf("client message leaks internal detail: %q", msg)
+	}
+}

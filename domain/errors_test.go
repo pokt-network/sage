@@ -99,3 +99,4 @@ func TestErrorKind_StringIsStable(t *testing.T) {
 		}
 	}
 }
+

@@ -319,6 +319,24 @@ func (p *Protocol) SendRelay(
 		if err != nil {
 			return nil, domain.NewRelayError(domain.ErrTransport, "failed to read relay response body", err, true)
 		}
+
+		// A non-2xx status is the relay MINER erroring before it produced a
+		// signed RelayResponse (overload -> 503, its own 500, payload too large
+		// -> 413): the body is an error page, not a RelayResponse. Do not try to
+		// unmarshal it — that fails and blacklisted the supplier for 15 minutes
+		// over a transient miner error. Grade it as a retryable endpoint error
+		// so retry reaches another supplier and the score records a recoverable
+		// penalty (via the score middleware), while the supplier stays in the
+		// pool. The client sees the kind, not the status.
+		if httpStatus < 200 || httpStatus >= 300 {
+			p.logger.Debug("SendRelay: relay miner returned HTTP error",
+				"component", "shannon",
+				"service_id", serviceID,
+				"endpoint_addr", endpointAddr,
+				"http_status", httpStatus,
+			)
+			return nil, domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable", nil, true)
+		}
 	}
 
 	// Verify the supplier's signature over the response. See
