@@ -17,12 +17,30 @@ type hedgeResult struct {
 	ctx *relay.Context
 }
 
-// Hedge returns a middleware that issues a speculative second ("hedge") request
-// after HedgeDelay if the primary has not yet completed. The first successful
-// response wins; if both fail, the primary error is returned.
-// If the "hedge" feature flag is disabled or HedgeDelay==0, the middleware
-// passes through to the inner handler without wrapping.
+// HedgeRecorder is notified of the outcome of a hedge race
+// (primary_won, hedge_won, both_failed). metrics.Recorder satisfies it.
+// Nil disables recording.
+type HedgeRecorder interface {
+	RecordHedge(serviceID domain.ServiceID, result string)
+}
+
+// Hedge returns a middleware that issues a speculative second ("hedge")
+// request after HedgeDelay if the primary has not yet completed. The first
+// successful response wins; if both fail, the primary error is returned. It is
+// HedgeWithRecorder with no metric recorder. If the "hedge" flag is disabled
+// or HedgeDelay==0 the middleware passes through.
 func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig) relay.Middleware {
+	return HedgeWithRecorder(flags, configFn, nil)
+}
+
+// HedgeWithRecorder returns the hedge middleware, recording sage_hedge_total
+// on each resolved race when rec is non-nil.
+func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec HedgeRecorder) relay.Middleware {
+	recordHedge := func(ctx *relay.Context, result string) {
+		if rec != nil {
+			rec.RecordHedge(ctx.ServiceID, result)
+		}
+	}
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			if !flags.IsEnabled(ctx.Ctx, featureflag.FlagHedge, ctx.ServiceID) {
@@ -75,6 +93,9 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			case res := <-primaryCh:
 				// Primary finished before the hedge delay — return its result.
 				mergeContext(ctx, res.ctx)
+				if res.err == nil {
+					recordHedge(ctx, "primary_won")
+				}
 				return res.err
 
 			case <-ctx.Ctx.Done():
@@ -147,11 +168,13 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					primaryDone = true
 					if res.err == nil {
 						mergeContext(ctx, res.ctx)
+						recordHedge(ctx, "primary_won")
 						return nil
 					}
 					// Primary failed — if hedge already succeeded, use it.
 					if hedgeDone && hedgeRes.err == nil {
 						mergeContext(ctx, hedgeRes.ctx)
+						recordHedge(ctx, "hedge_won")
 						return nil
 					}
 
@@ -160,11 +183,13 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					hedgeDone = true
 					if res.err == nil {
 						mergeContext(ctx, res.ctx)
+						recordHedge(ctx, "hedge_won")
 						return nil
 					}
 					// Hedge failed — if primary already succeeded, use it.
 					if primaryDone && primaryRes.err == nil {
 						mergeContext(ctx, primaryRes.ctx)
+						recordHedge(ctx, "primary_won")
 						return nil
 					}
 				}
@@ -175,6 +200,7 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			// ctx.Endpoint on its next attempt; with nothing merged it would
 			// exclude "" and could draw the same dead endpoint again.
 			mergeContext(ctx, primaryRes.ctx)
+			recordHedge(ctx, "both_failed")
 			return primaryRes.err
 		})
 	}

@@ -10,15 +10,26 @@ import (
 	"github.com/pokt-network/sage/responsecache"
 )
 
+// CacheRecorder is notified of cache hits and misses. metrics.Recorder
+// satisfies it. Nil disables recording.
+type CacheRecorder interface {
+	RecordCacheHit(serviceID domain.ServiceID)
+	RecordCacheMiss(serviceID domain.ServiceID)
+}
+
 // Cache returns a middleware that serves repeated identical relay requests
 // from an in-memory response cache, bypassing the upstream relay entirely on
-// a cache hit.
+// a cache hit. It is CacheWithRecorder with no metric recorder.
 //
-// Caching is only applied when:
-//   - The "cache" feature flag is enabled for the service.
-//   - The QoS plugin for the service implements CachePolicy and returns a
-//     positive TTL for the method + params + response combination.
+// Caching is only applied when the "cache" feature flag is enabled for the
+// service and the QoS plugin implements CachePolicy with a positive TTL.
 func Cache(flags featureflag.FlagStore, cache *responsecache.Cache) relay.Middleware {
+	return CacheWithRecorder(flags, cache, nil)
+}
+
+// CacheWithRecorder returns the cache middleware, recording
+// sage_cache_hits_total / sage_cache_misses_total when rec is non-nil.
+func CacheWithRecorder(flags featureflag.FlagStore, cache *responsecache.Cache, rec CacheRecorder) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			if !flags.IsEnabled(ctx.Ctx, featureflag.FlagCache, ctx.ServiceID) {
@@ -38,10 +49,16 @@ func Cache(flags featureflag.FlagStore, cache *responsecache.Cache) relay.Middle
 			if resp, ok := cache.Get(key); ok {
 				ctx.Response = resp
 				ctx.Cached = true
+				if rec != nil {
+					rec.RecordCacheHit(ctx.ServiceID)
+				}
 				return nil
 			}
 
 			// Cache miss: run the inner chain.
+			if rec != nil {
+				rec.RecordCacheMiss(ctx.ServiceID)
+			}
 			if err := next.HandleRelay(ctx); err != nil {
 				return err
 			}

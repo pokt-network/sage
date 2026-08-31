@@ -150,6 +150,11 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- `sage_retry_total`, `sage_hedge_total`, `sage_cache_hits_total` and
+  `sage_cache_misses_total` are now emitted — they were defined and documented
+  but never incremented (no writer), so Prometheus had no series. Retry records
+  a reason per attempt (`rollover`, a timeout, or the error kind); hedge records
+  `primary_won` / `hedge_won` / `both_failed`.
 - A session rollover between endpoint selection and send no longer 502s the
   client or penalizes the supplier: the selected endpoint being absent from
   the now-current session is treated as retryable, Retry reselects from the

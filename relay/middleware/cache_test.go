@@ -212,3 +212,26 @@ func TestCache_LRUEviction(t *testing.T) {
 		t.Fatal("p2 should have been evicted from cache")
 	}
 }
+
+type recordingCacheRec struct{ hits, misses int }
+
+func (r *recordingCacheRec) RecordCacheHit(_ domain.ServiceID)  { r.hits++ }
+func (r *recordingCacheRec) RecordCacheMiss(_ domain.ServiceID) { r.misses++ }
+
+// A miss then a hit each emit their metric — the counters were dead.
+func TestCache_RecordsHitAndMiss(t *testing.T) {
+	c := responsecache.NewCache(100)
+	rec := &recordingCacheRec{}
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{Body: []byte(`{"result":"0x1"}`), HTTPStatusCode: 200}
+		return nil
+	})
+	h := CacheWithRecorder(&staticFlags{enabled: true}, c, rec)(inner)
+	plugin := &cachePolicyPlugin{ttl: time.Minute}
+	p := domain.NewPayload([]byte(`params`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	_ = h.HandleRelay(makeRelayCtx("eth", p, plugin)) // miss
+	_ = h.HandleRelay(makeRelayCtx("eth", p, plugin)) // hit
+	if rec.hits != 1 || rec.misses != 1 {
+		t.Fatalf("hits=%d misses=%d, want 1/1", rec.hits, rec.misses)
+	}
+}

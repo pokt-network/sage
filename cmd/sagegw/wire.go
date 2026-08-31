@@ -447,7 +447,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWValidate, func() relay.Middleware {
 		return middleware.Validate(cfg.Gateway.AllServices())
 	})
-	mwReg.Register(relay.MWCache, func() relay.Middleware { return middleware.Cache(flags, respCache) })
+	mwReg.Register(relay.MWCache, func() relay.Middleware { return middleware.CacheWithRecorder(flags, respCache, recorder) })
 	mwReg.Register(relay.MWBatch, func() relay.Middleware {
 		return middleware.Batch(cfg.Concurrency.MaxConcurrentRelays, cfg.Concurrency.MaxBatchPayloads, flags, repSvc)
 	})
@@ -458,8 +458,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWCrossValidate, func() relay.Middleware {
 		return middleware.CrossValidate(flags, crossVal)
 	})
-	mwReg.Register(relay.MWRetry, func() relay.Middleware { return middleware.Retry(flags, retryFn) })
-	mwReg.Register(relay.MWHedge, func() relay.Middleware { return middleware.Hedge(flags, retryFn) })
+	mwReg.Register(relay.MWRetry, func() relay.Middleware { return middleware.RetryWithRecorder(flags, retryFn, recorder) })
+	mwReg.Register(relay.MWHedge, func() relay.Middleware { return middleware.HedgeWithRecorder(flags, retryFn, recorder) })
 	mwReg.Register(relay.MWSupplierAffinity, func() relay.Middleware {
 		return middleware.SupplierAffinity(flags, 10*time.Second)
 	})

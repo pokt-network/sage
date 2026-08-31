@@ -12,11 +12,23 @@ import (
 	"github.com/pokt-network/sage/relay"
 )
 
-// Retry returns a middleware that retries failed relay attempts up to MaxRetries
-// additional times, each time on a different endpoint than previously tried.
-// If the "retry" feature flag is disabled or MaxRetries==0, the middleware
-// passes through to the inner handler without wrapping.
+// RetryRecorder is notified once per retry attempt with a coarse reason.
+// metrics.Recorder satisfies it. Nil disables recording.
+type RetryRecorder interface {
+	RecordRetry(serviceID domain.ServiceID, reason string)
+}
+
+// Retry returns a middleware that retries failed relay attempts up to
+// MaxRetries additional times, each on a different endpoint. It is
+// RetryWithRecorder with no metric recorder. If the "retry" flag is disabled
+// or MaxRetries==0 the middleware passes through.
 func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig) relay.Middleware {
+	return RetryWithRecorder(flags, configFn, nil)
+}
+
+// RetryWithRecorder returns the retry middleware, recording sage_retry_total
+// on each retry when rec is non-nil.
+func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec RetryRecorder) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			if !flags.IsEnabled(ctx.Ctx, featureflag.FlagRetry, ctx.ServiceID) {
@@ -64,6 +76,10 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					// last error is the honest answer.
 					if !budgetForRetry(ctx.Ctx, start) {
 						return lastErr
+					}
+
+					if rec != nil {
+						rec.RecordRetry(ctx.ServiceID, retryReason(lastErr))
 					}
 
 					// A session rollover between selection and send leaves the
@@ -186,4 +202,17 @@ func budgetForRetry(ctx context.Context, start time.Time) bool {
 		return true
 	}
 	return time.Until(deadline) >= deadline.Sub(start)/retryBudgetFraction
+}
+
+// retryReason is the coarse label sage_retry_total carries. It stays low
+// cardinality: a rollover, a timeout, or the failed attempt's error kind.
+func retryReason(err error) string {
+	if errors.Is(err, domain.ErrEndpointsStale) {
+		return "rollover"
+	}
+	var re *domain.RelayError
+	if errors.As(err, &re) {
+		return re.Kind.String()
+	}
+	return "error"
 }

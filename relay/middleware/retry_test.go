@@ -457,3 +457,38 @@ func (h *staleThenOKHandler) HandleRelay(ctx *relay.Context) error {
 	ctx.Endpoint = ctx.Endpoints[0]
 	return nil
 }
+
+type recordingRetryRec struct{ reasons []string }
+
+func (r *recordingRetryRec) RecordRetry(_ domain.ServiceID, reason string) {
+	r.reasons = append(r.reasons, reason)
+}
+
+// Every retry attempt increments sage_retry_total with a reason. The metric
+// was defined and documented but never emitted — no series in Prometheus.
+func TestRetry_RecordsMetricPerRetry(t *testing.T) {
+	rec := &recordingRetryRec{}
+	th := &trackingMockHandler{responses: []error{retryableErr("fail1"), retryableErr("fail2"), nil}}
+	mw := RetryWithRecorder(newFlags("retry"), retryCfg(3, 0), rec)
+	if err := mw(th).HandleRelay(baseContext()); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.reasons) != 2 {
+		t.Fatalf("expected 2 retry records (2 retries before success), got %d: %v", len(rec.reasons), rec.reasons)
+	}
+}
+
+// A rollover retry is labelled so it is distinguishable from an ordinary one.
+func TestRetry_RolloverReasonLabel(t *testing.T) {
+	rec := &recordingRetryRec{}
+	th := &staleThenOKHandler{}
+	mw := RetryWithRecorder(newFlags("retry"), retryCfg(2, 0), rec)
+	ctx := baseContext()
+	ctx.Endpoints = domain.EndpointAddrList{"pokt1old-https://old.example.com"}
+	if err := mw(th).HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.reasons) != 1 || rec.reasons[0] != "rollover" {
+		t.Fatalf("expected one 'rollover' reason, got %v", rec.reasons)
+	}
+}
