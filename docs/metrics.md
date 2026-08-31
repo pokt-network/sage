@@ -40,3 +40,9 @@ means traffic is arriving for services this gateway does not serve.
 | `sage_retry_total` | counter | `service_id`, `reason` | Total relay retries, partitioned by service and reason. |
 | `sage_singleflight_coalesced_total` | counter | `service_id` | Total requests coalesced by the singleflight deduplicator. |
 | `sage_supplier_blacklists_total` | counter | `service_id`, `reason` | Total supplier blacklist events from relay response validation, by service and reason. |
+| `sage_websocket_bytes_total` | counter | `service_id`, `direction` | Payload bytes routed through WebSocket bridges, by service and direction, measured after processing (the bytes written to the receiving side). |
+| `sage_websocket_closes_total` | counter | `service_id`, `initiator`, `code` | WebSocket bridges ended, by service, who ended it (client, endpoint, or gateway — a deadline, a processing error, a shutdown) and the close code sent to the client (1000–1015 verbatim, 3000–3999 as "registered", 4000–4999 as "application", anything else "other"). |
+| `sage_websocket_connections` | gauge | `service_id` | Live WebSocket bridges (a client connection plus its supplier connection) by service. |
+| `sage_websocket_frames_total` | counter | `service_id`, `direction` | Data frames routed through WebSocket bridges, by service and direction (client_to_endpoint or endpoint_to_client). Control frames (ping, pong, close) are not counted. |
+| `sage_websocket_rejected_total` | counter | `service_id`, `reason` | WebSocket upgrades the gateway refused before opening a bridge, by service and reason (capacity: the max_concurrent_connections cap was reached). |
+| `sage_websocket_unresponsive_total` | counter | `service_id`, `side` | WebSocket bridges closed because one side sent nothing — no data, no pong — for a whole pong wait, by service and the silent side (client or endpoint). An endpoint count is a supplier that went away under a live socket. |

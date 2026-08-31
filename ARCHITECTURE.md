@@ -382,7 +382,7 @@ verbatim by the relay miner.
 | `json_rpc` | HTTP POST at the supplier root; the body is the whole request |
 | `rest` | HTTP, path-addressed |
 | `comet_bft` | HTTP, path-addressed, or JSON-RPC method names over POST |
-| `websocket` | Bidirectional bridge, including subscriptions |
+| `websocket` | Bidirectional bridge, including subscriptions; ping/pong liveness on both sides (60 s silence = gone) |
 | `grpc` | A **gRPC call** to the miner's relay service — see below |
 
 ### gRPC
@@ -508,7 +508,7 @@ sage/
   crossvalidation/     — response consensus + outlier detection
   responsecache/       — LRU response cache with TTL
   healthcheck/         — periodic probes, leader election, external block sources
-  websockets/          — generic bidirectional bridge (rotation-ready)
+  websockets/          — generic bidirectional bridge (rotation-ready), ping/pong liveness, Observer hook for metrics
   metrics/             — Prometheus metrics
   router/              — HTTP routing + admin API
   internal/docgen/     — generators for docs/ (build-time only, not in the binary)

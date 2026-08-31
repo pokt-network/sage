@@ -32,6 +32,17 @@ const (
 	// OS-level TCP timeout, which can be many minutes. The deadline turns that
 	// into a fast, ordinary write error.
 	writeWait = 10 * time.Second
+
+	// defaultPongWait is how long a peer may go without sending anything —
+	// data or a pong — before it is declared gone. defaultPingPeriod is how
+	// often the bridge pings each peer; it must be shorter than the wait so
+	// an idle but healthy peer is asked at least twice before the deadline.
+	//
+	// Without these a half-open socket (a supplier host that died, a NAT that
+	// dropped the mapping) is noticed only by the next write failure or the
+	// session boundary. TCP keepalive would take hours; a pong is seconds.
+	defaultPongWait   = 60 * time.Second
+	defaultPingPeriod = 20 * time.Second
 )
 
 // MessageSource identifies which side of the bridge a message originates from.
@@ -62,6 +73,10 @@ type Connection struct {
 
 	writeMu sync.Mutex
 
+	// pongWait is the read deadline extended on every read and every pong.
+	// Zero disables the deadline (tests that do not exercise liveness).
+	pongWait time.Duration
+
 	closeInfoMu   sync.Mutex
 	lastCloseCode int
 	lastCloseText string
@@ -80,10 +95,38 @@ func NewConnection(conn *websocket.Conn, source MessageSource, logger *slog.Logg
 	}
 }
 
+// setLiveness arms the read deadline: every read and every pong pushes it
+// pongWait into the future, so a peer that sends nothing — no data, no pong —
+// for that long makes ReadMessage return a timeout.
+//
+// gorilla dispatches control frames from inside a read call, so the pong
+// handler runs on the reading goroutine; net.Conn deadlines are safe to set
+// from there.
+func (c *Connection) setLiveness(pongWait time.Duration) {
+	c.pongWait = pongWait
+	c.conn.SetPongHandler(func(string) error { return c.extendReadDeadline() })
+}
+
+func (c *Connection) extendReadDeadline() error {
+	if c.pongWait <= 0 {
+		return nil
+	}
+	return c.conn.SetReadDeadline(time.Now().Add(c.pongWait))
+}
+
 // ReadMessage reads the next message from the underlying WebSocket connection.
 // It is safe to call from a single goroutine; do not call concurrently.
 func (c *Connection) ReadMessage() (messageType int, data []byte, err error) {
+	if err := c.extendReadDeadline(); err != nil {
+		return 0, nil, err
+	}
 	return c.conn.ReadMessage()
+}
+
+// Ping sends a ping control frame. The peer's pong (or any data frame) is
+// what extends the read deadline; the ping itself only prompts one.
+func (c *Connection) Ping(deadline time.Time) error {
+	return c.WriteControl(websocket.PingMessage, nil, deadline)
 }
 
 // WriteMessage writes a data message to the connection, bounded by writeWait.

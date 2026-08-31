@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -72,6 +73,26 @@ type Bridge struct {
 
 	shutdownOnce sync.Once
 	done         chan struct{}
+
+	// pingPeriod / pongWait are the liveness knobs; see connection.go.
+	pingPeriod time.Duration
+	pongWait   time.Duration
+
+	// observer, when non-nil, is told about frames and the close.
+	observer Observer
+}
+
+// BridgeOption tunes a bridge at StartBridge.
+type BridgeOption func(*Bridge)
+
+// WithLiveness sets how often each peer is pinged and how long it may stay
+// silent before the bridge declares it gone. pingPeriod must be below
+// pongWait; zero pongWait disables the check entirely.
+func WithLiveness(pingPeriod, pongWait time.Duration) BridgeOption {
+	return func(b *Bridge) {
+		b.pingPeriod = pingPeriod
+		b.pongWait = pongWait
+	}
 }
 
 // StartBridge creates a Bridge, upgrades the client HTTP connection to WebSocket,
@@ -95,6 +116,7 @@ func StartBridge(
 	endpointURL string,
 	endpointHeaders http.Header,
 	processor MessageProcessor,
+	opts ...BridgeOption,
 ) (*Bridge, error) {
 	logger = logger.With("component", "websocket_bridge")
 
@@ -134,6 +156,18 @@ func StartBridge(
 		processor:    processor,
 		msgChan:      make(chan message, 32),
 		done:         make(chan struct{}),
+		pingPeriod:   defaultPingPeriod,
+		pongWait:     defaultPongWait,
+	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	if b.pongWait > 0 {
+		b.clientConn.setLiveness(b.pongWait)
+		b.endpointConn.setLiveness(b.pongWait)
+	}
+	if b.observer != nil {
+		b.observer.Opened()
 	}
 
 	safego.Go(b.logger, "websocket.bridge", b.run)
@@ -163,6 +197,9 @@ func (b *Bridge) Shutdown(err error) {
 		closeCode, closeText := b.determineCloseCode(err)
 		closeCode = sanitizeCloseCode(closeCode)
 		clientMsg := websocket.FormatCloseMessage(closeCode, closeText)
+		if b.observer != nil {
+			b.observer.Closed(b.closeInitiator(), closeCode)
+		}
 
 		// The two peers do not get the same frame. SAGE sits in the middle —
 		//
@@ -209,6 +246,9 @@ func (b *Bridge) run() {
 	b.logger.Info("websocket: bridge started")
 	safego.Go(b.logger, "websocket.read.client", func() { b.readLoop(b.clientConn) })
 	safego.Go(b.logger, "websocket.read.endpoint", func() { b.readLoop(b.endpointConn) })
+	if b.pongWait > 0 && b.pingPeriod > 0 {
+		safego.Go(b.logger, "websocket.ping", b.pingLoop)
+	}
 
 	for {
 		select {
@@ -235,6 +275,10 @@ func (b *Bridge) route(msg message) {
 		if writeErr := b.endpointConn.WriteMessage(msg.messageType, processed); writeErr != nil {
 			b.logger.Error("websocket: write to endpoint failed", "err", writeErr)
 			b.Shutdown(fmt.Errorf("%w: write to endpoint: %w", ErrBridgeConnectionFailed, writeErr))
+			return
+		}
+		if b.observer != nil {
+			b.observer.Frame(SourceClient, len(processed))
 		}
 
 	case SourceEndpoint:
@@ -247,6 +291,49 @@ func (b *Bridge) route(msg message) {
 		if writeErr := b.clientConn.WriteMessage(msg.messageType, processed); writeErr != nil {
 			b.logger.Error("websocket: write to client failed", "err", writeErr)
 			b.Shutdown(fmt.Errorf("%w: write to client: %w", ErrBridgeConnectionFailed, writeErr))
+			return
+		}
+		if b.observer != nil {
+			b.observer.Frame(SourceEndpoint, len(processed))
+		}
+	}
+}
+
+// closeInitiator reports who ended the bridge: a peer that sent a close
+// frame, else the gateway (a deadline, a processing error, a shutdown).
+func (b *Bridge) closeInitiator() CloseInitiator {
+	if b.endpointConn != nil {
+		if code, _ := b.endpointConn.GetCloseInfo(); code != 0 {
+			return InitiatorEndpoint
+		}
+	}
+	if b.clientConn != nil {
+		if code, _ := b.clientConn.GetCloseInfo(); code != 0 {
+			return InitiatorClient
+		}
+	}
+	return InitiatorGateway
+}
+
+// pingLoop pings both peers every pingPeriod. A ping that cannot be written
+// is a dead socket found early; a ping that is written but never answered is
+// found by the read deadline in readLoop.
+func (b *Bridge) pingLoop() {
+	ticker := time.NewTicker(b.pingPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-ticker.C:
+			deadline := time.Now().Add(writeWait)
+			for _, c := range []*Connection{b.clientConn, b.endpointConn} {
+				if err := c.Ping(deadline); err != nil {
+					b.logger.Warn("websocket: ping failed", "source", c.source, "err", err)
+					b.Shutdown(fmt.Errorf("%w: ping %v: %w", ErrBridgeConnectionFailed, c.source, err))
+					return
+				}
+			}
 		}
 	}
 }
@@ -268,6 +355,18 @@ func (b *Bridge) readLoop(conn *Connection) {
 					"code", code,
 					"text", text,
 				)
+			} else if isTimeout(err) {
+				// Nothing — no data, no pong — for a whole pong wait. The
+				// peer is gone whatever the socket says.
+				b.logger.Warn("websocket: peer unresponsive", "source", conn.source, "pong_wait", b.pongWait)
+				// Only the side that caused the close: once Shutdown has run
+				// the other side's read fails too, and a deadline that
+				// happens to fire in that window is not a second finding.
+				if b.observer != nil && b.ctx.Err() == nil {
+					b.observer.Unresponsive(conn.source)
+				}
+				b.Shutdown(fmt.Errorf("%w: %v silent for %v", ErrBridgePeerUnresponsive, conn.source, b.pongWait))
+				return
 			} else {
 				b.logger.Warn("websocket: read error", "source", conn.source, "err", err)
 			}
@@ -407,6 +506,12 @@ func (b *Bridge) determineCloseCode(err error) (int, string) {
 	case errors.Is(err, ErrBridgeEndpointUnavailable):
 		return websocket.CloseServiceRestart, "endpoint temporarily unavailable, please reconnect"
 
+	case errors.Is(err, ErrBridgePeerUnresponsive):
+		// 1012 to the client: reconnecting draws a fresh supplier through
+		// selection, which is the only remedy for a supplier that went quiet.
+		// (endpointCloseCode turns it into 1001 facing the supplier.)
+		return websocket.CloseServiceRestart, "peer unresponsive, please reconnect"
+
 	case errors.Is(err, ErrBridgeMessageProcessing):
 		return websocket.CloseInternalServerErr, "message processing error"
 
@@ -416,4 +521,11 @@ func (b *Bridge) determineCloseCode(err error) (int, string) {
 	default:
 		return websocket.CloseInternalServerErr, fmt.Sprintf("bridge error: %s", err.Error())
 	}
+}
+
+// isTimeout reports whether a read error is the read deadline firing: gorilla
+// surfaces it as the net.Error from the underlying conn.
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }

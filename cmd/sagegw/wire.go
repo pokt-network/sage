@@ -553,6 +553,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			FrameObservationSampleRate: wsCfg.EffectiveFrameObservationSampleRate(),
 			CloseObservationSampleRate: wsCfg.EffectiveCloseObservationSampleRate(),
 			MaxConcurrentConnections:   wsCfg.EffectiveMaxConcurrentConnections(),
+			Metrics:                    metrics.NewWebSocketMetrics(serviceIDsFrom(cfg)),
 		})
 	}
 

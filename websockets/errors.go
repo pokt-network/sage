@@ -28,4 +28,8 @@ var (
 	// bridge has crossed its SessionEndBlockHeight and the bridge is being
 	// closed so the client can reconnect with a fresh session.
 	ErrBridgeSessionExpired = errors.New("session expired")
+	// ErrBridgePeerUnresponsive indicates one side sent nothing — no data, no
+	// pong — for a whole pong wait. The socket may still look open; the peer
+	// behind it is gone.
+	ErrBridgePeerUnresponsive = errors.New("peer unresponsive")
 )
