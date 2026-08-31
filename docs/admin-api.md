@@ -52,6 +52,8 @@ reaches the supplier as `/status`, not `/v1/status`.
 | `GET` | `/v1` | Routes GET /v1[/...] requests to the WebSocket relayer when the client is attempting an upgrade, and to the normal relay chain otherwise. |
 | `GET` | `/v1/{path...}` | Routes GET /v1[/...] requests to the WebSocket relayer when the client is attempting an upgrade, and to the normal relay chain otherwise. |
 | `GET` | `/health` | Returns 200 when the protocol layer is ready, 503 otherwise. |
+| `GET` | `/healthz` | Returns 200 when the protocol layer is ready, 503 otherwise. |
+| `GET` | `/livez` | Answers 200 unconditionally: the process is up and serving. |
 | `GET` | `/ready/{service}` | Checks whether a specific service is configured and ready. |
 | `GET` | `/ready` | Reports readiness for every configured service. |
 
@@ -70,9 +72,14 @@ Routes GET /v1[/...] requests to the WebSocket relayer
 when the client is attempting an upgrade, and to the normal relay chain
 otherwise. If no WS relayer is configured, upgrade attempts return 503.
 
-### `GET /health`
+### `GET /health`, `GET /healthz`
 
 Returns 200 when the protocol layer is ready, 503 otherwise.
+
+### `GET /livez`
+
+Answers 200 unconditionally: the process is up and serving.
+Readiness (sessions, full node) is /health and /ready.
 
 ### `GET /ready/{service}`
 

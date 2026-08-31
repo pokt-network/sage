@@ -18,13 +18,14 @@ convenience.
 | Prometheus | `metrics_config.prometheus_addr` | `:9090` | your scraper |
 | pprof | `metrics_config.pprof_addr` | **off** | nobody, normally |
 
-**The admin API has no authentication.** Anyone who reaches it can toggle
-feature flags, reset reputation, and clear circuit breakers. Enabling
-`shadow_mode` through it stops the gateway answering client requests at all —
-it is a denial-of-service switch reachable by an unauthenticated HTTP call. It
-defaults to loopback for that reason, and binding it elsewhere is warned about
-at startup. If you need it remotely, put a TLS-terminating proxy with its own
-auth in front, or reach it over an SSH tunnel.
+**The admin API is a control plane.** Anyone who reaches it can toggle
+feature flags, reset reputation, clear circuit breakers, drain operators,
+rebind WebSocket clients and reload the config. Enabling `shadow_mode` through
+it stops the gateway answering client requests at all. It defaults to loopback
+with no token; binding it anywhere else **requires** `admin_config.auth_token`
+(or the `SAGE_ADMIN_TOKEN` environment variable, which overrides it) and the
+gateway refuses to start otherwise. Send it as `Authorization: Bearer <token>`.
+Put TLS in front of it all the same.
 
 **pprof is off unless you set an address.** `/debug/pprof` hands out heap
 dumps, and this process holds `gateway_private_key_hex` and every entry in
@@ -51,6 +52,63 @@ running without a full node or suppliers at all:
 
 The mock serves canned responses in-process. Use it for load tests and for
 confirming the gateway's own behaviour without spending relays.
+
+### Kubernetes
+
+The image (`Dockerfile`, non-root, static binary) takes the config as a file
+or as the `GATEWAY_CONFIG` environment variable. Prefer the file: `POST
+/admin/reload` and `SIGHUP` re-read it, and there is nothing to re-read from
+an environment variable.
+
+```yaml
+containers:
+  - name: sagegw
+    image: sage:latest
+    args: ["-config", "/etc/sage/config.yaml"]
+    ports:
+      - {name: relay,   containerPort: 3069}
+      - {name: admin,   containerPort: 9091}
+      - {name: metrics, containerPort: 9090}
+    env:
+      - name: SAGE_ADMIN_TOKEN
+        valueFrom: {secretKeyRef: {name: sage-admin, key: token}}
+    volumeMounts:
+      - {name: config, mountPath: /etc/sage, readOnly: true}
+    livenessProbe:
+      httpGet: {path: /livez, port: relay}
+      periodSeconds: 10
+    readinessProbe:
+      httpGet: {path: /healthz, port: relay}
+      periodSeconds: 5
+    lifecycle:
+      preStop: {exec: {command: ["sleep", "5"]}}
+volumes:
+  - name: config
+    secret: {secretName: sage-config}   # it holds signing keys
+```
+
+- **Liveness is `/livez`, readiness is `/healthz`** (or `/health`; the two
+  are the same check, `/healthz` is PATH's spelling). `/healthz` answers 503
+  until the protocol layer has a session, and again whenever the full node
+  is unreachable — right for taking a pod out of the Service, wrong for
+  restarting it, which is what a liveness probe on it would do during a
+  full-node outage. `/livez` is 200 whenever the process serves.
+- The relay port is the only one to expose through the Service. Reach the
+  admin port through `kubectl port-forward` or an internal Service with the
+  token; scrape metrics from the pod.
+- `admin_config.addr` must be `0.0.0.0:9091` (not the loopback default)
+  for anything outside the container to reach it, and then the token is
+  mandatory.
+- Shutdown is graceful (`SIGTERM`, 10 s): in-flight relays finish, WebSocket
+  clients get 1012 and reconnect. The `preStop` sleep lets the endpoint
+  controller stop routing new connections first.
+- Several replicas behind one Redis share drains, feature flags and health
+  probes (only the elected leader sends probe relays; the others apply its
+  results from the `sage:probes` stream). Reputation, method blocks and
+  circuit breakers are per replica by design.
+- `SIGHUP` on the container (`kubectl exec … kill -HUP 1`) or `POST
+  /admin/reload` applies a changed config file without a restart; the
+  response names what took effect and what needs a restart.
 
 ### Read the startup log
 

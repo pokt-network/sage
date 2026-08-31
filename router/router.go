@@ -71,6 +71,13 @@ func New(
 
 	// Health / readiness.
 	mux.HandleFunc("GET /health", r.handleHealth)
+	// /healthz is PATH's spelling of the same check, so a Kubernetes probe
+	// or load-balancer rule written for PATH works unchanged.
+	mux.HandleFunc("GET /healthz", r.handleHealth)
+	// /livez is process liveness only: 200 whenever the server answers. A
+	// liveness probe on /health would restart pods whenever the full node is
+	// unreachable, turning one dependency's outage into a restart loop.
+	mux.HandleFunc("GET /livez", r.handleLive)
 	mux.HandleFunc("GET /ready/{service}", r.handleReadyService)
 	mux.HandleFunc("GET /ready", r.handleReadyAll)
 
@@ -296,6 +303,12 @@ func (r *Router) handleReadyService(w http.ResponseWriter, req *http.Request) {
 		"ready":   true,
 		"service": string(serviceID),
 	})
+}
+
+// handleLive answers 200 unconditionally: the process is up and serving.
+// Readiness (sessions, full node) is /health and /ready.
+func (r *Router) handleLive(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 }
 
 // handleReadyAll reports readiness for every configured service.

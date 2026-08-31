@@ -703,3 +703,38 @@ func TestHandleRelay_GRPCResponseFraming(t *testing.T) {
 		})
 	}
 }
+
+// /healthz is PATH's spelling of /health; a Kubernetes probe written for PATH
+// must work unchanged. /livez answers 200 whenever the process serves at all:
+// a liveness probe on /health would restart pods during a full-node outage,
+// which turns one dependency's outage into a restart loop.
+func TestHealthzAliasAndLivez(t *testing.T) {
+	sessions := &mockSessions{ready: false}
+	r := newTestRouter(t, relay.Noop, sessions)
+	srv := httptest.NewServer(r.mux)
+	defer srv.Close()
+
+	for path, want := range map[string]int{
+		"/health":  http.StatusServiceUnavailable,
+		"/healthz": http.StatusServiceUnavailable,
+		"/livez":   http.StatusOK,
+	} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("%s = %d, want %d while sessions are not ready", path, resp.StatusCode, want)
+		}
+	}
+	sessions.ready = true
+	resp, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz = %d, want 200 once ready", resp.StatusCode)
+	}
+}
