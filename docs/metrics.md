@@ -23,6 +23,7 @@ means traffic is arriving for services this gateway does not serve.
 | `sage_circuit_breaker_outcome_total` | counter | `service_id`, `domain`, `outcome` | Relay outcomes as counted by the circuit breaker's failure-rate gate, keyed on the HOSTNAME the gate uses. outcome is success or failure: numerator and denominator of the rate that decides a break. Only what the gate sees — a broken domain is absent, not healthy. |
 | `sage_circuit_breaker_state` | gauge | `service_id`, `domain` | 1 while a domain is circuit-broken for this service (locked out of selection). Absent when healthy. |
 | `sage_circuit_breaks_total` | counter | `service_id`, `domain` | Total circuit breaker open events, by service and domain. |
+| `sage_client_requests_total` | counter | `service_id`, `status` | Client-facing relay requests by service and the HTTP status returned to the client. Unlike relay_total (per relay attempt), this is one count per client request and matches what an edge or client sees — a JSON-RPC error is an HTTP 200 here. |
 | `sage_degraded_total` | counter | `service_id`, `tier` | Total requests served in degraded mode, by service and tier. |
 | `sage_drained_operators` | gauge | `service_id`, `domain`, `rpc_type` | 1 while an operator is drained from a service (rpc_type "all" = every RPC type). Absent when nothing is drained. |
 | `sage_endpoint_reputation_score` | gauge | `service_id`, `endpoint` | Current reputation score, by service and reputation key (see reputation/key.go for what a key covers). |

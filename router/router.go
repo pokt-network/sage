@@ -28,6 +28,13 @@ type WebSocketOpener interface {
 	Open(ctx context.Context, serviceID domain.ServiceID, req *http.Request, w http.ResponseWriter) error
 }
 
+// ClientMetrics records the client-facing HTTP status of each relay request —
+// what the caller/edge sees, distinct from sage_relay_total's per-attempt view.
+// metrics.Recorder satisfies it; nil disables recording.
+type ClientMetrics interface {
+	RecordClientRequest(serviceID domain.ServiceID, status int)
+}
+
 // Warmup reports whether the gateway can steer endpoint selection yet — i.e.
 // health-check results have populated reputation for the configured services.
 // A nil Warmup on the Router means not gated (always ready).
@@ -45,8 +52,15 @@ type Router struct {
 	wsRelayer WebSocketOpener // optional; if nil, WS upgrade requests 503
 	// warmup gates /ready: nil means not gated. Set via SetWarmup at wire time.
 	warmup Warmup
-	logger *slog.Logger
+	// clientMetrics records the client-facing status per relay request. Nil
+	// disables recording. Set via SetClientMetrics at wire time.
+	clientMetrics ClientMetrics
+	logger        *slog.Logger
 }
+
+// SetClientMetrics installs the client-facing request-status recorder. Wire
+// time only; nil leaves client-status recording off.
+func (r *Router) SetClientMetrics(m ClientMetrics) { r.clientMetrics = m }
 
 // SetWarmup installs the readiness warm-up gate consulted by /ready. Wire time
 // only; nil leaves /ready ungated (session readiness alone).
@@ -190,6 +204,12 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 
 	rw := relay.NewHTTPResponseWriter(w)
 	ctx := relay.NewContext(req.Context(), req, r.logger, rw)
+
+	// Record the client-facing status once, whichever path answers — this is
+	// what an edge dashboard sees, unlike sage_relay_total's per-attempt view.
+	if r.clientMetrics != nil {
+		defer func() { r.clientMetrics.RecordClientRequest(ctx.ServiceID, rw.Status()) }()
+	}
 
 	if err := r.chain.HandleRelay(ctx); err != nil {
 		// A retry verdict with a response in hand is not a failure to

@@ -611,6 +611,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		app.Admin.SetWebSocketRebinder(rb)
 	}
 	app.Router = router.New(cfg.Router, chain, proto, wsRelayer, logger)
+	app.Router.SetClientMetrics(recorder)
 	// Gate /ready on reputation warm-up so a fresh or rolled pod is not put
 	// into the Service until it can steer selection. Only when health checks
 	// are enabled — otherwise nothing warms and readiness must not stall.

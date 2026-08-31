@@ -23,6 +23,7 @@ type Recorder struct {
 	services *labelPolicy
 
 	relayTotal            *prometheus.CounterVec
+	clientRequestsTotal   *prometheus.CounterVec
 	relayLatency          *prometheus.HistogramVec
 	retryTotal            *prometheus.CounterVec
 	hedgeTotal            *prometheus.CounterVec
@@ -58,6 +59,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Namespace: "sage",
 				Name:      "relay_total",
 				Help:      "Total relay attempts, partitioned by service and HTTP status.",
+			},
+			[]string{"service_id", "status"},
+		),
+		clientRequestsTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "client_requests_total",
+				Help:      "Client-facing relay requests by service and the HTTP status returned to the client. Unlike relay_total (per relay attempt), this is one count per client request and matches what an edge or client sees — a JSON-RPC error is an HTTP 200 here.",
 			},
 			[]string{"service_id", "status"},
 		),
@@ -193,6 +202,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 	prometheus.MustRegister(
 		r.healthCheckResults,
 		r.relayTotal,
+		r.clientRequestsTotal,
 		r.relayLatency,
 		r.retryTotal,
 		r.hedgeTotal,
@@ -225,6 +235,14 @@ func (r *Recorder) RecordRelay(
 
 	r.relayTotal.WithLabelValues(sid, status).Inc()
 	r.relayLatency.WithLabelValues(sid).Observe(latency.Seconds())
+}
+
+// RecordClientRequest records the client-facing HTTP status of one relay
+// request — one count per request, matching what a client or edge dashboard
+// sees. A JSON-RPC error is HTTP 200 here; only a real HTTP-level failure is
+// 4xx/5xx. Distinct from RecordRelay, which counts each relay ATTEMPT.
+func (r *Recorder) RecordClientRequest(serviceID domain.ServiceID, status int) {
+	r.clientRequestsTotal.WithLabelValues(r.services.serviceValue(serviceID), strconv.Itoa(status)).Inc()
 }
 
 // RecordRetry increments the retry counter for a service with a given reason.

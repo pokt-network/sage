@@ -150,6 +150,11 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- **`sage_client_requests_total{service_id, status}`** — the client-facing HTTP
+  status per relay request (one count per request), distinct from
+  `sage_relay_total`'s per-attempt view. A JSON-RPC error is HTTP 200 here, so
+  this is what an edge/client dashboard sees and reconciles against; it makes a
+  gateway's real 4xx/5xx client-error rate visible directly.
 - **`blocked_suppliers`** (per-service) and **`endpoint_policy`**
   (`require_https`, `require_domain`) are honoured — both were PATH config keys
   SAGE parsed and ignored. A blocked supplier operator address is never

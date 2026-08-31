@@ -93,6 +93,15 @@ func (w *HTTPResponseWriter) SetStatusCode(code int) {
 	}
 }
 
+// Status returns the status code the client was (or will be) sent — the staged
+// value before Write, the committed value after. This is the client-facing
+// HTTP status, distinct from any single relay attempt's status.
+func (w *HTTPResponseWriter) Status() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.status
+}
+
 func (w *HTTPResponseWriter) Write(body []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

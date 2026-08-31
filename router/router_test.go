@@ -855,3 +855,47 @@ func TestHandleReady_SessionNotReady(t *testing.T) {
 		t.Fatalf("/ready with cold session = %d, want 503", resp.StatusCode)
 	}
 }
+
+type recordingClientRec struct{ statuses []int }
+
+func (r *recordingClientRec) RecordClientRequest(_ domain.ServiceID, status int) {
+	r.statuses = append(r.statuses, status)
+}
+
+// The client-facing HTTP status of each relay request is recorded — distinct
+// from sage_relay_total, which is per relay ATTEMPT. This is what a
+// client/edge sees, so it reconciles against an edge dashboard.
+func TestHandleRelay_RecordsClientStatus(t *testing.T) {
+	// Success -> 200.
+	okChain := &mockChain{response: &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"result":"0x1"}`)}}
+	rec := &recordingClientRec{}
+	r := New(config.RouterConfig{Port: 0}, okChain, &mockSessions{ready: true}, nil, discardLogger())
+	r.SetClientMetrics(rec)
+	srv := httptest.NewServer(r.mux)
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/v1", "application/json", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(rec.statuses) != 1 || rec.statuses[0] != 200 {
+		t.Fatalf("success should record client status 200, got %v", rec.statuses)
+	}
+
+	// A transport failure with no response -> 502 to the client.
+	failChain := &mockChain{err: domain.NewRelayError(domain.ErrTransport, "dial failed", nil, true)}
+	rec2 := &recordingClientRec{}
+	r2 := New(config.RouterConfig{Port: 0}, failChain, &mockSessions{ready: true}, nil, discardLogger())
+	r2.SetClientMetrics(rec2)
+	srv2 := httptest.NewServer(r2.mux)
+	defer srv2.Close()
+	resp2, err := http.Post(srv2.URL+"/v1", "application/json", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	// JSON-RPC error is delivered at HTTP 200 by convention.
+	if len(rec2.statuses) != 1 || rec2.statuses[0] != 200 {
+		t.Fatalf("a JSON-RPC-shaped failure records the client status 200, got %v", rec2.statuses)
+	}
+}
