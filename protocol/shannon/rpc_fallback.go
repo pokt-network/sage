@@ -40,10 +40,28 @@ func (t rpcFallbackTable) resolve(serviceID domain.ServiceID, rpcType domain.RPC
 	return t[serviceID][rpcType]
 }
 
+// anyStakes reports whether at least one endpoint in the session staked the
+// RPC type — the pool-level question rpc_type_fallbacks turns on.
+func anyStakes(endpoints map[domain.EndpointAddr]*endpoint, rpcType domain.RPCType) bool {
+	for _, ep := range endpoints {
+		if _, err := ep.GetURL(rpcType); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // endpointURL is the URL a relay of rpcType goes to on ep: the staked URL for
 // that type, or — one hop, when the service maps it — the URL of the fallback
-// type. The request itself is not changed; the fallback exists because relay
-// miners commonly serve CometBFT's HTTP and JSON-RPC surfaces from one port.
+// type. The request itself is not changed.
+//
+// This is per endpoint, where selection (Protocol.endpoints) applies the
+// mapping pool-level like PATH. Both are needed: selection must not add a
+// REST-only supplier to a json_rpc pool that has json_rpc suppliers, while a
+// relay addressed to an endpoint that lacks the type — one handed out under
+// the pool fallback, or a cosmos health check, which probes json_rpc-staked
+// suppliers with the CometBFT GET /status they serve from the same port —
+// still has to reach it.
 func (p *Protocol) endpointURL(serviceID domain.ServiceID, ep *endpoint, rpcType domain.RPCType) (string, error) {
 	url, err := ep.GetURL(rpcType)
 	if err == nil {

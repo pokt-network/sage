@@ -11,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	apptypes "github.com/pokt-network/poktroll/x/application/types"
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
+	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
+	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
 	sdktypes "github.com/pokt-network/shannon-sdk/types"
 	"google.golang.org/protobuf/proto"
 
@@ -19,35 +22,78 @@ import (
 	"github.com/pokt-network/sage/domain"
 )
 
-// A cosmos supplier staked for json_rpc only. With the service mapping
-// comet_bft onto json_rpc, it serves comet_bft requests through that URL —
-// the PATH rpc_type_fallbacks contract, which the mainnet config relies on
-// while suppliers catch up on their comet_bft stakes.
-func TestAvailableEndpoints_RPCTypeFallback(t *testing.T) {
-	session := buildRelayTestSession("pokt1jsononly", "https://node.example.com")
-	sm := newSessionManager(&mockRelayFullNode{session: session}, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
-	p := &Protocol{
-		sessions:  sm,
-		bl:        newBlacklist(),
-		ownedApps: map[domain.ServiceID][]string{"eth": {"pokt1app"}},
-		logger:    newTestLogger(),
+// typedSession builds a one-service session where each supplier stakes the
+// RPC types listed for it, all on one URL per supplier.
+func typedSession(stakes map[string][]sharedtypes.RPCType) *sessiontypes.Session {
+	s := &sessiontypes.Session{
+		SessionId: "typed-session",
+		Header: &sessiontypes.SessionHeader{
+			SessionId: "typed-session", ServiceId: "eth",
+			SessionStartBlockHeight: 100, SessionEndBlockHeight: 110,
+		},
+		Application: &apptypes.Application{Address: "pokt1app"},
 	}
+	for addr, types := range stakes {
+		var eps []*sharedtypes.SupplierEndpoint
+		for _, t := range types {
+			eps = append(eps, &sharedtypes.SupplierEndpoint{Url: "https://" + addr + ".example.com", RpcType: t})
+		}
+		s.Suppliers = append(s.Suppliers, &sharedtypes.Supplier{
+			OperatorAddress: addr,
+			Services:        []*sharedtypes.SupplierServiceConfig{{ServiceId: "eth", Endpoints: eps}},
+		})
+	}
+	return s
+}
 
-	got, err := p.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeCometBFT)
+func fallbackProtocol(session *sessiontypes.Session, table rpcFallbackTable) *Protocol {
+	sm := newSessionManager(&mockRelayFullNode{session: session}, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+	return &Protocol{
+		sessions:     sm,
+		bl:           newBlacklist(),
+		ownedApps:    map[domain.ServiceID][]string{"eth": {"pokt1app"}},
+		rpcFallbacks: table,
+		logger:       newTestLogger(),
+	}
+}
+
+// PATH's rpc_type_fallbacks is a pool-level switch: the fallback type is used
+// only when NO supplier in the session staked the requested one. Applying it
+// per supplier instead sent tron JSON-RPC to REST-only suppliers' roots on the
+// mainnet canary — 405 on a fifth of tron responses — while PATH, with the
+// same config and suppliers, never fell back at all.
+func TestAvailableEndpoints_RPCTypeFallbackIsPoolLevel(t *testing.T) {
+	table := rpcFallbackTable{"eth": {domain.RPCTypeJSONRPC: domain.RPCTypeREST}}
+
+	mixed := typedSession(map[string][]sharedtypes.RPCType{
+		"pokt1jsonrpc":  {sharedtypes.RPCType_JSON_RPC},
+		"pokt1restonly": {sharedtypes.RPCType_REST},
+	})
+	got, err := fallbackProtocol(mixed, table).AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("without a fallback a json_rpc-only supplier must not serve comet_bft, got %v", got)
+	if len(got) != 1 || !strings.HasPrefix(string(got[0]), "pokt1jsonrpc-") {
+		t.Fatalf("with a json_rpc supplier present the REST-only one must not be offered, got %v", got)
 	}
 
-	p.rpcFallbacks = rpcFallbackTable{"eth": {domain.RPCTypeCometBFT: domain.RPCTypeJSONRPC}}
-	got, err = p.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeCometBFT)
+	restOnly := typedSession(map[string][]sharedtypes.RPCType{
+		"pokt1restonly": {sharedtypes.RPCType_REST},
+	})
+	got, err = fallbackProtocol(restOnly, table).AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("with comet_bft->json_rpc the supplier must be offered, got %v", got)
+		t.Fatalf("with no json_rpc supplier at all the pool falls back to REST, got %v", got)
+	}
+
+	got, err = fallbackProtocol(restOnly, nil).AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("without a mapping there is no fallback, got %v", got)
 	}
 }
 

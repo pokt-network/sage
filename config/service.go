@@ -252,17 +252,22 @@ type ServiceConfig struct {
 	ExternalBlockSources []ExternalBlockSource `yaml:"external_block_sources"`
 
 	// RPCTypeFallbacks maps a requested RPC type onto the one to relay through
-	// when a supplier has not staked the requested one, e.g.
-	// `comet_bft: json_rpc`. The request is sent unchanged to the fallback
-	// type's URL; nothing is translated. It exists because relay miners
-	// commonly serve CometBFT's HTTP and JSON-RPC surfaces from one port, so a
-	// supplier staked for json_rpc only can answer a comet_bft `/status` — and
-	// on mainnet many still are, so without the mapping those suppliers are
-	// invisible to comet_bft traffic and to the cosmos health check.
+	// when NO supplier in the session staked the requested one, e.g.
+	// `comet_bft: json_rpc`. It is a pool-level switch, as in PATH: with even
+	// one supplier staking the requested type the mapping is not consulted
+	// for selection. The request is sent unchanged to the fallback type's
+	// URL; nothing is translated. It exists because relay miners commonly
+	// serve CometBFT's HTTP and JSON-RPC surfaces from one port, so a pool of
+	// json_rpc-only suppliers can still answer a comet_bft `/status`.
 	//
-	// Same key and semantics as PATH's, so a PATH config carries over. One hop
-	// only: a fallback's own fallback is not consulted. Both sides must name a
-	// known RPC type and differ; that is validated at load.
+	// The one per-endpoint use is the cosmos health check, which probes
+	// json_rpc-staked suppliers with that same GET /status through this
+	// mapping; the earlier per-supplier selection semantics added REST-only
+	// suppliers to tron's json_rpc pool and answered 405 from their REST root.
+	//
+	// Same key as PATH's, so a PATH config carries over. One hop only: a
+	// fallback's own fallback is not consulted. Both sides must name a known
+	// RPC type and differ; that is validated at load.
 	RPCTypeFallbacks map[string]string `yaml:"rpc_type_fallbacks"`
 }
 

@@ -126,9 +126,12 @@ the source of truth for the design and the reasoning behind it.
   not change), which halves an EVM service's probe spend on its own. Every
   probe is a paid relay: one idle pod on the mainnet config was spending ~58
   a second.
-- **`rpc_type_fallbacks`** is live, with PATH's key and one-hop semantics: a
-  request whose RPC type the supplier has not staked goes to the mapped type's
-  URL. Mainnet cosmos suppliers are still catching up on `comet_bft` stakes.
+- **`rpc_type_fallbacks`** is live, with PATH's key and pool-level one-hop
+  semantics: when no supplier staked the requested RPC type, selection uses
+  the mapped type's URLs. Mainnet cosmos suppliers are still catching up on
+  `comet_bft` stakes. (A first cut applied it per supplier and put tron's
+  REST-only suppliers into its json_rpc pool — 405s on a fifth of tron
+  responses on the canary; fixed the same day.)
 - **Kubernetes probes**: `/healthz` (PATH's spelling of `/health`, readiness)
   and `/livez` (process liveness); on-demand container images from any branch
   (`image.yml`), tagged `<branch>-<sha7>` and `<sha7>`.

@@ -126,13 +126,13 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 	}
 
 	p := &Protocol{
-		fullNode:    fullNode,
-		sessions:    sm,
-		signer:      signer,
-		bl:          newBlacklist(),
-		gatewayAddr: cfg.Gateway.GatewayAddress,
-		ownedApps:   ownedApps,
-		httpClient:  httpClient,
+		fullNode:     fullNode,
+		sessions:     sm,
+		signer:       signer,
+		bl:           newBlacklist(),
+		gatewayAddr:  cfg.Gateway.GatewayAddress,
+		ownedApps:    ownedApps,
+		httpClient:   httpClient,
 		grpc:         newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
 		metrics:      noopSupplierMetrics{},
 		rpcFallbacks: buildRPCFallbacks(cfg.Gateway.AllServices()),
@@ -425,13 +425,25 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 	// handed out, so they cover relay selection (and therefore retry, hedge
 	// and batch), WebSocket bind and health checks without each of them
 	// knowing either exists.
+	// rpc_type_fallbacks is a pool-level switch, as in PATH: the fallback
+	// type is used only when no supplier in the session staked the requested
+	// one. Applied per supplier it would add REST-only suppliers to a
+	// json_rpc pool that has plenty of json_rpc ones — which on mainnet
+	// answered tron JSON-RPC with 405 from their REST root.
+	lookupType := rpcType
+	if rpcType != domain.RPCTypeUnknown && !anyStakes(endpoints, rpcType) {
+		if fallback := p.rpcFallbacks.resolve(serviceID, rpcType); fallback != "" {
+			lookupType = fallback
+		}
+	}
+
 	blockedDomains := p.blockedDomains.Load()
 	result := make(domain.EndpointAddrList, 0, len(endpoints))
 	var blacklisted, blocked, drained int
 	for addr, ep := range endpoints {
 		url := ""
 		if rpcType != domain.RPCTypeUnknown {
-			u, err := p.endpointURL(serviceID, ep, rpcType)
+			u, err := ep.GetURL(lookupType)
 			if err != nil {
 				continue
 			}
