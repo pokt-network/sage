@@ -43,8 +43,12 @@ Config comes from `-config <path>` or the `GATEWAY_CONFIG` environment
 variable. `GATEWAY_CONFIG` holds the YAML **content**, not a path to it, which
 suits a config delivered as a secret rather than a mounted file.
 
-There is a container image (`make docker_build`), and a mock backend for
-running without a full node or suppliers at all:
+There is a container image (`make docker_build` locally; `release.yml`
+publishes `ghcr.io/pokt-network/sage:<tag>`, `:latest` and `:<sha7>` on a version tag;
+the *Image* workflow (`gh workflow run image.yml --ref <branch>`) publishes
+`ghcr.io/pokt-network/sage:<branch>-<sha7>` and `:<sha7>` from any branch on
+demand without touching `latest`), and a mock backend for running without a full node or
+suppliers at all:
 
 ```bash
 ./bin/sagegw -config bench/mock-config.yaml
