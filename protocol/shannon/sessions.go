@@ -48,12 +48,14 @@ type sessionManager struct {
 	latestBlockHeight atomic.Int64
 	stopPoller        chan struct{}
 
-	// lastFetchErr remembers, per (serviceID, appAddr), the text of the last
-	// failed session fetch, so the same failure is reported once rather than
-	// every cycle. A service with no suppliers on the network fails every
-	// refresh for as long as that lasts; the first failure is an error, the
-	// repeats are debug, recovery is info and clears the entry.
-	lastFetchErr sync.Map // "serviceID:appAddr" → string
+	// failing marks each (serviceID, appAddr) whose last session fetch failed,
+	// so a failure is reported once rather than every cycle. A service with no
+	// suppliers on the network fails every refresh for as long as that lasts,
+	// and the full node's message carries the block height, so comparing the
+	// text would re-report it at every session boundary. The first failure is
+	// an error, the repeats are debug (with the current message), recovery is
+	// info and clears the mark.
+	failing sync.Map // "serviceID:appAddr" → struct{}
 }
 
 // newSessionManager creates a session manager for the given services and full node.
@@ -221,11 +223,10 @@ func (sm *sessionManager) refreshSession(ctx context.Context, serviceID string, 
 	session, err := sm.fullNode.GetSession(ctx, serviceID, appAddr)
 	key := sessionCacheKey(serviceID, appAddr)
 	if err != nil {
-		if prev, seen := sm.lastFetchErr.Load(key); seen && prev.(string) == err.Error() {
-			sm.logger.Debug("getSession: full node returned error (repeat)",
+		if _, seen := sm.failing.LoadOrStore(key, struct{}{}); seen {
+			sm.logger.Debug("getSession: full node returned error (still failing)",
 				"service_id", serviceID, "app_addr", appAddr, "error", err)
 		} else {
-			sm.lastFetchErr.Store(key, err.Error())
 			sm.logger.Error("getSession: full node returned error",
 				"service_id", serviceID,
 				"app_addr", appAddr,
@@ -234,7 +235,7 @@ func (sm *sessionManager) refreshSession(ctx context.Context, serviceID string, 
 		}
 		return nil, fmt.Errorf("getSession: %w", err)
 	}
-	if _, failed := sm.lastFetchErr.LoadAndDelete(key); failed {
+	if _, failed := sm.failing.LoadAndDelete(key); failed {
 		sm.logger.Info("getSession: full node answers again",
 			"service_id", serviceID, "app_addr", appAddr)
 	}

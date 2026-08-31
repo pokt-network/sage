@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -119,14 +120,17 @@ func TestBuildRPCFallbacks(t *testing.T) {
 }
 
 // A service whose app has no suppliers fails getSession on every cycle. The
-// first failure is an error; the same failure again is not news.
+// first failure is an error; failing again is not news — even when the full
+// node's message differs, as it does at every session boundary because it
+// carries the block height.
 func TestRefreshSession_RepeatedFailureLogsOnce(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	fn := &mockRelayFullNode{sessionErr: errors.New("no suppliers not found for session")}
+	fn := &mockRelayFullNode{}
 	sm := newSessionManager(fn, map[domain.ServiceID]struct{}{"router": {}}, logger)
 
-	for range 3 {
+	for _, height := range []int{901781, 901801, 901821} {
+		fn.sessionErr = fmt.Errorf("could not find suppliers for service router at height %d", height)
 		if _, err := sm.getSession(context.Background(), "router", "pokt1app"); err == nil {
 			t.Fatal("expected getSession to fail")
 		}
