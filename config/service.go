@@ -64,6 +64,22 @@ type GatewayConfig struct {
 
 	LatencyProfiles map[string]LatencyProfile `yaml:"latency_profiles"`
 	Defaults        ServiceDefaults           `yaml:"defaults"`
+
+	// EndpointPolicy constrains which supplier URLs may be selected, on every
+	// service. Same key as PATH's gateway-level endpoint_policy.
+	EndpointPolicy EndpointPolicy `yaml:"endpoint_policy"`
+}
+
+// EndpointPolicy constrains which supplier URLs may be selected. Both checks
+// are opt-in (the zero value is "no policy"), applied wherever endpoints are
+// handed out — selection, retry, hedge, WebSocket bind and health checks.
+type EndpointPolicy struct {
+	// RequireHTTPS drops any endpoint whose URL is not https:// or wss:// — a
+	// plaintext http/ws supplier relays keys and payloads in the clear.
+	RequireHTTPS bool `yaml:"require_https"`
+	// RequireDomain drops any endpoint whose host is a raw IP literal rather
+	// than a domain name.
+	RequireDomain bool `yaml:"require_domain"`
 }
 
 // BlockedDomain is one entry of the operator domain blocklist.
@@ -250,6 +266,14 @@ type ServiceConfig struct {
 	Retry   RetryConfig   `yaml:"retry_config"`
 
 	ExternalBlockSources []ExternalBlockSource `yaml:"external_block_sources"`
+
+	// BlockedSuppliers lists supplier operator addresses ("pokt1...") that must
+	// never be selected for this service, whatever their reputation. Unlike the
+	// earned supplier blacklist (a validation failure, temporary) this is an
+	// operator's standing decision — "not this supplier, not ever" — matched on
+	// the supplier address so it survives session rollover. Same key and
+	// semantics as PATH's per-service blocked_suppliers.
+	BlockedSuppliers []string `yaml:"blocked_suppliers"`
 
 	// RPCTypeFallbacks maps a requested RPC type onto the one to relay through
 	// when NO supplier in the session staked the requested one, e.g.

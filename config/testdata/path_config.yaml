@@ -235,8 +235,13 @@ gateway_config:
         very_slow_response: -2
 
   # One service per QoS type, so every plugin's config shape is exercised.
+  endpoint_policy:
+    require_https: true
+    require_domain: true
   services:
     - id: eth
+      blocked_suppliers:
+        - pokt1blockedsupplierexample
       rpc_type_fallbacks:
         comet_bft: json_rpc
       type: evm

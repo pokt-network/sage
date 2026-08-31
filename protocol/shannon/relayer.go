@@ -13,8 +13,8 @@ import (
 
 	apptypes "github.com/pokt-network/poktroll/x/application/types"
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
-	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
+	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
 	sdk "github.com/pokt-network/shannon-sdk"
 	sdktypes "github.com/pokt-network/shannon-sdk/types"
 
@@ -83,7 +83,11 @@ type Protocol struct {
 	// rpcFallbacks is the per-service rpc_type_fallbacks mapping, consulted by
 	// endpointURL wherever a relay is addressed. Nil when no service sets one.
 	rpcFallbacks rpcFallbackTable
-	logger       *slog.Logger
+	// blockedSuppliers and endpointPolicy are operator selection constraints
+	// applied alongside the blacklist/drain/domain-ban in endpoints().
+	blockedSuppliers blockedSupplierTable
+	endpointPolicy   endpointPolicy
+	logger           *slog.Logger
 }
 
 // New constructs a Protocol from the given configuration.
@@ -128,17 +132,19 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 	}
 
 	p := &Protocol{
-		fullNode:     fullNode,
-		sessions:     sm,
-		signer:       signer,
-		bl:           newBlacklist(),
-		gatewayAddr:  cfg.Gateway.GatewayAddress,
-		ownedApps:    ownedApps,
-		httpClient:   httpClient,
-		grpc:         newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
-		metrics:      noopSupplierMetrics{},
-		rpcFallbacks: buildRPCFallbacks(cfg.Gateway.AllServices()),
-		logger:       logger.With("component", "shannon_protocol"),
+		fullNode:         fullNode,
+		sessions:         sm,
+		signer:           signer,
+		bl:               newBlacklist(),
+		gatewayAddr:      cfg.Gateway.GatewayAddress,
+		ownedApps:        ownedApps,
+		httpClient:       httpClient,
+		grpc:             newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
+		metrics:          noopSupplierMetrics{},
+		rpcFallbacks:     buildRPCFallbacks(cfg.Gateway.AllServices()),
+		blockedSuppliers: buildBlockedSuppliers(cfg.Gateway.AllServices()),
+		endpointPolicy:   newEndpointPolicy(cfg.Gateway.EndpointPolicy),
+		logger:           logger.With("component", "shannon_protocol"),
 	}
 	p.blockedDomains.Store(blockedDomains)
 	return p, nil
@@ -467,7 +473,7 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 
 	blockedDomains := p.blockedDomains.Load()
 	result := make(domain.EndpointAddrList, 0, len(endpoints))
-	var blacklisted, blocked, drained int
+	var blacklisted, blocked, drained, supplierBlocked, policyRejected int
 	for addr, ep := range endpoints {
 		url := ""
 		if rpcType != domain.RPCTypeUnknown {
@@ -495,6 +501,14 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 			blacklisted++
 			continue
 		}
+		if p.blockedSuppliers.blocked(serviceID, ep.Supplier()) {
+			supplierBlocked++
+			continue
+		}
+		if p.endpointPolicy.rejects(url) {
+			policyRejected++
+			continue
+		}
 		result = append(result, addr)
 	}
 
@@ -507,6 +521,8 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 			"blacklisted", blacklisted,
 			"blocked_domain", blocked,
 			"drained", drained,
+			"blocked_supplier", supplierBlocked,
+			"policy_rejected", policyRejected,
 		)
 	}
 

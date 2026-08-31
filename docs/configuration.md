@@ -214,6 +214,7 @@ Services supports the production config format (gateway_config.services[])
 | `latency_profile` | string | **⚠️ Parsed, not implemented:** names an entry in latency_profiles, which nothing reads. It names an entry in gateway_config.latency_profiles, which is itself not wired. |
 | `chain_id` | string | The chain identifier this service is expected to serve, as the chain itself reports it. When set, health checks assert the endpoint agrees; one serving a different chain is ejected rather than left to answer with another chain's data under this service's name. The value is opaque here on purpose. Its format and how it compares are chain semantics, so they belong to the QoS plugin, not to config: EVM reports hex from eth_chainId ("0x1") and must compare numerically, since "0x531" and "0x0531" are the same chain; CometBFT reports a name from /status ("cosmoshub-4") that compares exactly. Validation therefore lives in the plugin's own Config.Validate, called at wire time — still a startup failure, without teaching config about any one chain. Empty disables the assertion — the zero value keeps existing services behaving exactly as before, so this is opt-in per service. |
 | `retry_config` | RetryConfig | Same keys as [`gateway_config.retry_config`](#gateway-config-retry-config). |
+| `blocked_suppliers` | list of string | Lists supplier operator addresses ("pokt1...") that must never be selected for this service, whatever their reputation. Unlike the earned supplier blacklist (a validation failure, temporary) this is an operator's standing decision — "not this supplier, not ever" — matched on the supplier address so it survives session rollover. Same key and semantics as PATH's per-service blocked_suppliers. |
 | `rpc_type_fallbacks` | map of string → string | Maps a requested RPC type onto the one to relay through when NO supplier in the session staked the requested one, e.g. `comet_bft: json_rpc`. It is a pool-level switch, as in PATH: with even one supplier staking the requested type the mapping is not consulted for selection. The request is sent unchanged to the fallback type's URL; nothing is translated. It exists because relay miners commonly serve CometBFT's HTTP and JSON-RPC surfaces from one port, so a pool of json_rpc-only suppliers can still answer a comet_bft `/status`. The one per-endpoint use is the cosmos health check, which probes json_rpc-staked suppliers with that same GET /status through this mapping; the earlier per-supplier selection semantics added REST-only suppliers to tron's json_rpc pool and answered 405 from their REST root. Same key as PATH's, so a PATH config carries over. One hop only: a fallback's own fallback is not consulted. Both sides must name a known RPC type and differ; that is validated at load. |
 
 #### `gateway_config.services[].timeout_config`
@@ -377,6 +378,16 @@ Provides default values for services.
 | `retry_config` | RetryConfig | Same keys as [`gateway_config.retry_config`](#gateway-config-retry-config). |
 | `timeout_config` | TimeoutConfig | Same keys as [`gateway_config.services[].timeout_config`](#gateway-config-services-timeout-config). |
 | `reputation_config` | ReputationConfig | **⚠️ Parsed, not implemented:** reputation is configured from gateway_config.reputation_config only; the selector and the scorer are global, so a copy under defaults is read by nothing. Same keys as [`gateway_config.reputation_config`](#gateway-config-reputation-config). |
+
+### `gateway_config.endpoint_policy`
+
+EndpointPolicy constrains which supplier URLs may be selected, on every
+service. Same key as PATH's gateway-level endpoint_policy.
+
+| Key | Type | Description |
+|---|---|---|
+| `require_https` | boolean | Drops any endpoint whose URL is not https:// or wss:// — a plaintext http/ws supplier relays keys and payloads in the clear. |
+| `require_domain` | boolean | Drops any endpoint whose host is a raw IP literal rather than a domain name. |
 
 ## `websocket_config`
 

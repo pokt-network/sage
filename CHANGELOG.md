@@ -150,6 +150,14 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- **`blocked_suppliers`** (per-service) and **`endpoint_policy`**
+  (`require_https`, `require_domain`) are honoured — both were PATH config keys
+  SAGE parsed and ignored. A blocked supplier operator address is never
+  selected (matched on the address, so it survives session rollover); a
+  plaintext http/ws endpoint or a raw-IP host is dropped when the matching
+  policy is on. Applied at the one place endpoints are handed out, so they
+  cover selection, retry, hedge, WebSocket bind and health checks, and are
+  reported in the AvailableEndpoints debug counters.
 - A non-2xx status from the relay miner (503 overload, its own 500, 413) is
   graded as a retryable endpoint error instead of being unmarshalled as a
   RelayResponse — which failed and blacklisted the supplier for 15 minutes over
