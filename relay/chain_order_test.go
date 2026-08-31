@@ -154,3 +154,42 @@ func TestValidateChainOrder_ScorePosition(t *testing.T) {
 		t.Errorf("expected retry→score violation, got %v", err)
 	}
 }
+
+// timeout resolves its deadline per service, and the service is what parse
+// sets: a timeout that runs before parse resolves the knob for service "", so
+// a per-service timeout_config or tuning override never applies. It must still
+// wrap the fan-out, or a batch's sub-relays and a retry's later attempts run
+// past the deadline.
+func TestDefaultChainOrder_TimeoutAfterParseBeforeBatch(t *testing.T) {
+	idx := func(name string) int {
+		for i, n := range canonicalOrder {
+			if n == name {
+				return i
+			}
+		}
+		t.Fatalf("%s missing from DefaultChainOrder", name)
+		return -1
+	}
+	if idx(MWTimeout) < idx(MWValidate) {
+		t.Errorf("timeout (%d) runs before validate (%d): ctx.ServiceID is not set yet", idx(MWTimeout), idx(MWValidate))
+	}
+	if idx(MWTimeout) > idx(MWBatch) {
+		t.Errorf("timeout (%d) runs inside batch (%d): the deadline would not cover the fan-out", idx(MWTimeout), idx(MWBatch))
+	}
+}
+
+func TestValidateChainOrder_TimeoutBeforeParseRejected(t *testing.T) {
+	order := []string{MWTimeout, MWParse, MWValidate, MWSendRelay}
+	err := ValidateChainOrder(order)
+	if err == nil || !strings.Contains(err.Error(), "timeout") || !strings.Contains(err.Error(), "parse") {
+		t.Errorf("expected parse→timeout violation, got %v", err)
+	}
+}
+
+func TestValidateChainOrder_TimeoutAfterRetryRejected(t *testing.T) {
+	order := []string{MWParse, MWValidate, MWRetry, MWTimeout, MWSendRelay}
+	err := ValidateChainOrder(order)
+	if err == nil || !strings.Contains(err.Error(), "timeout") || !strings.Contains(err.Error(), "retry") {
+		t.Errorf("expected timeout→retry violation, got %v", err)
+	}
+}

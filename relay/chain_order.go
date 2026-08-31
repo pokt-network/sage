@@ -44,12 +44,15 @@ func DefaultChainOrder() []string {
 		// --- Outermost (runs first) ---
 		MWShadow,
 		MWTracing,
-		MWTimeout,
 		MWRequestID,
 		MWClientIP,
 		MWMetrics,
 		MWParse,
 		MWValidate,
+		// After parse: the deadline is resolved per service, and the service
+		// is what parse sets. Before cache/batch: the deadline must cover the
+		// fan-out and every attempt inside it.
+		MWTimeout,
 		MWCache,
 		MWBatch,
 		MWSingleflight,
@@ -79,6 +82,12 @@ func DefaultChainOrder() []string {
 //   - parse must precede validate, cache, batch, singleflight,
 //     cross_validate, select_endpoint, send_relay, heuristic
 //     (they all read fields Parse sets: ServiceID, RPCType, Payloads).
+//   - parse must precede timeout (timeout resolves its deadline per service,
+//     which parse sets; before parse it resolves for service "" and no
+//     per-service timeout_config or tuning override ever applies).
+//   - timeout must precede batch and retry (the deadline has to cover the
+//     fan-out and every attempt; inside either it would bound one sub-relay
+//     or one attempt and let the request as a whole run on).
 //   - select_endpoint must precede send_relay (SendRelay reads ctx.Endpoint).
 //   - retry must precede select_endpoint (retry needs to re-select on each
 //     attempt; if it were inside, rotation wouldn't work).
@@ -146,6 +155,10 @@ func ValidateChainOrder(names []string) error {
 		{MWHedge, MWSelectEndpoint, "each hedge racer must pick its own endpoint"},
 
 		{MWCircuitBreak, MWSelectEndpoint, "circuit_break prunes broken domains before selection"},
+
+		{MWParse, MWTimeout, "timeout resolves its deadline per service, which parse sets"},
+		{MWTimeout, MWBatch, "the deadline must cover the batch fan-out"},
+		{MWTimeout, MWRetry, "the deadline must cover every retry attempt"},
 
 		{MWHedge, MWMethodBlocks, "each hedge arm must honour and feed method blocks"},
 		{MWMethodBlocks, MWSelectEndpoint, "method_blocks prunes before selection"},

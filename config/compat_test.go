@@ -172,7 +172,7 @@ func TestConfigCompatibility_Gateway(t *testing.T) {
 	})
 
 	t.Run("middleware_chain", func(t *testing.T) {
-		want := "timeout,parse,retry,select_endpoint,send_relay"
+		want := "parse,timeout,retry,select_endpoint,send_relay"
 		if got := strings.Join(g.EffectiveMiddlewareChain(), ","); got != want {
 			t.Errorf("middleware_chain = %q, want %q", got, want)
 		}
@@ -478,7 +478,7 @@ func TestConfigCompatibility_UnifiedServicesFormat(t *testing.T) {
 		t.Errorf("unified defaults = %+v", d)
 	}
 
-	want := "timeout,parse,send_relay"
+	want := "parse,timeout,send_relay"
 	if got := strings.Join(g.EffectiveMiddlewareChain(), ","); got != want {
 		t.Errorf("unified middleware_chain = %q, want %q", got, want)
 	}

@@ -84,8 +84,8 @@ gateway_config:
     - "0000000000000000000000000000000000000000000000000000000000000003"
 
   middleware_chain:
-    - timeout
     - parse
+    - timeout
     - retry
     - select_endpoint
     - send_relay

@@ -21,8 +21,8 @@ gateway_config:
 
   unified_services:
     middleware_chain:
-      - timeout
       - parse
+      - timeout
       - send_relay
 
     latency_profiles:

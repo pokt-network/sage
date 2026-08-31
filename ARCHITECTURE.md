@@ -30,14 +30,14 @@ Every request flows through a composable chain of middleware components. Each mi
 HTTP Request
   [Shadow]           — dry-run mode (process but don't serve)
     [Tracing]        — OpenTelemetry spans
-      [Timeout]      — per-request deadline
-        [RequestID]  — correlation ID (X-Request-ID header)
-          [ClientIP] — resolve the attributed client address (trusted-proxy aware)
-          [Metrics]  — Prometheus counters + latency histogram
-            [Parse]  — extract service ID, detect RPC type, load QoS plugin
-              [Validate]     — check RPC type is supported by service
-                [Cache]      — LRU response cache for finalized data
-                  [Batch]    — decompose batch → fan-out → recombine
+      [RequestID]    — correlation ID (X-Request-ID header)
+        [ClientIP]   — resolve the attributed client address (trusted-proxy aware)
+        [Metrics]    — Prometheus counters + latency histogram
+          [Parse]    — extract service ID, detect RPC type, load QoS plugin
+            [Validate]     — check RPC type is supported by service
+              [Timeout]    — per-request deadline (after Parse: resolved per service)
+                [Cache]    — LRU response cache for finalized data
+                  [Batch]  — decompose batch → fan-out → recombine
                     [Singleflight] — coalesce identical concurrent requests
                       [Observe]    — async reputation + deep parsing
                         [CrossValidate] — response digest consensus
