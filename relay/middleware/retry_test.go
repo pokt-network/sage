@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -552,3 +553,40 @@ func TestRetry_PerAttemptTimeoutLeavesRoomToRetry(t *testing.T) {
 
 // h2 wires a middleware around a plain handler for the test.
 func h2(mw relay.Middleware, h relay.Handler) relay.Handler { return mw(h) }
+
+// End to end: retry wrapping hedge. On the first attempt both hedge arms
+// blackhole (hang past the per-attempt cap); retry must then run a second
+// attempt that succeeds. This is the path that was inert on prod traffic —
+// hedge returned a non-retryable deadline, so the cap failed fast but never
+// recovered.
+func TestRetryOverHedge_RecoversAfterBlackhole(t *testing.T) {
+	var mu sync.Mutex
+	attempts := 0
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n <= 2 {
+			// First retry attempt = a hedge race of two arms; both hang.
+			<-ctx.Ctx.Done()
+			return retryableErr("blackhole")
+		}
+		ctx.Endpoint = ctx.Endpoints[0]
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	flags := newFlags("retry", "hedge")
+	chain := Retry(flags, retryCfg(1, 0))(Hedge(flags, hedgeCfg(2*time.Millisecond))(inner))
+
+	ctx := baseContext()
+	c, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	ctx.Ctx = c
+
+	err := chain.HandleRelay(ctx)
+	if err != nil {
+		t.Fatalf("expected recovery on the retry after a blackholed hedge, got %v", err)
+	}
+}

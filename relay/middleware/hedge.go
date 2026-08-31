@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 
 	"github.com/pokt-network/sage/config"
@@ -101,12 +102,12 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			case <-ctx.Ctx.Done():
 				// The arms are detached so a signed relay in flight still
 				// flushes; the WAIT is not. Nobody is listening for the answer
-				// any more (the client hung up, or the Timeout middleware's
-				// deadline passed), and holding here until the protocol's own
-				// HTTP client gave up would make the per-service relay timeout
-				// mean nothing whenever hedging is on. The arm scores itself
-				// when it finishes; there is no winner to merge.
-				return ctx.Ctx.Err()
+				// any more (the client hung up, or a deadline passed), and
+				// holding here until the protocol's own HTTP client gave up
+				// would make the per-service relay timeout mean nothing
+				// whenever hedging is on. The arm scores itself when it
+				// finishes; there is no winner to merge.
+				return ctxDoneError(ctx.Ctx)
 
 			case <-timer.C:
 				// Hedge delay elapsed; launch speculative second request.
@@ -161,7 +162,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 				select {
 				case <-ctx.Ctx.Done():
 					// Same as above: stop waiting, let the arms finish detached.
-					return ctx.Ctx.Err()
+					return ctxDoneError(ctx.Ctx)
 
 				case res := <-primaryCh:
 					primaryRes = res
@@ -222,4 +223,18 @@ func mergeContext(dst, src *relay.Context) {
 	// pointer: the arm has already returned through its channel, so nothing
 	// writes to it any more.
 	dst.HeuristicResult = src.HeuristicResult
+}
+
+// ctxDoneError turns a finished request context into the error the hedge race
+// returns. A deadline — the per-attempt cap Retry sets, or the request timeout
+// — is a RETRYABLE transport error: Retry's budget guard then decides whether
+// another attempt fits, so a capped hedged attempt can still reach a healthy
+// supplier. A client cancel is nobody's to retry and stays as-is (Retry's own
+// ctx.Ctx.Err() check returns without another attempt).
+func ctxDoneError(ctx context.Context) error {
+	err := ctx.Err()
+	if errors.Is(err, context.DeadlineExceeded) {
+		return domain.NewRelayError(domain.ErrTransport, "hedge: attempt deadline exceeded", err, true)
+	}
+	return err
 }

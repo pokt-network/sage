@@ -150,6 +150,12 @@ the source of truth for the design and the reasoning behind it.
 - The `_other` method bucket is never marked or filtered; three
   method-unsupported wordings that were unreachable now produce the block
   they were listed for.
+- Hedge returns a retryable error when its wait ends on a deadline, so the
+  per-attempt timeout below actually recovers on a hedged relay. Hedge is on
+  for every service, and it returned a raw context.DeadlineExceeded (not
+  retryable), so a capped hedged attempt failed fast but the retry never fired
+  — the recovery half was inert on the canary. A client cancel stays
+  non-retryable.
 - Each relay attempt is bounded to a share of the request deadline, so a
   supplier that accepts the connection but never responds ("awaiting headers")
   cannot consume the whole timeout and starve the retry that would reach a

@@ -461,3 +461,47 @@ func TestHedge_RecordsOutcome(t *testing.T) {
 		t.Fatalf("got %v, want one primary_won", rec.results)
 	}
 }
+
+// When the hedge race ends because the (per-attempt) deadline fired, it must
+// return a RETRYABLE error so the retry middleware outside it can try another
+// supplier with the remaining budget. A raw context.DeadlineExceeded is not
+// retryable, so a per-attempt cap on a hedged relay failed fast but never
+// recovered — the retry-recovery half was inert on prod traffic.
+func TestHedge_DeadlineIsRetryable(t *testing.T) {
+	// Both arms hang past the deadline.
+	handler := relay.HandlerFunc(func(ctx *relay.Context) error {
+		<-ctx.Ctx.Done()
+		return retryableErr("arm hung")
+	})
+	mw := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(5*time.Millisecond))
+	ctx := baseContext()
+	c, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	ctx.Ctx = c
+
+	err := mw(handler).HandleRelay(ctx)
+	if err == nil {
+		t.Fatal("expected a deadline error")
+	}
+	if !domain.IsRetryable(err) {
+		t.Fatalf("hedge deadline error must be retryable so retry can try another supplier, got %v (retryable=%v)", err, domain.IsRetryable(err))
+	}
+}
+
+// A client hang-up (context.Canceled) is NOT retryable — nobody is waiting.
+func TestHedge_CancelIsNotRetryable(t *testing.T) {
+	handler := relay.HandlerFunc(func(ctx *relay.Context) error {
+		<-ctx.Ctx.Done()
+		return retryableErr("arm hung")
+	})
+	mw := Hedge(newFlags("hedge"), hedgeCfg(5*time.Millisecond))
+	ctx := baseContext()
+	c, cancel := context.WithCancel(context.Background())
+	ctx.Ctx = c
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+
+	err := mw(handler).HandleRelay(ctx)
+	if domain.IsRetryable(err) {
+		t.Fatalf("a client cancel must not be retryable, got retryable %v", err)
+	}
+}
