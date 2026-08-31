@@ -507,7 +507,7 @@ sage/
   observe/             — async observation pipeline
   crossvalidation/     — response consensus + outlier detection
   responsecache/       — LRU response cache with TTL
-  healthcheck/         — periodic probes, leader election, external block sources
+  healthcheck/         — periodic probes (leader only; results streamed to every replica), leader election, external block sources
   websockets/          — generic bidirectional bridge with endpoint rebind, ping/pong liveness, Observer hook for metrics
   metrics/             — Prometheus metrics
   router/              — HTTP routing + admin API

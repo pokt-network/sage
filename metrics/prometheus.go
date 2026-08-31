@@ -36,6 +36,7 @@ type Recorder struct {
 	relayMinerErrors      *prometheus.CounterVec
 	methodBlockEvents     *prometheus.CounterVec
 	reputationAttempts    *prometheus.CounterVec
+	healthCheckResults    *prometheus.CounterVec
 
 	// codespaces bounds the relay miner error codespace label, which is a
 	// string chosen by the supplier's relay miner.
@@ -180,7 +181,17 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		),
 	}
 
+	r.healthCheckResults = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "sage",
+			Name:      "health_check_results_total",
+			Help:      "Health-check probe results applied on this replica, by service and source: probe (this replica sent the relay — the leader) or stream (another replica sent it and published the result). On a healthy fleet only the leader shows probe; the stream count is the relay saving made visible.",
+		},
+		[]string{"service_id", "source"},
+	)
+
 	prometheus.MustRegister(
+		r.healthCheckResults,
 		r.relayTotal,
 		r.relayLatency,
 		r.retryTotal,
@@ -277,6 +288,12 @@ func (r *Recorder) RecordSupplierBlacklist(serviceID domain.ServiceID, reason st
 // codespace is written by that miner, so it is bounded here — see boundedLabel.
 func (r *Recorder) RecordRelayMinerError(serviceID domain.ServiceID, codespace string) {
 	r.relayMinerErrors.WithLabelValues(r.services.serviceValue(serviceID), r.codespaces.value(codespace)).Inc()
+}
+
+// RecordHealthCheckResult counts one applied probe result. source is the
+// closed set healthcheck.ResultSource.
+func (r *Recorder) RecordHealthCheckResult(serviceID domain.ServiceID, source string) {
+	r.healthCheckResults.WithLabelValues(r.services.serviceValue(serviceID), source).Inc()
 }
 
 // RecordMethodBlockEvent counts one method-block event. method comes from

@@ -140,6 +140,10 @@ func (l trafficSummaryLister) PreviousWindow(serviceID string) (distinctRatio, t
 	return l.sampler.PreviousWindow(domain.ServiceID(serviceID))
 }
 
+// healthCheckInterval is how often the leader probes every backend. It is
+// also what sizes a booting follower's replay window (two intervals).
+const healthCheckInterval = 30 * time.Second
+
 // serviceIDsFrom lists every configured service ID. It bounds the service_id
 // metric label — see metrics.NewRecorder.
 func serviceIDsFrom(cfg *config.Config) []domain.ServiceID {
@@ -221,6 +225,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// key_granularity is checked in validateConfig, above: a misspelled value
 	// must not fall through to the default, because it silently changes what
 	// scores attach to.
+	// Write-behind goes to Redis from the leader only: several replicas each
+	// writing their own view of a key was last-writer-wins, nobody's view.
+	// The elector is built below; the closure reads it once it exists.
+	var leader *healthcheck.LeaderElector
+	repStorage = reputation.NewLeaderOnlyStorage(repStorage, func() bool {
+		return leader == nil || leader.IsLeader()
+	})
 	repSvc := reputation.NewService(repStorage, timeline, reputation.ServiceConfig{
 		InitialScore:   initialScore,
 		MaxScore:       100,
@@ -494,14 +505,14 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 
 	// 13. Health checks
-	leader := healthcheck.NewLeaderElector(redisClient, logger)
+	leader = healthcheck.NewLeaderElector(redisClient, logger)
 	leader.Start(ctx)
 	app.Leader = leader
 
 	healthExe := healthcheck.NewExecutor(
 		proto, proto, proto,
 		qosReg, repSvc, obsQueue,
-		30*time.Second, 4, logger,
+		healthCheckInterval, 4, logger,
 	)
 
 	// Health checks declared in YAML, in addition to the plugin's own. A rule
@@ -513,6 +524,17 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 	healthExe.SetConfiguredChecks(configuredChecks)
 	healthExe.SetBackendURLDedup(!cfg.Gateway.HealthChecks.DisableBackendURLDedup)
+	// Probe once, apply everywhere: only the leader sends probe relays (each
+	// one is paid for from the app's stake); it publishes every result to a
+	// Redis stream and every replica applies them. Without Redis the elector
+	// is always leader and there is nothing to publish to — unchanged.
+	healthExe.SetLeader(leader)
+	healthExe.SetResultRecorder(recorder)
+	if redisClient != nil {
+		probeStream := healthcheck.NewRedisProbeStream(redisClient, leader.ID(), 2*healthCheckInterval)
+		healthExe.SetProbeSink(probeStream)
+		healthExe.SetProbeSource(probeStream)
+	}
 
 	healthExe.Start(ctx)
 	app.HealthExe = healthExe

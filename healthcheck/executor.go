@@ -56,6 +56,15 @@ type Executor struct {
 	// represents each backend so no single registration carries every probe.
 	cycle uint64
 
+	// leader decides whether this replica probes at all; sink is where its
+	// results go; source is where the others' results come from. All
+	// optional: nil leader means always probe, nil sink means publish
+	// nothing, nil source means apply only what this replica probed.
+	leader   Leader
+	sink     ProbeSink
+	source   ProbeSource
+	recorder ResultRecorder
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
@@ -109,6 +118,19 @@ func (e *Executor) SetConfiguredChecks(c *ConfiguredChecks) {
 	e.configured.Store(c)
 }
 
+// SetLeader installs the election the probe loop consults. Wire time only.
+func (e *Executor) SetLeader(l Leader) { e.leader = l }
+
+// SetProbeSink installs where this replica's probe results are published.
+func (e *Executor) SetProbeSink(s ProbeSink) { e.sink = s }
+
+// SetProbeSource installs the feed of other replicas' probe results; Start
+// runs it.
+func (e *Executor) SetProbeSource(s ProbeSource) { e.source = s }
+
+// SetResultRecorder installs the metric hook for applied results.
+func (e *Executor) SetResultRecorder(r ResultRecorder) { e.recorder = r }
+
 // Start begins the background health check loop. It is safe to call Start
 // only once; subsequent calls do nothing.
 func (e *Executor) Start(ctx context.Context) {
@@ -132,6 +154,30 @@ func (e *Executor) Start(ctx context.Context) {
 			}
 		}
 	}()
+
+	// The feed of other replicas' probe results. Restarted after every
+	// return with a short pause: a Redis blip must not leave a follower
+	// blind until the process restarts.
+	if e.source != nil {
+		e.wg.Add(1)
+		go func() {
+			defer e.wg.Done()
+			for ctx.Err() == nil {
+				safego.Run(e.logger, "healthcheck.probe.source", func() {
+					if err := e.source.Run(ctx, func(r ProbeResult) {
+						r.Source = ResultSourceStream
+						e.applyResult(ctx, r)
+					}); err != nil && ctx.Err() == nil {
+						e.logger.Warn("healthcheck: probe source stopped, restarting", "error", err)
+					}
+				})
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+				}
+			}
+		}()
+	}
 }
 
 // Stop cancels the background loop and waits for all goroutines to exit.
@@ -144,6 +190,12 @@ func (e *Executor) Stop() {
 
 // runOnce performs a single health check cycle across all configured services.
 func (e *Executor) runOnce(ctx context.Context) {
+	// Probing is the leader's job: a probe is a paid relay against the app's
+	// stake, and N replicas probing buy N copies of one fact. Followers
+	// learn the same facts from the leader's published results.
+	if e.leader != nil && !e.leader.IsLeader() {
+		return
+	}
 	services := e.sessions.ConfiguredServices()
 	if len(services) == 0 {
 		return
@@ -306,38 +358,8 @@ func checkSignal(checkName string, statusCode int, extractErr error, latency tim
 	}
 }
 
-// transportSignal grades a health check that failed before any response
-// existed, using the same evidence and verdict as the relay path
-// (heuristic.AnalyzeTransportError) instead of a fixed severity.
-//
-// A dead host must not look healthier to health checks than it does to
-// relays. Beta observed exactly that gap: every transport failure here was
-// graded a flat major error, so a DNS-dead host — critical on the relay
-// path via the same heuristic — took ~7 health-check cycles to fall below
-// the probation threshold, and stayed "vouched for" (reputation.Vouched)
-// the whole time, absorbing a method a block had diverted onto it.
-//
-// The second return is false when nothing should be recorded: a result with
-// ShouldPenalize == false means the executor's own context ended (a
-// client-cancelled check), which is not evidence about the endpoint.
-func transportSignal(checkName string, err error, ctxErr error, latency time.Duration) (reputation.Signal, bool) {
-	result := heuristic.AnalyzeTransportError(err, ctxErr)
-	if !result.ShouldPenalize {
-		return reputation.Signal{}, false
-	}
-	reason := "health_check: " + checkName + ": " + result.Reason
-	switch result.PenaltySeverity {
-	case heuristic.SeverityCritical:
-		return reputation.NewCriticalErrorSignal(reason, latency), true
-	case heuristic.SeverityMajor:
-		return reputation.NewMajorErrorSignal(reason, latency), true
-	default:
-		return reputation.NewMinorErrorSignal(reason, latency), true
-	}
-}
-
-// sendCheck sends a single health check, processes the response, and records
-// reputation signals and observations.
+// sendCheck sends a single health check and applies its result here, then
+// publishes the result so every other replica can apply it too.
 // siblings are every endpoint on the probed backend, including ep. Results the
 // backend produced — its block height, whether it answered correctly — apply to
 // all of them: they are the same machine reached through different
@@ -352,31 +374,81 @@ func (e *Executor) sendCheck(
 	check qos.HealthCheck,
 	configured *ConfiguredChecks,
 ) {
+	_ = plugin
+	_ = configured
+	result := e.probe(ctx, serviceID, ep, siblings, check)
+	e.applyResult(ctx, result)
+	if e.sink != nil {
+		if err := e.sink.Publish(ctx, result); err != nil {
+			e.logger.Warn("healthcheck: publish probe result", "service_id", serviceID, "check", check.Name, "error", err)
+		}
+	}
+}
+
+// probe sends one health check and packages what came back as a
+// ProbeResult. A transport failure is graded here, on the replica that saw
+// the error, because the verdict travels and the error does not.
+func (e *Executor) probe(ctx context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, siblings domain.EndpointAddrList, check qos.HealthCheck) ProbeResult {
 	start := time.Now()
-
 	resp, err := e.protocol.SendRelay(ctx, serviceID, ep, check.Payload)
-	latency := time.Since(start)
-
+	result := ProbeResult{
+		ServiceID: serviceID,
+		Endpoint:  ep,
+		Siblings:  siblings,
+		Check:     check.Name,
+		RPCType:   check.Payload.RPCType(),
+		Request:   check.Payload.Bytes(),
+		LatencyMS: time.Since(start).Milliseconds(),
+		ProbedAt:  start,
+		Source:    ResultSourceProbe,
+	}
 	if err != nil {
 		e.logger.Debug("healthcheck: relay error",
-			"service_id", serviceID,
-			"endpoint", ep,
-			"check", check.Name,
-			"error", err,
-		)
+			"service_id", serviceID, "endpoint", ep, "check", check.Name, "error", err)
+		result.TransportError = err.Error()
+		verdict := heuristic.AnalyzeTransportError(err, ctx.Err())
+		result.TransportReason = verdict.Reason
+		if verdict.ShouldPenalize {
+			result.TransportSeverity = verdict.PenaltySeverity
+		}
+		return result
+	}
+	result.StatusCode = resp.HTTPStatusCode
+	result.Body = resp.Body
+	if len(result.Body) > maxProbeBodyBytes {
+		result.Body = result.Body[:maxProbeBodyBytes]
+	}
+	return result
+}
+
+// applyResult lands one probe's knowledge on this replica: the reputation
+// signal, the block height on every sibling, the observation. Identical for
+// a result this replica probed and one it received, which is the point.
+func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
+	if e.recorder != nil {
+		e.recorder.RecordHealthCheckResult(r.ServiceID, string(r.Source))
+	}
+	latency := time.Duration(r.LatencyMS) * time.Millisecond
+	rpcType := r.RPCType
+	if rpcType == "" {
+		rpcType = domain.RPCTypeJSONRPC
+	}
+
+	if r.TransportError != "" {
 		// Penalize only the endpoint that actually failed. A relay error can be
 		// the supplier's session or signing rather than the backend, and there
 		// is no response to tell the two apart — blaming the backend's other
 		// registrations for it would eject healthy ones.
-		if e.repService != nil {
-			if signal, ok := transportSignal(check.Name, err, ctx.Err(), latency); ok {
-				signal.Probe = true
-				_ = e.repService.RecordSignal(ctx, serviceID, ep, check.Payload.RPCType(), signal)
-			}
+		if e.repService != nil && r.TransportSeverity != "" {
+			signal := severitySignal(r.TransportSeverity, "health_check: "+r.Check+": "+r.TransportReason, latency)
+			signal.Probe = true
+			_ = e.repService.RecordSignal(ctx, r.ServiceID, r.Endpoint, rpcType, signal)
 		}
-		e.submitObservation(serviceID, ep, check.Payload.Bytes(), nil, 0, latency, nil)
+		e.submitObservation(r.ServiceID, r.Endpoint, r.Request, nil, 0, latency, nil)
 		return
 	}
+
+	plugin := e.qosRegistry.Get(r.ServiceID)
 
 	// Extract structured data if the plugin supports it.
 	//
@@ -386,15 +458,11 @@ func (e *Executor) sendCheck(
 	var extractErr error
 	if extractor, ok := plugin.(qos.DataExtractor); ok {
 		var data *qos.ExtractedData
-		data, extractErr = extractor.ExtractData(ep, check.Payload.Bytes(), resp.Body)
+		data, extractErr = extractor.ExtractData(r.Endpoint, r.Request, r.Body)
 		switch {
 		case extractErr != nil:
 			e.logger.Debug("healthcheck: extract error",
-				"service_id", serviceID,
-				"endpoint", ep,
-				"check", check.Name,
-				"error", extractErr,
-			)
+				"service_id", r.ServiceID, "endpoint", r.Endpoint, "check", r.Check, "error", extractErr)
 		case data != nil:
 			extracted = &observe.ExtractedData{
 				BlockHeight: data.BlockHeight,
@@ -407,7 +475,7 @@ func (e *Executor) sendCheck(
 			// otherwise the un-probed siblings would look permanently
 			// height-less and be filtered out of selection.
 			if tracker, ok := plugin.(qos.BlockHeightTracker); ok && data.BlockHeight != nil {
-				for _, sibling := range siblings {
+				for _, sibling := range r.Siblings {
 					tracker.UpdateBlockHeight(sibling, *data.BlockHeight)
 				}
 			}
@@ -426,25 +494,41 @@ func (e *Executor) sendCheck(
 	// property of the stake table and not of the machine (ruling F1,
 	// docs/scoring.md §3 principle 4 and §7.4).
 	if e.repService != nil {
-		signal := checkSignal(check.Name, resp.HTTPStatusCode, extractErr, latency)
-		if failed := resp.HTTPStatusCode < 200 || resp.HTTPStatusCode >= 300 || extractErr != nil; failed {
-			if declared, ok := configured.SignalFor(check.Name, "health_check: "+check.Name, latency); ok {
+		signal := checkSignal(r.Check, r.StatusCode, extractErr, latency)
+		if failed := r.StatusCode < 200 || r.StatusCode >= 300 || extractErr != nil; failed {
+			if declared, ok := e.configured.Load().SignalFor(r.Check, "health_check: "+r.Check, latency); ok {
 				signal = declared
 			}
 		}
 		signal.Probe = true
+		siblings := r.Siblings
+		if len(siblings) == 0 {
+			siblings = domain.EndpointAddrList{r.Endpoint}
+		}
 		if once, ok := e.repService.(reputation.OnceRecorder); ok {
-			_ = once.RecordSignalOnce(ctx, serviceID, siblings, check.Payload.RPCType(), signal)
+			_ = once.RecordSignalOnce(ctx, r.ServiceID, siblings, rpcType, signal)
 		} else {
 			// A Service that cannot dedupe: the pre-F1 fan-out is still better
 			// than dropping the probe.
 			for _, sibling := range siblings {
-				_ = e.repService.RecordSignal(ctx, serviceID, sibling, check.Payload.RPCType(), signal)
+				_ = e.repService.RecordSignal(ctx, r.ServiceID, sibling, rpcType, signal)
 			}
 		}
 	}
 
-	e.submitObservation(serviceID, ep, check.Payload.Bytes(), resp.Body, resp.HTTPStatusCode, latency, extracted)
+	e.submitObservation(r.ServiceID, r.Endpoint, r.Request, r.Body, r.StatusCode, latency, extracted)
+}
+
+// severitySignal builds the signal a transport verdict carries.
+func severitySignal(severity, reason string, latency time.Duration) reputation.Signal {
+	switch severity {
+	case heuristic.SeverityCritical:
+		return reputation.NewCriticalErrorSignal(reason, latency)
+	case heuristic.SeverityMajor:
+		return reputation.NewMajorErrorSignal(reason, latency)
+	default:
+		return reputation.NewMinorErrorSignal(reason, latency)
+	}
 }
 
 // submitObservation enqueues an observation for async processing.

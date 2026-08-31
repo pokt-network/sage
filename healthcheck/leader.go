@@ -89,6 +89,10 @@ func (l *LeaderElector) Stop() error {
 	return l.release(ctx)
 }
 
+// ID is this instance's election identity, also used to tag what it
+// publishes so it does not apply its own probe results twice.
+func (l *LeaderElector) ID() string { return l.id }
+
 // IsLeader returns true if this instance currently holds the leader lock.
 func (l *LeaderElector) IsLeader() bool {
 	return l.isLeader.Load()

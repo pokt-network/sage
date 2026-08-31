@@ -593,7 +593,21 @@ func TestTransportSignal_Grading(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sig, ok := transportSignal("eth_chainId", tc.err, tc.ctxErr, 5*time.Millisecond)
+			// Grade the way the leader does: probe records the verdict on the
+			// result, applyResult turns it into a signal.
+			ctx := context.Background()
+			if tc.ctxErr != nil {
+				c, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = c
+			}
+			exe := newTestExecutor(&stubRelayer{err: tc.err}, &stubEndpointProvider{}, &stubSessionManager{}, qos.NewRegistry(), nil)
+			res := exe.probe(ctx, "eth", "supplierA-https://node1.example.com", nil, qos.HealthCheck{Name: "eth_chainId", Payload: domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "eth_chainId")})
+			ok := res.TransportSeverity != ""
+			var sig reputation.Signal
+			if ok {
+				sig = severitySignal(res.TransportSeverity, "health_check: eth_chainId: "+res.TransportReason, 5*time.Millisecond)
+			}
 			if tc.none {
 				if ok {
 					t.Fatalf("expected no signal, got %+v", sig)

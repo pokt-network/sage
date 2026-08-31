@@ -29,16 +29,14 @@ From the 2026-08-31 end-to-end read (see the standing caveat below), verified
 but not fixed (the SYN-blackhole grading and the drain SCAN cost from the same
 list were fixed the same day):
 
-- `healthcheck.LeaderElector` is wired and elects (Redis `SET NX`, 30 s TTL,
-  hand-over in ~6 s on graceful stop — verified with two replicas on
-  2026-08-31), but **nothing reads `IsLeader()`**: `Executor.runOnce` has no
-  gate, so every replica probes every supplier. That is not an oversight to
-  fix with one `if`: reputation is write-behind only (`reputation.Storage`
-  is never read back), so a non-leader that stopped probing would be blind
-  to dead hosts until client traffic found them. Either share reputation
-  (read-through, or leader publishes and followers subscribe) and then gate
-  probes on the leader, or delete the elector so the log stops claiming a
-  role that changes nothing. Decision, not code.
+- ~~`LeaderElector` elects and nothing reads it.~~ Closed 2026-08-31: probe
+  once, apply everywhere (`docs/superpowers/specs/2026-08-31-probe-once-design.md`).
+  Only the leader sends probe relays; it publishes every result to the
+  `sage:probes` Redis stream and every replica applies them, so followers
+  have the same reputation and block heights without spending a relay. The
+  write-behind reputation store is leader-only now. The one hook a sharded
+  assignment (each live replica probes its share) would replace is
+  `healthcheck.Leader`; the stream already supports it.
 - A config reload applies `feature_flags` through `FlagStore.Set`, which on
   the Redis store writes the fleet-wide global key — one replica's file edit
   reaches every replica, and a global flip an admin set through the API is
