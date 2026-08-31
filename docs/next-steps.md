@@ -28,16 +28,6 @@ landed on 2026-08-29; what is left needs a decision.
 From the 2026-08-31 end-to-end read (see the standing caveat below), verified
 but not fixed:
 
-- `heuristic.isConnectFailure` recognises a dead host only through
-  `net.OpError{Op: "dial"}` (refused, DNS, TLS). A host that drops SYNs
-  surfaces through `http.Client{Timeout}` as `url.Error` → `http` timeout
-  with no OpError, so it grades `transport_timeout` (major, MethodBlocking)
-  rather than `transport_connect_failed` (critical, breaker). It is still
-  benched — method marks escalate to a host-wide block at three distinct
-  methods inside one TTL, and the additive score floors — but the breaker
-  never sees it. Telling "never connected" from "connected, no answer" needs
-  `httptrace.ClientTrace.GotConn` on the relay path in `protocol/shannon`,
-  not another error-shape check.
 - `drain.RedisStore.refresh` runs `SCAN MATCH sage:drain:*` over the whole
   keyspace every 5 s on every replica; MATCH filters, it does not index, so
   the cost scales with everything else in that Redis. Cheap fix if it ever

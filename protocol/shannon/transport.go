@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptrace"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
 
@@ -81,9 +83,36 @@ func (p *Protocol) sendHTTP(ctx context.Context, url string, body []byte, rpcTyp
 		req.Header.Set("Rpc-Type", v)
 	}
 
-	resp, err := p.httpClient.Do(req)
+	resp, err := doTraced(p.httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("sendHTTP: request failed: %w", err)
 	}
 	return resp, nil
+}
+
+// doTraced is client.Do with one fact attached to a failure: whether a
+// connection to the host was ever obtained. An error with none is wrapped in
+// domain.ConnectError.
+//
+// The fact has to be observed, not inferred. net/http runs the dial under the
+// request context, so when Client.Timeout fires against a host that drops
+// SYNs the error is a url.Error around an http timeout — the identical shape a
+// host that accepted the connection and never answered produces. Only the
+// GotConn hook separates the two, and the difference is a dead host (circuit
+// breaker) versus a slow method (method block).
+//
+// GotConn fires for a reused pooled connection too, which is right: the host
+// was reachable. It fires only after the TLS handshake, so a handshake failure
+// counts as no connection, matching the other connect-level shapes.
+func doTraced(client *http.Client, req *http.Request) (*http.Response, error) {
+	var connected atomic.Bool
+	trace := &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
+	}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	resp, err := client.Do(req)
+	if err != nil && !connected.Load() {
+		return nil, &domain.ConnectError{Cause: err}
+	}
+	return resp, err
 }

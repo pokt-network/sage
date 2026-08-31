@@ -175,7 +175,7 @@ func (t *grpcRelayTransport) sendWeb(ctx context.Context, supplierURL string, re
 	req.Header.Set("Content-Type", grpcWebContentType)
 	req.Header.Set("rpc-type", rpcTypeHeaderValue(rpcType))
 
-	resp, err := t.httpClient.Do(req)
+	resp, err := doTraced(t.httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("grpc-web relay: %w", err)
 	}

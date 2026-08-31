@@ -59,6 +59,30 @@ func TestSendHTTP_TransportErrorShapesClassify(t *testing.T) {
 		assertReason(t, err, nil, "transport_timeout")
 	})
 
+	t.Run("dial that never completes is a connect failure", func(t *testing.T) {
+		// A host that drops SYNs. net/http runs the dial under the request
+		// context, so when Client.Timeout fires the error is a url.Error
+		// around an http timeout — no net.OpError{Op: "dial"} anywhere in
+		// the chain, the same shape as a host that accepted and went quiet.
+		// The only fact that separates the two is whether a connection was
+		// ever obtained, which is what the httptrace hook records.
+		p := &Protocol{httpClient: &http.Client{
+			Timeout: 50 * time.Millisecond,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				},
+			},
+		}}
+
+		_, err := p.sendHTTP(context.Background(), "http://10.255.255.1:1", []byte(`{}`), domain.RPCTypeJSONRPC)
+		if err == nil {
+			t.Fatal("want an error when the dial never completes")
+		}
+		assertReason(t, err, nil, "transport_connect_failed")
+	})
+
 	t.Run("context cancelled mid-flight is a client hang-up", func(t *testing.T) {
 		p := &Protocol{httpClient: &http.Client{Timeout: 5 * time.Second}}
 		ctx, cancel := context.WithCancel(context.Background())

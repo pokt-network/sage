@@ -120,7 +120,7 @@ hang-up from anything else.
 | Verdict | Detected by | Result |
 |---|---|---|
 | Client cancelled | `requestCtxErr == context.Canceled` | `AttrClient`, no retry, no penalty, **no signal** |
-| Connect-level | `*net.OpError` with `Op == "dial"`, DNS (`*net.DNSError`), TLS handshake (`tls.RecordHeaderError`, `x509` errors), `ECONNREFUSED`/`ECONNRESET` before any byte | `AttrSupplier`, critical, `ShouldCircuitBreak`, retry |
+| Connect-level | `domain.ConnectError`, attached by the protocol layer when `httptrace.GotConn` never fired (since 2026-08-31 — a SYN-dropping host under `Client.Timeout` has the same error shape as a hanging one, so the fact is observed, not inferred); or by shape for callers off the traced client: `*net.OpError` with `Op == "dial"`, DNS (`*net.DNSError`), TLS handshake (`tls.RecordHeaderError`, `x509` errors) | `AttrSupplier`, critical, `ShouldCircuitBreak`, retry |
 | Timeout after connect | `net.Error.Timeout()`, `context.DeadlineExceeded` from the HTTP client, or `requestCtxErr == context.DeadlineExceeded` (the Timeout middleware fired mid-attempt) | `AttrSupplier`, major, retry, `MethodBlocking = true` |
 | Other | anything else the relayer wraps (`ErrProtocol`, session fetch, signing, relay-miner validation) | today's behaviour: `AttrUnknown`, minor, retry per `IsRetryable` |
 

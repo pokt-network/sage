@@ -182,3 +182,14 @@ func TestAnalyzeTransportError_OtherStaysMinorUnknown(t *testing.T) {
 		t.Fatal("ShouldRetry must follow domain.IsRetryable for the other bucket")
 	}
 }
+
+// A domain.ConnectError carries the fact the error shape cannot: the host was
+// never reached. It must grade as a dead host whatever it wraps — here the
+// exact http timeout a SYN-dropping host produces under Client.Timeout.
+func TestAnalyzeTransportError_ConnectErrorIsDeadHost(t *testing.T) {
+	inner := &url.Error{Op: "Post", URL: "http://10.255.255.1:1", Err: context.DeadlineExceeded}
+	r := AnalyzeTransportError(relayerWrap(&domain.ConnectError{Cause: inner}), nil)
+	if r.Reason != "transport_connect_failed" || !r.ShouldCircuitBreak || r.MethodBlocking {
+		t.Fatalf("connect error graded as %+v", r)
+	}
+}

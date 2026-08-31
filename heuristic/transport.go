@@ -83,9 +83,19 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 // exchanged with the host: a dial that was refused or timed out, a name that
 // did not resolve, a TLS handshake that failed.
 //
+// The authoritative signal is domain.ConnectError, which the protocol layer
+// attaches from an httptrace observation: a host that drops SYNs surfaces as
+// the same http timeout as a host that accepted and went quiet, and no error
+// shape tells them apart. The shape checks below remain for callers that do
+// not go through the traced client.
+//
 // A dial timeout is a connect failure, not a method timeout — the check for
 // Op == "dial" runs before the generic Timeout() check on purpose.
 func isConnectFailure(err error) bool {
+	var connErr *domain.ConnectError
+	if errors.As(err, &connErr) {
+		return true
+	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) && opErr.Op == "dial" {
 		return true

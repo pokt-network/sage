@@ -88,6 +88,24 @@ func NewRelayError(kind ErrorKind, msg string, cause error, retryable bool) *Rel
 	return &RelayError{Kind: kind, Message: msg, Cause: cause, Retryable: retryable}
 }
 
+// ConnectError marks a transport failure that happened before any connection
+// to the host was obtained: the dial never completed, the name did not
+// resolve, the TLS handshake failed. It is set by the protocol layer from an
+// httptrace observation rather than inferred from the error's shape, because
+// the shape does not carry the fact: a host that drops SYNs and a host that
+// accepted and went quiet both surface as the same http timeout once
+// Client.Timeout fires. The heuristic keys on this to grade a dead host as
+// dead (circuit breaker) rather than as slow on one method (method block).
+type ConnectError struct {
+	Cause error
+}
+
+func (e *ConnectError) Error() string { return "no connection to host: " + e.Cause.Error() }
+
+// Unwrap exposes the underlying transport error, so errors.Is on
+// context.DeadlineExceeded or a net.Error still sees through it.
+func (e *ConnectError) Unwrap() error { return e.Cause }
+
 // IsRetryable returns true if the error indicates the request can be retried.
 func IsRetryable(err error) bool {
 	if re, ok := err.(*RelayError); ok {
