@@ -114,6 +114,9 @@ failureThreshold) here.
 | `POST` | `/admin/reputation/drain/{serviceID}` | Applies or releases an operator drain for one service. |
 | `GET` | `/admin/reputation/drain/{serviceID}` | Lists the live drains for a service. |
 | `DELETE` | `/admin/reputation/drain/{serviceID}/{domain}` | Releases every RPC-type-scoped drain on one operator for a service. |
+| `GET` | `/admin/blocked-domains` | Lists the blocked domains in force: the config base and the admin-set entries, separately, plus whether admin entries are shared across replicas. |
+| `PUT` | `/admin/blocked-domains/{domain}` | Bans a domain on every service, for every RPC type or only the listed ones, without a redeploy. |
+| `DELETE` | `/admin/blocked-domains/{domain}` | Lifts an admin-set ban. |
 | `GET` | `/admin/tuning` | Returns every knob that can be overridden at runtime, with whatever has been set on it. |
 | `PUT` | `/admin/tuning/{knob}` | Sets a knob globally. |
 | `PUT` | `/admin/tuning/{knob}/{serviceID}` | Sets a knob for one service only. |
@@ -277,6 +280,28 @@ Every key that failed only to propagate is still counted as released and its
 error accumulated into one propagation_error string, so the response
 describes the whole operator rather than stopping at the first key Redis
 could not be told about.
+
+### `GET /admin/blocked-domains`
+
+Lists the blocked domains in force: the config
+base and the admin-set entries, separately, plus whether admin entries are
+shared across replicas.
+
+### `PUT /admin/blocked-domains/{domain}`
+
+Bans a domain on every service, for every RPC type or
+only the listed ones, without a redeploy. The ban is permanent until released,
+applies on this replica immediately and, with Redis, reaches every replica
+within its poll interval and survives restarts. Body: {"rpc_types":
+["websocket"], "reason": "..."}; an empty rpc_types bans every type. A
+domain the config already lists is widened, never narrowed. A ban that
+applied here but did not reach Redis is reported in propagation_error with
+status 200: it is real on this replica.
+
+### `DELETE /admin/blocked-domains/{domain}`
+
+Lifts an admin-set ban. A domain only the config
+lists is 404: remove it from the file and reload.
 
 ### `GET /admin/tuning`
 

@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/pokt-network/sage/blocklist"
 	"github.com/pokt-network/sage/circuitbreaker"
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/crossvalidation"
@@ -91,11 +92,13 @@ type App struct {
 	// mock backend, which hands out endpoints without consulting one — a
 	// reload says so rather than reporting the section applied.
 	blockedDomains blockedDomainSetter
-	Leader         *healthcheck.LeaderElector
-	HealthExe      *healthcheck.Executor
-	Redis          *redis.Client
-	Metrics        *metrics.Recorder
-	Logger         *slog.Logger
+	// blocklist is the same manager, for the admin API's routes.
+	blocklist *blocklist.Manager
+	Leader    *healthcheck.LeaderElector
+	HealthExe *healthcheck.Executor
+	Redis     *redis.Client
+	Metrics   *metrics.Recorder
+	Logger    *slog.Logger
 }
 
 // methodBlockLister adapts methodblock.Store to metrics.MethodBlockLister so
@@ -112,6 +115,11 @@ func (l methodBlockLister) ActiveMethodBlocks(serviceID string) []metrics.Method
 	}
 	return out
 }
+
+// blocklistPollInterval is how often each replica re-reads the admin-set
+// domain bans from Redis. Same order as the drain refresh: a ban set on one
+// replica is in force everywhere within it.
+const blocklistPollInterval = 5 * time.Second
 
 // drainLister adapts drain.Store to metrics.DrainLister so metrics does not
 // import drain (nor the reverse).
@@ -265,8 +273,30 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		}
 		shannonProto.StartBlockPoller(ctx)
 		app.Protocol = shannonProto
-		app.blockedDomains = shannonProto
 		proto = shannonProto
+
+		// The domain ban's swap point is the blocklist manager, not the
+		// protocol: it owns the union of the config list and the admin-set
+		// bans, so a reload (which rewrites the config half) and an admin
+		// PUT (the other half) never overwrite each other. Redis when
+		// available so a ban reaches every replica and outlives a restart;
+		// memory otherwise, and the admin API says which.
+		var backend blocklist.Backend = blocklist.NewMemoryBackend()
+		var blOpts []blocklist.Option
+		if redisClient != nil {
+			backend = blocklist.NewRedisBackend(redisClient)
+			blOpts = append(blOpts, blocklist.WithPollInterval(blocklistPollInterval), blocklist.WithShared(true))
+		}
+		blocked := blocklist.New(shannonProto, backend, cfg.Gateway.BlockedDomains, blOpts...)
+		if err := blocked.Start(ctx); err != nil {
+			// The config half is already compiled into the protocol; what
+			// failed is reading the admin half back. Not fatal: bans set
+			// while Redis is away land locally and the poll catches up.
+			logger.Warn("blocked domains: reading admin-set bans from redis failed, starting with the config list", "error", err)
+		}
+		app.blockedDomains = blocked
+		app.blocklist = blocked
+		prometheus.MustRegister(metrics.NewBlockedDomainsGauge(blocked.Len))
 	}
 
 	// 5. QoS registry
@@ -611,6 +641,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// under the mock backend, and the rebinder is the same object.
 	if rb, ok := wsRelayer.(router.WSRebinder); ok {
 		app.Admin.SetWebSocketRebinder(rb)
+	}
+	if app.blocklist != nil {
+		app.Admin.SetBlocklist(app.blocklist)
 	}
 	app.Router = router.New(cfg.Router, chain, proto, wsRelayer, logger)
 	app.Router.SetClientMetrics(recorder)

@@ -18,6 +18,7 @@ means traffic is arriving for services this gateway does not serve.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
+| `sage_blocked_domains_admin` | gauge | — | Domains banned through the admin API (PUT /admin/blocked-domains), in force on this replica, not counting gateway_config.blocked_domains. Non-zero on a fresh replica is a ban inherited through Redis. |
 | `sage_cache_hits_total` | counter | `service_id` | Total response cache hits. |
 | `sage_cache_misses_total` | counter | `service_id` | Total response cache misses. |
 | `sage_circuit_breaker_outcome_total` | counter | `service_id`, `domain`, `outcome` | Relay outcomes as counted by the circuit breaker's failure-rate gate, keyed on the HOSTNAME the gate uses. outcome is success or failure: numerator and denominator of the rate that decides a break. Only what the gate sees — a broken domain is absent, not healthy. |

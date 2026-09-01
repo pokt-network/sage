@@ -33,6 +33,7 @@ type AdminAPI struct {
 	reloader    Reloader
 	sampler     *traffic.Sampler
 	wsRebinder  WSRebinder
+	blocklist   Blocklist
 	logger      *slog.Logger
 }
 
@@ -118,6 +119,12 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/reputation/drain/{serviceID}", a.handleSetDrain)
 	mux.HandleFunc("GET /admin/reputation/drain/{serviceID}", a.handleGetDrains)
 	mux.HandleFunc("DELETE /admin/reputation/drain/{serviceID}/{domain}", a.handleReleaseDrain)
+
+	// Blocked domains: the permanent, global, fleet-wide ban (see package
+	// blocklist). Distinct from a drain, which is per service and expires.
+	mux.HandleFunc("GET /admin/blocked-domains", a.handleListBlockedDomains)
+	mux.HandleFunc("PUT /admin/blocked-domains/{domain}", a.handleSetBlockedDomain)
+	mux.HandleFunc("DELETE /admin/blocked-domains/{domain}", a.handleReleaseBlockedDomain)
 
 	// Runtime tuning overrides
 	mux.HandleFunc("GET /admin/tuning", a.handleListTuning)
