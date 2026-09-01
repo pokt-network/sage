@@ -6,12 +6,69 @@ ordered by priority within each section. Update this file when an item lands
 or a decision changes it; delete items rather than marking them done, so the
 file only ever lists open work.
 
-Last updated: 2026-08-31 (mainnet canary up, one pod, no external traffic; probe
-cadence knobs and `rpc_type_fallbacks` landed from its first hour of metrics
-and logs. PATH `origin/main` at `274e9791`, 2026-08-25).
+Last updated: 2026-09-01 (mainnet canary at 1% traffic; first OOM found and
+fixed, see the reputation memory bound section. PATH `origin/main` at
+`274e9791`, 2026-08-25).
 
 
 
+
+## Reputation memory bound (landed 2026-09-01, verification open)
+
+The canary's first incident: after 14.7 h on `64a7e72` one of two pods was
+OOMKilled (exit 137, 1 Gi limit, `GOMEMLIMIT=900MiB`). Working set climbed
+~100 MB/h linearly from start, hit the limit at 04–05 h, and both pods sat
+pinned for eight hours before one lost. The heap profile put 76% of in-use
+memory in `reputation.(*Timeline).Record`: 82k reputation keys on the 14 h
+pod against 6k on a fresh one, and 82k × ~13 KB per key ring is 1.07 GB.
+
+Root cause: the timeline bounded events per key (a ring of 100) but never
+evicted a key, and the canary ran `key_granularity: per-supplier`, so a key
+was a staked registration that rotates every session — the set grew with the
+network for the life of the process. The score cache
+(`pruneUninformative` + shard cap) and the exporter (per-service cap) had
+bounds; the admin-only timeline had none. The Redis write-behind grew the
+same way (`HLEN sage:reputation:` reached 119,567) and nothing reads it back.
+
+Landed in `aa5d63a` + `b4673b6`, image `ghcr.io/pokt-network/sage:b4673b6`:
+
+- `reputation.Timeline` drops keys idle past 1 h (`DefaultIdleTTL`: three
+  ~20-minute sessions) and holds at most 16,384 keys, ≤ ~213 MB worst case.
+- `State.UpdatedAt` is stamped on every write-behind; the leader runs
+  `StaleDeleter.DeleteStale` every 5 min (HSCAN + batched HDEL on Redis, a
+  map sweep in memory) with the same 1 h TTL. Unstamped fields count as
+  stale, so the first sweep drains what pre-stamp pods left.
+- `sage_reputation_timeline_keys` and `sage_reputation_keys{service_id}` show
+  the bounds working. `sage_endpoint_reputation_score` exports only keys
+  below the full score, capped 500 per service (was every key, 2,000): one
+  pod was emitting 104k series, 2.3% of the Prometheus head.
+- Canary config moved to the default `per-url` (keys are backend URLs, which
+  do not rotate). The PATH config's comment on `per-endpoint` ("each URL
+  tracked separately") describes per-url; per-endpoint is the supplier × URL
+  pair and grows the same way per-supplier did.
+
+Open:
+
+- **Verify on the canary.** Ops reports at 1 h and 3 h after the roll:
+  `container_memory_working_set_bytes` flat within ±10% between the two
+  readings is the pass line; `sage_reputation_timeline_keys` in the low
+  thousands and flat after the first hour; series per pod well under 10k;
+  `HLEN sage:reputation:` down from 119,567 within minutes of the leader
+  coming up. Close this section when those land.
+- **The reputation write-behind is write-only.** Nothing reads
+  `sage:reputation:` back — a restart starts every score at 100 and rebuilds
+  from probes behind the readiness gate. Either add a warm-up read on start
+  (the `Storage.GetStates` seam exists) or drop the write-behind and its
+  Redis footprint; keeping a store nobody reads is the middle option and the
+  one in place. Decide once the canary has a restart under traffic to judge
+  the warm-up cost against.
+- **Other ever-seen maps.** The audit that found this one was reactive. Worth
+  a pass over every map keyed by endpoint, supplier or session that is
+  written on the relay or probe path and never deleted from: the
+  `reputation.memoize` key cache (bounded by a whole-map reset), the
+  `methodblock` store (TTL), the session endpoint cache (evicted on
+  rollover). Each already has a bound; the check is that a bound exists for
+  anything new, and that a gauge exposes it.
 
 ## Explore next (raised 2026-09-01)
 
