@@ -75,6 +75,18 @@ Open:
 
 ## Explore next (raised 2026-09-01)
 
+- **Label probe vs client attempts in sage_relay_total (and the latency
+  histogram).** Found 2026-09-01, first stable window after the per-attempt
+  move: relay_total ÷ client_requests_total = 1.557, decomposing to client
+  47.1/s + health-check probes 15.7/s + retries 2.3/s + hedge losers. Probes
+  are a third of attempts and there is no label separating them, so every
+  error-rate and latency dashboard on relay_total mixes synthetic checks
+  into client-facing numbers. PATH hit the same and split via
+  path_relays_total{request_type}; do the equivalent: a probe|client label
+  on sage_relay_total and sage_relay_latency_seconds. The probe flag already
+  exists on reputation signals (Signal.Probe) — find where the relay context
+  carries it and hand it to the metrics middleware.
+
 - ~~Dynamic blocked_domains from the admin UI.~~ Landed 2026-09-01: package
   `blocklist` owns the union of the config list and admin-set bans;
   `PUT/GET/DELETE /admin/blocked-domains[/{domain}]` and a "Blocked domains"
