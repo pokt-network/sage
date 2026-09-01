@@ -94,19 +94,16 @@ Open:
   gains an external result source (it already has a ProbeSource seam for the
   Redis stream — same shape).
 
-- **SAGE cannot open nodefleet WebSockets; PATH can (the 1011 root cause).**
-  Corrected 2026-09-01: nodefleet WS works through PATH, so "dead since July"
-  was wrong — the failure is on SAGE's side of the dial. Mitigated the same
-  day: nodefleet.net is banned for websocket via the new admin blocklist
-  (78% of the WS pool, 1,029 client 1011s the previous night). The open
-  investigation is a diff of the WS open path against PATH's: URL scheme and
-  path handed to the dialer, headers/subprotocols, the signed relay request
-  around the upgrade, TLS. One captured SAGE→nodefleet open attempt (what
-  status came back instead of the 101) decides most of it; ops may have one.
-  The cold-reputation half stands on its own, smaller: WS volume is too low
-  to warm scores and probes do not cover the websocket rpc_type, so HTTP's
+- **WS cold reputation (what remains of the 1011 thread).** The dial bug is
+  fixed: suppliers stake WS endpoints as https:// (nodefleet stakes every one
+  that way — 78% of the WS pool) and the bridge handed that to gorilla, which
+  rejects non-ws/wss as "malformed ws or wss URL" before a packet is sent.
+  ConnectEndpoint now dials http as ws and https as wss (never downgrading);
+  no ban needed. What remains is the cold-score half: WS volume is too low to
+  warm scores and probes do not cover the websocket rpc_type, so HTTP's
   knowledge does not reach WS — (a) share operator/domain reputation across
-  rpc_types, or (b) probe WS. Lift the ban once the dial bug is fixed.
+  rpc_types, or (b) probe WS. Also solana: "no endpoints for rpc type
+  websocket" is real staking scarcity, not a bug.
 
 
 ## Latency-aware selection (parked — acceptable for now)
