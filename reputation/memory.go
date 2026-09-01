@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ErrStateNotFound is returned when a state key does not exist in storage.
@@ -64,4 +65,19 @@ func (m *MemoryStorage) DeleteState(_ context.Context, key string) error {
 	defer m.mu.Unlock()
 	delete(m.states, key)
 	return nil
+}
+
+// DeleteStale implements StaleDeleter.
+func (m *MemoryStorage) DeleteStale(_ context.Context, olderThan time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cutoff := olderThan.Unix()
+	n := 0
+	for k, st := range m.states {
+		if st.UpdatedAt < cutoff {
+			delete(m.states, k)
+			n++
+		}
+	}
+	return n, nil
 }

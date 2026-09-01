@@ -81,7 +81,19 @@ type ServiceConfig struct {
 	// means DefaultSelectorConfig(); a partially set struct is used as-is, so
 	// a caller that sets any field must set all of them (wire.go does).
 	Selector SelectorConfig
+	// StateIdleTTL is how long a key's entry in Storage outlives its last
+	// write before the sweep deletes it. Zero means DefaultIdleTTL; negative
+	// disables the sweep. Only matters when Storage implements StaleDeleter.
+	StateIdleTTL time.Duration
+	// StateSweepInterval is how often the write-behind goroutine runs the
+	// sweep. Zero means defaultStateSweepInterval.
+	StateSweepInterval time.Duration
 }
+
+// defaultStateSweepInterval paces the storage sweep. The sweep is one HSCAN
+// over the hash on the leader; every few minutes is far more often than the
+// TTL needs and cheap enough not to think about.
+const defaultStateSweepInterval = 5 * time.Minute
 
 // DefaultServiceConfig returns a ServiceConfig with sensible defaults.
 func DefaultServiceConfig() ServiceConfig {
@@ -168,6 +180,12 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	}
 	if cfg.WriteQueueSize == 0 {
 		cfg.WriteQueueSize = 4096
+	}
+	if cfg.StateIdleTTL == 0 {
+		cfg.StateIdleTTL = DefaultIdleTTL
+	}
+	if cfg.StateSweepInterval <= 0 {
+		cfg.StateSweepInterval = defaultStateSweepInterval
 	}
 	s := &serviceImpl{
 		cfg:      cfg,
@@ -607,20 +625,43 @@ func (s *serviceImpl) clamp(score float64) float64 {
 // drainWrites processes the async write queue until Stop is called.
 func (s *serviceImpl) drainWrites() {
 	defer s.wg.Done()
+	sweeper, canSweep := s.storage.(StaleDeleter)
+	canSweep = canSweep && s.cfg.StateIdleTTL > 0
+	var sweep <-chan time.Time
+	if canSweep {
+		ticker := time.NewTicker(s.cfg.StateSweepInterval)
+		defer ticker.Stop()
+		sweep = ticker.C
+	}
 	for {
 		select {
 		case op := <-s.writeCh:
-			_ = s.storage.SetState(context.Background(), op.key, op.state)
+			s.write(op)
+		case now := <-sweep:
+			// Errors are dropped like write errors are: storage is write-behind
+			// that nothing reads back, and a sweep that failed runs again next
+			// tick. safego.Run keeps one bad sweep from stopping the drain.
+			safego.Run(nil, "reputation.sweep", func() {
+				_, _ = sweeper.DeleteStale(context.Background(), now.Add(-s.cfg.StateIdleTTL))
+			})
 		case <-s.stopCh:
 			// Drain remaining writes.
 			for {
 				select {
 				case op := <-s.writeCh:
-					_ = s.storage.SetState(context.Background(), op.key, op.state)
+					s.write(op)
 				default:
 					return
 				}
 			}
 		}
 	}
+}
+
+// write stamps the state and hands it to storage. The stamp is what the
+// sweep keys on; it is set here, at write time, rather than at enqueue, so
+// it says when storage last heard about the key.
+func (s *serviceImpl) write(op writeOp) {
+	op.state.UpdatedAt = time.Now().Unix()
+	_ = s.storage.SetState(context.Background(), op.key, op.state)
 }

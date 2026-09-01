@@ -1,6 +1,7 @@
 package reputation
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -97,5 +98,86 @@ func TestTimeline_GetReturnsCopy(t *testing.T) {
 	original := tl.Get(key)
 	if original[0].Score != 90 {
 		t.Error("Get should return a copy, but original was mutated")
+	}
+}
+
+// A key whose last event is older than the idle TTL is dropped the next time
+// its shard admits a new key. This is the bound that keeps a rotating key set
+// (per-supplier granularity: a fresh supplier address every session) from
+// growing for the life of the process.
+func TestTimeline_EvictsIdleKeys(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	tl := NewTimelineWithConfig(TimelineConfig{MaxLen: 5, IdleTTL: time.Hour, MaxKeys: 100_000})
+	tl.now = func() time.Time { return now }
+
+	tl.Record("eth:old", TimelineEvent{Timestamp: now, Event: "signal"})
+	now = now.Add(30 * time.Minute)
+	tl.Record("eth:fresh", TimelineEvent{Timestamp: now, Event: "signal"})
+
+	// Past the TTL for "old", not for "fresh"; a new key triggers the sweep.
+	now = now.Add(45 * time.Minute)
+	tl.Record("eth:newer", TimelineEvent{Timestamp: now, Event: "signal"})
+
+	if got := tl.Get("eth:old"); got != nil {
+		t.Errorf("idle key survived the sweep: %v", got)
+	}
+	if got := tl.Get("eth:fresh"); len(got) != 1 {
+		t.Errorf("live key was evicted: got %d events", len(got))
+	}
+	if got := tl.Len(); got != 2 {
+		t.Errorf("Len = %d, want 2", got)
+	}
+}
+
+// Recording on a key refreshes its idle clock: a key that keeps receiving
+// events is never idle, however old its first event is.
+func TestTimeline_ActivityKeepsKeyAlive(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	tl := NewTimelineWithConfig(TimelineConfig{MaxLen: 5, IdleTTL: time.Hour, MaxKeys: 100_000})
+	tl.now = func() time.Time { return now }
+
+	for i := 0; i < 5; i++ {
+		tl.Record("eth:busy", TimelineEvent{Timestamp: now, Event: "signal"})
+		now = now.Add(40 * time.Minute)
+	}
+	tl.Record("eth:other", TimelineEvent{Timestamp: now, Event: "signal"})
+
+	if got := tl.Get("eth:busy"); len(got) != 5 {
+		t.Errorf("busy key was evicted: got %d events", len(got))
+	}
+}
+
+// When the idle sweep is not enough, the hard cap drops the keys with the
+// oldest last event until the timeline is back under MaxKeys. Memory is then
+// bounded by MaxKeys × MaxLen regardless of how fast keys rotate.
+func TestTimeline_HardCapEvictsOldest(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	const maxKeys = 64
+	tl := NewTimelineWithConfig(TimelineConfig{MaxLen: 5, IdleTTL: 24 * time.Hour, MaxKeys: maxKeys})
+	tl.now = func() time.Time { return now }
+
+	for i := 0; i < 4*maxKeys; i++ {
+		now = now.Add(time.Second)
+		tl.Record(fmt.Sprintf("eth:ep%d", i), TimelineEvent{Timestamp: now, Event: "signal"})
+	}
+
+	if got := tl.Len(); got > maxKeys {
+		t.Fatalf("Len = %d, want <= %d", got, maxKeys)
+	}
+	// The newest key always survives; the very first is long gone.
+	if got := tl.Get(fmt.Sprintf("eth:ep%d", 4*maxKeys-1)); len(got) != 1 {
+		t.Errorf("newest key missing")
+	}
+	if got := tl.Get("eth:ep0"); got != nil {
+		t.Errorf("oldest key survived the cap: %v", got)
+	}
+}
+
+// Zero-value config falls back to the defaults, and NewTimeline(maxLen) keeps
+// its old meaning with the default key bounds applied.
+func TestTimeline_DefaultBounds(t *testing.T) {
+	tl := NewTimeline(0)
+	if tl.maxLen != 100 || tl.idleTTL != DefaultTimelineIdleTTL || tl.maxKeys != DefaultTimelineMaxKeys {
+		t.Errorf("defaults not applied: maxLen=%d idleTTL=%v maxKeys=%d", tl.maxLen, tl.idleTTL, tl.maxKeys)
 	}
 }

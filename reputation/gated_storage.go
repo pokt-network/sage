@@ -1,6 +1,9 @@
 package reputation
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // LeaderOnlyStorage writes through to inner only while isLeader reports
 // true, and reads through always.
@@ -48,3 +51,16 @@ func (s *LeaderOnlyStorage) DeleteState(ctx context.Context, key string) error {
 }
 
 var _ Storage = (*LeaderOnlyStorage)(nil)
+
+// DeleteStale implements StaleDeleter on the leader only, and only when the
+// inner storage can. A follower reports nothing deleted.
+func (s *LeaderOnlyStorage) DeleteStale(ctx context.Context, olderThan time.Time) (int, error) {
+	if s.isLeader != nil && !s.isLeader() {
+		return 0, nil
+	}
+	sd, ok := s.inner.(StaleDeleter)
+	if !ok {
+		return 0, nil
+	}
+	return sd.DeleteStale(ctx, olderThan)
+}
