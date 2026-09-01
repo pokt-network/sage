@@ -124,29 +124,6 @@ even when they succeed. This shifts traffic to the fast suppliers without
 penalizing the slow-but-working ones in the score. Prototype the tiebreak in
 the selector (reputation/selector) when picked up.
 
-## Session rollover grace period (committed next, after 397a949 boundary read)
-
-`397a949` coalesced session refresh (singleflight) and should end the boundary
-stall. The committed follow-up is the grace period, which is a correctness fix
-as much as a performance one:
-
-`getSession` treats a session as dead the instant `height >= session.end` and
-forces a synchronous refresh. The protocol keeps a session valid for relays
-through `end + GracePeriodEndOffsetBlocks` — an on-chain shared parameter
-(poktroll `x/shared`, alongside `NumBlocksPerSession`). SAGE already fetches
-`GetSharedParams` but does not use the grace for session validity, so it
-expires sessions a whole grace-window early and hard-cuts at the boundary.
-
-Plan: read `GracePeriodEndOffsetBlocks` from shared params; treat a session as
-valid until `end + grace`; refresh the next session in the background during
-the grace so no relay blocks at the boundary, and every relay is signed
-against a session the chain still honours (this is what relayminers accept for
-claims/proofs). PATH's `session_rollover_blocks=10` is a more conservative
-buffer on the same idea. Gate: proceed once ops' boundary-containing 15m
-window on 397a949 confirms the coalesce landed (boundary p95 near PATH's
-~150ms); if a residual per-boundary blip remains, the grace removes it.
-
-
 ## 1. Parked follow-ups
 
 None blocking. The mechanical items from the scoring v2 and admin passes
