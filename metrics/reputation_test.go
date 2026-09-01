@@ -49,7 +49,7 @@ func TestScoreCollector_ReportsScores(t *testing.T) {
 		"eth": {"https://a.example.com|json_rpc": 90, "https://b.example.com|json_rpc": 40},
 	}}
 
-	mfs := gather(t, NewScoreCollector(lister, []domain.ServiceID{"eth"}))
+	mfs := gather(t, NewScoreCollector(lister, []domain.ServiceID{"eth"}, 100))
 
 	mf := familyByName(mfs, "sage_endpoint_reputation_score")
 	if mf == nil {
@@ -57,6 +57,68 @@ func TestScoreCollector_ReportsScores(t *testing.T) {
 	}
 	if got := len(mf.GetMetric()); got != 2 {
 		t.Fatalf("series = %d, want 2", got)
+	}
+}
+
+// sage_reputation_keys is the count before the per-scrape cap: it must say how
+// many keys the service really holds, not how many survived truncation.
+func TestScoreCollector_ReportsKeyCountBeforeCap(t *testing.T) {
+	scores := make(map[string]float64, maxScoreSeriesPerService+10)
+	for i := 0; i < maxScoreSeriesPerService+10; i++ {
+		scores[fmt.Sprintf("https://h%d.example.com|json_rpc", i)] = 50
+	}
+	lister := &fakeScoreLister{scores: map[domain.ServiceID]map[string]float64{"eth": scores}}
+
+	mfs := gather(t, NewScoreCollector(lister, []domain.ServiceID{"eth"}, 100))
+
+	mf := familyByName(mfs, "sage_reputation_keys")
+	if mf == nil {
+		t.Fatal("sage_reputation_keys not reported")
+	}
+	if got := mf.GetMetric()[0].GetGauge().GetValue(); got != float64(maxScoreSeriesPerService+10) {
+		t.Errorf("sage_reputation_keys = %v, want %d", got, maxScoreSeriesPerService+10)
+	}
+	if got := len(familyByName(mfs, "sage_endpoint_reputation_score").GetMetric()); got != maxScoreSeriesPerService {
+		t.Errorf("score series = %d, want the cap %d", got, maxScoreSeriesPerService)
+	}
+}
+
+// A key at the full score is what a miss would answer: it is counted on
+// sage_reputation_keys and not exported as a series.
+func TestScoreCollector_SkipsFullScoreKeys(t *testing.T) {
+	lister := &fakeScoreLister{scores: map[domain.ServiceID]map[string]float64{
+		"eth": {
+			"https://healthy.example.com|json_rpc": 100,
+			"https://sick.example.com|json_rpc":    30,
+		},
+	}}
+
+	mfs := gather(t, NewScoreCollector(lister, []domain.ServiceID{"eth"}, 100))
+
+	scores := familyByName(mfs, "sage_endpoint_reputation_score")
+	if got := len(scores.GetMetric()); got != 1 {
+		t.Fatalf("score series = %d, want 1 (the sick one)", got)
+	}
+	if got := scores.GetMetric()[0].GetGauge().GetValue(); got != 30 {
+		t.Errorf("exported score = %v, want 30", got)
+	}
+	if got := familyByName(mfs, "sage_reputation_keys").GetMetric()[0].GetGauge().GetValue(); got != 2 {
+		t.Errorf("sage_reputation_keys = %v, want 2 (full-score key still counted)", got)
+	}
+	if got := familyByName(mfs, "sage_endpoint_reputation_scores_dropped").GetMetric()[0].GetGauge().GetValue(); got != 0 {
+		t.Errorf("dropped = %v, want 0 (filtered is not dropped)", got)
+	}
+}
+
+func TestTimelineKeysGauge(t *testing.T) {
+	n := 7
+	mfs := gather(t, NewTimelineKeysGauge(func() int { return n }))
+	mf := familyByName(mfs, "sage_reputation_timeline_keys")
+	if mf == nil {
+		t.Fatal("sage_reputation_timeline_keys not reported")
+	}
+	if got := mf.GetMetric()[0].GetGauge().GetValue(); got != 7 {
+		t.Errorf("value = %v, want 7", got)
 	}
 }
 
@@ -68,7 +130,7 @@ func TestScoreCollector_DoesNotRetainVanishedKeys(t *testing.T) {
 	lister := &fakeScoreLister{scores: map[domain.ServiceID]map[string]float64{
 		"eth": {"https://a.example.com|json_rpc": 90, "https://gone.example.com|json_rpc": 10},
 	}}
-	c := NewScoreCollector(lister, []domain.ServiceID{"eth"})
+	c := NewScoreCollector(lister, []domain.ServiceID{"eth"}, 100)
 
 	if got := len(familyByName(gather(t, c), "sage_endpoint_reputation_score").GetMetric()); got != 2 {
 		t.Fatalf("first scrape series = %d, want 2", got)
@@ -92,21 +154,24 @@ func TestScoreCollector_DoesNotRetainVanishedKeys(t *testing.T) {
 // Under per-endpoint granularity the key carries a supplier address, which
 // rotates every session, so the set is unbounded by anything SAGE controls.
 func TestScoreCollector_CapsSeriesAndKeepsTheWorst(t *testing.T) {
-	scores := make(map[string]float64, maxScoreSeriesPerService+500)
-	for i := 0; i < maxScoreSeriesPerService+500; i++ {
-		// Scores climb with i, so the first 500 are the ones worth keeping.
-		scores[fmt.Sprintf("pokt1supplier%05d-https://node.example.com|json_rpc", i)] = float64(i)
+	const n = maxScoreSeriesPerService + 500
+	scores := make(map[string]float64, n)
+	for i := 0; i < n; i++ {
+		// Scores climb with i and all sit below the full score, so the first
+		// maxScoreSeriesPerService are the ones worth keeping.
+		scores[fmt.Sprintf("pokt1supplier%05d-https://node.example.com|json_rpc", i)] = 99 * float64(i) / n
 	}
+	cutoff := 99 * float64(maxScoreSeriesPerService) / n
 	lister := &fakeScoreLister{scores: map[domain.ServiceID]map[string]float64{"eth": scores}}
 
-	mfs := gather(t, NewScoreCollector(lister, []domain.ServiceID{"eth"}))
+	mfs := gather(t, NewScoreCollector(lister, []domain.ServiceID{"eth"}, 100))
 
 	mf := familyByName(mfs, "sage_endpoint_reputation_score")
 	if got := len(mf.GetMetric()); got != maxScoreSeriesPerService {
 		t.Fatalf("series = %d, want the cap %d", got, maxScoreSeriesPerService)
 	}
 	for _, m := range mf.GetMetric() {
-		if v := m.GetGauge().GetValue(); v >= float64(maxScoreSeriesPerService) {
+		if v := m.GetGauge().GetValue(); v >= cutoff {
 			t.Fatalf("kept a score of %v — truncation must keep the LOWEST scores", v)
 		}
 	}
@@ -125,7 +190,7 @@ func TestScoreCollector_CapsSeriesAndKeepsTheWorst(t *testing.T) {
 func TestScoreCollector_SkipsServiceOnError(t *testing.T) {
 	lister := &fakeScoreLister{err: fmt.Errorf("redis unreachable")}
 
-	mfs := gather(t, NewScoreCollector(lister, []domain.ServiceID{"eth"}))
+	mfs := gather(t, NewScoreCollector(lister, []domain.ServiceID{"eth"}, 100))
 
 	if mf := familyByName(mfs, "sage_endpoint_reputation_score"); mf != nil {
 		t.Errorf("reported %d series for a service whose scores could not be read", len(mf.GetMetric()))
@@ -133,7 +198,7 @@ func TestScoreCollector_SkipsServiceOnError(t *testing.T) {
 }
 
 func TestScoreCollector_NilListerIsInert(t *testing.T) {
-	if mfs := gather(t, NewScoreCollector(nil, []domain.ServiceID{"eth"})); len(mfs) != 0 {
+	if mfs := gather(t, NewScoreCollector(nil, []domain.ServiceID{"eth"}, 100)); len(mfs) != 0 {
 		t.Errorf("nil lister reported %d families", len(mfs))
 	}
 }

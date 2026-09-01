@@ -301,7 +301,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// A pushed gauge keyed on an endpoint identity never evicts, so every
 	// supplier registration that has ever been scored would keep costing heap
 	// and scrape bytes until restart. See metrics.ScoreCollector.
-	prometheus.MustRegister(metrics.NewScoreCollector(repSvc, serviceIDsFrom(cfg)))
+	prometheus.MustRegister(metrics.NewScoreCollector(repSvc, serviceIDsFrom(cfg), 100))
+	// The timeline is bounded by design; this is the gauge that proves it.
+	prometheus.MustRegister(metrics.NewTimelineKeysGauge(timeline.Len))
 
 	// 6b. Method blocks: per-host, per-method memory consulted at selection.
 	// Local memory only — see the methodblock package doc.
