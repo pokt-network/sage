@@ -94,14 +94,19 @@ Open:
   gains an external result source (it already has a ProbeSource seam for the
   Redis stream — same shape).
 
-- **WS reputation is cold (the 1011 root cause).** WS bind uses SelectSpread +
-  penalises lost endpoints, but at 1% WS volume across a 2763-endpoint pool
-  (78% nodefleet, dead since July) it never warms — untried score-100 nodefleet
-  endpoints get picked and instantly fail. HTTP avoids this via volume + probes,
-  but probes don't cover the websocket rpc_type and reputation is keyed per
-  (service, supplier, rpc_type) so HTTP's dead-nodefleet knowledge doesn't reach
-  WS. Fixes: (a) ban nodefleet WS via blocked_domains/drain now; (b) share
-  operator/domain reputation across rpc_types so HTTP steers WS; (c) probe WS.
+- **SAGE cannot open nodefleet WebSockets; PATH can (the 1011 root cause).**
+  Corrected 2026-09-01: nodefleet WS works through PATH, so "dead since July"
+  was wrong — the failure is on SAGE's side of the dial. Mitigated the same
+  day: nodefleet.net is banned for websocket via the new admin blocklist
+  (78% of the WS pool, 1,029 client 1011s the previous night). The open
+  investigation is a diff of the WS open path against PATH's: URL scheme and
+  path handed to the dialer, headers/subprotocols, the signed relay request
+  around the upgrade, TLS. One captured SAGE→nodefleet open attempt (what
+  status came back instead of the 101) decides most of it; ops may have one.
+  The cold-reputation half stands on its own, smaller: WS volume is too low
+  to warm scores and probes do not cover the websocket rpc_type, so HTTP's
+  knowledge does not reach WS — (a) share operator/domain reputation across
+  rpc_types, or (b) probe WS. Lift the ban once the dial bug is fixed.
 
 
 ## Latency-aware selection (parked — acceptable for now)
