@@ -62,24 +62,25 @@ Open:
   Redis footprint; keeping a store nobody reads is the middle option and the
   one in place. Decide once the canary has a restart under traffic to judge
   the warm-up cost against.
-- **Other ever-seen maps.** The audit that found this one was reactive. Worth
-  a pass over every map keyed by endpoint, supplier or session that is
-  written on the relay or probe path and never deleted from: the
-  `reputation.memoize` key cache (bounded by a whole-map reset), the
-  `methodblock` store (TTL), the session endpoint cache (evicted on
-  rollover). Each already has a bound; the check is that a bound exists for
-  anything new, and that a gauge exposes it.
+- ~~Other ever-seen maps.~~ Audited 2026-09-01: every map keyed by endpoint,
+  supplier, URL, host, session or method on the relay or probe path has a
+  bound — a sweep, a cap, a whole-map reset or a TTL. Three residuals, none
+  growing per session, recorded rather than fixed: `grpcRelayTransport.conns`
+  holds one `*grpc.ClientConn` per gRPC host ever relayed to and never closes
+  one (bounded by hosts, but each is a live connection — idle eviction if it
+  shows in a profile); `WSRelayer.activeLoad` keeps an 8-byte counter per
+  endpoint ever bound and never deletes at zero (bounded by the endpoint
+  set); `methodblock` marks are per (host, method) with method from the
+  client, bounded only by the TTL — a client can inflate it for one TTL.
 
 ## Explore next (raised 2026-09-01)
 
-- **Dynamic blocked_domains from the admin UI** (no redeploy to ban a domain).
-  Machinery mostly exists: the operator-drain is already dynamic + Redis-shared
-  + admin-driven, keyed (service, operator-domain, rpc_type) — draining
-  `nodefleet.net` for `websocket` mitigates the WS 1011s today without a deploy
-  (per-service, TTL semantics). The clean version is a small admin endpoint
-  `POST /admin/blocked-domains` calling the existing `SetBlockedDomains`
-  (already runtime-swappable via reload) + Redis persistence for a permanent,
-  global, fleet-wide ban from the UI. Immediate use: ban nodefleet WS.
+- ~~Dynamic blocked_domains from the admin UI.~~ Landed 2026-09-01: package
+  `blocklist` owns the union of the config list and admin-set bans;
+  `PUT/GET/DELETE /admin/blocked-domains[/{domain}]` and a "Blocked domains"
+  tab in the UI; Redis hash `sage:blocked_domains` polled every 5 s so a ban
+  reaches every replica and survives a restart; `sage_blocked_domains_admin`
+  counts them. Not yet used in anger — banning nodefleet WS is the first use.
 
 - **Consume PATH probe/reputation instead of running our own health checks.**
   Goal: two gateways probing the same suppliers pay twice; share one probe
