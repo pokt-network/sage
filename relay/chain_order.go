@@ -46,7 +46,6 @@ func DefaultChainOrder() []string {
 		MWTracing,
 		MWRequestID,
 		MWClientIP,
-		MWMetrics,
 		MWParse,
 		MWValidate,
 		// After parse: the deadline is resolved per service, and the service
@@ -60,6 +59,13 @@ func DefaultChainOrder() []string {
 		MWCrossValidate,
 		MWRetry,
 		MWHedge,
+		// Inside every fan-out and outside selection: one upstream attempt is
+		// one sage_relay_total increment and one latency observation, with the
+		// endpoint that attempt picked. Outside retry/hedge it counted one per
+		// client request — the mainnet canary measured relay_total ÷
+		// client_requests_total = 1.000 (2026-09-01) — which is what
+		// sage_client_requests_total is for.
+		MWMetrics,
 		MWSupplierAffinity,
 		MWCircuitBreak,
 		MWMethodBlocks,
@@ -171,6 +177,13 @@ func ValidateChainOrder(names []string) error {
 		{MWBatch, MWScore, "batch collapses the per-attempt signals score adds to its sink"},
 		{MWSelectEndpoint, MWScore, "score reads ctx.Endpoint, which select_endpoint sets for this attempt"},
 		{MWScore, MWHeuristic, "score consumes the verdict heuristic produces for this attempt"},
+
+		// Same shape as score: metrics counts attempts, so every fan-out must
+		// wrap it, and it must wrap selection to see the attempt's endpoint.
+		{MWRetry, MWMetrics, "sage_relay_total counts attempts; metrics must see every retry"},
+		{MWHedge, MWMetrics, "each hedge arm is one relay attempt"},
+		{MWBatch, MWMetrics, "each batch sub-relay is one relay attempt"},
+		{MWMetrics, MWSelectEndpoint, "metrics reads ctx.Endpoint, which select_endpoint sets for this attempt"},
 	}
 
 	for _, rule := range mustPrecede {

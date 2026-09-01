@@ -58,7 +58,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "relay_total",
-				Help:      "Total relay attempts, partitioned by service and HTTP status.",
+				Help:      "Upstream relay attempts by service and HTTP status: one count per attempt inside retry, hedge and batch, so a retried or hedged request counts more than once. Cache hits and coalesced requests make no attempt and are absent. One count per client request is sage_client_requests_total.",
 			},
 			[]string{"service_id", "status"},
 		),
@@ -74,7 +74,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.HistogramOpts{
 				Namespace: "sage",
 				Name:      "relay_latency_seconds",
-				Help:      "Relay latency in seconds.",
+				Help:      "Upstream relay attempt latency in seconds — selection through response, one observation per attempt. Not client-facing latency: a request that retried or hedged is several observations, none of them its total.",
 				Buckets:   prometheus.DefBuckets,
 			},
 			[]string{"service_id"},
@@ -221,7 +221,9 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 	return r
 }
 
-// RecordRelay satisfies relay/middleware.MetricsRecorder.
+// RecordRelay satisfies relay/middleware.MetricsRecorder: one upstream
+// attempt. The metrics middleware sits inside retry/hedge/batch and outside
+// select_endpoint (relay/chain_order.go), which is what makes this per attempt.
 // statusCode 0 is recorded as "0" (unknown/connection-level error).
 func (r *Recorder) RecordRelay(
 	serviceID domain.ServiceID,

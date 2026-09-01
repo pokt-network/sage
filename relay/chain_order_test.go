@@ -193,3 +193,44 @@ func TestValidateChainOrder_TimeoutAfterRetryRejected(t *testing.T) {
 		t.Errorf("expected timeout→retry violation, got %v", err)
 	}
 }
+
+// metrics counts upstream attempts, so it must sit inside every fan-out and
+// outside selection — the same position rules as score. Outside retry it
+// counted one per client request (canary, 2026-09-01).
+func TestValidateChainOrder_MetricsPosition(t *testing.T) {
+	cases := []struct {
+		name  string
+		chain []string
+		want  string
+	}{
+		{"outside retry", []string{MWParse, MWMetrics, MWRetry, MWSelectEndpoint, MWSendRelay}, "metrics must see every retry"},
+		{"outside hedge", []string{MWParse, MWMetrics, MWHedge, MWSelectEndpoint, MWSendRelay}, "each hedge arm is one relay attempt"},
+		{"outside batch", []string{MWParse, MWTimeout, MWMetrics, MWBatch, MWSelectEndpoint, MWSendRelay}, "each batch sub-relay is one relay attempt"},
+		{"inside select_endpoint", []string{MWParse, MWRetry, MWSelectEndpoint, MWMetrics, MWSendRelay}, "metrics reads ctx.Endpoint"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateChainOrder(tc.chain)
+			if err == nil {
+				t.Fatalf("expected an error for %v", tc.chain)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not mention %q", err, tc.want)
+			}
+		})
+	}
+
+	// The default order satisfies all of it, with metrics inside hedge.
+	order := DefaultChainOrder()
+	pos := func(n string) int {
+		for i, x := range order {
+			if x == n {
+				return i
+			}
+		}
+		return -1
+	}
+	if pos(MWMetrics) < pos(MWHedge) || pos(MWMetrics) > pos(MWSelectEndpoint) {
+		t.Fatalf("default order puts metrics at %d, hedge at %d, select_endpoint at %d", pos(MWMetrics), pos(MWHedge), pos(MWSelectEndpoint))
+	}
+}

@@ -30,7 +30,6 @@ HTTP Request
     [Tracing]        — OpenTelemetry spans
       [RequestID]    — correlation ID (X-Request-ID header)
         [ClientIP]   — resolve the attributed client address (trusted-proxy aware)
-        [Metrics]    — Prometheus counters + latency histogram
           [Parse]    — extract service ID, detect RPC type, load QoS plugin
             [Validate]     — check RPC type is supported by service
               [Timeout]    — per-request deadline (after Parse: resolved per service)
@@ -41,6 +40,7 @@ HTTP Request
                         [CrossValidate] — response digest consensus
                           [Retry]  — retry with endpoint rotation
                             [Hedge]    — race primary vs delayed secondary
+                              [Metrics]  — one sage_relay_total + latency observation per attempt
                               [Affinity] — sticky supplier after writes
                                 [CircuitBreak] — skip broken domains
                                   [MethodBlocks] — skip hosts blocked for this method
