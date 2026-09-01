@@ -77,7 +77,7 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "websocket_closes_total",
-				Help:      "WebSocket bridges ended, by service, who ended it (client, endpoint, or gateway — a deadline, a processing error, a shutdown) and the close code sent to the client (1000–1015 verbatim, 3000–3999 as \"registered\", 4000–4999 as \"application\", anything else \"other\").",
+				Help:      "WebSocket bridges ended, by service, who ended it (client, endpoint, or gateway — a deadline, a processing error, a shutdown) and the close code as determined, before wire sanitisation (1000–1015 verbatim, 3000–3999 as \"registered\", 4000–4999 as \"application\", anything else \"other\"). A 1006 here is a peer that vanished without a close handshake — the wire carried a 1011 in its place, but counting it as 1011 would dress client churn up as server errors.",
 			},
 			[]string{"service_id", "initiator", "code"},
 		),

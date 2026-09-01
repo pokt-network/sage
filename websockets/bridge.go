@@ -224,11 +224,18 @@ func (b *Bridge) Shutdown(err error) {
 		// we stop draining it.
 		b.cancelCtx()
 
-		closeCode, closeText := b.determineCloseCode(err)
-		closeCode = sanitizeCloseCode(closeCode)
+		// The observer gets the code as determined, the wire gets it
+		// sanitized. A client that vanishes mid-connection is a 1006 the
+		// peer never sent: unsendable on the wire (sanitizeCloseCode turns
+		// it into 1011) but the truth for the metric — a churning consumer
+		// that drops sockets without a close handshake must not show up as
+		// a flood of "internal server error". The mainnet canary's residual
+		// 1011|client after the scheme fix was exactly this.
+		rawCode, closeText := b.determineCloseCode(err)
+		closeCode := sanitizeCloseCode(rawCode)
 		clientMsg := websocket.FormatCloseMessage(closeCode, closeText)
 		if b.observer != nil {
-			b.observer.Closed(b.closeInitiator(), closeCode)
+			b.observer.Closed(b.closeInitiator(), rawCode)
 		}
 
 		// The two peers do not get the same frame. SAGE sits in the middle —

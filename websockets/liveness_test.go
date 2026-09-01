@@ -246,3 +246,40 @@ func TestBridge_ObserverSeesUnresponsiveEndpoint(t *testing.T) {
 	require.Equal(t, InitiatorGateway, obs.closed[0].initiator)
 	require.Equal(t, websocket.CloseServiceRestart, obs.closed[0].code)
 }
+
+// TestBridge_ObserverGetsRawCodeForVanishedClient: a client that drops the
+// TCP connection without a close handshake is a 1006 the peer never sent.
+// The wire must carry the sanitized 1011 (1006 is unsendable), but the
+// observer — the metrics — must see the 1006: on the canary a churning
+// consumer showed up as a flood of "internal server error" until it did.
+func TestBridge_ObserverGetsRawCodeForVanishedClient(t *testing.T) {
+	echo := newEchoServer(t)
+	defer echo.Close()
+	obs := newRecordingObserver()
+	srv, bridges := startBridgeServer(t, wsURL(echo), WithObserver(obs))
+	defer srv.Close()
+
+	client := dialTestServer(t, srv)
+	b := <-bridges
+
+	// Vanish: kill the TCP connection under the WebSocket, no close frame.
+	_ = client.UnderlyingConn().Close()
+
+	select {
+	case <-b.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge did not shut down after the client vanished")
+	}
+
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	if len(obs.closed) != 1 {
+		t.Fatalf("Closed called %d times, want 1", len(obs.closed))
+	}
+	if got := obs.closed[0].initiator; got != InitiatorClient {
+		t.Fatalf("initiator = %q, want %q", got, InitiatorClient)
+	}
+	if got := obs.closed[0].code; got != websocket.CloseAbnormalClosure {
+		t.Fatalf("observed code = %d, want 1006 (raw), not the sanitized wire code", got)
+	}
+}
