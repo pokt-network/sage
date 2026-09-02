@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/observe"
@@ -77,6 +78,12 @@ type Executor struct {
 	warm             atomic.Bool
 	warmThresholdSet bool
 	warmThreshold    int
+
+	// flags gates traffic-informed probing; skipper holds its per-cycle state.
+	// Both nil unless SetTrafficSkip wired them, and a nil skipper means every
+	// due check runs, which is the behaviour that predates this.
+	flags   featureflag.FlagStore
+	skipper *trafficSkipper
 
 	// now is the clock the schedule reads; tests move it.
 	now func() time.Time
@@ -187,6 +194,21 @@ func (e *Executor) SetProbeSink(s ProbeSink) { e.sink = s }
 // runs it.
 func (e *Executor) SetProbeSource(s ProbeSource) { e.source = s }
 
+// SetTrafficSkip enables traffic-informed probing: a due check against a
+// backend that client traffic has already graded this cycle is not sent.
+//
+// Both arguments are required for it to do anything. counter is where the
+// traffic readings come from — a reputation.Service that does not implement
+// reputation.TrafficCounter leaves this off — and flags is what gates it per
+// service at runtime. Call at wire time.
+func (e *Executor) SetTrafficSkip(counter reputation.TrafficCounter, flags featureflag.FlagStore, cfg TrafficSkipConfig) {
+	if counter == nil || flags == nil {
+		return
+	}
+	e.flags = flags
+	e.skipper = newTrafficSkipper(counter, cfg)
+}
+
 // SetResultRecorder installs the metric hook for applied results.
 func (e *Executor) SetResultRecorder(r ResultRecorder) { e.recorder = r }
 
@@ -275,6 +297,9 @@ func (e *Executor) runOnce(ctx context.Context) {
 	// next replaces lastRun at the end of the cycle, holding only the probes
 	// seen this cycle.
 	next := make(map[probeKey]time.Time, len(e.lastRun))
+	if e.skipper != nil {
+		e.skipper.beginCycle()
+	}
 
 	// Semaphore limits concurrent workers.
 	sem := make(chan struct{}, e.workers)
@@ -326,9 +351,20 @@ func (e *Executor) runOnce(ctx context.Context) {
 			checks := make([]qos.HealthCheck, 0, len(all))
 			for _, check := range all {
 				interval := max(check.Interval, serviceInterval)
-				if e.due(probeKey{serviceID, group.key, check.Name}, interval, tick, now, next) {
-					checks = append(checks, check)
+				if !e.due(probeKey{serviceID, group.key, check.Name}, interval, tick, now, next) {
+					continue
 				}
+				// After due, not before: the skip decision needs this cycle's
+				// traffic reading recorded for every backend that was going to
+				// be probed, and a check whose own interval has not elapsed
+				// was not going to be probed either way. Stamping it due and
+				// then skipping it is also what keeps the schedule honest — a
+				// skipped check is covered, not overdue, so it must not come
+				// back the moment traffic pauses.
+				if e.skipCoveredByTraffic(ctx, serviceID, probe, group.key, check) {
+					continue
+				}
+				checks = append(checks, check)
 			}
 			if len(checks) == 0 {
 				continue
@@ -346,7 +382,42 @@ func (e *Executor) runOnce(ctx context.Context) {
 	}
 
 	e.lastRun = next
+	if e.skipper != nil {
+		e.skipper.endCycle()
+	}
 	e.cycle++
+}
+
+// skipCoveredByTraffic reports whether client traffic has already bought what
+// this check would learn.
+//
+// Three conditions, all of them load-bearing. The flag is off by default and
+// resolves per service, so an operator can keep probing a chain whose block
+// height matters most. The pod must be warm: readiness counts coverage from
+// applied probe results, so a pod that skipped its way to fewer probes could
+// hold itself out of rotation — and warm latches, so this costs one atomic
+// read forever after. And the traffic must be recent and substantial enough to
+// stand in for the probe's own observation (see DefaultMinTrafficSignals).
+func (e *Executor) skipCoveredByTraffic(
+	ctx context.Context,
+	serviceID domain.ServiceID,
+	ep domain.EndpointAddr,
+	backend string,
+	check qos.HealthCheck,
+) bool {
+	if e.skipper == nil || !e.warm.Load() {
+		return false
+	}
+	if !e.flags.IsEnabled(ctx, featureflag.FlagTrafficInformedProbing, serviceID) {
+		return false
+	}
+	if !e.skipper.skip(serviceID, ep, backend, check.Payload.RPCType()) {
+		return false
+	}
+	if e.recorder != nil {
+		e.recorder.RecordHealthCheckSkipped(serviceID)
+	}
+	return true
 }
 
 // backendGroup is the set of endpoints sharing one backend URL.

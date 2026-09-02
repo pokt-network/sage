@@ -84,10 +84,11 @@ type ProbeSource interface {
 
 // ResultRecorder is the metrics hook the executor reports through:
 // RecordHealthCheckResult counts applied results by source (this replica's
-// probes and the ones streamed from other replicas alike), while
-// RecordProbeRelay counts only the relays this replica actually sent, into
-// the same series as client relay attempts under request_type="probe".
-// metrics.Recorder satisfies it; nil disables both counts.
+// probes and the ones streamed from other replicas alike), RecordProbeRelay
+// counts only the relays this replica actually sent, into the same series as
+// client relay attempts under request_type="probe", and
+// RecordHealthCheckSkipped counts the checks traffic-informed probing decided
+// not to send at all. metrics.Recorder satisfies it; nil disables all three.
 type ResultRecorder interface {
 	RecordHealthCheckResult(serviceID domain.ServiceID, source string)
 	RecordProbeRelay(
@@ -97,4 +98,5 @@ type ResultRecorder interface {
 		latency time.Duration,
 		err error,
 	)
+	RecordHealthCheckSkipped(serviceID domain.ServiceID)
 }

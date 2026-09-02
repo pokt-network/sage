@@ -250,6 +250,32 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **Traffic-informed probing: don't probe a backend client traffic is already
+  grading.** Every client attempt records a reputation signal, so a busy
+  backend is graded continuously and the health check against it buys a second
+  copy of a fact the score middleware has. Measured on the mainnet canary at 1%
+  traffic before building it — two snapshots of the admin reputation listing
+  ten minutes apart — 48.66% of probes in the window went to backends traffic
+  had graded in that same window, concentrated on the busy EVM services and
+  absent on the long tail. Behind the `traffic_informed_probing` flag, which
+  defaults to **off**: the saving and the exposure both scale with traffic
+  share, so this wants an experiment per deployment rather than the canary's
+  numbers assumed. `sage_health_check_skipped_total` counts what it saves.
+
+  The threshold is derived, not chosen. A probe is the only observation source
+  that bypasses sampling (`observe.Queue.Submit` exempts `SourceHealthCheck`
+  alone), so client traffic only stands in for a probe once the sampler
+  forwards at least one observation from it — ten relays at the default 10%
+  rate, ten times that at 1%. `health_checks.min_traffic_signals` overrides it.
+  There is deliberately no setting meaning "skip on any traffic".
+
+  Three things it will not do. It never skips before the pod is warm, because
+  readiness counts coverage from applied probe results. It never treats a
+  reputation key it is seeing for the first time as a window with no traffic,
+  which would let a lifetime's cumulative count skip a probe on its first real
+  reading. And one transport's traffic never excuses another's probe, because
+  the RPC type is part of the reputation key.
+
 - **The reputation timeline never evicted a key, and it OOMKilled a canary
   pod.** After 14.7 h one of two pods died (exit 137, 1 Gi limit), working set
   climbing ~100 MB/h from start; the heap put 76% of in-use memory in

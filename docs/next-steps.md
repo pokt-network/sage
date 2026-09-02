@@ -39,50 +39,37 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
   can now serve it, but the gate is still being bypassed and that is worth
   fixing at the manifest.
 
-- **Traffic-informed probing — measured 2026-09-02, worth building, but not as
-  specified.** A backend that served a client relay in the last probe interval
-  was already graded by it, so probing it again buys a second copy of a fact
-  the score middleware has. Measured on the canary at 1% traffic from
-  `GET /admin/reputation/{serviceID}`, which already carries `attempts`,
-  `traffic_attempts` and `probe_only` per key at the same per-url granularity a
-  probe targets. Two snapshots on one pod 10m31s apart: **48.66% of probes in
-  the window went to keys client traffic had also graded in that window**
-  (1,015 of 2,086), against a 76% cumulative ceiling. The saving is
-  concentrated where the traffic is — arb-one, mantle, fantom and robinhood at
-  or near 100%, linea 95.5%, avax and poly 89.3%, eth 76.2% — and absent on the
-  long tail, with 11 of the 46 probed services saving nothing. Caveat on the
-  figure: `attempts` counts reputation signals, not relays, and signals fan out
-  ~2-2.7x per relay, so the ratio holds only if fan-out is uniform across
-  trafficked and untrafficked keys, which was not verified.
+- **Turn traffic-informed probing on for one service and measure it.** Built
+  2026-09-02 and shipped OFF: the `traffic_informed_probing` flag defaults to
+  false, so nothing changes until an operator enables it, globally or for one
+  service through the admin API. What it does: a due health check against a
+  backend that client traffic graded enough in the previous cycle is not sent,
+  because every client attempt records a reputation signal and a busy backend
+  is being graded continuously. Measured on the canary at 1% traffic before
+  building it, 48.66% of probes in a ten-minute window went to backends traffic
+  had graded in that same window (1,015 of 2,086), concentrated on the busy EVM
+  services — arb-one, mantle, fantom and robinhood at or near 100%, eth 76.2% —
+  and absent on the long tail.
 
-  Two things to get right before building it:
+  The experiment: enable it for one high-saving service (`arb-one` or `mantle`),
+  and watch `sage_health_check_skipped_total` against
+  `sage_health_check_results_total{source="probe"}` for the saving, and that
+  service's block-height agreement and `sage_relay_total{status="200"}` share
+  for the cost. Roll it back with the same admin call if either moves. Then
+  repeat at whatever traffic share this would run at, because both halves of
+  the tradeoff scale with it — more keys become trafficked, so the saving rises
+  and so does the exposure.
 
-  - **Gate on traffic rate, not on "traffic happened".** Probes are the only
-    observation source that bypasses sampling: `observe.Queue.Submit` skips the
-    `SampleRate` check for `SourceHealthCheck` alone, so a client relay feeds
-    the block-consensus and QoS state at the configured fraction (10%) while a
-    probe feeds it every time. Skipping a probe on a key busy enough that 10%
-    of its relays exceed one observation per interval is free; skipping one on
-    a key that saw a single relay is a real loss of block-height signal. The
-    canary shows this is the common case — of 2,445 ever-trafficked keys, only
-    603 (24.7%) saw traffic again inside a 10-minute window.
-  - **Only skip while `warm` is true.** Ops raised the warm gate as a blocker:
-    29 of 73 services have keys and no `probe_only` key at all, so every one of
-    their backends is traffic-graded and the service would go unprobed — 40% of
-    the configured set against a gate that tolerates 25%. The concern is
-    right but the exposure is startup-only, because `warm` latches
-    (`markCovered` returns early once set, and nothing clears it) and the
-    threshold is computed once as `ceil(0.75n)`. It is also self-limiting:
-    `TrafficAttempts` is persisted and hydrated, so a pod that cannot hydrate
-    has no traffic history, finds nothing skippable, and probes everything —
-    while a pod that can hydrate was credited coverage by `SeedCoverage` before
-    `Start` for the same services. Gating the skip on `warm` costs nothing in
-    steady state and removes the whole class.
-
-  Numbers are at 1% traffic share. Both halves of the tradeoff move together
-  with share — more keys become trafficked, so the saving rises and the
-  warm-gate exposure worsens — so repeat the measurement at whatever share this
-  would run at. Raw snapshots and the diff script are with ops.
+  What the code already guards, so the experiment does not have to: the skip
+  only fires once the pod is warm (readiness counts coverage from applied probe
+  results, and `warm` latches, so this costs one atomic read after startup); a
+  key the reputation service does not know yet records no baseline, so a
+  lifetime's cumulative traffic is never mistaken for one window's; a count
+  that went backwards is treated as an eviction rather than negative traffic;
+  and the threshold is derived from the observation pipeline's `sample_rate`
+  rather than being "any traffic", because a probe is the only observation
+  source that bypasses sampling. `health_checks.min_traffic_signals` overrides
+  the derivation.
 - **Re-land the 408 supplier attribution, one half at a time.** The combined
   change (retry + minor penalty, `26f22c5`) was reverted on 2026-09-02 after
   the canary quadrupled its client-facing 408 rate; the revert put it back

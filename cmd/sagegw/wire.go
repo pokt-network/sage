@@ -602,6 +602,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// is always leader and there is nothing to publish to — unchanged.
 	healthExe.SetLeader(leader)
 	healthExe.SetResultRecorder(recorder)
+	// Traffic-informed probing: skip a check against a backend client traffic
+	// has already graded this cycle. Gated by the traffic_informed_probing
+	// flag, which is off by default, and inert until the pod is warm.
+	healthExe.SetTrafficSkip(repSvc, flags, healthcheck.TrafficSkipConfig{
+		MinSignals: cfg.Gateway.HealthChecks.MinTrafficSignals,
+		SampleRate: cfg.Gateway.ObservationPipeline.SampleRate,
+	})
 	if redisClient != nil {
 		probeStream := healthcheck.NewRedisProbeStream(redisClient, leader.ID(), 2*healthCheckInterval)
 		healthExe.SetProbeSink(probeStream)

@@ -44,6 +44,17 @@ const (
 	// one request on both paths or neither — an admin action, not a traffic
 	// pattern. See docs/scoring.md.
 	FlagScoringV2 = "scoring_v2"
+	// FlagTrafficInformedProbing gates skipping a health check against a
+	// backend that client traffic has already graded this cycle. Every client
+	// attempt records a reputation signal, so a busy backend is graded
+	// continuously and its probe buys a second copy of the same fact — on the
+	// mainnet canary at 1% traffic, 48.66% of probes in a ten-minute window
+	// went to backends traffic had graded in that same window. Off by default:
+	// the saving and the risk both scale with traffic share, and a probe is
+	// the only observation source that bypasses sampling, so this needs
+	// measuring at whatever share it runs at rather than assuming the canary's
+	// numbers hold. Only ever skips once the pod is warm.
+	FlagTrafficInformedProbing = "traffic_informed_probing"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -75,6 +86,8 @@ var DefaultFlags = map[string]bool{
 	FlagMethodBlocks:           true,
 	FlagRequestSampler:         true,
 	FlagScoringV2:              true,
+
+	FlagTrafficInformedProbing: false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

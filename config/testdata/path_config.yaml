@@ -146,6 +146,7 @@ gateway_config:
   active_health_checks:
     enabled: true
     disable_backend_url_dedup: false
+    min_traffic_signals: 20
     local:
       - service_id: eth
         check_interval: 30s

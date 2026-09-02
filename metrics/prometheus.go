@@ -38,6 +38,7 @@ type Recorder struct {
 	methodBlockEvents     *prometheus.CounterVec
 	reputationAttempts    *prometheus.CounterVec
 	healthCheckResults    *prometheus.CounterVec
+	healthCheckSkipped    *prometheus.CounterVec
 
 	// codespaces bounds the relay miner error codespace label, which is a
 	// string chosen by the supplier's relay miner.
@@ -199,8 +200,18 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		[]string{"service_id", "source"},
 	)
 
+	r.healthCheckSkipped = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "sage",
+			Name:      "health_check_skipped_total",
+			Help:      "Health checks not sent because client traffic had already graded the backend this cycle (the traffic_informed_probing flag). Every client attempt records a reputation signal, so a busy backend is graded continuously and its probe would buy a second copy of the same fact. Against sage_health_check_results_total{source=\"probe\"} this is the relay saving; it stays at zero while the flag is off and while the pod is not yet warm.",
+		},
+		[]string{"service_id"},
+	)
+
 	prometheus.MustRegister(
 		r.healthCheckResults,
+		r.healthCheckSkipped,
 		r.relayTotal,
 		r.clientRequestsTotal,
 		r.relayLatency,
@@ -352,6 +363,12 @@ func (r *Recorder) RecordRelayMinerError(serviceID domain.ServiceID, codespace s
 // closed set healthcheck.ResultSource.
 func (r *Recorder) RecordHealthCheckResult(serviceID domain.ServiceID, source string) {
 	r.healthCheckResults.WithLabelValues(r.services.serviceValue(serviceID), source).Inc()
+}
+
+// RecordHealthCheckSkipped counts one health check not sent because client
+// traffic had already graded the backend.
+func (r *Recorder) RecordHealthCheckSkipped(serviceID domain.ServiceID) {
+	r.healthCheckSkipped.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // RecordMethodBlockEvent counts one method-block event. method comes from

@@ -676,6 +676,19 @@ type HealthCheckConfig struct {
 	// the config rather than leave a field unset.
 	DisableBackendURLDedup bool `yaml:"disable_backend_url_dedup"`
 
+	// MinTrafficSignals is how many client-traffic reputation signals a
+	// backend must record within one cycle before traffic-informed probing
+	// skips its check. Only consulted when the traffic_informed_probing
+	// feature flag is on for the service; zero derives it from the
+	// observation pipeline's sample_rate, which is the number that decides
+	// how much traffic it takes to replace a probe's observation.
+	//
+	// Raise it to probe more and trust traffic less. There is deliberately no
+	// value meaning "skip on any traffic": a probe is the only observation
+	// source that bypasses sampling, so one relay does not stand in for one
+	// probe.
+	MinTrafficSignals uint64 `yaml:"min_traffic_signals"`
+
 	// Local defines per-service health checks in the config file. They are
 	// additional to whatever the service's QoS plugin already checks, never a
 	// replacement: the plugin's checks are what make block height and chain ID

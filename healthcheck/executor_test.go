@@ -1215,6 +1215,13 @@ type recordingResultRecorder struct {
 	mu      sync.Mutex
 	applied []string
 	relays  []probeRelayCall
+	skipped []domain.ServiceID
+}
+
+func (r *recordingResultRecorder) RecordHealthCheckSkipped(serviceID domain.ServiceID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.skipped = append(r.skipped, serviceID)
 }
 
 type probeRelayCall struct {
