@@ -55,13 +55,17 @@ Open:
   thousands and flat after the first hour; series per pod well under 10k;
   `HLEN sage:reputation:` down from 119,567 within minutes of the leader
   coming up. Close this section when those land.
-- **The reputation write-behind is write-only.** Nothing reads
-  `sage:reputation:` back — a restart starts every score at 100 and rebuilds
-  from probes behind the readiness gate. Either add a warm-up read on start
-  (the `Storage.GetStates` seam exists) or drop the write-behind and its
-  Redis footprint; keeping a store nobody reads is the middle option and the
-  one in place. Decide once the canary has a restart under traffic to judge
-  the warm-up cost against.
+- ~~The reputation write-behind is write-only.~~ Resolved 2026-09-02 by the
+  canary restart this was waiting for. A rolled pod covered 26 of 73 services
+  after six minutes and was killed by its startup probe, so the warm-up read
+  won over dropping the store: `reputation.Hydrate` loads `sage:reputation:`
+  once at startup through the `Storage.GetStates` seam, and
+  `healthcheck.Executor.SeedCoverage` credits the services it loaded towards
+  the warm gate. Bounds: a state older than the idle TTL or carrying no
+  `UpdatedAt` is skipped (the sweep's own rule, so a pod never adopts what is
+  about to be deleted), live state is never overwritten, and the per-shard cap
+  still applies. Storage is now read exactly once per process — a score that
+  changes in the store mid-life still reaches nobody.
 - ~~Other ever-seen maps.~~ Audited 2026-09-01: every map keyed by endpoint,
   supplier, URL, host, session or method on the relay or probe path has a
   bound — a sweep, a cap, a whole-map reset or a TTL. Three residuals, none

@@ -579,6 +579,29 @@ func (e *Executor) ensureWarmThresholdLocked() {
 	e.warmThresholdSet = true
 }
 
+// SeedCoverage credits services whose reputation was loaded from shared
+// storage at startup, so readiness does not wait for this pod to re-probe what
+// it already knows.
+//
+// The warm gate exists to keep a pod that would select blind out of rotation.
+// A service whose scores were just hydrated is not blind — the pod holds real
+// state for it, at most one idle TTL old — so it counts exactly as a probe
+// result does. Without this a pod can load every score it needs and still sit
+// 503 for minutes waiting to observe them again.
+//
+// Only configured services count. Storage is shared across a fleet and outlives
+// any one config, so a service this pod does not serve must not inflate the
+// coverage its readiness is measured against.
+func (e *Executor) SeedCoverage(services []domain.ServiceID) {
+	configured := e.sessions.ConfiguredServices()
+	for _, svc := range services {
+		if _, ok := configured[svc]; !ok {
+			continue
+		}
+		e.markCovered(svc)
+	}
+}
+
 // markCovered records that a result has been applied for a service and latches
 // warm once the threshold is met.
 func (e *Executor) markCovered(svc domain.ServiceID) {

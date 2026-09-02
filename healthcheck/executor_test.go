@@ -1337,3 +1337,49 @@ func TestProbe_NilRecorderIsSafe(t *testing.T) {
 	exec.runOnce(context.Background())
 	time.Sleep(50 * time.Millisecond)
 }
+
+// --- warm-up seeded from hydrated reputation ---
+
+// A pod that loaded the fleet's scores from shared storage already holds the
+// knowledge the warm gate is waiting for, so it must go ready without probing
+// or waiting for a stream.
+func TestSeedCoverage_WarmsWithoutAnyResult(t *testing.T) {
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{
+		"eth": {}, "poly": {}, "kava": {}, "sei": {},
+	}}
+	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{}, sessions,
+		qos.NewRegistry(), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
+
+	if exec.Warm() {
+		t.Fatal("precondition: a fresh executor must not be warm")
+	}
+
+	exec.SeedCoverage([]domain.ServiceID{"eth", "poly", "kava"})
+
+	if !exec.Warm() {
+		t.Error("3 of 4 services hydrated is the 75% threshold — must read warm")
+	}
+}
+
+// Storage is shared across a fleet and outlives any one config. A service this
+// pod does not serve must not count towards the coverage its readiness is
+// measured against.
+func TestSeedCoverage_IgnoresUnconfiguredServices(t *testing.T) {
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{
+		"eth": {}, "poly": {}, "kava": {}, "sei": {},
+	}}
+	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{}, sessions,
+		qos.NewRegistry(), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
+
+	// Three real services would be enough; two real plus two strangers is not.
+	exec.SeedCoverage([]domain.ServiceID{"eth", "poly", "avax", "moonriver"})
+
+	if exec.Warm() {
+		t.Error("services not in this config must not count towards coverage")
+	}
+
+	exec.SeedCoverage([]domain.ServiceID{"kava"})
+	if !exec.Warm() {
+		t.Error("the third configured service should complete the threshold")
+	}
+}

@@ -153,6 +153,13 @@ func (l trafficSummaryLister) PreviousWindow(serviceID string) (distinctRatio, t
 // a booting follower's replay window (two intervals).
 const defaultHealthCheckInterval = 30 * time.Second
 
+// hydrateTimeout bounds the reputation warm-up read. It is one HGETALL against
+// a hash the sweep keeps to an hour of live keys, so it answers in
+// milliseconds; the timeout exists so an unreachable Redis costs a slow start
+// rather than a start that never finishes. Exceeding it is not fatal — the pod
+// runs cold.
+const hydrateTimeout = 10 * time.Second
+
 // serviceIDsFrom lists every configured service ID. It bounds the service_id
 // metric label — see metrics.NewRecorder.
 func serviceIDsFrom(cfg *config.Config) []domain.ServiceID {
@@ -584,6 +591,32 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		probeStream := healthcheck.NewRedisProbeStream(redisClient, leader.ID(), 2*healthCheckInterval)
 		healthExe.SetProbeSink(probeStream)
 		healthExe.SetProbeSource(probeStream)
+	}
+
+	// Warm from what the fleet already knows before the first probe cycle.
+	// The write-behind has been persisting reputation all along and nothing
+	// read it back, so every rolled pod re-learned the pool from scratch —
+	// minutes behind the readiness gate. Services whose scores load count as
+	// covered, which is what lets a pod be ready in seconds rather than
+	// cycles. Failure is not fatal: the pod runs cold, exactly as before.
+	{
+		hydrateCtx, cancelHydrate := context.WithTimeout(ctx, hydrateTimeout)
+		loaded, err := repSvc.Hydrate(hydrateCtx)
+		cancelHydrate()
+		switch {
+		case err != nil:
+			logger.Warn("reputation warm-up read failed; starting cold",
+				"error", err)
+		case loaded.Keys == 0:
+			logger.Info("reputation warm-up read found nothing; starting cold",
+				"skipped", loaded.Skipped)
+		default:
+			healthExe.SeedCoverage(loaded.Services)
+			logger.Info("reputation warmed from storage",
+				"keys", loaded.Keys,
+				"services", len(loaded.Services),
+				"skipped", loaded.Skipped)
+		}
 	}
 
 	healthExe.Start(ctx)

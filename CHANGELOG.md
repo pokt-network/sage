@@ -267,6 +267,20 @@ the source of truth for the design and the reasoning behind it.
   without circuit-breaking (slow is not broken) and without method blocking (a
   timeout says nothing about which methods a host serves).
 
+- **A pod inherits the fleet's reputation instead of re-learning it.** The
+  write-behind had been persisting scores all along and nothing ever read them
+  back, so every restarted or rolled pod started every endpoint at 100 and
+  rebuilt the pool from probes — minutes behind the readiness gate, which on
+  the mainnet canary meant a rolled pod covering 26 of 73 services after six
+  minutes and being killed by its startup probe. `reputation.Hydrate` now
+  loads the store once at startup and the health-check executor credits the
+  services it loaded towards the warm gate, so a pod is ready in well under a
+  second rather than cycles. A state older than the idle TTL, or with no
+  `UpdatedAt` stamp, is skipped — the same rule the storage sweep applies, so
+  nothing is adopted that is about to be deleted — live state is never
+  overwritten, and the per-shard bound still holds. Redis unreachable, or a
+  store with nothing fresh in it, starts cold exactly as before.
+
 ### Added — config & compatibility
 
 - **Loads a PATH config unmodified.** Parsing is lenient but never silent: an

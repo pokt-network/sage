@@ -87,7 +87,6 @@ containers:
       httpGet: {path: /ready, port: relay}
       failureThreshold: 30   # 30 x 10s = 5 min, covers a from-cold leader's first probe cycle
       periodSeconds: 10
-      periodSeconds: 5
     lifecycle:
       preStop: {exec: {command: ["sleep", "5"]}}
 volumes:

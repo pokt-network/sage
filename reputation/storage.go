@@ -7,13 +7,14 @@ import (
 
 // Storage defines the persistence layer for reputation state.
 //
-// The service treats it as write-behind and never reads it back: the in-memory
-// cache is the whole read path, and a miss there answers InitialScore rather
-// than consulting Storage. So what is written here does not survive a restart
-// as far as the gateway is concerned, and a second pod does not see this pod's
-// scores — it is state for external tooling (and for a load path that has not
-// been built), not durability or sharing. Anything that needs to *behave*
-// differently after a restart cannot get that by writing here.
+// It is write-behind on the hot path: the in-memory cache is the whole read
+// path, and a miss there answers InitialScore rather than consulting Storage.
+// Storage is read exactly once, at startup, by Hydrate — which is what makes a
+// restarted or rolled pod inherit the fleet's scores instead of re-learning
+// them from probes. So a write here does survive a restart and is visible to
+// the next pod, but only through that one read: nothing consults Storage again
+// while the process runs, and a score that changes in the store mid-life
+// reaches nobody.
 type Storage interface {
 	// GetState retrieves the state for the given key. Returns
 	// ErrStateNotFound if the key does not exist.
