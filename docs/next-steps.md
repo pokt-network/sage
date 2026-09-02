@@ -39,22 +39,50 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
   can now serve it, but the gate is still being bypassed and that is worth
   fixing at the manifest.
 
-- **Traffic-informed probing.** Unparked 2026-09-02: the blocker was "no
-  canary traffic to measure against", and the canary has been at 1% since
-  2026-09-01. A backend that served client relays within the last interval was
-  already graded by them — every attempt scores — so probing it buys a second
-  copy of a fact the score middleware has. Skipping those backends cuts probe
-  spend roughly in proportion to traffic coverage, and needs nothing new: the
-  reputation store already knows the last attempt time per key, and
-  `request_type="client"` vs `"probe"` on `sage_relay_total` now measures the
-  saving directly. Probes are 2.4-3.2/s against ~136k client attempts per 30
-  min, so at 1% traffic the overlap is small and the saving will be too — take
-  the measurement before building, and expect this to be worth doing at a
-  traffic share where client relays actually cover the pool. The risk to size
-  first: a backend covered only by client traffic stops being probed, so a
-  service whose traffic then stops has no fresh signal until the next
-  interval, and the coverage the warm gate counts comes only from probes.
+- **Traffic-informed probing — measured 2026-09-02, worth building, but not as
+  specified.** A backend that served a client relay in the last probe interval
+  was already graded by it, so probing it again buys a second copy of a fact
+  the score middleware has. Measured on the canary at 1% traffic from
+  `GET /admin/reputation/{serviceID}`, which already carries `attempts`,
+  `traffic_attempts` and `probe_only` per key at the same per-url granularity a
+  probe targets. Two snapshots on one pod 10m31s apart: **48.66% of probes in
+  the window went to keys client traffic had also graded in that window**
+  (1,015 of 2,086), against a 76% cumulative ceiling. The saving is
+  concentrated where the traffic is — arb-one, mantle, fantom and robinhood at
+  or near 100%, linea 95.5%, avax and poly 89.3%, eth 76.2% — and absent on the
+  long tail, with 11 of the 46 probed services saving nothing. Caveat on the
+  figure: `attempts` counts reputation signals, not relays, and signals fan out
+  ~2-2.7x per relay, so the ratio holds only if fan-out is uniform across
+  trafficked and untrafficked keys, which was not verified.
 
+  Two things to get right before building it:
+
+  - **Gate on traffic rate, not on "traffic happened".** Probes are the only
+    observation source that bypasses sampling: `observe.Queue.Submit` skips the
+    `SampleRate` check for `SourceHealthCheck` alone, so a client relay feeds
+    the block-consensus and QoS state at the configured fraction (10%) while a
+    probe feeds it every time. Skipping a probe on a key busy enough that 10%
+    of its relays exceed one observation per interval is free; skipping one on
+    a key that saw a single relay is a real loss of block-height signal. The
+    canary shows this is the common case — of 2,445 ever-trafficked keys, only
+    603 (24.7%) saw traffic again inside a 10-minute window.
+  - **Only skip while `warm` is true.** Ops raised the warm gate as a blocker:
+    29 of 73 services have keys and no `probe_only` key at all, so every one of
+    their backends is traffic-graded and the service would go unprobed — 40% of
+    the configured set against a gate that tolerates 25%. The concern is
+    right but the exposure is startup-only, because `warm` latches
+    (`markCovered` returns early once set, and nothing clears it) and the
+    threshold is computed once as `ceil(0.75n)`. It is also self-limiting:
+    `TrafficAttempts` is persisted and hydrated, so a pod that cannot hydrate
+    has no traffic history, finds nothing skippable, and probes everything —
+    while a pod that can hydrate was credited coverage by `SeedCoverage` before
+    `Start` for the same services. Gating the skip on `warm` costs nothing in
+    steady state and removes the whole class.
+
+  Numbers are at 1% traffic share. Both halves of the tradeoff move together
+  with share — more keys become trafficked, so the saving rises and the
+  warm-gate exposure worsens — so repeat the measurement at whatever share this
+  would run at. Raw snapshots and the diff script are with ops.
 - **Re-land the 408 supplier attribution, one half at a time.** The combined
   change (retry + minor penalty, `26f22c5`) was reverted on 2026-09-02 after
   the canary quadrupled its client-facing 408 rate; the revert put it back
