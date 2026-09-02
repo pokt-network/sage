@@ -281,6 +281,20 @@ the source of truth for the design and the reasoning behind it.
   overwritten, and the per-shard bound still holds. Redis unreachable, or a
   store with nothing fresh in it, starts cold exactly as before.
 
+- **Sessions are warmed before a pod takes traffic.** Reputation hydration
+  made a pod ready in seconds — before the first probe cycle, and so before any
+  session existed. `getSession` falls through to a synchronous full-node fetch
+  on the request path, so the first relay for each service paid it and the
+  client waited out its whole deadline: on the canary that was one
+  `relay timeout exceeded` per service across bsc, fuse, sei, linea, opbnb and
+  zksync-era. `PrefetchSessions` now warms every configured service at startup
+  before readiness is credited, and only services holding both a score and a
+  session count towards the warm gate — readiness means "can serve", not "has
+  opinions". It is paced rather than parallel-everything: at most 4 fetches in
+  flight and no more than 20 a second, because the full node is shared and
+  rate-limited and a rolling fleet must not arrive as a burst. Seventy-odd
+  services finish in under four seconds; running out of time warms what it can
+  and leaves the rest to the request path, as before.
 - **`sage_reputation_hydrated_keys` / `sage_reputation_hydrated_services`** —
   what the startup warm-up read loaded, set once and constant thereafter. The
   log line saying the same thing is INFO, which production log levels suppress:

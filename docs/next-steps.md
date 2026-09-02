@@ -79,6 +79,16 @@ Open:
 
 ## Explore next (raised 2026-09-01)
 
+- **A cold pod is served client traffic before readiness passes.** Confirmed on
+  every pod of the 2026-09-02 `335a264` rollout: relay errors begin ~7-8 s after
+  container start, 11-18 s before `/ready` returns true, and the requests fail
+  with `relay timeout exceeded`. The warm gate cannot cause this — Service
+  membership is the cluster's to decide — so the cause is on that side
+  (`publishNotReadyAddresses`, or linkerd endpoint caching). Session prefetch
+  makes it survivable rather than harmful, since a pod that gets traffic early
+  can now serve it, but the gate is still being bypassed and that is worth
+  fixing at the manifest.
+
 - **Verify the request_type split and the 408 fix on the canary** (both landed
   2026-09-02, not yet imaged). After the roll: `sage_relay_total` should carry
   a `request_type="probe"` series at roughly the probe rate, and the 408 share

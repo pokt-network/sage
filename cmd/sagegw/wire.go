@@ -160,6 +160,21 @@ const defaultHealthCheckInterval = 30 * time.Second
 // runs cold.
 const hydrateTimeout = 10 * time.Second
 
+// sessionPrefetchTimeout bounds the startup session warm-up. At the default
+// pace (20 fetches a second) seventy-odd services finish in under four
+// seconds; this is the ceiling for a slow or unhappy full node, chosen to stay
+// well inside a Kubernetes startup probe budget. Running out is not an error —
+// whatever was warmed stays warmed and the rest is fetched on the request path
+// exactly as it was before.
+const sessionPrefetchTimeout = 30 * time.Second
+
+// sessionPrefetcher is the optional half of the protocol backend that can warm
+// its session cache before taking traffic. The mock backend has no sessions
+// and does not implement it.
+type sessionPrefetcher interface {
+	PrefetchSessions(ctx context.Context, cfg shannon.PrefetchConfig) shannon.PrefetchResult
+}
+
 // serviceIDsFrom lists every configured service ID. It bounds the service_id
 // metric label — see metrics.NewRecorder.
 func serviceIDsFrom(cfg *config.Config) []domain.ServiceID {
@@ -593,6 +608,32 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		healthExe.SetProbeSource(probeStream)
 	}
 
+	// Warm the session cache before this pod can be marked ready. A hydrated
+	// pod goes ready in seconds, well before the first probe cycle, and
+	// getSession falls through to a synchronous full-node fetch on the request
+	// path — so without this the first relay for each service pays that fetch
+	// and the client waits out its whole deadline for it. Paced, because the
+	// full node is shared and rate-limited: this is a startup burst across a
+	// rolling fleet, and it has the entire readiness window to finish in.
+	prefetched := map[domain.ServiceID]struct{}{}
+	pf, prefetchSupported := proto.(sessionPrefetcher)
+	if prefetchSupported {
+		prefetchCtx, cancelPrefetch := context.WithTimeout(ctx, sessionPrefetchTimeout)
+		res := pf.PrefetchSessions(prefetchCtx, shannon.PrefetchConfig{})
+		cancelPrefetch()
+		for _, svc := range res.Ready {
+			prefetched[svc] = struct{}{}
+		}
+		logger.Info("session cache prefetched",
+			"ready", len(res.Ready),
+			"failed", res.Failed,
+			"elapsed", res.Elapsed)
+		if len(res.Ready) == 0 {
+			logger.Warn("session prefetch warmed nothing; first relay per service will fetch on the request path",
+				"failed", res.Failed)
+		}
+	}
+
 	// Warm from what the fleet already knows before the first probe cycle.
 	// The write-behind has been persisting reputation all along and nothing
 	// read it back, so every rolled pod re-learned the pool from scratch —
@@ -616,10 +657,26 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			logger.Warn("reputation warm-up read found nothing; starting cold",
 				"skipped", loaded.Skipped)
 		default:
-			healthExe.SeedCoverage(loaded.Services)
+			// Only services that also hold a session: readiness has to mean
+			// "can serve", and scores without a session are half the answer.
+			// A service whose prefetch failed has no suppliers to select from,
+			// which is exactly what the 75% threshold exists to tolerate.
+			// A backend with no session layer at all (the mock) has nothing to
+			// be cold about, so every hydrated service counts.
+			ready := loaded.Services
+			if prefetchSupported {
+				ready = make([]domain.ServiceID, 0, len(loaded.Services))
+				for _, svc := range loaded.Services {
+					if _, ok := prefetched[svc]; ok {
+						ready = append(ready, svc)
+					}
+				}
+			}
+			healthExe.SeedCoverage(ready)
 			logger.Info("reputation warmed from storage",
 				"keys", loaded.Keys,
 				"services", len(loaded.Services),
+				"credited", len(ready),
 				"skipped", loaded.Skipped)
 		}
 		// The durable form of that line: a log entry can be filtered out by
