@@ -250,6 +250,28 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **The reputation timeline never evicted a key, and it OOMKilled a canary
+  pod.** After 14.7 h one of two pods died (exit 137, 1 Gi limit), working set
+  climbing ~100 MB/h from start; the heap put 76% of in-use memory in
+  `reputation.(*Timeline).Record`, 82k keys against 6k on a fresh pod at ~13 KB
+  per key ring. The timeline bounded events per key (a ring of 100) but never
+  dropped a key, and the canary ran `key_granularity: per-supplier`, where a
+  key is a staked registration that rotates every session — so the key set grew
+  with the network for the life of the process. The score cache and the
+  exporter both had bounds; the admin-only timeline had none, and the Redis
+  write-behind grew the same way (`HLEN sage:reputation:` reached 119,567).
+  Keys now drop after 1 h idle and cap at 16,384; `State.UpdatedAt` is stamped
+  on every write-behind and the leader sweeps stale fields every 5 min with the
+  same TTL, treating unstamped fields as stale so the first sweep drains what
+  pre-stamp pods left. `sage_endpoint_reputation_score` exports only keys below
+  the full score, capped at 500 per service — one pod had been emitting 104k
+  series, 2.3% of the Prometheus head. Canary config moved to the default
+  `per-url`, whose keys are backend URLs and do not rotate; note that the PATH
+  config's comment on `per-endpoint` ("each URL tracked separately") actually
+  describes `per-url`, while `per-endpoint` is the supplier x URL pair and grows
+  the way `per-supplier` did. Verified on the canary over 17 h: timeline keys
+  flat at ~2.3k, working set flat, and no pod has approached the limit since.
+
 - **`request_type` (`client`|`probe`) on `sage_relay_total` and
   `sage_relay_latency_seconds`.** Health-check probes are paid relays, but they
   call `protocol.SendRelay` directly and never enter the middleware chain, so

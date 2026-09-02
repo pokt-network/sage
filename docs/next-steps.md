@@ -6,78 +6,28 @@ ordered by priority within each section. Update this file when an item lands
 or a decision changes it; delete items rather than marking them done, so the
 file only ever lists open work.
 
-Last updated: 2026-09-02 (mainnet canary at 1% traffic; overnight OOM watch
-passed — reputation timeline keys flat at ~2.3k over 17 h. PATH `origin/main`
-at `274e9791`, 2026-08-25).
+Last updated: 2026-09-02 (mainnet canary at 1% traffic on `01a96ca`; the
+reputation memory bound is verified and closed, and the 408 attribution change
+was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
+2026-08-25).
 
 
 
-
-## Reputation memory bound (landed 2026-09-01, verification open)
-
-The canary's first incident: after 14.7 h on `64a7e72` one of two pods was
-OOMKilled (exit 137, 1 Gi limit, `GOMEMLIMIT=900MiB`). Working set climbed
-~100 MB/h linearly from start, hit the limit at 04–05 h, and both pods sat
-pinned for eight hours before one lost. The heap profile put 76% of in-use
-memory in `reputation.(*Timeline).Record`: 82k reputation keys on the 14 h
-pod against 6k on a fresh one, and 82k × ~13 KB per key ring is 1.07 GB.
-
-Root cause: the timeline bounded events per key (a ring of 100) but never
-evicted a key, and the canary ran `key_granularity: per-supplier`, so a key
-was a staked registration that rotates every session — the set grew with the
-network for the life of the process. The score cache
-(`pruneUninformative` + shard cap) and the exporter (per-service cap) had
-bounds; the admin-only timeline had none. The Redis write-behind grew the
-same way (`HLEN sage:reputation:` reached 119,567) and nothing reads it back.
-
-Landed in `aa5d63a` + `b4673b6`, image `ghcr.io/pokt-network/sage:b4673b6`:
-
-- `reputation.Timeline` drops keys idle past 1 h (`DefaultIdleTTL`: three
-  ~20-minute sessions) and holds at most 16,384 keys, ≤ ~213 MB worst case.
-- `State.UpdatedAt` is stamped on every write-behind; the leader runs
-  `StaleDeleter.DeleteStale` every 5 min (HSCAN + batched HDEL on Redis, a
-  map sweep in memory) with the same 1 h TTL. Unstamped fields count as
-  stale, so the first sweep drains what pre-stamp pods left.
-- `sage_reputation_timeline_keys` and `sage_reputation_keys{service_id}` show
-  the bounds working. `sage_endpoint_reputation_score` exports only keys
-  below the full score, capped 500 per service (was every key, 2,000): one
-  pod was emitting 104k series, 2.3% of the Prometheus head.
-- Canary config moved to the default `per-url` (keys are backend URLs, which
-  do not rotate). The PATH config's comment on `per-endpoint` ("each URL
-  tracked separately") describes per-url; per-endpoint is the supplier × URL
-  pair and grows the same way per-supplier did.
-
-Open:
-
-- **Verify on the canary.** Ops reports at 1 h and 3 h after the roll:
-  `container_memory_working_set_bytes` flat within ±10% between the two
-  readings is the pass line; `sage_reputation_timeline_keys` in the low
-  thousands and flat after the first hour; series per pod well under 10k;
-  `HLEN sage:reputation:` down from 119,567 within minutes of the leader
-  coming up. Close this section when those land.
-- ~~The reputation write-behind is write-only.~~ Resolved 2026-09-02 by the
-  canary restart this was waiting for. A rolled pod covered 26 of 73 services
-  after six minutes and was killed by its startup probe, so the warm-up read
-  won over dropping the store: `reputation.Hydrate` loads `sage:reputation:`
-  once at startup through the `Storage.GetStates` seam, and
-  `healthcheck.Executor.SeedCoverage` credits the services it loaded towards
-  the warm gate. Bounds: a state older than the idle TTL or carrying no
-  `UpdatedAt` is skipped (the sweep's own rule, so a pod never adopts what is
-  about to be deleted), live state is never overwritten, and the per-shard cap
-  still applies. Storage is now read exactly once per process — a score that
-  changes in the store mid-life still reaches nobody.
-- ~~Other ever-seen maps.~~ Audited 2026-09-01: every map keyed by endpoint,
-  supplier, URL, host, session or method on the relay or probe path has a
-  bound — a sweep, a cap, a whole-map reset or a TTL. Three residuals, none
-  growing per session, recorded rather than fixed: `grpcRelayTransport.conns`
-  holds one `*grpc.ClientConn` per gRPC host ever relayed to and never closes
-  one (bounded by hosts, but each is a live connection — idle eviction if it
-  shows in a profile); `WSRelayer.activeLoad` keeps an 8-byte counter per
-  endpoint ever bound and never deletes at zero (bounded by the endpoint
-  set); `methodblock` marks are per (host, method) with method from the
-  client, bounded only by the TTL — a client can inflate it for one TTL.
 
 ## Explore next (raised 2026-09-01)
+
+- **Three unbounded-ish maps, recorded rather than fixed.** From the
+  ever-seen-maps audit of 2026-09-01, which followed the reputation timeline
+  OOM (see the CHANGELOG). Every map keyed by endpoint, supplier, URL, host,
+  session or method on the relay or probe path has a bound — a sweep, a cap, a
+  whole-map reset or a TTL — except these, none of which grows per session:
+  `grpcRelayTransport.conns` holds one `*grpc.ClientConn` per gRPC host ever
+  relayed to and never closes one (bounded by hosts, but each is a live
+  connection — idle eviction if it ever shows in a profile);
+  `WSRelayer.activeLoad` keeps an 8-byte counter per endpoint ever bound and
+  never deletes at zero (bounded by the endpoint set); `methodblock` marks are
+  per (host, method) with the method coming from the client, so they are
+  bounded only by the TTL and a client can inflate the set for one TTL.
 
 - **A cold pod is served client traffic before readiness passes.** Confirmed on
   every pod of the 2026-09-02 `335a264` rollout: relay errors begin ~7-8 s after
@@ -88,6 +38,22 @@ Open:
   makes it survivable rather than harmful, since a pod that gets traffic early
   can now serve it, but the gate is still being bypassed and that is worth
   fixing at the manifest.
+
+- **Traffic-informed probing.** Unparked 2026-09-02: the blocker was "no
+  canary traffic to measure against", and the canary has been at 1% since
+  2026-09-01. A backend that served client relays within the last interval was
+  already graded by them — every attempt scores — so probing it buys a second
+  copy of a fact the score middleware has. Skipping those backends cuts probe
+  spend roughly in proportion to traffic coverage, and needs nothing new: the
+  reputation store already knows the last attempt time per key, and
+  `request_type="client"` vs `"probe"` on `sage_relay_total` now measures the
+  saving directly. Probes are 2.4-3.2/s against ~136k client attempts per 30
+  min, so at 1% traffic the overlap is small and the saving will be too — take
+  the measurement before building, and expect this to be worth doing at a
+  traffic share where client relays actually cover the pool. The risk to size
+  first: a backend covered only by client traffic stops being probed, so a
+  service whose traffic then stops has no fresh signal until the next
+  interval, and the coverage the warm gate counts comes only from probes.
 
 - **Re-land the 408 supplier attribution, one half at a time.** The combined
   change (retry + minor penalty, `26f22c5`) was reverted on 2026-09-02 after
@@ -105,16 +71,13 @@ Open:
 - **Canary counters need more than one window before they are a baseline.**
   Two targets set during the 408 incident were built on single windows and both
   were wrong. Probe volume was quoted at ~18/s from the d1f237f rollout and is
-  really 2.4-3.2/s. Client-side 404 and 502 read 258 and 120 per 100k in one
-  `cac8818` window and 62 and 46 in another — a 4x spread inside one image — so
+  really 2.4-3.2/s (4,389-5,776 probe attempts per 30 min, 3.1-4.1% of all
+  relay attempts, measured 2026-09-02). Client-side 404 and 502 read 258 and
+  120 per 100k in one `cac8818` window and 62 and 46 in another — a 4x spread
+  inside one image — so
   the "404 and 502 return to 258/120" pass condition was measuring noise, and
   the ~300 per 100k of apparent 404/502-to-408 reclassification was noise too.
   Take an offset sweep before calling any of these a baseline.
-- **Probe volume is 3.2/s, not the ~18/s recorded during the d1f237f
-  rollout.** Measured 2026-09-02 on `f27f45a`: 5,776 probe attempts per 30
-  minutes, 4.1% of all relay attempts, with a 4.1% 408 rate against client
-  traffic's 2.0%. Nothing depends on this yet, but the earlier figure is
-  quoted in the probe-cadence notes and is wrong by 5.6x.
 - **Split the >10s latency tail by service_id.** Raised by ops 2026-09-02: 4.8%
   of `sage_relay_latency_seconds` observations land in `+Inf` over a 17 h
   window, so the merged p99 is above 10 s. The label is already there, so this
@@ -209,12 +172,6 @@ landed on 2026-08-29; what is left needs a decision.
 
 From the mainnet canary (2026-08-31), parked rather than done:
 
-- **Traffic-informed probing.** A backend that served client relays within the
-  last interval was graded by them (every attempt scores); probing it too buys
-  a second copy of a fact the score middleware already has. Skipping those
-  backends would cut probe spend roughly in proportion to traffic coverage,
-  and it needs nothing new — the reputation store knows the last attempt time
-  per key. Not done because the canary has no traffic yet to measure against.
 - **PATH's `active_health_checks.external` rule file.** Not fetched, by
   decision (`docs/path-compat.md`). What it has that the plugins do not:
   archival `eth_getBalance` probes on 22 EVM services and a websocket
