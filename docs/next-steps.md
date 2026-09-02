@@ -91,8 +91,10 @@ Open:
 
 - **Re-land the 408 supplier attribution, one half at a time.** The combined
   change (retry + minor penalty, `26f22c5`) was reverted on 2026-09-02 after
-  the canary quadrupled its client-facing 408 rate; the measurement and the
-  ruled-out mechanisms are in the CHANGELOG. What was never separated is which
+  the canary quadrupled its client-facing 408 rate; the revert put it back
+  (0.719% client 408, 200 at 99.140% per 100k, attempts per client request
+  1.519), which confirms the attribution change as the cause. The measurement
+  and the ruled-out mechanisms are in the CHANGELOG. What was never separated is which
   half did it. The retry half alone cannot raise client 408s — retry exhaustion
   delivers the upstream's own response (`router.go`), so a retried 408 ends as
   200 or the same 408 — which points at the penalty half and its effect on
@@ -100,6 +102,14 @@ Open:
   retryable with `ShouldPenalize: false`, then the penalty alone. Until then a
   supplier that times out keeps being handed to callers, which is the known
   cost of the safe state.
+- **Canary counters need more than one window before they are a baseline.**
+  Two targets set during the 408 incident were built on single windows and both
+  were wrong. Probe volume was quoted at ~18/s from the d1f237f rollout and is
+  really 2.4-3.2/s. Client-side 404 and 502 read 258 and 120 per 100k in one
+  `cac8818` window and 62 and 46 in another — a 4x spread inside one image — so
+  the "404 and 502 return to 258/120" pass condition was measuring noise, and
+  the ~300 per 100k of apparent 404/502-to-408 reclassification was noise too.
+  Take an offset sweep before calling any of these a baseline.
 - **Probe volume is 3.2/s, not the ~18/s recorded during the d1f237f
   rollout.** Measured 2026-09-02 on `f27f45a`: 5,776 probe attempts per 30
   minutes, 4.1% of all relay attempts, with a 4.1% 408 rate against client

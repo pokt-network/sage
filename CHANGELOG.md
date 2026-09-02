@@ -273,6 +273,10 @@ the source of truth for the design and the reasoning behind it.
   a smaller tier-1 set, which sheds under the load it inherits, which scores it
   down in turn. 408 goes back to the generic 4xx branches. Re-landing this
   needs an experiment that separates the retry half from the penalty half.
+  Confirmed on the canary the same day: client 408 back to 0.719% and 200 to
+  99.140% per 100k, attempts per client request 1.519 — so the attribution
+  change was the cause, and essentially all of the extra 408s were requests
+  that would otherwise have been answered 200.
 
 - **A pod inherits the fleet's reputation instead of re-learning it.** The
   write-behind had been persisting scores all along and nothing ever read them
