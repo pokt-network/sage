@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1381,5 +1382,81 @@ func TestSeedCoverage_IgnoresUnconfiguredServices(t *testing.T) {
 	exec.SeedCoverage([]domain.ServiceID{"kava"})
 	if !exec.Warm() {
 		t.Error("the third configured service should complete the threshold")
+	}
+}
+
+// --- warm-up progress logging ---
+
+// logWarmProgress is the only explanation a 503 readiness gate ever gives, so
+// it has to name the numbers and the services, and it has to stop once warm.
+func TestLogWarmProgress(t *testing.T) {
+	newExec := func(buf *bytes.Buffer) *Executor {
+		sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{
+			"eth": {}, "poly": {}, "kava": {}, "sei": {},
+		}}
+		logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		return NewExecutor(&stubRelayer{}, &stubEndpointProvider{}, sessions,
+			qos.NewRegistry(), &stubRepService{}, nil, defaultInterval, 4, logger)
+	}
+
+	t.Run("names what is missing, at WARN so production sees it", func(t *testing.T) {
+		var buf bytes.Buffer
+		exec := newExec(&buf)
+		exec.markCovered("eth")
+		exec.logWarmProgress()
+
+		out := buf.String()
+		if !strings.Contains(out, "level=WARN") {
+			t.Errorf("logged below WARN, which production suppresses: %s", out)
+		}
+		if !strings.Contains(out, "covered=1") || !strings.Contains(out, "needed=3") {
+			t.Errorf("missing the counts that make this actionable: %s", out)
+		}
+		for _, svc := range []string{"kava", "poly", "sei"} {
+			if !strings.Contains(out, svc) {
+				t.Errorf("uncovered service %q not named: %s", svc, out)
+			}
+		}
+		if strings.Contains(out, "eth") {
+			t.Errorf("covered service listed as awaited: %s", out)
+		}
+	})
+
+	t.Run("silent once warm", func(t *testing.T) {
+		var buf bytes.Buffer
+		exec := newExec(&buf)
+		exec.markCovered("eth")
+		exec.markCovered("poly")
+		exec.markCovered("kava")
+		if !exec.Warm() {
+			t.Fatal("precondition: 3 of 4 should be warm")
+		}
+		exec.logWarmProgress()
+		if buf.Len() != 0 {
+			t.Errorf("a warm pod must not keep logging: %s", buf.String())
+		}
+	})
+}
+
+// A fleet with dozens of services must not turn one log line into a page.
+func TestLogWarmProgress_BoundsTheServiceList(t *testing.T) {
+	services := make(map[domain.ServiceID]struct{}, 40)
+	for i := range 40 {
+		services[domain.ServiceID(fmt.Sprintf("svc-%02d", i))] = struct{}{}
+	}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{},
+		&stubSessionManager{services: services}, qos.NewRegistry(),
+		&stubRepService{}, nil, defaultInterval, 4, logger)
+
+	exec.logWarmProgress()
+
+	out := buf.String()
+	if !strings.Contains(out, "awaiting_not_listed=30") {
+		t.Errorf("want 10 listed and 30 counted, got: %s", out)
+	}
+	if strings.Count(out, "svc-") != maxUnwarmedServicesLogged {
+		t.Errorf("listed %d services, want %d: %s", strings.Count(out, "svc-"), maxUnwarmedServicesLogged, out)
 	}
 }

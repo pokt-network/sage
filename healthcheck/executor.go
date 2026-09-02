@@ -209,6 +209,7 @@ func (e *Executor) Start(ctx context.Context) {
 				// loop would contain the panic and still leave the ticker
 				// dead, which is a stopped health checker that logged once.
 				safego.Run(e.logger, "healthcheck.cycle", func() { e.runOnce(ctx) })
+				e.logWarmProgress()
 				if t := e.tick(); t != tick {
 					tick = t
 					ticker.Reset(tick)
@@ -600,6 +601,59 @@ func (e *Executor) SeedCoverage(services []domain.ServiceID) {
 		}
 		e.markCovered(svc)
 	}
+}
+
+// maxUnwarmedServicesLogged bounds the service list in the warm-up log. A
+// fleet runs dozens of services and the point of the line is which ones are
+// missing, not all of them; a handful names the pattern without turning one
+// log line into a page.
+const maxUnwarmedServicesLogged = 10
+
+// logWarmProgress says why readiness is still 503, once per cycle until it is
+// not.
+//
+// It is WARN rather than INFO deliberately. A pod that is not warm is a pod
+// not serving, and this line is the only explanation of that anywhere: /ready
+// returns a bare 503, and the "no session yet, skipping service" path that
+// usually causes it logs at DEBUG, which production log levels suppress. The
+// mainnet canary spent a rollout on 2026-09-02 being restarted by its startup
+// probe with no logged reason at all, diagnosed only from a goroutine dump and
+// a metrics scrape.
+//
+// It stops as soon as the pod is warm, and warm is latched, so a healthy pod
+// logs this a bounded number of times at startup and never again.
+func (e *Executor) logWarmProgress() {
+	if e.warm.Load() {
+		return
+	}
+
+	e.warmMu.Lock()
+	e.ensureWarmThresholdLocked()
+	covered, threshold := len(e.coveredServices), e.warmThreshold
+	missing := make([]string, 0, maxUnwarmedServicesLogged)
+	truncated := 0
+	for svc := range e.sessions.ConfiguredServices() {
+		if _, ok := e.coveredServices[svc]; ok {
+			continue
+		}
+		if len(missing) < maxUnwarmedServicesLogged {
+			missing = append(missing, string(svc))
+			continue
+		}
+		truncated++
+	}
+	e.warmMu.Unlock()
+
+	// Sorted so consecutive lines are comparable; map order would make every
+	// line look different while nothing changed.
+	slices.Sort(missing)
+
+	e.logger.Warn("health checks: not warm, readiness is 503",
+		"covered", covered,
+		"needed", threshold,
+		"awaiting", missing,
+		"awaiting_not_listed", truncated,
+	)
 }
 
 // markCovered records that a result has been applied for a service and latches

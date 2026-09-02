@@ -281,6 +281,13 @@ the source of truth for the design and the reasoning behind it.
   overwritten, and the per-shard bound still holds. Redis unreachable, or a
   store with nothing fresh in it, starts cold exactly as before.
 
+- **A pod that is not ready says why.** The warm gate answered a bare 503 and
+  the path that usually causes it logs at DEBUG, which production levels
+  suppress — so a stalled rollout had no logged explanation at all. The
+  executor now logs one WARN per cycle until it is warm, carrying the coverage
+  count, the threshold, and the services still awaited (bounded to ten, with a
+  count of the rest). It stops the moment the pod warms.
+
 ### Added — config & compatibility
 
 - **Loads a PATH config unmodified.** Parsing is lenient but never silent: an
