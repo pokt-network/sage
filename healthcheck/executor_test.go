@@ -1207,3 +1207,133 @@ func TestExecutor_WarmWhenNoServices(t *testing.T) {
 		t.Fatal("no configured services must read as warm, not stall readiness")
 	}
 }
+
+// --- probe relay metrics ---
+
+type recordingResultRecorder struct {
+	mu      sync.Mutex
+	applied []string
+	relays  []probeRelayCall
+}
+
+type probeRelayCall struct {
+	serviceID  domain.ServiceID
+	endpoint   domain.EndpointAddr
+	statusCode int
+	failed     bool
+}
+
+func (r *recordingResultRecorder) RecordHealthCheckResult(_ domain.ServiceID, source string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.applied = append(r.applied, source)
+}
+
+func (r *recordingResultRecorder) RecordProbeRelay(
+	serviceID domain.ServiceID,
+	endpoint domain.EndpointAddr,
+	statusCode int,
+	_ time.Duration,
+	err error,
+) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.relays = append(r.relays, probeRelayCall{
+		serviceID:  serviceID,
+		endpoint:   endpoint,
+		statusCode: statusCode,
+		failed:     err != nil,
+	})
+}
+
+func (r *recordingResultRecorder) probeRelays() []probeRelayCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]probeRelayCall(nil), r.relays...)
+}
+
+// A probe is a paid relay that never enters the middleware chain, so the
+// executor is the only place it can be counted. Every send must be reported —
+// including the ones that fail, which are exactly the ones a probe error rate
+// is built from.
+func TestProbe_RecordsEveryRelaySend(t *testing.T) {
+	cases := []struct {
+		name       string
+		relayer    *stubRelayer
+		wantStatus int
+		wantFailed bool
+	}{
+		{
+			name:       "answered",
+			relayer:    &stubRelayer{response: &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`)}},
+			wantStatus: 200,
+		},
+		{
+			name:       "transport failure is 502, the same sentinel the metrics middleware uses",
+			relayer:    &stubRelayer{err: errors.New("connection refused")},
+			wantStatus: 502,
+			wantFailed: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eps := &stubEndpointProvider{
+				endpoints: domain.EndpointAddrList{"supplierA-https://node1.example.com"},
+			}
+			sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}}}
+			payload := domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+			reg := qos.NewRegistry()
+			if err := reg.Register("eth", &checkOnlyPlugin{
+				checks: []qos.HealthCheck{{Name: "block_number", Payload: payload}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			rec := &recordingResultRecorder{}
+			exec := newTestExecutor(tc.relayer, eps, sessions, reg, &stubRepService{})
+			exec.SetResultRecorder(rec)
+			exec.runOnce(context.Background())
+
+			time.Sleep(50 * time.Millisecond)
+
+			relays := rec.probeRelays()
+			if len(relays) != 1 {
+				t.Fatalf("recorded %d probe relays, want 1", len(relays))
+			}
+			got := relays[0]
+			if got.serviceID != "eth" {
+				t.Errorf("service_id = %q, want %q", got.serviceID, "eth")
+			}
+			if got.endpoint != "supplierA-https://node1.example.com" {
+				t.Errorf("endpoint = %q, want the probed one", got.endpoint)
+			}
+			if got.statusCode != tc.wantStatus {
+				t.Errorf("statusCode = %d, want %d", got.statusCode, tc.wantStatus)
+			}
+			if got.failed != tc.wantFailed {
+				t.Errorf("failed = %v, want %v", got.failed, tc.wantFailed)
+			}
+		})
+	}
+}
+
+// A nil recorder is the documented "metrics off" case and must not panic.
+func TestProbe_NilRecorderIsSafe(t *testing.T) {
+	eps := &stubEndpointProvider{endpoints: domain.EndpointAddrList{"supplierA-https://node1.example.com"}}
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}}}
+	payload := domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	reg := qos.NewRegistry()
+	if err := reg.Register("eth", &checkOnlyPlugin{
+		checks: []qos.HealthCheck{{Name: "block_number", Payload: payload}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	exec := newTestExecutor(
+		&stubRelayer{response: &domain.Response{HTTPStatusCode: 200}},
+		eps, sessions, reg, &stubRepService{},
+	)
+	exec.runOnce(context.Background())
+	time.Sleep(50 * time.Millisecond)
+}

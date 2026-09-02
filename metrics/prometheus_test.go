@@ -39,11 +39,11 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 		services: allowedLabel(knownServices),
 		relayTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "relay_total"},
-			[]string{"service_id", "status"},
+			[]string{"service_id", "status", "request_type"},
 		),
 		relayLatency: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{Namespace: "sage_test", Name: "relay_latency_seconds", Buckets: prometheus.DefBuckets},
-			[]string{"service_id"},
+			[]string{"service_id", "request_type"},
 		),
 		retryTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "retry_total"},
@@ -104,18 +104,47 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 func TestRecordRelay_IncrementsCounter(t *testing.T) {
 	r := newIsolatedRecorder(t)
 	r.RecordRelay("eth", "supplierA-https://node.example.com", 200, 50*time.Millisecond, nil)
+	r.RecordRelay("eth", "supplierA-https://node.example.com", 200, 10*time.Millisecond, nil)
 
-	c, err := r.relayTotal.GetMetricWithLabelValues("eth", "200")
+	c, err := r.relayTotal.GetMetricWithLabelValues("eth", "200", "client")
 	if err != nil {
 		t.Fatalf("GetMetricWithLabelValues: %v", err)
 	}
+	if got := value(t, c); got != 2 {
+		t.Errorf("relay_total{status=200,request_type=client} = %v, want 2", got)
+	}
+}
 
-	// Use the dto to read the value.
-	// We call RecordRelay again and verify the counter increased.
+// A health-check probe is a paid relay, so it belongs in the same counter as a
+// client attempt — and it is not client traffic, so it must not be mixed into
+// the series a client-facing error rate is built from.
+func TestRecordProbeRelay_SeparateFromClientAttempts(t *testing.T) {
+	r := newIsolatedRecorder(t)
 	r.RecordRelay("eth", "supplierA-https://node.example.com", 200, 10*time.Millisecond, nil)
-	c2, _ := r.relayTotal.GetMetricWithLabelValues("eth", "200")
-	_ = c
-	_ = c2
+	r.RecordProbeRelay("eth", "supplierA-https://node.example.com", 200, 20*time.Millisecond, nil)
+	r.RecordProbeRelay("eth", "supplierA-https://node.example.com", 200, 30*time.Millisecond, nil)
+
+	client, err := r.relayTotal.GetMetricWithLabelValues("eth", "200", "client")
+	if err != nil {
+		t.Fatalf("GetMetricWithLabelValues(client): %v", err)
+	}
+	if got := value(t, client); got != 1 {
+		t.Errorf("relay_total{request_type=client} = %v, want 1 — probes must not land here", got)
+	}
+
+	probe, err := r.relayTotal.GetMetricWithLabelValues("eth", "200", "probe")
+	if err != nil {
+		t.Fatalf("GetMetricWithLabelValues(probe): %v", err)
+	}
+	if got := value(t, probe); got != 2 {
+		t.Errorf("relay_total{request_type=probe} = %v, want 2", got)
+	}
+
+	// The histogram splits the same way, which is what lets a latency panel
+	// exclude synthetic checks.
+	if _, err := r.relayLatency.GetMetricWithLabelValues("eth", "probe"); err != nil {
+		t.Fatalf("relay_latency_seconds has no probe series: %v", err)
+	}
 }
 
 func TestRecordRelay_StatusCodeFromError(t *testing.T) {

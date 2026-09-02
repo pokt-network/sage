@@ -248,6 +248,25 @@ the source of truth for the design and the reasoning behind it.
   failure once, then again only when it changes or recovers.
 - `TestTieredSelector_Tier1` no longer fails one run in twenty.
 
+### September 2026, from the mainnet canary
+
+- **`request_type` (`client`|`probe`) on `sage_relay_total` and
+  `sage_relay_latency_seconds`.** Health-check probes are paid relays, but they
+  call `protocol.SendRelay` directly and never enter the middleware chain, so
+  they appeared in no relay metric at all — the probe share of relay spend, and
+  probe latency, were invisible, and the only probe-inclusive counter was
+  `sage_reputation_attempts_total`. The executor now records each send it makes
+  under `request_type="probe"`; client attempts keep the same series under
+  `request_type="client"`. A panel that wants what it had before adds
+  `{request_type="client"}`; an unfiltered one now includes probes.
+- **HTTP 408 from a supplier is the supplier's, not the client's.** It was
+  falling into the generic 4xx case — attributed to the client, not retried,
+  not penalised — so a supplier whose own server timed out ended the relay and
+  the caller got the 408. On the canary that was 0.89% of client requests, the
+  largest non-200 class. It now retries elsewhere and takes a minor penalty,
+  without circuit-breaking (slow is not broken) and without method blocking (a
+  timeout says nothing about which methods a host serves).
+
 ### Added — config & compatibility
 
 - **Loads a PATH config unmodified.** Parsing is lenient but never silent: an

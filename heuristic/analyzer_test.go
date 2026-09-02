@@ -48,6 +48,14 @@ func TestAnalyze_Tier0_HTTPStatus(t *testing.T) {
 			wantAttribution:  AttrSupplier,
 		},
 		{
+			name:             "408 request timeout — supplier fault, not the client's",
+			statusCode:       408,
+			wantRetry:        true,
+			wantCircuitBreak: false,
+			wantPenalize:     true,
+			wantAttribution:  AttrSupplier,
+		},
+		{
 			name:             "400 bad request — client fault",
 			statusCode:       400,
 			wantRetry:        false,
@@ -450,5 +458,51 @@ func TestAnalyze_4xxWithoutEnvelopeOnJSONRPC_IsSupplierFault(t *testing.T) {
 	got = Analyze([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"invalid request"}}`), 400, domain.RPCTypeJSONRPC)
 	if got.ShouldRetry || got.Attribution != AttrClient {
 		t.Errorf("JSON-RPC error with 400: retry=%v attribution=%v; want no retry, client", got.ShouldRetry, got.Attribution)
+	}
+}
+
+// A supplier 408 carries a valid JSON-RPC envelope often enough that the
+// 4xx-without-envelope branch does not catch it, and it arrives on rpc types
+// that branch does not apply to at all. Both paths must reach the same
+// verdict: the supplier timed out, so rotate and score it, but do not block
+// the method — a timeout is not a statement about which methods the host
+// serves.
+func TestAnalyze_408IsSupplierTimeoutOnEveryRPCType(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    []byte
+		rpcType domain.RPCType
+	}{
+		{"json-rpc envelope", []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`), domain.RPCTypeJSONRPC},
+		{"json-rpc empty body", []byte(``), domain.RPCTypeJSONRPC},
+		{"rest body", []byte(`{"height":"1"}`), domain.RPCTypeREST},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := Analyze(tc.body, 408, tc.rpcType)
+
+			if !result.ShouldRetry {
+				t.Error("ShouldRetry = false, want true (another supplier will answer)")
+			}
+			if result.ShouldCircuitBreak {
+				t.Error("ShouldCircuitBreak = true, want false (slow is not broken)")
+			}
+			if !result.ShouldPenalize {
+				t.Error("ShouldPenalize = false, want true")
+			}
+			if result.Attribution != AttrSupplier {
+				t.Errorf("Attribution = %v, want %v", result.Attribution, AttrSupplier)
+			}
+			if result.PenaltySeverity != SeverityMinor {
+				t.Errorf("PenaltySeverity = %v, want %v", result.PenaltySeverity, SeverityMinor)
+			}
+			if result.MethodBlocking {
+				t.Error("MethodBlocking = true, want false — a timeout is not method-specific")
+			}
+			if result.Reason != "http_408" {
+				t.Errorf("Reason = %q, want %q", result.Reason, "http_408")
+			}
+		})
 	}
 }

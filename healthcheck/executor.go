@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -476,12 +477,43 @@ func (e *Executor) sendCheck(
 	}
 }
 
+// recordProbeRelay reports one probe send to the relay-attempt metrics, so a
+// health check shows up in sage_relay_total and sage_relay_latency_seconds
+// under request_type="probe" the way a client attempt shows up under
+// "client". Probes bypass the middleware chain, so this is the only place
+// they can be counted.
+//
+// The status mirrors the metrics middleware: the response's status when there
+// is one, 502 as the sentinel for a relay that failed before producing a
+// response, and 0 for neither.
+func (e *Executor) recordProbeRelay(
+	serviceID domain.ServiceID,
+	ep domain.EndpointAddr,
+	resp *domain.Response,
+	latency time.Duration,
+	err error,
+) {
+	if e.recorder == nil {
+		return
+	}
+	statusCode := 0
+	switch {
+	case resp != nil:
+		statusCode = resp.HTTPStatusCode
+	case err != nil:
+		statusCode = http.StatusBadGateway
+	}
+	e.recorder.RecordProbeRelay(serviceID, ep, statusCode, latency, err)
+}
+
 // probe sends one health check and packages what came back as a
 // ProbeResult. A transport failure is graded here, on the replica that saw
 // the error, because the verdict travels and the error does not.
 func (e *Executor) probe(ctx context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, siblings domain.EndpointAddrList, check qos.HealthCheck) ProbeResult {
 	start := time.Now()
 	resp, err := e.protocol.SendRelay(ctx, serviceID, ep, check.Payload)
+	latency := time.Since(start)
+	e.recordProbeRelay(serviceID, ep, resp, latency, err)
 	result := ProbeResult{
 		ServiceID: serviceID,
 		Endpoint:  ep,
@@ -489,7 +521,7 @@ func (e *Executor) probe(ctx context.Context, serviceID domain.ServiceID, ep dom
 		Check:     check.Name,
 		RPCType:   check.Payload.RPCType(),
 		Request:   check.Payload.Bytes(),
-		LatencyMS: time.Since(start).Milliseconds(),
+		LatencyMS: latency.Milliseconds(),
 		ProbedAt:  start,
 		Source:    ResultSourceProbe,
 	}

@@ -6,9 +6,9 @@ ordered by priority within each section. Update this file when an item lands
 or a decision changes it; delete items rather than marking them done, so the
 file only ever lists open work.
 
-Last updated: 2026-09-01 (mainnet canary at 1% traffic; first OOM found and
-fixed, see the reputation memory bound section. PATH `origin/main` at
-`274e9791`, 2026-08-25).
+Last updated: 2026-09-02 (mainnet canary at 1% traffic; overnight OOM watch
+passed — reputation timeline keys flat at ~2.3k over 17 h. PATH `origin/main`
+at `274e9791`, 2026-08-25).
 
 
 
@@ -75,17 +75,37 @@ Open:
 
 ## Explore next (raised 2026-09-01)
 
-- **Label probe vs client attempts in sage_relay_total (and the latency
-  histogram).** Found 2026-09-01, first stable window after the per-attempt
-  move: relay_total ÷ client_requests_total = 1.557, decomposing to client
-  47.1/s + health-check probes 15.7/s + retries 2.3/s + hedge losers. Probes
-  are a third of attempts and there is no label separating them, so every
-  error-rate and latency dashboard on relay_total mixes synthetic checks
-  into client-facing numbers. PATH hit the same and split via
-  path_relays_total{request_type}; do the equivalent: a probe|client label
-  on sage_relay_total and sage_relay_latency_seconds. The probe flag already
-  exists on reputation signals (Signal.Probe) — find where the relay context
-  carries it and hand it to the metrics middleware.
+- **Verify the request_type split and the 408 fix on the canary** (both landed
+  2026-09-02, not yet imaged). After the roll: `sage_relay_total` should carry
+  a `request_type="probe"` series at roughly the probe rate, and the 408 share
+  of `sage_client_requests_total` should fall from the 0.89% measured over 17 h
+  on `cac8818` as those relays rotate to another supplier instead of being
+  handed back. Watch `sage_retry_total` for the offsetting rise, and check the
+  408 suppliers actually lose score rather than the retries just costing more
+  relays.
+- **Split the >10s latency tail by service_id.** Raised by ops 2026-09-02: 4.8%
+  of `sage_relay_latency_seconds` observations land in `+Inf` over a 17 h
+  window, so the merged p99 is above 10 s. The label is already there, so this
+  is a dashboard query, not a code change — but note the histogram uses
+  `prometheus.DefBuckets`, whose top finite bucket is 10 s, so nothing
+  distinguishes 11 s from 300 s. If the tail turns out to matter, the buckets
+  need extending before it can be measured.
+
+- ~~Label probe vs client attempts in sage_relay_total.~~ Landed 2026-09-02,
+  and the premise it was filed under was wrong: probes were not a third of
+  relay_total, they were not in it at all. `healthcheck.Executor` calls
+  `protocol.SendRelay` directly on the raw protocol handed to it in
+  `cmd/sagegw/wire.go`, so a probe never enters the middleware chain and
+  `RecordRelay` never sees it. The 1.557 ratio measured on 2026-09-01 is
+  retries, hedge losers and **batch sub-relays** — the metrics middleware sits
+  inside `MWBatch` as well as retry and hedge, so a ten-call JSON-RPC batch is
+  ten increments against one client request. Anyone reconciling relay_total
+  against client_requests_total should start there, not with probes.
+  `request_type` (`client`|`probe`) is now on `sage_relay_total` and
+  `sage_relay_latency_seconds`, and the executor records its own sends, so
+  probe spend and probe latency are visible for the first time. Unfiltered
+  panels step up by the probe rate; `{request_type="client"}` restores the old
+  reading.
 
 - ~~Dynamic blocked_domains from the admin UI.~~ Landed 2026-09-01: package
   `blocklist` owns the union of the config list and admin-set bans;

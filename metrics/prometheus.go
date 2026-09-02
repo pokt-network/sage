@@ -58,9 +58,9 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "relay_total",
-				Help:      "Upstream relay attempts by service and HTTP status: one count per attempt inside retry, hedge and batch, so a retried or hedged request counts more than once. Cache hits and coalesced requests make no attempt and are absent. One count per client request is sage_client_requests_total.",
+				Help:      "Upstream relay attempts by service, HTTP status and request_type (client|probe): one count per attempt inside retry, hedge and batch, so a retried, hedged or batched request counts more than once. request_type=\"probe\" is a health-check relay, which is paid for like any other but is not client traffic — filter on request_type=\"client\" for client-facing rates. Cache hits and coalesced requests make no attempt and are absent. One count per client request is sage_client_requests_total.",
 			},
-			[]string{"service_id", "status"},
+			[]string{"service_id", "status", "request_type"},
 		),
 		clientRequestsTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -74,10 +74,10 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.HistogramOpts{
 				Namespace: "sage",
 				Name:      "relay_latency_seconds",
-				Help:      "Upstream relay attempt latency in seconds — selection through response, one observation per attempt. Not client-facing latency: a request that retried or hedged is several observations, none of them its total.",
+				Help:      "Upstream relay attempt latency in seconds — selection through response, one observation per attempt, split by request_type (client|probe). Not client-facing latency: a request that retried or hedged is several observations, none of them its total, and a health-check probe is not a client request at all.",
 				Buckets:   prometheus.DefBuckets,
 			},
-			[]string{"service_id"},
+			[]string{"service_id", "request_type"},
 		),
 		retryTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -221,10 +221,21 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 	return r
 }
 
+// Relay attempt kinds, the request_type label on relay_total and
+// relay_latency_seconds. Health-check probes are billed relays like any
+// other, so they belong in the same counter; they are not client traffic, so
+// they must be separable from it. PATH splits the same way, via
+// path_relays_total{request_type}.
+const (
+	requestTypeClient = "client"
+	requestTypeProbe  = "probe"
+)
+
 // RecordRelay satisfies relay/middleware.MetricsRecorder: one upstream
-// attempt. The metrics middleware sits inside retry/hedge/batch and outside
-// select_endpoint (relay/chain_order.go), which is what makes this per attempt.
-// statusCode 0 is recorded as "0" (unknown/connection-level error).
+// attempt on the client path. The metrics middleware sits inside
+// retry/hedge/batch and outside select_endpoint (relay/chain_order.go), which
+// is what makes this per attempt. statusCode 0 is recorded as "0"
+// (unknown/connection-level error).
 func (r *Recorder) RecordRelay(
 	serviceID domain.ServiceID,
 	_ domain.EndpointAddr,
@@ -232,11 +243,38 @@ func (r *Recorder) RecordRelay(
 	latency time.Duration,
 	_ error,
 ) {
+	r.recordRelayAttempt(serviceID, statusCode, latency, requestTypeClient)
+}
+
+// RecordProbeRelay records one health-check relay attempt into the same
+// counter and histogram as client attempts, under request_type="probe".
+//
+// Probes do not run through the middleware chain — healthcheck.Executor calls
+// protocol.SendRelay directly — so without this they appear in no relay
+// metric at all, and the probe share of what the gateway spends on relays is
+// invisible. Only the probing replica records: a follower applying another
+// pod's streamed result sent nothing.
+func (r *Recorder) RecordProbeRelay(
+	serviceID domain.ServiceID,
+	_ domain.EndpointAddr,
+	statusCode int,
+	latency time.Duration,
+	_ error,
+) {
+	r.recordRelayAttempt(serviceID, statusCode, latency, requestTypeProbe)
+}
+
+func (r *Recorder) recordRelayAttempt(
+	serviceID domain.ServiceID,
+	statusCode int,
+	latency time.Duration,
+	requestType string,
+) {
 	sid := r.services.serviceValue(serviceID)
 	status := strconv.Itoa(statusCode)
 
-	r.relayTotal.WithLabelValues(sid, status).Inc()
-	r.relayLatency.WithLabelValues(sid).Observe(latency.Seconds())
+	r.relayTotal.WithLabelValues(sid, status, requestType).Inc()
+	r.relayLatency.WithLabelValues(sid, requestType).Observe(latency.Seconds())
 }
 
 // RecordClientRequest records the client-facing HTTP status of one relay
