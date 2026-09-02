@@ -608,7 +608,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			logger.Warn("reputation warm-up read failed; starting cold",
 				"error", err)
 		case loaded.Keys == 0:
-			logger.Info("reputation warm-up read found nothing; starting cold",
+			// WARN, not INFO: a pod that expected to inherit the fleet's
+			// scores and got nothing is about to warm the slow way, and that
+			// is the case an operator needs to see. Production log levels
+			// suppress INFO — the canary roll that carried this could not
+			// confirm hydration from the logs at all.
+			logger.Warn("reputation warm-up read found nothing; starting cold",
 				"skipped", loaded.Skipped)
 		default:
 			healthExe.SeedCoverage(loaded.Services)
@@ -617,6 +622,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 				"services", len(loaded.Services),
 				"skipped", loaded.Skipped)
 		}
+		// The durable form of that line: a log entry can be filtered out by
+		// level, a gauge cannot.
+		prometheus.MustRegister(metrics.NewHydratedGauges(loaded.Keys, len(loaded.Services))...)
 	}
 
 	healthExe.Start(ctx)

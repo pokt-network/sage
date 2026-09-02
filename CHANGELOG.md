@@ -281,6 +281,15 @@ the source of truth for the design and the reasoning behind it.
   overwritten, and the per-shard bound still holds. Redis unreachable, or a
   store with nothing fresh in it, starts cold exactly as before.
 
+- **`sage_reputation_hydrated_keys` / `sage_reputation_hydrated_services`** —
+  what the startup warm-up read loaded, set once and constant thereafter. The
+  log line saying the same thing is INFO, which production log levels suppress:
+  the canary roll that carried hydration had to confirm it by inferring from
+  `sage_reputation_keys`. Zero on a pod that should have inherited state is the
+  value worth alerting on. The "found nothing, starting cold" case moved from
+  INFO to WARN for the same reason. `internal/docgen` now also recognises the
+  bare `prometheus.NewGauge`/`NewCounter`/`NewHistogram` forms, which it was
+  silently omitting from the reference.
 - **A pod that is not ready says why.** The warm gate answered a bare 503 and
   the path that usually causes it logs at DEBUG, which production levels
   suppress — so a stalled rollout had no logged explanation at all. The

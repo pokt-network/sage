@@ -101,12 +101,12 @@ func GenerateMetricsReference(metricsDir string) (string, error) {
 // label list; the Func forms take an Opts literal and the function that
 // supplies the value, so they document as a metric with no labels.
 //
-// The Func forms are here because a metric this generator cannot see is a
-// metric the reference silently omits, which is the one failure mode generated
-// docs are supposed to remove.
+// The Func and bare forms are here because a metric this generator cannot see
+// is a metric the reference silently omits, which is the one failure mode
+// generated docs are supposed to remove.
 func metricFromVecCall(call *ast.CallExpr) (metricDoc, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || len(call.Args) < 2 {
+	if !ok || len(call.Args) < 1 {
 		return metricDoc{}, false
 	}
 	var kind string
@@ -122,7 +122,18 @@ func metricFromVecCall(call *ast.CallExpr) (metricDoc, bool) {
 		kind, labelled = "counter", false
 	case "NewGaugeFunc":
 		kind, labelled = "gauge", false
+	// The bare forms take the Opts literal alone: one unlabelled series set
+	// directly rather than through a function.
+	case "NewCounter":
+		kind, labelled = "counter", false
+	case "NewGauge":
+		kind, labelled = "gauge", false
+	case "NewHistogram":
+		kind, labelled = "histogram", false
 	default:
+		return metricDoc{}, false
+	}
+	if labelled && len(call.Args) < 2 {
 		return metricDoc{}, false
 	}
 

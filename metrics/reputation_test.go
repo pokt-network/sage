@@ -202,3 +202,43 @@ func TestScoreCollector_NilListerIsInert(t *testing.T) {
 		t.Errorf("nil lister reported %d families", len(mfs))
 	}
 }
+
+// The gauges exist because a log line can be filtered out by level and a
+// metric cannot — so they must report what the warm-up read actually loaded,
+// including the zero that means a pod started cold.
+func TestNewHydratedGauges(t *testing.T) {
+	cases := []struct {
+		name             string
+		keys, services   int
+		wantKeys, wantSv float64
+	}{
+		{name: "loaded", keys: 2266, services: 73, wantKeys: 2266, wantSv: 73},
+		{name: "cold start", keys: 0, services: 0, wantKeys: 0, wantSv: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := prometheus.NewRegistry()
+			collectors := NewHydratedGauges(tc.keys, tc.services)
+			if len(collectors) != 2 {
+				t.Fatalf("got %d collectors, want 2", len(collectors))
+			}
+			reg.MustRegister(collectors...)
+
+			families, err := reg.Gather()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make(map[string]float64, 2)
+			for _, f := range families {
+				got[f.GetName()] = f.GetMetric()[0].GetGauge().GetValue()
+			}
+			if got["sage_reputation_hydrated_keys"] != tc.wantKeys {
+				t.Errorf("hydrated_keys = %v, want %v", got["sage_reputation_hydrated_keys"], tc.wantKeys)
+			}
+			if got["sage_reputation_hydrated_services"] != tc.wantSv {
+				t.Errorf("hydrated_services = %v, want %v", got["sage_reputation_hydrated_services"], tc.wantSv)
+			}
+		})
+	}
+}

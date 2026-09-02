@@ -191,3 +191,40 @@ func NewTimelineKeysGauge(keys func() int) prometheus.GaugeFunc {
 		func() float64 { return float64(keys()) },
 	)
 }
+
+// NewHydratedGauges exposes what the startup warm-up read loaded:
+//
+//	sage_reputation_hydrated_keys <count>
+//	sage_reputation_hydrated_services <count>
+//
+// Both are set once, at startup, and never change — which is the point. The
+// only other evidence that hydration ran is a log line, and on the mainnet
+// canary (2026-09-02) that line was invisible: the log level suppresses INFO,
+// so the first roll carrying hydration had to be confirmed by inferring it
+// from sage_reputation_keys being implausibly high for a fresh pod. These say
+// it directly, in the place operators already scrape.
+//
+// Zero keys on a pod that should have inherited state is the signal worth
+// alerting on: it means the store was empty, unreachable, or entirely stale,
+// and the pod is warming from probes the slow way.
+// The Name and Help below are spelled out per gauge rather than passed to a
+// shared helper: internal/docgen reads these literals out of the AST to
+// generate docs/metrics.md, and a metric named by a variable is a metric the
+// reference silently omits.
+func NewHydratedGauges(keys, services int) []prometheus.Collector {
+	keysGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "sage",
+		Name:      "reputation_hydrated_keys",
+		Help:      "Reputation states loaded from storage by the startup warm-up read. Set once at startup and constant thereafter; zero means the pod started cold and is re-learning the pool from probes.",
+	})
+	keysGauge.Set(float64(keys))
+
+	servicesGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "sage",
+		Name:      "reputation_hydrated_services",
+		Help:      "Distinct services covered by the startup warm-up read. These are credited to the health-check warm gate, so this is how much of readiness was satisfied by inherited state rather than by this pod's own probing.",
+	})
+	servicesGauge.Set(float64(services))
+
+	return []prometheus.Collector{keysGauge, servicesGauge}
+}
