@@ -89,14 +89,22 @@ Open:
   can now serve it, but the gate is still being bypassed and that is worth
   fixing at the manifest.
 
-- **Verify the request_type split and the 408 fix on the canary** (both landed
-  2026-09-02, not yet imaged). After the roll: `sage_relay_total` should carry
-  a `request_type="probe"` series at roughly the probe rate, and the 408 share
-  of `sage_client_requests_total` should fall from the 0.89% measured over 17 h
-  on `cac8818` as those relays rotate to another supplier instead of being
-  handed back. Watch `sage_retry_total` for the offsetting rise, and check the
-  408 suppliers actually lose score rather than the retries just costing more
-  relays.
+- **Re-land the 408 supplier attribution, one half at a time.** The combined
+  change (retry + minor penalty, `26f22c5`) was reverted on 2026-09-02 after
+  the canary quadrupled its client-facing 408 rate; the measurement and the
+  ruled-out mechanisms are in the CHANGELOG. What was never separated is which
+  half did it. The retry half alone cannot raise client 408s — retry exhaustion
+  delivers the upstream's own response (`router.go`), so a retried 408 ends as
+  200 or the same 408 — which points at the penalty half and its effect on
+  selection. Worth testing as two canary experiments rather than one: 408
+  retryable with `ShouldPenalize: false`, then the penalty alone. Until then a
+  supplier that times out keeps being handed to callers, which is the known
+  cost of the safe state.
+- **Probe volume is 3.2/s, not the ~18/s recorded during the d1f237f
+  rollout.** Measured 2026-09-02 on `f27f45a`: 5,776 probe attempts per 30
+  minutes, 4.1% of all relay attempts, with a 4.1% 408 rate against client
+  traffic's 2.0%. Nothing depends on this yet, but the earlier figure is
+  quoted in the probe-cadence notes and is wrong by 5.6x.
 - **Split the >10s latency tail by service_id.** Raised by ops 2026-09-02: 4.8%
   of `sage_relay_latency_seconds` observations land in `+Inf` over a 17 h
   window, so the merged p99 is above 10 s. The label is already there, so this

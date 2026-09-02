@@ -259,13 +259,20 @@ the source of truth for the design and the reasoning behind it.
   under `request_type="probe"`; client attempts keep the same series under
   `request_type="client"`. A panel that wants what it had before adds
   `{request_type="client"}`; an unfiltered one now includes probes.
-- **HTTP 408 from a supplier is the supplier's, not the client's.** It was
-  falling into the generic 4xx case — attributed to the client, not retried,
-  not penalised — so a supplier whose own server timed out ended the relay and
-  the caller got the 408. On the canary that was 0.89% of client requests, the
-  largest non-200 class. It now retries elsewhere and takes a minor penalty,
-  without circuit-breaking (slow is not broken) and without method blocking (a
-  timeout says nothing about which methods a host serves).
+- **HTTP 408 from a supplier was treated as the supplier's fault, and reverted
+  the same day.** The change made a 408 retryable, attributed to the supplier
+  and worth a minor penalty, on the reasoning that a supplier whose own server
+  timed out should not end the relay. The canary disagreed: over equal
+  30-minute windows on `sage_client_requests_total`, the client-facing 408 rate
+  went from 0.674% to 2.597%, and roughly 1,600 requests per 100k that had been
+  answered 200 came back 408. Attempts per client request did not move (1.555
+  to 1.524), so it was not retry amplification, and SAGE emits no 408 of its
+  own anywhere — every client 408 is an upstream response forwarded verbatim —
+  so it was not the gateway manufacturing them. The mechanism left standing is
+  the penalty: scoring every timing-out supplier down concentrates traffic onto
+  a smaller tier-1 set, which sheds under the load it inherits, which scores it
+  down in turn. 408 goes back to the generic 4xx branches. Re-landing this
+  needs an experiment that separates the retry half from the penalty half.
 
 - **A pod inherits the fleet's reputation instead of re-learning it.** The
   write-behind had been persisting scores all along and nothing ever read them

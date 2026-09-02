@@ -90,28 +90,6 @@ func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (Anal
 			Details:            "rate limited",
 		}, true
 
-	// 408 is the one 4xx that is not a statement about the request. The
-	// supplier's own server gave up waiting — on its backend, or on reading a
-	// request it had already accepted — which is a timing failure on its side,
-	// not a malformed request on the client's. Falling into the generic 4xx
-	// case below attributed it to the client, ended the relay without
-	// rotating, and charged the supplier nothing: on the mainnet canary that
-	// was 0.89% of all client requests, the largest non-200 class, handed
-	// straight through to callers. Retry elsewhere and score it like the
-	// transient fault it is. No method blocking — a timeout says nothing about
-	// which methods the host serves.
-	case statusCode == http.StatusRequestTimeout:
-		return AnalysisResult{
-			ShouldRetry:        true,
-			ShouldCircuitBreak: false, // slow or overloaded, not broken
-			ShouldPenalize:     true,
-			PenaltySeverity:    SeverityMinor,
-			Attribution:        AttrSupplier,
-			Confidence:         0.90,
-			Reason:             "http_408",
-			Details:            "supplier request timeout",
-		}, true
-
 	// A JSON-RPC server reports a client's mistake inside a JSON-RPC
 	// envelope, whatever status it puts on it. A 4xx carrying anything else —
 	// an HTML 404 page, an empty body — is the supplier's HTTP layer answering

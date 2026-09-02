@@ -48,14 +48,6 @@ func TestAnalyze_Tier0_HTTPStatus(t *testing.T) {
 			wantAttribution:  AttrSupplier,
 		},
 		{
-			name:             "408 request timeout — supplier fault, not the client's",
-			statusCode:       408,
-			wantRetry:        true,
-			wantCircuitBreak: false,
-			wantPenalize:     true,
-			wantAttribution:  AttrSupplier,
-		},
-		{
 			name:             "400 bad request — client fault",
 			statusCode:       400,
 			wantRetry:        false,
@@ -461,47 +453,81 @@ func TestAnalyze_4xxWithoutEnvelopeOnJSONRPC_IsSupplierFault(t *testing.T) {
 	}
 }
 
-// A supplier 408 carries a valid JSON-RPC envelope often enough that the
-// 4xx-without-envelope branch does not catch it, and it arrives on rpc types
-// that branch does not apply to at all. Both paths must reach the same
-// verdict: the supplier timed out, so rotate and score it, but do not block
-// the method — a timeout is not a statement about which methods the host
-// serves.
-func TestAnalyze_408IsSupplierTimeoutOnEveryRPCType(t *testing.T) {
+// A supplier 408 gets no special case, and that is a decision the mainnet
+// canary made for us on 2026-09-02.
+//
+// Treating 408 as a supplier timeout — retryable, AttrSupplier, minor penalty
+// — is defensible on its face: the supplier's own server gave up waiting, so
+// another supplier should answer. Shipped to the canary it quadrupled the
+// client-facing 408 rate, 0.674% -> 2.597% of all client requests measured on
+// sage_client_requests_total over equal 30-minute windows, with roughly 1,600
+// requests per 100k that had been answered 200 now answered 408. Attempts per
+// client request did not move (1.555 -> 1.524), so it was not retry
+// amplification; SAGE emits no 408 of its own anywhere, so it was not the
+// gateway manufacturing them. What is left is the penalty: scoring every
+// timing-out supplier down concentrates traffic onto a smaller tier-1 set,
+// which then sheds under the load it inherits, which scores it down in turn.
+//
+// So 408 falls through to the generic 4xx branches, and what happens to it
+// depends on the body, exactly as any other 4xx does. Re-landing the special
+// case needs a canary experiment that separates the retry half from the
+// penalty half, not a rerun of the same reasoning.
+func TestAnalyze_408HasNoSupplierSpecialCase(t *testing.T) {
 	cases := []struct {
-		name    string
-		body    []byte
-		rpcType domain.RPCType
+		name            string
+		body            []byte
+		rpcType         domain.RPCType
+		wantRetry       bool
+		wantPenalize    bool
+		wantAttribution ErrorAttribution
+		wantReason      string
 	}{
-		{"json-rpc envelope", []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`), domain.RPCTypeJSONRPC},
-		{"json-rpc empty body", []byte(``), domain.RPCTypeJSONRPC},
-		{"rest body", []byte(`{"height":"1"}`), domain.RPCTypeREST},
+		{
+			name:            "json-rpc envelope is the client's answer to keep",
+			body:            []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`),
+			rpcType:         domain.RPCTypeJSONRPC,
+			wantAttribution: AttrClient,
+			wantReason:      "http_4xx",
+		},
+		{
+			name:            "rest body is the client's answer to keep",
+			body:            []byte(`{"height":"1"}`),
+			rpcType:         domain.RPCTypeREST,
+			wantAttribution: AttrClient,
+			wantReason:      "http_4xx",
+		},
+		{
+			// Unchanged by the revert: a JSON-RPC request answered with no
+			// JSON at all is the supplier's HTTP layer talking, whatever the
+			// status on it.
+			name:            "json-rpc with no envelope is still the supplier's",
+			body:            []byte(``),
+			rpcType:         domain.RPCTypeJSONRPC,
+			wantRetry:       true,
+			wantPenalize:    true,
+			wantAttribution: AttrSupplier,
+			wantReason:      "http_4xx_page",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result := Analyze(tc.body, 408, tc.rpcType)
 
-			if !result.ShouldRetry {
-				t.Error("ShouldRetry = false, want true (another supplier will answer)")
+			if result.ShouldRetry != tc.wantRetry {
+				t.Errorf("ShouldRetry = %v, want %v", result.ShouldRetry, tc.wantRetry)
+			}
+			if result.ShouldPenalize != tc.wantPenalize {
+				t.Errorf("ShouldPenalize = %v, want %v", result.ShouldPenalize, tc.wantPenalize)
+			}
+			if result.Attribution != tc.wantAttribution {
+				t.Errorf("Attribution = %v, want %v", result.Attribution, tc.wantAttribution)
+			}
+			if result.Reason != tc.wantReason {
+				t.Errorf("Reason = %q, want %q", result.Reason, tc.wantReason)
 			}
 			if result.ShouldCircuitBreak {
-				t.Error("ShouldCircuitBreak = true, want false (slow is not broken)")
-			}
-			if !result.ShouldPenalize {
-				t.Error("ShouldPenalize = false, want true")
-			}
-			if result.Attribution != AttrSupplier {
-				t.Errorf("Attribution = %v, want %v", result.Attribution, AttrSupplier)
-			}
-			if result.PenaltySeverity != SeverityMinor {
-				t.Errorf("PenaltySeverity = %v, want %v", result.PenaltySeverity, SeverityMinor)
-			}
-			if result.MethodBlocking {
-				t.Error("MethodBlocking = true, want false — a timeout is not method-specific")
-			}
-			if result.Reason != "http_408" {
-				t.Errorf("Reason = %q, want %q", result.Reason, "http_408")
+				t.Error("ShouldCircuitBreak = true, want false: no 4xx breaks a circuit")
 			}
 		})
 	}
