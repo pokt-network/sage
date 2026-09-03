@@ -1,8 +1,8 @@
 package shannon
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"

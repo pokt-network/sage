@@ -507,6 +507,17 @@ func (r *WSRelayer) handleEndpointFrame(
 	frameErr error,
 	latency time.Duration,
 ) {
+	// A control frame is the miner reporting a condition — a session expiry,
+	// most often — not the supplier answering badly. It is the one frame that
+	// is graded neither up nor down: recording a success would reward a
+	// supplier for an error, and recording a failure would penalise it for a
+	// session boundary it does not control. The observation still goes out,
+	// forced, because a client did receive a non-2xx and that is worth seeing.
+	if errors.Is(frameErr, ErrEndpointControlFrame) {
+		r.submitObservation(serviceID, endpointAddr, payload, latency, frameErr, true)
+		return
+	}
+
 	// If the processor handed us an error (validation failure, supplier
 	// signature rejected), treat as a major supplier error without running
 	// heuristic on the raw bytes.

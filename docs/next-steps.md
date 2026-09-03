@@ -16,6 +16,17 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
 
 ## Explore next (raised 2026-09-01)
 
+- **Confirm the WebSocket control-frame path fires on mainnet.** The envelope
+  decoding added 2026-09-03 (see the CHANGELOG) is a port of a PATH fix found
+  by a live session-cycle test; SAGE's own exposure is inferred from the miner
+  behaving the same way for us, not observed. It is safe either way — a payload
+  that is not provably an envelope is passed through untouched — but if it
+  never fires, the code is inert and worth knowing about. The signal is the
+  `ws: endpoint returned a non-2xx response` WARN, which names the status;
+  expect it at session boundaries on long-lived subscriptions, and zero
+  elsewhere. If it fires often, the `410` count is also the rate at which
+  clients were previously being handed protobuf.
+
 - **Three unbounded-ish maps, recorded rather than fixed.** From the
   ever-seen-maps audit of 2026-09-01, which followed the reputation timeline
   OOM (see the CHANGELOG). Every map keyed by endpoint, supplier, URL, host,

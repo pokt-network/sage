@@ -250,6 +250,21 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **A WebSocket session expiry reached the client as an undecoded protobuf
+  blob, and cost the supplier reputation.** The relay miner puts a backend's
+  raw WebSocket frame straight into `RelayResponse.Payload`, so SAGE forwarded
+  that field verbatim — correct for every data frame, and wrong for the miner's
+  own control responses, which come through the same field as a serialized
+  `POKTHTTPResponse`. A connection landing on an already-ended session got an
+  HTTP 410 envelope: the client saw protobuf where it expected JSON, and the
+  per-frame heuristic graded the unparseable bytes as a supplier fault for a
+  session boundary the supplier does not control. SAGE became exposed to this
+  when WebSocket rebind let connections outlive a session boundary at all.
+  `extractEndpointFrameBody` now decodes only what is provably an envelope —
+  a real HTTP status, since `proto.Unmarshal` accepts almost anything — and a
+  non-2xx forwards the decoded body while grading nothing in either direction.
+  Found upstream in PATH (`1ff57772`) with a live session-cycle test.
+
 - **Traffic-informed probing: don't probe a backend client traffic is already
   grading.** Every client attempt records a reputation signal, so a busy
   backend is graded continuously and the health check against it buys a second

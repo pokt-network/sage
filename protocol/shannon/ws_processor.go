@@ -130,10 +130,14 @@ func (p *wsMessageProcessor) ProcessClientMessage(data []byte) ([]byte, error) {
 }
 
 // ProcessEndpointMessage validates the supplier's signed RelayResponse and
-// returns the inner payload — raw frame bytes — for the bridge to forward
-// to the client. The miner places the backend's raw WS frame directly into
-// RelayResponse.Payload (see poktroll websockets/bridge.go line ~363), so
-// no HTTP envelope decoding is needed or permitted here.
+// returns the inner payload for the bridge to forward to the client.
+//
+// The miner places a backend's raw WS frame directly into
+// RelayResponse.Payload (see poktroll websockets/bridge.go line ~363), so a
+// data frame needs no decoding — but its OWN control and error responses come
+// through the same field as a POKTHTTPResponse envelope, and those do. See
+// extractEndpointFrameBody, which decodes only what is provably an envelope
+// and returns everything else untouched.
 //
 // Validation failure goes through the same policy as the HTTP path
 // (Protocol.handleValidationFailure: blacklist only what the supplier is
@@ -160,7 +164,30 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	}
 
 	latency := time.Since(start)
-	payload := relayResp.Payload
+	payload, status := extractEndpointFrameBody(relayResp.Payload)
+
+	// A non-2xx status is the miner reporting a condition, not the backend
+	// answering. Forward the DECODED body — the client gets readable JSON
+	// instead of a protobuf blob, and the endpoint's close frame follows —
+	// but hand the callback ErrEndpointControlFrame so nothing is graded: a
+	// session expiry is a session-boundary event, and rewarding the supplier
+	// for it (the bug this replaces) and penalising it are both wrong.
+	//
+	// Not returned as an error: the bridge treats a returned error as
+	// terminal, and this body is exactly what the client should see.
+	if status < 200 || status >= 300 {
+		p.protocol.logger.Warn("ws: endpoint returned a non-2xx response, forwarding the decoded body without grading it",
+			"service_id", serviceID,
+			"endpoint_addr", p.endpointAddr,
+			"http_status", status,
+			"body", string(payload),
+		)
+		if p.onEndpointFrame != nil {
+			p.onEndpointFrame(payload, ErrEndpointControlFrame, latency)
+		}
+		return payload, nil
+	}
+
 	if p.onEndpointFrame != nil {
 		p.onEndpointFrame(payload, nil, latency)
 	}
