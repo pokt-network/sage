@@ -52,6 +52,13 @@ func main() {
 		logger.Warn("config key ignored: SAGE does not implement this setting, and it has no effect", "detail", f)
 	}
 
+	// The few ignored keys where "unknown key" is true and unhelpful, because
+	// the key looks like it governs something the operator is reasoning about.
+	// Said separately and with what governs it instead.
+	for _, f := range cfg.Unimplemented {
+		logger.Warn("config key is not implemented, and here is what decides this instead", "detail", f)
+	}
+
 	// The quieter half: keys that DO parse into a field and are read by
 	// nothing. These are worse than unknown keys, because they survive the
 	// round trip and show up in GET /admin/config looking live.

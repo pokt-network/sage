@@ -1,11 +1,15 @@
 package healthcheck
 
 import (
+	"context"
+	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/qos"
 )
 
 // fakeResolver is a live cadence source the test can move.
@@ -108,5 +112,54 @@ func TestTick_StillHonoursConfiguredChecks(t *testing.T) {
 
 	if got := e.tick(); got != 5*time.Second {
 		t.Errorf("tick = %v, want 5s from the configured check", got)
+	}
+}
+
+// The other half of the cadence trade. max_workers was a config key with no Go
+// field until 2026-09-03: an operator set 500 on the mainnet canary and got 4,
+// while four-way concurrency was the thing making a cycle take 74s.
+func TestWorkerCount_ResolvedLive(t *testing.T) {
+	e := &Executor{workers: 4}
+
+	if got := e.workerCount(); got != 4 {
+		t.Fatalf("with no resolver: %d, want the constructed 4", got)
+	}
+
+	e.SetWorkerResolver(func() int { return 16 })
+	if got := e.workerCount(); got != 16 {
+		t.Errorf("override = %d, want 16", got)
+	}
+
+	// A non-positive override is not a pool of zero, which would dispatch
+	// nothing at all.
+	for _, n := range []int{0, -1} {
+		e.SetWorkerResolver(func() int { return n })
+		if got := e.workerCount(); got != 4 {
+			t.Errorf("override %d gave %d, want the fallback 4", n, got)
+		}
+	}
+}
+
+// The pool is sized once per cycle. Resolving it per dispatch would put two
+// differently-sized semaphores in play for one pass, so the cycle would not
+// have a concurrency limit — it would have two.
+func TestRunOnce_SizesThePoolOncePerCycle(t *testing.T) {
+	var calls atomic.Int32
+	e := &Executor{
+		workers:         4,
+		logger:          slog.New(slog.DiscardHandler),
+		qosRegistry:     qos.NewRegistry(),
+		sessions:        &stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}, "poly": {}, "kava": {}}},
+		now:             time.Now,
+		lastRun:         map[probeKey]time.Time{},
+		coveredServices: map[domain.ServiceID]struct{}{},
+	}
+	e.configured.Store(&ConfiguredChecks{})
+	e.SetWorkerResolver(func() int { calls.Add(1); return 8 })
+
+	e.runOnce(context.Background())
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("resolver called %d times in one cycle, want 1: the pool must be sized once", got)
 	}
 }

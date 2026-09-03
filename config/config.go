@@ -50,6 +50,16 @@ type Config struct {
 	// Also not a YAML field, and reported at startup the same way.
 	Inert []string `yaml:"-"`
 
+	// Unimplemented lists keys with no Go field at all where the bare
+	// "unknown key" line would leave an operator guessing. Ignored already
+	// names every such key; these are the few where the true answer needs a
+	// second sentence saying what governs the behaviour instead, because the
+	// key looks like it decides something somebody is actively reasoning
+	// about. See unimplementedFields in inert.go.
+	//
+	// Not a YAML field. Reported at startup alongside Ignored and Inert.
+	Unimplemented []string `yaml:"-"`
+
 	// Warnings lists settings that load, are read, and are probably not what
 	// the operator meant — as operator-facing sentences saying what the
 	// gateway will actually do with them.

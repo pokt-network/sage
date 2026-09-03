@@ -85,6 +85,12 @@ type Executor struct {
 	flags   featureflag.FlagStore
 	skipper *trafficSkipper
 
+	// workersFn resolves the probe concurrency at read time, so a runtime
+	// override takes effect on the next cycle. Nil means the value NewExecutor
+	// was given. Read once per cycle, not per dispatch: a pool that changed
+	// size mid-cycle would have two different semaphores in play for one pass.
+	workersFn func() int
+
 	// intervalFn resolves the probe cadence at read time so a runtime override
 	// takes effect on the next cycle rather than the next restart. Nil means
 	// the value NewExecutor was given, which is what tests and a gateway with
@@ -253,6 +259,26 @@ type IntervalResolver interface {
 // kind of asymmetry nobody discovers until they need the other one.
 func (e *Executor) SetIntervalResolver(r IntervalResolver) { e.intervalFn = r }
 
+// SetWorkerResolver installs a live source for the probe concurrency.
+//
+// Separate from SetIntervalResolver because the two dials trade in opposite
+// directions and an operator needs both: more workers shortens the cycle,
+// while a longer interval cuts the number of probes outright. Only the second
+// reduces what is spent — the first spreads the same probes over less time, at
+// the cost of concurrency against suppliers that are also serving client
+// relays.
+func (e *Executor) SetWorkerResolver(fn func() int) { e.workersFn = fn }
+
+// workerCount is the pool size for one cycle.
+func (e *Executor) workerCount() int {
+	if e.workersFn != nil {
+		if n := e.workersFn(); n > 0 {
+			return n
+		}
+	}
+	return e.workers
+}
+
 // SetTrafficSkip enables traffic-informed probing: a due check against a
 // backend that client traffic has already graded this cycle is not sent.
 //
@@ -362,8 +388,9 @@ func (e *Executor) runOnce(ctx context.Context) {
 		e.skipper.beginCycle()
 	}
 
-	// Semaphore limits concurrent workers.
-	sem := make(chan struct{}, e.workers)
+	// Semaphore limits concurrent workers. Sized once per cycle: resolving it
+	// per dispatch would put two differently-sized pools in play for one pass.
+	sem := make(chan struct{}, e.workerCount())
 
 	for serviceID := range services {
 		serviceID := serviceID // capture for goroutine
@@ -853,7 +880,7 @@ func (e *Executor) recordCycle(elapsed, tick time.Duration) {
 	e.logger.Warn("health check cycle overran its interval; the configured interval is not the cadence being achieved",
 		slog.Duration("elapsed", elapsed),
 		slog.Duration("interval", tick),
-		slog.Int("workers", e.workers),
+		slog.Int("workers", e.workerCount()),
 	)
 }
 

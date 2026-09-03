@@ -250,6 +250,30 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **`active_health_checks.max_workers` was a config key with no Go field.** The
+  mainnet canary's config set it to 500 and the executor ran 4, which is the
+  hardcoded default — and four-way concurrency was the whole reason a
+  health-check cycle took 74 seconds against a 60-second interval. It parses
+  now, and is also `health_checks.max_workers` in the tuning registry, so it
+  moves at runtime like the cadence does. The two are opposite halves of one
+  trade and an operator needs both: more workers shortens the cycle, a longer
+  interval cuts the number of probes outright. Only the second reduces spend —
+  the first spreads the same probes over less time, at the cost of concurrency
+  against suppliers that are also serving client relays. The pool is sized once
+  per cycle, because resolving it per dispatch would put two differently-sized
+  semaphores in play for one pass.
+- **A key SAGE does not implement can now say what decides the behaviour
+  instead.** `Config.Ignored` already names every key with no Go field, and for
+  most that is enough. `active_health_checks.external` is the case where it is
+  not: it points at a shared rule file with 69 per-service rules, 32 of them at
+  a 10s cadence, and SAGE does not fetch it at all — so an operator
+  investigating probe cadence on 2026-09-03 had to ask whether those rules were
+  setting the health-check tick, because nothing in the startup log said they
+  were being read by nothing. The new `Config.Unimplemented` registry carries a
+  reason per key, written for whoever reads it in a startup log, and the bar
+  for an entry is that somebody was actually misled rather than that a key
+  looks confusing.
+
 - **The probe cadence is a runtime knob, not a redeploy.**
   `active_health_checks.interval` was captured at wire time, so changing the
   one setting whose cost is paid in relays — probes were 13.7% of all relay

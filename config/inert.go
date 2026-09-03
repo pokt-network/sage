@@ -106,16 +106,51 @@ var inertFields = []inertField{
 // zero-valued field says nothing about whether anyone set it.
 func InertKeys(tree any) []string {
 	var found []string
-	walkInert(tree, "", "", &found)
+	walkRegistry(tree, "", "", inertFields, "is parsed but not implemented", &found)
 	sort.Strings(found)
 	return found
 }
 
-// walkInert descends the YAML tree, reporting any key registered as inert.
-// path is the dotted path to the current node and parent is the key of the
-// mapping that holds it — sequence indexes are left out of the parent so an
-// entry under services[3] still matches Parent: "retry_config".
-func walkInert(node any, path, parent string, found *[]string) {
+// unimplementedFields names config keys SAGE has NO field for, where "unknown
+// key" is a true answer and an unhelpful one.
+//
+// Config.Ignored already reports every key with no matching field, and for
+// most of them that is enough: the key describes a feature SAGE does not have
+// and the operator can see the name. These are the ones where the honest
+// answer needs a second sentence, because the key looks like it governs
+// something an operator is actively reasoning about — and they will reason
+// about it wrongly without being told what governs it instead.
+//
+// The bar for an entry here is that somebody has actually been misled, not
+// that a key looks confusing. active_health_checks.external qualifies: on
+// 2026-09-03 an operator investigating probe cadence had to ask whether the 69
+// rules in the file it points at were setting the health-check tick, because
+// nothing in the startup log said they were not being read at all.
+var unimplementedFields = []inertField{
+	{
+		Parent: "active_health_checks",
+		Key:    "external",
+		Reason: "SAGE does not fetch the remote rule file, so none of its rules or their check_interval values have any effect. " +
+			"Probing is governed by active_health_checks.interval, by local[].check_interval per service, " +
+			"and by each QoS plugin's own checks. See docs/path-compat.md",
+	},
+}
+
+// UnimplementedKeys reports the keys in a decoded YAML tree that are
+// registered above, each with what governs the behaviour instead.
+func UnimplementedKeys(tree any) []string {
+	var found []string
+	walkRegistry(tree, "", "", unimplementedFields, "is not implemented", &found)
+	sort.Strings(found)
+	return found
+}
+
+// walkRegistry descends the YAML tree, reporting any key in the given
+// registry. path is the dotted path to the current node and parent is the key
+// of the mapping that holds it — sequence indexes are left out of the parent so
+// an entry under services[3] still matches Parent: "retry_config". verb is how
+// the finding is phrased, since the two registries describe different failures.
+func walkRegistry(node any, path, parent string, registry []inertField, verb string, found *[]string) {
 	switch n := node.(type) {
 	case map[string]any:
 		for key, child := range n {
@@ -123,18 +158,18 @@ func walkInert(node any, path, parent string, found *[]string) {
 			if path != "" {
 				childPath = path + "." + key
 			}
-			if reason, ok := matchInert(parent, key); ok {
-				*found = append(*found, fmt.Sprintf("%s is parsed but not implemented: %s", childPath, reason))
+			if reason, ok := matchField(registry, parent, key); ok {
+				*found = append(*found, fmt.Sprintf("%s %s: %s", childPath, verb, reason))
 				// Do not descend: a block-level entry has already said what
 				// every key inside it would say.
 				continue
 			}
-			walkInert(child, childPath, key, found)
+			walkRegistry(child, childPath, key, registry, verb, found)
 		}
 
 	case []any:
 		for i, child := range n {
-			walkInert(child, fmt.Sprintf("%s[%d]", path, i), parent, found)
+			walkRegistry(child, fmt.Sprintf("%s[%d]", path, i), parent, registry, verb, found)
 		}
 	}
 }
@@ -142,7 +177,13 @@ func walkInert(node any, path, parent string, found *[]string) {
 // matchInert reports whether (parent, key) is registered. An entry with an
 // empty Parent matches whatever holds it.
 func matchInert(parent, key string) (string, bool) {
-	for _, f := range inertFields {
+	return matchField(inertFields, parent, key)
+}
+
+// matchField reports whether (parent, key) appears in a registry. An entry with
+// an empty Parent matches any.
+func matchField(registry []inertField, parent, key string) (string, bool) {
+	for _, f := range registry {
 		if f.Key != key {
 			continue
 		}

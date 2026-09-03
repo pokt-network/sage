@@ -660,6 +660,25 @@ type HealthCheckConfig struct {
 	// change), which is never made faster by this.
 	Interval time.Duration `yaml:"interval"`
 
+	// MaxWorkers is how many health-check probes may be in flight at once.
+	// Zero means 4.
+	//
+	// It is the second dial on probe cost, and it trades against `interval` in
+	// opposite directions. A cycle walks every backend of every service and
+	// dispatches through this pool, and the cycle runs on the scheduler's own
+	// goroutine — so when a cycle takes longer than `interval`, the achieved
+	// cadence is the cycle, not the interval, and probes arrive in one burst
+	// per cycle rather than spread across it. More workers shortens the cycle;
+	// a longer interval cuts the number of probes outright.
+	//
+	// Raise it carefully. The suppliers a probe talks to are the same ones
+	// serving client relays, so probe concurrency competes with traffic for
+	// them — which is why the fix for a slow cycle was a probe timeout before
+	// it was more workers. `sage_health_check_cycle_seconds` is the
+	// before-and-after; `sage_health_check_cycle_overruns_total` says whether
+	// the interval is being achieved at all.
+	MaxWorkers int `yaml:"max_workers"`
+
 	// DisableBackendURLDedup turns off per-backend deduplication, restoring one
 	// health-check relay per supplier.
 	//

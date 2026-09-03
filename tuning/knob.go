@@ -49,6 +49,8 @@ const (
 	KnobRelayTimeout = "timeout.relay_timeout"
 	// KnobHealthCheckInterval overrides active_health_checks.interval.
 	KnobHealthCheckInterval = "health_checks.interval"
+	// KnobHealthCheckWorkers overrides active_health_checks.max_workers.
+	KnobHealthCheckWorkers = "health_checks.max_workers"
 )
 
 // Knob describes one overridable setting.
@@ -117,6 +119,16 @@ var Knobs = []Knob{
 		Min:         1_000,
 		Max:         3_600_000,
 		Unit:        "ms",
+	},
+	{
+		Name: KnobHealthCheckWorkers,
+		Kind: KindInt,
+		// The other half of the cadence trade, and the one with a cost that
+		// lands on somebody else.
+		Description: "Health-check probes in flight at once. Raising it shortens the cycle — the cadence actually achieved is the longer of health_checks.interval and one cycle — but probe concurrency competes with client traffic for the same suppliers. Read sage_health_check_cycle_seconds before and after; a longer interval cuts probe count outright, this only spreads the same probes over less time.",
+		Min:         1,
+		Max:         64,
+		Unit:        "workers",
 	},
 }
 

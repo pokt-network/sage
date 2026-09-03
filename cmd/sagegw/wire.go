@@ -584,7 +584,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	healthExe := healthcheck.NewExecutor(
 		proto, proto, proto,
 		qosReg, repSvc, obsQueue,
-		healthCheckInterval, 4, logger,
+		healthCheckInterval, cfg.Gateway.HealthChecks.MaxWorkers, logger,
 	)
 	logger.Info("health checks: probe interval", "interval", healthCheckInterval)
 	for _, svc := range cfg.Gateway.HealthChecks.Local {
@@ -610,6 +610,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	healthExe.SetIntervalResolver(healthCheckIntervalResolver{
 		store: tuningStore,
 		base:  healthCheckInterval,
+	})
+	// The other half of the same trade, live for the same reason.
+	healthCheckWorkers := cfg.Gateway.HealthChecks.MaxWorkers
+	healthExe.SetWorkerResolver(func() int {
+		return tuningStore.Int(tuning.KnobHealthCheckWorkers, "", healthCheckWorkers)
 	})
 	// Probe once, apply everywhere: only the leader sends probe relays (each
 	// one is paid for from the app's stake); it publishes every result to a

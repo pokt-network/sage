@@ -36,6 +36,7 @@ func parse(data []byte) (*Config, error) {
 	}
 	cfg.Ignored = ignoredFields(data)
 	cfg.Inert = inertKeysFromYAML(data)
+	cfg.Unimplemented = unimplementedKeysFromYAML(data)
 	applyDefaults(&cfg)
 	cfg.Warnings = reputationWarnings(cfg.Gateway.Reputation)
 	if err := validate(&cfg); err != nil {
@@ -93,6 +94,17 @@ func ignoredFields(data []byte) []string {
 // actually wrote. It decodes a second time into generic maps rather than
 // reading the struct, because a zero-valued field cannot say whether anyone
 // set it.
+// unimplementedKeysFromYAML reports keys with no Go field at all where the
+// bare "unknown key" warning would leave an operator guessing what governs the
+// behaviour instead.
+func unimplementedKeysFromYAML(data []byte) []string {
+	var tree any
+	if err := yaml.Unmarshal(data, &tree); err != nil {
+		return nil
+	}
+	return UnimplementedKeys(tree)
+}
+
 func inertKeysFromYAML(data []byte) []string {
 	var tree any
 	if err := yaml.Unmarshal(data, &tree); err != nil {

@@ -301,3 +301,59 @@ func namedType(expr ast.Expr) string {
 	}
 	return ""
 }
+
+// A key with no Go field is already reported as unknown. These are the few
+// where that answer is true and unhelpful, so the warning has to say what
+// decides the behaviour instead.
+func TestUnimplementedKeys(t *testing.T) {
+	tree := map[string]any{
+		"gateway_config": map[string]any{
+			"active_health_checks": map[string]any{
+				"interval": "60s",
+				"external": map[string]any{
+					"url":              "https://example.com/rules.yaml",
+					"refresh_interval": "5m",
+				},
+			},
+		},
+	}
+
+	got := UnimplementedKeys(tree)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %v", len(got), got)
+	}
+	line := got[0]
+	for _, want := range []string{
+		"active_health_checks.external",
+		"does not fetch",
+		"check_interval",
+		"active_health_checks.interval",
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("finding does not mention %q — an operator cannot act on it: %s", want, line)
+		}
+	}
+}
+
+// A key of the same name under a different parent is a different key.
+func TestUnimplementedKeys_ParentScoped(t *testing.T) {
+	tree := map[string]any{
+		"something_else": map[string]any{
+			"external": map[string]any{"url": "https://example.com"},
+		},
+	}
+	if got := UnimplementedKeys(tree); len(got) != 0 {
+		t.Errorf("matched external under the wrong parent: %v", got)
+	}
+}
+
+// The two registries stay separate: an inert key is parsed and unread, an
+// unimplemented one has no field at all, and reporting a key as both would
+// tell an operator two different stories about it.
+func TestRegistriesDoNotOverlap(t *testing.T) {
+	for _, u := range unimplementedFields {
+		if reason, ok := matchInert(u.Parent, u.Key); ok {
+			t.Errorf("%s.%s is in both registries; inert says %q", u.Parent, u.Key, reason)
+		}
+	}
+}

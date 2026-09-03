@@ -148,6 +148,7 @@ gateway_config:
     disable_backend_url_dedup: false
     min_traffic_signals: 20
     probe_timeout: 5s
+    max_workers: 8
     local:
       - service_id: eth
         check_interval: 30s
