@@ -16,6 +16,23 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
 
 ## Explore next (raised 2026-09-01)
 
+- **Choose the probe cadence on the histogram, now that it is a live knob.**
+  `health_checks.interval` is tunable at runtime as of 2026-09-03, so this is
+  an experiment rather than a rollout: set it, read
+  `sage_health_check_cycle_seconds` and `sage_health_check_cycle_overruns_total`
+  for a cycle or two, and put it back if it is wrong. Ops recommends 120s
+  against a measured 73.7s mean cycle and 61% overruns; note their halving
+  arithmetic understates the saving slightly, because the period today is the
+  cycle (~74s), not the 60s tick, so the drop is nearer 14.5 to 9 probe
+  relays/s than to 7. The thing to watch on the way up is
+  `sage_chain_view_staleness_seconds`, which is how long a degraded supplier
+  keeps taking traffic.
+
+  Worth settling first, and only ops can see it: whether the canary config
+  carries any `local[].check_interval` rows. One service at 10s pins the
+  executor's tick for the whole fleet regardless of the global value, and PATH
+  configs commonly carry exactly that.
+
 - **Decide whether four health-check workers is enough, now that the cadence
   is measurable.** `sage_health_check_cycle_seconds` and
   `sage_health_check_cycle_overruns_total` (added 2026-09-03) say whether the

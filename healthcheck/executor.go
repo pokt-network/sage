@@ -85,6 +85,12 @@ type Executor struct {
 	flags   featureflag.FlagStore
 	skipper *trafficSkipper
 
+	// intervalFn resolves the probe cadence at read time so a runtime override
+	// takes effect on the next cycle rather than the next restart. Nil means
+	// the value NewExecutor was given, which is what tests and a gateway with
+	// no tuning store use. See SetIntervalResolver.
+	intervalFn IntervalResolver
+
 	// probeTimeoutNanos bounds one health check, in nanoseconds. Atomic for
 	// the same reason configured is: a reload writes it while a cycle reads it.
 	// Zero means DefaultProbeTimeout.
@@ -152,10 +158,34 @@ func NewExecutor(
 // intervals.
 func (e *Executor) tick() time.Duration {
 	tick := e.interval
+	if e.intervalFn != nil {
+		if s := e.intervalFn.Shortest(); s > 0 {
+			tick = s
+		}
+	}
 	if s := e.configured.Load().shortestInterval(); s > 0 && s < tick {
 		tick = s
 	}
 	return tick
+}
+
+// serviceInterval is how often this service's checks come round: its runtime
+// override, else its configured cadence, else the global one.
+//
+// The override wins over the configured per-service value on purpose. An
+// operator reaching for the admin API is reacting to something in front of
+// them, and a config file quietly outranking that would make the override look
+// accepted and do nothing.
+func (e *Executor) serviceInterval(serviceID domain.ServiceID, configured *ConfiguredChecks) time.Duration {
+	if e.intervalFn != nil {
+		if d := e.intervalFn.For(serviceID); d > 0 {
+			return d
+		}
+	}
+	if d := configured.IntervalFor(serviceID); d > 0 {
+		return d
+	}
+	return e.interval
 }
 
 // due reports whether a probe should run this cycle and stamps it if so.
@@ -198,6 +228,30 @@ func (e *Executor) SetProbeSink(s ProbeSink) { e.sink = s }
 // SetProbeSource installs the feed of other replicas' probe results; Start
 // runs it.
 func (e *Executor) SetProbeSource(s ProbeSource) { e.source = s }
+
+// IntervalResolver reports the probe cadence for a service, and the shortest
+// cadence any service has been given.
+//
+// Two methods because the scheduler needs both and they are different
+// questions. For is asked once per service per cycle and decides when that
+// service's checks come round. Shortest decides how often the cycle itself
+// runs, and has to account for a service whose cadence was set faster than the
+// global one — including a service the resolver has never been asked about,
+// which is why the scheduler cannot simply take the minimum of what it saw.
+type IntervalResolver interface {
+	For(serviceID domain.ServiceID) time.Duration
+	Shortest() time.Duration
+}
+
+// SetIntervalResolver installs a live source for the probe cadence, so an
+// operator can change it without a redeploy.
+//
+// The cadence is the one setting here whose cost is paid in relays rather than
+// in latency — every probe is bought from the app's stake — and it was the one
+// captured at wire time. A per-service `local[].check_interval` was already
+// picked up by a config reload while the global interval was not, which is the
+// kind of asymmetry nobody discovers until they need the other one.
+func (e *Executor) SetIntervalResolver(r IntervalResolver) { e.intervalFn = r }
 
 // SetTrafficSkip enables traffic-informed probing: a due check against a
 // backend that client traffic has already graded this cycle is not sent.
@@ -322,11 +376,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 			continue
 		}
 
-		// The service's cadence: its own check_interval, else the global one.
-		serviceInterval := configured.IntervalFor(serviceID)
-		if serviceInterval <= 0 {
-			serviceInterval = e.interval
-		}
+		serviceInterval := e.serviceInterval(serviceID, configured)
 
 		eps, err := e.endpoints.AvailableEndpoints(ctx, serviceID, domain.RPCTypeJSONRPC)
 		if err != nil {

@@ -191,3 +191,26 @@ func (s *Store) All() map[string]KnobState {
 	}
 	return out
 }
+
+// ServiceOverrides returns the per-service overrides set on one knob, or nil
+// when none are.
+//
+// It exists for a reader that has to act on every override rather than resolve
+// one — the health-check scheduler, whose tick has to be short enough for the
+// fastest cadence anyone has asked for, and which therefore cannot wait to be
+// asked about a service to find out. A knob with per-service overrides that
+// nothing enumerates is a knob that silently does nothing for the service it
+// was set on, which is worse than not offering it.
+func (s *Store) ServiceOverrides(name string) map[domain.ServiceID]Override {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	byService := s.service[name]
+	if len(byService) == 0 {
+		return nil
+	}
+	out := make(map[domain.ServiceID]Override, len(byService))
+	for id, o := range byService {
+		out[id] = o
+	}
+	return out
+}

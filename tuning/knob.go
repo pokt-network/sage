@@ -47,6 +47,8 @@ const (
 	KnobHedgeDelay = "retry.hedge_delay"
 	// KnobRelayTimeout overrides timeout_config.relay_timeout.
 	KnobRelayTimeout = "timeout.relay_timeout"
+	// KnobHealthCheckInterval overrides active_health_checks.interval.
+	KnobHealthCheckInterval = "health_checks.interval"
 )
 
 // Knob describes one overridable setting.
@@ -103,6 +105,17 @@ var Knobs = []Knob{
 		Description: "Ceiling on one relay, applied by the timeout middleware around the whole chain.",
 		Min:         100,
 		Max:         300_000,
+		Unit:        "ms",
+	},
+	{
+		Name: KnobHealthCheckInterval,
+		Kind: KindDuration,
+		// Written for whoever is about to change it in a hurry, which here
+		// means: this is a spend dial, and it is the only one whose cost is
+		// paid in relays rather than latency.
+		Description: "How often every backend of every service is probed. Each probe is a paid relay, so halving this doubles health-check spend — on the mainnet canary probes were 13.7% of all relay volume at 60s. Raising it trades staleness for spend: an endpoint's health signal is at best this old, and at worst a whole health-check cycle old (see sage_health_check_cycle_seconds, which is the cadence actually being achieved).",
+		Min:         1_000,
+		Max:         3_600_000,
 		Unit:        "ms",
 	},
 }

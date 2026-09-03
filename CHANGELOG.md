@@ -250,6 +250,33 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **The probe cadence is a runtime knob, not a redeploy.**
+  `active_health_checks.interval` was captured at wire time, so changing the
+  one setting whose cost is paid in relays — probes were 13.7% of all relay
+  volume on the canary — meant a rollout. It is now
+  `health_checks.interval` in the tuning registry: `PUT
+  /admin/tuning/health_checks.interval` globally or per service, effective on
+  the next cycle. The asymmetry it closes was already there and unnoticed: a
+  per-service `local[].check_interval` was picked up by a config reload while
+  the global interval was not.
+
+  The scheduler resolves the cadence per cycle rather than holding a value, and
+  the tick follows the fastest override anyone has set — including on a service
+  the scheduler has not reached yet, which is why `tuning.Store` grew
+  `ServiceOverrides`. A knob with per-service overrides that nothing enumerates
+  is a knob that looks accepted and does nothing for the service it was set on.
+  A runtime override outranks the config file's per-service value on purpose:
+  an operator reaching for the admin API is reacting to something in front of
+  them.
+
+  This is also the answer to wanting PATH's `active_health_checks.external`
+  rule file for cadence. SAGE still does not fetch it (see
+  `docs/path-compat.md`) and adopting it would raise probe spend rather than
+  make it manageable — the file's `check_interval: 10s` rows are most of PATH's
+  probe volume, and SAGE's own ruling was that they would be floored at the
+  global interval anyway, which is parity in name only. The file's real gap is
+  archival and websocket rows, not intervals.
+
 - **The three maps the ever-seen audit left open are bounded.** From the
   2026-09-01 sweep that followed the reputation-timeline OOM: every map keyed
   by endpoint, supplier, URL, host, session or method had a bound except these,

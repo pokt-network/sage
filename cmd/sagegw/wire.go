@@ -604,6 +604,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	healthExe.SetConfiguredChecks(configuredChecks)
 	healthExe.SetBackendURLDedup(!cfg.Gateway.HealthChecks.DisableBackendURLDedup)
 	healthExe.SetProbeTimeout(cfg.Gateway.HealthChecks.ProbeTimeout)
+	// The probe cadence is resolved per cycle rather than captured here, so
+	// PUT /admin/tuning/health_checks.interval takes effect on the next cycle.
+	// It is the only knob whose cost is paid in relays.
+	healthExe.SetIntervalResolver(healthCheckIntervalResolver{
+		store: tuningStore,
+		base:  healthCheckInterval,
+	})
 	// Probe once, apply everywhere: only the leader sends probe relays (each
 	// one is paid for from the app's stake); it publishes every result to a
 	// Redis stream and every replica applies them. Without Redis the elector
@@ -780,6 +787,37 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 // re-reads the pointer rather than a config captured once at wire time. A
 // setting NOT read through a closure like this cannot be made
 // runtime-changeable by registering a knob for it; see the tuning package doc.
+// healthCheckIntervalResolver resolves the probe cadence from the tuning store,
+// falling back to the configured interval.
+//
+// Shortest exists because the health-check scheduler's tick has to be at least
+// as fast as the fastest cadence anyone has asked for, and a per-service
+// override belongs to a service the scheduler may not have reached yet — so it
+// enumerates the overrides rather than waiting to be asked. A knob with
+// per-service overrides that nothing enumerates is a knob that silently does
+// nothing for the service it was set on.
+type healthCheckIntervalResolver struct {
+	store *tuning.Store
+	base  time.Duration
+}
+
+// For returns the cadence for one service: its override, else the global
+// override, else the configured interval.
+func (r healthCheckIntervalResolver) For(serviceID domain.ServiceID) time.Duration {
+	return r.store.Duration(tuning.KnobHealthCheckInterval, serviceID, r.base)
+}
+
+// Shortest returns the fastest cadence in force anywhere.
+func (r healthCheckIntervalResolver) Shortest() time.Duration {
+	shortest := r.store.Duration(tuning.KnobHealthCheckInterval, "", r.base)
+	for _, o := range r.store.ServiceOverrides(tuning.KnobHealthCheckInterval) {
+		if o.Value.Dur > 0 && o.Value.Dur < shortest {
+			shortest = o.Value.Dur
+		}
+	}
+	return shortest
+}
+
 func newRetryFn(cfgFn func() *config.Config, store *tuning.Store) func(domain.ServiceID) config.RetryConfig {
 	return func(serviceID domain.ServiceID) config.RetryConfig {
 		cfg := cfgFn()
