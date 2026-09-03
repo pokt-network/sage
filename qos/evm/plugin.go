@@ -68,6 +68,7 @@ var coalescableMethods = map[string]bool{
 //   - qos.ArchivalDetector
 //   - qos.HealthChecker
 //   - qos.DataExtractor
+//   - qos.ChainViewer
 //   - qos.MethodNormalizer
 //   - qos.CoalescenceClassifier
 //   - qos.CachePolicy
@@ -336,6 +337,12 @@ func (p *Plugin) HealthChecks(endpoint domain.EndpointAddr) []qos.HealthCheck {
 // chainIDCheckInterval is how often the chain-id check is repeated per
 // backend. A new backend is checked on the first cycle it appears regardless.
 const chainIDCheckInterval = 5 * time.Minute
+
+// --- qos.ChainViewer --- //
+
+// ChainView reports what this service currently believes about its chain, for
+// the metrics exporter. Delegates to the consensus that owns the observations.
+func (p *Plugin) ChainView() qos.ChainView { return p.consensus.ChainView() }
 
 // --- qos.DataExtractor ---
 

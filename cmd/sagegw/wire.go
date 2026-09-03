@@ -341,6 +341,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 	logger.Info("QoS plugins registered", "count", qosReg.Count())
 
+	// The chain view — perceived height, how far apart the pool is, and how
+	// long since anything confirmed it. Derived at scrape time from the
+	// consensus window, which ages on its own, so a service that stops
+	// reporting stops being exported rather than freezing at its last value.
+	// See metrics.ChainViewCollector for why none of this existed before.
+	prometheus.MustRegister(metrics.NewChainViewCollector(qosReg, serviceIDsFrom(cfg)))
+
 	// 6. Circuit breaker
 	cb := circuitbreaker.New(circuitbreaker.WithRedis(redisClient), circuitbreaker.WithLogger(logger))
 

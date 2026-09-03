@@ -155,6 +155,12 @@ func (p *Plugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck {
 	}
 }
 
+// --- qos.ChainViewer --- //
+
+// ChainView reports what this service currently believes about its chain, for
+// the metrics exporter. Delegates to the consensus that owns the observations.
+func (p *Plugin) ChainView() qos.ChainView { return p.consensus.ChainView() }
+
 // --- qos.DataExtractor --- //
 
 // ExtractData parses structured data from a Solana relay response.
@@ -243,6 +249,7 @@ var (
 	_ qos.BlockHeightParser     = (*Plugin)(nil)
 	_ qos.HealthChecker         = (*Plugin)(nil)
 	_ qos.DataExtractor         = (*Plugin)(nil)
+	_ qos.ChainViewer           = (*Plugin)(nil)
 	_ qos.CoalescenceClassifier = (*Plugin)(nil)
 	_ qos.LifecycleHooks        = (*Plugin)(nil)
 	_ qos.StateResetter         = (*Plugin)(nil)

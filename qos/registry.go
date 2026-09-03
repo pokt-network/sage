@@ -56,3 +56,18 @@ func (r *Registry) Count() int {
 	defer r.mu.RUnlock()
 	return len(r.plugins)
 }
+
+// ChainViewFor reports what the service's plugin believes about its chain, and
+// whether that plugin tracks a chain view at all. Satisfies
+// metrics.ChainViewSource.
+func (r *Registry) ChainViewFor(id domain.ServiceID) (ChainView, bool) {
+	plugin := r.Get(id)
+	if plugin == nil {
+		return ChainView{}, false
+	}
+	viewer, ok := plugin.(ChainViewer)
+	if !ok {
+		return ChainView{}, false
+	}
+	return viewer.ChainView(), true
+}

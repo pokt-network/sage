@@ -250,6 +250,23 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **The chain view is exported.** SAGE published 31 metrics and not one was
+  about block height, consensus or QoS state, so the mechanism endpoint
+  selection tiers on could not be seen from outside the process — no metric, no
+  admin route. That is how traffic-informed probing shipped able to starve a
+  service of its height source with nothing to show it. Four gauges per
+  service, derived at scrape time from the consensus window the way
+  `BreakerCollector` is: `sage_chain_view_height` (what selection filters
+  against), `sage_chain_view_spread_blocks` (how far apart the pool is),
+  `sage_chain_view_endpoints` (how many confirmed it — a spread of zero is
+  agreement or silence, and this is what separates them), and
+  `sage_chain_view_staleness_seconds` (age of the newest observation, which is
+  the one to alert on: a probed service refreshes every cycle, a service
+  relying on sampled client traffic refreshes only when a client happens to ask
+  for a height). A service whose plugin tracks no height is absent rather than
+  zero, and staleness is omitted rather than reported as the age of the Unix
+  epoch when there is no observation at all.
+
 - **A WebSocket session expiry reached the client as an undecoded protobuf
   blob, and cost the supplier reputation.** The relay miner puts a backend's
   raw WebSocket frame straight into `RelayResponse.Payload`, so SAGE forwarded
