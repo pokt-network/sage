@@ -230,7 +230,9 @@ func (e *Executor) Start(ctx context.Context) {
 				// Per tick, not per loop: a recovery that wrapped the whole
 				// loop would contain the panic and still leave the ticker
 				// dead, which is a stopped health checker that logged once.
+				start := e.now()
 				safego.Run(e.logger, "healthcheck.cycle", func() { e.runOnce(ctx) })
+				e.recordCycle(e.now().Sub(start), tick)
 				e.logWarmProgress()
 				if t := e.tick(); t != tick {
 					tick = t
@@ -716,6 +718,34 @@ func (e *Executor) SeedCoverage(services []domain.ServiceID) {
 // missing, not all of them; a handful names the pattern without turning one
 // log line into a page.
 const maxUnwarmedServicesLogged = 10
+
+// recordCycle reports how long a cycle took and says so when it overran the
+// tick it was scheduled on.
+//
+// The cycle runs on the ticker's own goroutine and dispatch blocks on a fixed
+// worker pool, so a cycle that outlasts its tick does not overlap the next one
+// — it delays it, and time.Ticker drops the tick it missed. The consequence is
+// that active_health_checks.interval is a FLOOR, not the cadence: with enough
+// backends for the worker pool, the real cadence is the cycle duration, every
+// service is probed in one burst as the loop reaches it, and per-service probe
+// rates measured over anything shorter than a cycle are sampling artifacts.
+//
+// None of that was observable, which is how it went unexplained until the
+// mainnet canary on 2026-09-03 showed a service flat for fourteen minutes on a
+// sixty-second interval and then jumping thirty-four probes at once.
+func (e *Executor) recordCycle(elapsed, tick time.Duration) {
+	if e.recorder != nil {
+		e.recorder.RecordHealthCheckCycle(elapsed, tick)
+	}
+	if tick <= 0 || elapsed <= tick {
+		return
+	}
+	e.logger.Warn("health check cycle overran its interval; the configured interval is not the cadence being achieved",
+		slog.Duration("elapsed", elapsed),
+		slog.Duration("interval", tick),
+		slog.Int("workers", e.workers),
+	)
+}
 
 // logWarmProgress says why readiness is still 503, once per cycle until it is
 // not.

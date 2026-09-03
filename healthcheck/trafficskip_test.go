@@ -2,6 +2,8 @@ package healthcheck
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -428,4 +430,62 @@ func TestSkipCoveredByTraffic_NeverSkipsAnEssentialCheck(t *testing.T) {
 		time.Minute, skipTestClock.Add(time.Minute)) {
 		t.Error("a non-essential check with the same traffic did not skip")
 	}
+}
+
+// The cadence a health checker achieves is the longer of its configured
+// interval and how long a cycle takes, and until 2026-09-03 nothing said so.
+//
+// The cycle runs on the ticker's own goroutine and dispatch blocks on a fixed
+// worker pool, so a cycle that outlasts its tick delays the next one rather
+// than overlapping it — time.Ticker drops the tick it missed. On the mainnet
+// canary that showed up as a service flat for fourteen minutes on a
+// sixty-second interval and then jumping thirty-four probes at once, and it
+// cost a wrong prediction and a round trip to explain, because the only
+// evidence was per-service probe rates that were really sampling artifacts.
+func TestRecordCycle_ReportsAndWarnsOnOverrun(t *testing.T) {
+	cases := []struct {
+		name        string
+		elapsed     time.Duration
+		tick        time.Duration
+		wantOverrun bool
+	}{
+		{name: "inside the tick", elapsed: 10 * time.Second, tick: time.Minute},
+		{name: "exactly the tick is not an overrun", elapsed: time.Minute, tick: time.Minute},
+		{name: "over the tick", elapsed: 14 * time.Minute, tick: time.Minute, wantOverrun: true},
+		{name: "no tick configured", elapsed: time.Hour, tick: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			e := &Executor{
+				logger:  slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
+				workers: 4,
+			}
+			rec := &recordingResultRecorder{}
+			e.recorder = rec
+
+			e.recordCycle(tc.elapsed, tc.tick)
+
+			// Every cycle is timed, overrun or not: the histogram is how an
+			// operator sees the achieved cadence at all.
+			if len(rec.cycles) != 1 {
+				t.Fatalf("recorded %d cycles, want 1", len(rec.cycles))
+			}
+			if rec.cycles[0].elapsed != tc.elapsed || rec.cycles[0].tick != tc.tick {
+				t.Errorf("recorded %+v, want elapsed %v tick %v", rec.cycles[0], tc.elapsed, tc.tick)
+			}
+
+			warned := strings.Contains(buf.String(), "overran its interval")
+			if warned != tc.wantOverrun {
+				t.Errorf("warned = %v, want %v (log: %q)", warned, tc.wantOverrun, buf.String())
+			}
+		})
+	}
+}
+
+// A nil recorder must not panic: the executor runs without metrics in tests
+// and in a minimal wiring.
+func TestRecordCycle_NilRecorder(t *testing.T) {
+	e := &Executor{logger: slog.New(slog.DiscardHandler), workers: 4}
+	e.recordCycle(10*time.Minute, time.Minute) // must not panic
 }

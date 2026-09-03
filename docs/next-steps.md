@@ -16,6 +16,18 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
 
 ## Explore next (raised 2026-09-01)
 
+- **Decide whether four health-check workers is enough, now that the cadence
+  is measurable.** `sage_health_check_cycle_seconds` and
+  `sage_health_check_cycle_overruns_total` (added 2026-09-03) say whether the
+  configured interval is being achieved. If overruns are steady, the fix is
+  more workers or a faster probe path — not a shorter interval, which only
+  drops more ticks. Two shapes to weigh: raising `workers` costs concurrent
+  load on the same suppliers the relay path is using, while taking dispatch off
+  the ticker goroutine (queue the cycle's work and let the tick return) removes
+  the coupling entirely but lets cycles overlap, which the per-cycle
+  bookkeeping in `lastRun` and the traffic skipper both assume cannot happen.
+  Get the before-and-after from the histogram rather than guessing.
+
 - **`TestBridge_StallDetectorTriggersRebind` is load-sensitive.** Seen failing
   once at `websockets/stall_test.go:61` during a full `./... -short -race` run
   on 2026-09-03, and passing 8 times out of 8 in isolation and 3 out of 3 as a

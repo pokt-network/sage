@@ -88,7 +88,9 @@ type ProbeSource interface {
 // counts only the relays this replica actually sent, into the same series as
 // client relay attempts under request_type="probe", and
 // RecordHealthCheckSkipped counts the checks traffic-informed probing decided
-// not to send at all. metrics.Recorder satisfies it; nil disables all three.
+// not to send at all, and RecordHealthCheckCycle times the whole cycle so the
+// achieved cadence is visible next to the configured one. metrics.Recorder
+// satisfies it; nil disables them all.
 type ResultRecorder interface {
 	RecordHealthCheckResult(serviceID domain.ServiceID, source string)
 	RecordProbeRelay(
@@ -99,4 +101,7 @@ type ResultRecorder interface {
 		err error,
 	)
 	RecordHealthCheckSkipped(serviceID domain.ServiceID)
+	// RecordHealthCheckCycle records how long one cycle took and whether it
+	// overran the tick it was scheduled on.
+	RecordHealthCheckCycle(elapsed, tick time.Duration)
 }

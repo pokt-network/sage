@@ -39,6 +39,8 @@ type Recorder struct {
 	reputationAttempts    *prometheus.CounterVec
 	healthCheckResults    *prometheus.CounterVec
 	healthCheckSkipped    *prometheus.CounterVec
+	healthCheckCycle      prometheus.Histogram
+	healthCheckOverruns   prometheus.Counter
 
 	// codespaces bounds the relay miner error codespace label, which is a
 	// string chosen by the supplier's relay miner.
@@ -209,9 +211,28 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		[]string{"service_id"},
 	)
 
+	r.healthCheckCycle = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: "sage",
+			Name:      "health_check_cycle_seconds",
+			Help:      "Wall time for one health-check cycle: every configured service walked and every due probe dispatched. This is the fleet's REAL probe cadence, which is the longer of active_health_checks.interval and this — the cycle runs on the ticker goroutine and dispatch blocks on a fixed worker pool, so a cycle that overruns its tick simply delays the next one and the configured interval is not achieved. Compare against the interval before trusting any per-service probe rate.",
+			Buckets:   []float64{1, 5, 15, 30, 60, 120, 300, 600, 1200},
+		},
+	)
+
+	r.healthCheckOverruns = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: "sage",
+			Name:      "health_check_cycle_overruns_total",
+			Help:      "Health-check cycles that took longer than the tick they were scheduled on, so the next tick was dropped. Non-zero means the configured interval is not the cadence being achieved and probes are arriving in bursts one cycle apart; the fix is more workers or a faster probe path, not a shorter interval.",
+		},
+	)
+
 	prometheus.MustRegister(
 		r.healthCheckResults,
 		r.healthCheckSkipped,
+		r.healthCheckCycle,
+		r.healthCheckOverruns,
 		r.relayTotal,
 		r.clientRequestsTotal,
 		r.relayLatency,
@@ -371,6 +392,15 @@ func (r *Recorder) RecordHealthCheckResult(serviceID domain.ServiceID, source st
 // traffic had already graded the backend.
 func (r *Recorder) RecordHealthCheckSkipped(serviceID domain.ServiceID) {
 	r.healthCheckSkipped.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
+}
+
+// RecordHealthCheckCycle records one completed health-check cycle and whether
+// it overran the tick it was scheduled on.
+func (r *Recorder) RecordHealthCheckCycle(d time.Duration, tick time.Duration) {
+	r.healthCheckCycle.Observe(d.Seconds())
+	if tick > 0 && d > tick {
+		r.healthCheckOverruns.Inc()
+	}
 }
 
 // initHealthCheckSkipped creates the skipped-probe series at zero for every

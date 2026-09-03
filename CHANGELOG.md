@@ -250,6 +250,24 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **`active_health_checks.interval` is a floor, not the cadence — and now it
+  says so.** The cycle runs on the ticker's own goroutine and dispatch blocks
+  on a fixed worker pool (four), so a cycle that outlasts its tick does not
+  overlap the next one: it delays it, and `time.Ticker` drops the tick it
+  missed. With enough backends for the pool the achieved cadence is the cycle
+  duration, every service is probed in one burst as the loop reaches it, and a
+  per-service probe rate measured over less than a cycle is a sampling
+  artifact. Nothing exported any of that, so on the mainnet canary it looked
+  like a service going silent for fourteen minutes on a sixty-second interval
+  and then jumping thirty-four probes at once — which cost a wrong prediction
+  and two rounds of measurement to explain.
+  `sage_health_check_cycle_seconds` times every cycle,
+  `sage_health_check_cycle_overruns_total` counts the ones that missed their
+  tick, and a cycle that overruns now says so at WARN with the elapsed time,
+  the interval and the worker count. The behaviour is unchanged; only its
+  visibility is. Whether four workers is the right number is a separate
+  decision, and this is the measurement it should be made on.
+
 - **The chain view is exported.** SAGE published 31 metrics and not one was
   about block height, consensus or QoS state, so the mechanism endpoint
   selection tiers on could not be seen from outside the process — no metric, no

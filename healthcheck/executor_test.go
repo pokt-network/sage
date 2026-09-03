@@ -1216,6 +1216,18 @@ type recordingResultRecorder struct {
 	applied []string
 	relays  []probeRelayCall
 	skipped []domain.ServiceID
+	cycles  []cycleRecord
+}
+
+type cycleRecord struct {
+	elapsed time.Duration
+	tick    time.Duration
+}
+
+func (r *recordingResultRecorder) RecordHealthCheckCycle(elapsed, tick time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cycles = append(r.cycles, cycleRecord{elapsed: elapsed, tick: tick})
 }
 
 func (r *recordingResultRecorder) RecordHealthCheckSkipped(serviceID domain.ServiceID) {
