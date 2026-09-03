@@ -268,14 +268,15 @@ the source of truth for the design and the reasoning behind it.
   bursts through a build that would have rejected 65 from an operator's own
   hand. `healthcheck.MaxProbeWorkers` is now the single bound and the knob
   advertises it, with a test that fails if the two disagree. It is 512 rather
-  than 64 because the canary answered the question the low ceiling was
-  guessing at: half an hour of 500-wide bursts moved nothing the wrong way —
-  probe 502s fell from 0.70 to 0.58 per second, 408s fell, and per-supplier
-  transport failures got flatter. The likely reason is that a burst and a
-  trickle cost a supplier the same concurrency-seconds while 500 workers hold a
-  connection for a second and 4 hold one continuously, and connection limits
-  care about shape rather than the integral. One fleet at one traffic share, so
-  there is still a ceiling. Out-of-range is clamped and reported rather than
+  than 64 because a ceiling should bound the absurd rather than express a
+  tuning preference: 64 was a judgement about supplier load, and that belongs
+  in the config file an operator writes, not in a constant they cannot see.
+  Half an hour of 500-wide bursts on the canary moved nothing the wrong way —
+  probe 502s fell from 0.70 to 0.58 per second, 408s fell, per-supplier
+  transport failures got flatter — but an arb-one supplier degradation ran
+  network-wide through that whole window, on the busiest service, so that is
+  "no harm was visible" and not evidence that bursts are easier on suppliers
+  than trickles. The ceiling stays for the same reason it was always there. Out-of-range is clamped and reported rather than
   refused: this was an unimplemented key until the same day, and turning it
   into one that stops the gateway would punish an operator for a value that had
   been inert.

@@ -131,15 +131,23 @@ type probeKey struct {
 // unreasonable on one path and waving it through on the other is worse than
 // either choice alone.
 //
-// 512 rather than 64, because the canary answered the question the low ceiling
-// was guessing at. Half an hour of 500-wide bursts moved nothing the wrong
-// way: probe 502s fell from 0.70 to 0.58 per second, 408s fell, and
-// per-supplier transport failures got FLATTER, not sharper. The likely reason
-// is that a burst and a trickle cost a supplier the same concurrency-seconds
-// — the same ~1,100 probes either way — but 500 workers hold a connection for
-// a second while 4 hold one continuously, and connection limits care about the
-// shape rather than the integral. That is one fleet at one traffic share and
-// not a general law, which is why there is still a ceiling.
+// 512 rather than 64 because a ceiling's job is to bound the absurd, not to
+// express a tuning preference. 64 was a preference — it said 500 is too many,
+// which is a judgement about supplier load that belongs in the config file an
+// operator writes and not in a constant they cannot see. A typo of 100000 is
+// what this exists to catch.
+//
+// The canary is a weak second argument and is recorded as weak. Half an hour
+// of 500-wide bursts moved nothing the wrong way — probe 502s fell from 0.70
+// to 0.58 per second, 408s fell, per-supplier transport failures got flatter —
+// which suggests a burst and a trickle cost a supplier the same
+// concurrency-seconds while differing in shape, 500 workers holding a
+// connection for a second where 4 hold one continuously. But an arb-one
+// supplier degradation ran network-wide through that entire window, on the
+// busiest service, so the per-supplier comparison was made against a moving
+// backdrop and is not a clean baseline for a claim about connection limits
+// (ops, 2026-09-03). Treat it as "no harm was visible", not as evidence that
+// bursts are better.
 const MaxProbeWorkers = 512
 
 // clampWorkers bounds a worker count from any source. Out-of-range is clamped
