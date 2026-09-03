@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			[]string{"service_id", "status", "request_type"},
 		),
 		relayLatency: prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{Namespace: "sage_test", Name: "relay_latency_seconds", Buckets: prometheus.DefBuckets},
+			prometheus.HistogramOpts{Namespace: "sage_test", Name: "relay_latency_seconds", Buckets: relayLatencyBuckets},
 			[]string{"service_id", "request_type"},
 		),
 		retryTotal: prometheus.NewCounterVec(
@@ -521,5 +522,35 @@ func TestRecorder_HealthCheckSkippedSeriesExistAtZero(t *testing.T) {
 	}
 	if after[`{service_id="poly"}`] != 0 {
 		t.Errorf("poly moved on eth's skip: %v", after)
+	}
+}
+
+// A p99 that lands in +Inf cannot be improved, because no change to it is
+// measurable. DefBuckets tops out at 10s and the canary had 4.8% of
+// observations above that over 17h.
+func TestRelayLatencyBuckets_ResolveTheTailPastTenSeconds(t *testing.T) {
+	if got := relayLatencyBuckets[len(relayLatencyBuckets)-1]; got < 30 {
+		t.Errorf("top bucket %vs: an attempt that outlives the 30s relay timeout still lands in +Inf", got)
+	}
+
+	// Sorted and strictly increasing, or Prometheus rejects the histogram.
+	for i := 1; i < len(relayLatencyBuckets); i++ {
+		if relayLatencyBuckets[i] <= relayLatencyBuckets[i-1] {
+			t.Fatalf("buckets are not strictly increasing at %d: %v", i, relayLatencyBuckets)
+		}
+	}
+
+	// The default range is kept, so existing dashboards read the same below
+	// ten seconds.
+	for _, edge := range prometheus.DefBuckets {
+		if !slices.Contains(relayLatencyBuckets, edge) {
+			t.Errorf("dropped default bucket edge %v; sub-10s percentiles would shift", edge)
+		}
+	}
+
+	// The 30s relay timeout must be an edge, so "timed out" and "made it,
+	// barely" fall in different buckets.
+	if !slices.Contains(relayLatencyBuckets, float64(30)) {
+		t.Error("30s is not a bucket edge; a timed-out attempt shares a bucket with a slow success")
 	}
 }

@@ -250,6 +250,38 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **The three maps the ever-seen audit left open are bounded.** From the
+  2026-09-01 sweep that followed the reputation-timeline OOM: every map keyed
+  by endpoint, supplier, URL, host, session or method had a bound except these,
+  and none grew per session, so they were recorded rather than fixed. Fixed
+  now, because "small and unbounded" is what the OOM was.
+  `grpcRelayTransport.conns` held one live `*grpc.ClientConn` per gRPC host
+  ever relayed to and closed none — a socket per departed supplier for the life
+  of the process — and now evicts after 30 minutes idle, swept lazily from the
+  dial path at most once a minute rather than by a goroutine with no lifecycle
+  to own it. `WSRelayer.activeLoad` kept a counter per endpoint address ever
+  bound and never deleted at zero, where an address carries a supplier that
+  rotates every session; the entry now goes when the count reaches zero. That
+  one also moved from a `sync.Map` of atomics to a mutex and a plain map:
+  delete-at-zero is where the lock-free version stops being safe, since the
+  delete and the decrement cannot be one step, and every repair for the race
+  either loses a bridge's load or counts it twice — the first attempt did the
+  latter and a concurrency test caught it. It is called once per bridge opening
+  and closing, not per frame. `methodblock` marks were bounded only by their
+  TTL with the method name coming from the client's request body, and now cap
+  at 128 live methods per host, dropping new marks rather than evicting
+  established ones so a flood of invented method names cannot wash real
+  evidence out of a host.
+- **`sage_relay_latency_seconds` resolves the tail past ten seconds.**
+  `prometheus.DefBuckets` stops at 10s, so every slower attempt landed in
+  `+Inf` and nothing separated eleven seconds from three hundred. The canary
+  had 4.8% of observations there over 17h, which put the merged p99 in the
+  overflow bucket and left it unimprovable — no change to a p99 in `+Inf` is
+  measurable. Buckets now run to 60s, with 30s an edge (the default relay
+  timeout, so "timed out" and "made it, barely" land in different buckets).
+  Every default edge is kept, so percentiles below ten seconds read exactly as
+  before.
+
 - **A health check is bounded on its own, not by the client relay timeout.**
   Nothing on the probe path set a deadline, so a probe inherited
   `defaults.timeout.relay_timeout` — 30s unconfigured — and one hung backend

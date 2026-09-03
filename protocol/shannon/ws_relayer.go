@@ -103,7 +103,23 @@ type WSRelayer struct {
 
 	// activeLoad tracks the number of open bridges per endpoint, feeding
 	// into reputation.SelectSpread to bias away from hot endpoints.
-	activeLoad sync.Map // domain.EndpointAddr → *atomic.Int64
+	//
+	// An entry is deleted when its count reaches zero rather than left at 0
+	// forever. Endpoint addresses carry a staked supplier that rotates every
+	// session, so a counter per address ever bound is a map that grows for the
+	// life of the process — small per entry, unbounded in count. Recorded as a
+	// residual by the ever-seen-maps audit on 2026-09-01; the reputation
+	// timeline was OOMKilled for the same shape.
+	//
+	// A mutex and a plain map, not a sync.Map of atomics. Delete-at-zero is
+	// where that combination stops being safe: the delete and the decrement
+	// cannot be made one step, so a concurrent open either increments a counter
+	// already removed from the map or races the entry back in, and every repair
+	// for that either loses a bridge's load or counts it twice. This is called
+	// once per bridge opening and closing — not per frame — so the lock costs
+	// nothing worth the subtlety.
+	loadMu     sync.Mutex
+	activeLoad map[domain.EndpointAddr]int
 
 	// chainHeight reads the current chain head. A field so tests can drive
 	// the height without a live block poller.
@@ -601,31 +617,40 @@ func frameSeverityToSignal(res heuristic.AnalysisResult, latency time.Duration) 
 
 // snapshotLoad returns a point-in-time map of endpoint → active bridge count.
 func (r *WSRelayer) snapshotLoad() map[domain.EndpointAddr]int {
-	result := make(map[domain.EndpointAddr]int)
-	r.activeLoad.Range(func(key, value any) bool {
-		ep, _ := key.(domain.EndpointAddr)
-		counter, _ := value.(*atomic.Int64)
-		if counter != nil {
-			if n := int(counter.Load()); n > 0 {
-				result[ep] = n
-			}
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+	result := make(map[domain.EndpointAddr]int, len(r.activeLoad))
+	for ep, n := range r.activeLoad {
+		if n > 0 {
+			result[ep] = n
 		}
-		return true
-	})
+	}
 	return result
 }
 
 func (r *WSRelayer) incLoad(ep domain.EndpointAddr) {
-	v, _ := r.activeLoad.LoadOrStore(ep, new(atomic.Int64))
-	v.(*atomic.Int64).Add(1)
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+	if r.activeLoad == nil {
+		r.activeLoad = make(map[domain.EndpointAddr]int)
+	}
+	r.activeLoad[ep]++
 }
 
 func (r *WSRelayer) decLoad(ep domain.EndpointAddr) {
-	v, ok := r.activeLoad.Load(ep)
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+	n, ok := r.activeLoad[ep]
 	if !ok {
 		return
 	}
-	v.(*atomic.Int64).Add(-1)
+	if n <= 1 {
+		// Zero carries no information, and the key is a supplier address that
+		// will not be seen again after this session.
+		delete(r.activeLoad, ep)
+		return
+	}
+	r.activeLoad[ep] = n - 1
 }
 
 // wsTarget is one resolved supplier: everything Open or a rebind needs to

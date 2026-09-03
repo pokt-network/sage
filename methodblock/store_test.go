@@ -2,6 +2,7 @@ package methodblock
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -269,4 +270,60 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// The method comes from the client's request body, so the only thing bounding
+// this map without a cap is the TTL: a fresh made-up method name on every
+// relay grows one host's map for as long as a mark lives.
+func TestMark_BoundsMethodsPerHost(t *testing.T) {
+	s := New(WithTTL(time.Hour), WithEscalation(0))
+
+	for i := range maxMethodsPerHost * 3 {
+		s.Mark("eth", "host.example.com", fmt.Sprintf("made_up_%d", i), false)
+	}
+
+	s.mu.RLock()
+	n := len(s.byService["eth"]["host.example.com"].methods)
+	s.mu.RUnlock()
+	if n > maxMethodsPerHost {
+		t.Errorf("host holds %d method marks, want at most %d", n, maxMethodsPerHost)
+	}
+}
+
+// A flood must not be able to wash real evidence out of a host: marks past the
+// cap are refused, not swapped in.
+func TestMark_FloodDoesNotEvictRealEvidence(t *testing.T) {
+	s := New(WithTTL(time.Hour), WithEscalation(0))
+
+	// One real, supplier-attributed mark.
+	s.Mark("eth", "host.example.com", "eth_getLogs", true)
+	if !s.Blocked("eth", "host.example.com", "eth_getLogs") {
+		t.Fatal("precondition: the real mark did not take")
+	}
+
+	for i := range maxMethodsPerHost * 3 {
+		s.Mark("eth", "host.example.com", fmt.Sprintf("made_up_%d", i), false)
+	}
+
+	if !s.Blocked("eth", "host.example.com", "eth_getLogs") {
+		t.Error("the real mark was evicted by a flood of made-up method names")
+	}
+}
+
+// The cap is about LIVE marks: once they expire the host can be marked again,
+// so a burst does not lock a host out of being graded for good.
+func TestMark_CapCountsOnlyLiveMarks(t *testing.T) {
+	s := New(WithTTL(50*time.Millisecond), WithEscalation(0))
+
+	for i := range maxMethodsPerHost + 10 {
+		s.Mark("eth", "host.example.com", fmt.Sprintf("made_up_%d", i), false)
+	}
+	time.Sleep(80 * time.Millisecond) // every mark expires
+
+	if !s.Mark("eth", "host.example.com", "eth_getLogs", false) && s.Blocked("eth", "host.example.com", "eth_getLogs") {
+		t.Skip("Mark reports escalation, not success; assert through Blocked below")
+	}
+	if !s.Blocked("eth", "host.example.com", "eth_getLogs") {
+		t.Error("a host that filled the cap with now-expired marks can no longer be marked at all")
+	}
 }

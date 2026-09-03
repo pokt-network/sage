@@ -28,18 +28,6 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
   bookkeeping in `lastRun` and the traffic skipper both assume cannot happen.
   Get the before-and-after from the histogram rather than guessing.
 
-- **`TestBridge_StallDetectorTriggersRebind` is load-sensitive.** Seen failing
-  once at `websockets/stall_test.go:61` during a full `./... -short -race` run
-  on 2026-09-03, and passing 8 times out of 8 in isolation and 3 out of 3 as a
-  whole package. The assertion is `require.Equal(t, 1, obs.stalls)` on a
-  detector driven by a ticker: under a loaded scheduler a second tick can fire
-  before the test clears the stall flag. Two stalls producing one rebind is
-  correct behaviour, and the line below it already pins the rebind count at
-  exactly one, so the stall assertion over-specifies. Loosen it to at-least-one
-  rather than weaken the rebind assertion — but check first that a doubled
-  stall really cannot double-rebind, because that is the bug this test would be
-  hiding if it can.
-
 - **Confirm the WebSocket control-frame path fires on mainnet.** The envelope
   decoding added 2026-09-03 (see the CHANGELOG) is a port of a PATH fix found
   by a live session-cycle test; SAGE's own exposure is inferred from the miner
@@ -50,19 +38,6 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
   expect it at session boundaries on long-lived subscriptions, and zero
   elsewhere. If it fires often, the `410` count is also the rate at which
   clients were previously being handed protobuf.
-
-- **Three unbounded-ish maps, recorded rather than fixed.** From the
-  ever-seen-maps audit of 2026-09-01, which followed the reputation timeline
-  OOM (see the CHANGELOG). Every map keyed by endpoint, supplier, URL, host,
-  session or method on the relay or probe path has a bound — a sweep, a cap, a
-  whole-map reset or a TTL — except these, none of which grows per session:
-  `grpcRelayTransport.conns` holds one `*grpc.ClientConn` per gRPC host ever
-  relayed to and never closes one (bounded by hosts, but each is a live
-  connection — idle eviction if it ever shows in a profile);
-  `WSRelayer.activeLoad` keeps an 8-byte counter per endpoint ever bound and
-  never deletes at zero (bounded by the endpoint set); `methodblock` marks are
-  per (host, method) with the method coming from the client, so they are
-  bounded only by the TTL and a client can inflate the set for one TTL.
 
 - **A cold pod is served client traffic before readiness passes.** Confirmed on
   every pod of the 2026-09-02 `335a264` rollout: relay errors begin ~7-8 s after
@@ -133,14 +108,6 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
   the "404 and 502 return to 258/120" pass condition was measuring noise, and
   the ~300 per 100k of apparent 404/502-to-408 reclassification was noise too.
   Take an offset sweep before calling any of these a baseline.
-- **Split the >10s latency tail by service_id.** Raised by ops 2026-09-02: 4.8%
-  of `sage_relay_latency_seconds` observations land in `+Inf` over a 17 h
-  window, so the merged p99 is above 10 s. The label is already there, so this
-  is a dashboard query, not a code change — but note the histogram uses
-  `prometheus.DefBuckets`, whose top finite bucket is 10 s, so nothing
-  distinguishes 11 s from 300 s. If the tail turns out to matter, the buckets
-  need extending before it can be measured.
-
 - ~~Label probe vs client attempts in sage_relay_total.~~ Landed 2026-09-02,
   and the premise it was filed under was wrong: probes were not a third of
   relay_total, they were not in it at all. `healthcheck.Executor` calls

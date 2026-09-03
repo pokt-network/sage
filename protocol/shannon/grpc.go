@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	sdktypes "github.com/pokt-network/shannon-sdk/types"
 	"google.golang.org/grpc"
@@ -71,15 +73,84 @@ type grpcRelayTransport struct {
 	// conns caches one *grpc.ClientConn per supplier host. A ClientConn is a
 	// long-lived multiplexed connection; building one per relay would pay a TLS
 	// handshake every time and defeat HTTP/2 entirely.
-	conns sync.Map // host (string) → *grpc.ClientConn
+	//
+	// Bounded by idle eviction, not by count. The set of hosts is small, but
+	// each entry is a live connection and a supplier that leaves the network
+	// never comes back — so without this the process holds an open socket per
+	// gRPC host it has ever relayed to, for its whole life. Recorded as a
+	// residual by the ever-seen-maps audit on 2026-09-01, after the reputation
+	// timeline was OOMKilled for the same shape of mistake.
+	conns sync.Map // host (string) → *grpcConn
+
+	// lastSweep is when idle connections were last closed, so the sweep runs
+	// at most once per interval however many relays arrive. Unix nanoseconds.
+	lastSweep atomic.Int64
 
 	// webOnly records hosts that answered a native attempt with "not HTTP/2".
 	// Without it, auto mode would re-learn the same fact on every single relay.
 	webOnly sync.Map // host (string) → struct{}
 }
 
+// grpcConn is a cached connection and when it was last used.
+type grpcConn struct {
+	conn *grpc.ClientConn
+	// lastUsed is Unix nanoseconds, written on every send. Atomic because
+	// relays to one host run concurrently.
+	lastUsed atomic.Int64
+}
+
+func (c *grpcConn) touch(now time.Time) { c.lastUsed.Store(now.UnixNano()) }
+
+const (
+	// grpcConnIdleTTL is how long an unused connection is kept. Long enough
+	// that a service probed once per health-check cycle keeps its connection
+	// across cycles, short enough that a supplier which has left the session
+	// stops costing a socket within the hour.
+	grpcConnIdleTTL = 30 * time.Minute
+	// grpcConnSweepInterval bounds how often the sweep walks the map. The walk
+	// is O(hosts) and hosts are few, but it runs from the relay path and there
+	// is no reason to pay it more than once a minute.
+	grpcConnSweepInterval = time.Minute
+)
+
 func newGRPCRelayTransport(mode string, httpClient *http.Client, logger *slog.Logger) *grpcRelayTransport {
 	return &grpcRelayTransport{mode: mode, httpClient: httpClient, logger: logger}
+}
+
+// sweepIdleConns closes connections unused for grpcConnIdleTTL.
+//
+// Lazy rather than a background goroutine on purpose: a goroutine would need a
+// lifecycle — somewhere to be started, somewhere to be stopped — and the
+// transport has neither, so it would either leak or need one invented for it.
+// Sweeping from the dial path costs a map walk at most once a minute and only
+// while relays are flowing, which is exactly when the map can grow.
+//
+// A connection is removed from the map before it is closed, so a concurrent
+// caller either finds it and uses it (holding a reference the close cannot
+// invalidate mid-call — gRPC drains in-flight RPCs) or misses it and dials a
+// fresh one.
+func (t *grpcRelayTransport) sweepIdleConns(now time.Time) {
+	last := t.lastSweep.Load()
+	if now.UnixNano()-last < int64(grpcConnSweepInterval) {
+		return
+	}
+	if !t.lastSweep.CompareAndSwap(last, now.UnixNano()) {
+		// Another relay is sweeping; one walk is enough.
+		return
+	}
+
+	cutoff := now.Add(-grpcConnIdleTTL).UnixNano()
+	t.conns.Range(func(key, value any) bool {
+		c := value.(*grpcConn)
+		if c.lastUsed.Load() > cutoff {
+			return true
+		}
+		t.conns.Delete(key)
+		if err := c.conn.Close(); err != nil && t.logger != nil {
+			t.logger.Debug("gRPC: closing idle connection", "host", key, "error", err)
+		}
+		return true
+	})
 }
 
 // send delivers relayReqBz to the supplier and returns the raw RelayResponse
@@ -142,9 +213,13 @@ func (t *grpcRelayTransport) sendNative(ctx context.Context, host string, useTLS
 
 // conn returns the cached ClientConn for host, dialing one if needed.
 func (t *grpcRelayTransport) conn(host string, useTLS bool) (*grpc.ClientConn, error) {
+	now := time.Now()
 	if c, ok := t.conns.Load(host); ok {
-		return c.(*grpc.ClientConn), nil
+		cached := c.(*grpcConn)
+		cached.touch(now)
+		return cached.conn, nil
 	}
+	t.sweepIdleConns(now)
 
 	creds := insecure.NewCredentials()
 	if useTLS {
@@ -155,13 +230,18 @@ func (t *grpcRelayTransport) conn(host string, useTLS bool) (*grpc.ClientConn, e
 		return nil, fmt.Errorf("grpc relay: dial %s: %w", host, err)
 	}
 
+	entry := &grpcConn{conn: conn}
+	entry.touch(now)
+
 	// Another goroutine may have won the race; keep theirs and drop ours so the
 	// cache never hands out a connection nobody will close.
-	actual, loaded := t.conns.LoadOrStore(host, conn)
+	actual, loaded := t.conns.LoadOrStore(host, entry)
 	if loaded {
 		_ = conn.Close()
 	}
-	return actual.(*grpc.ClientConn), nil
+	cached := actual.(*grpcConn)
+	cached.touch(now)
+	return cached.conn, nil
 }
 
 // sendWeb performs the relay as a gRPC-Web call over ordinary HTTP/1.1.

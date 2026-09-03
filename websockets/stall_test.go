@@ -23,6 +23,15 @@ func TestBridge_StallDetectorTriggersRebind(t *testing.T) {
 	var rebinds atomic.Int32
 	handler := func(context.Context, error) (*websocket.Conn, MessageProcessor, [][]byte, error) {
 		rebinds.Add(1)
+		// Clear the stall here, not after the assertion below. The detector
+		// polls every 10ms and ReplaceEndpoint runs the rebind inline, so a
+		// stall still set when the loop comes round again is a SECOND real
+		// stall — correct behaviour, bounded by rebindLimit, but not what this
+		// test is about. Clearing it as the rebind happens is what makes the
+		// stall transient, which is what the exact counts below assert. Left
+		// until after require.Eventually returned, this test failed on a
+		// loaded machine (seen 2026-09-03 in a full -race run).
+		stalled.Store(false)
 		conn, err := ConnectEndpoint(newTestLogger(), wsURL(second), nil)
 		return conn, &passthroughProcessor{}, [][]byte{[]byte("resubscribe")}, err
 	}
@@ -49,7 +58,6 @@ func TestBridge_StallDetectorTriggersRebind(t *testing.T) {
 		}
 		return false
 	}, 2*time.Second, 5*time.Millisecond, "a stall must rebind and replay")
-	stalled.Store(false)
 
 	select {
 	case <-b.Done():

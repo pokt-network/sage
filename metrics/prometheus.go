@@ -14,6 +14,24 @@ import (
 	"github.com/pokt-network/sage/internal/safego"
 )
 
+// relayLatencyBuckets extends the default buckets past ten seconds.
+//
+// prometheus.DefBuckets tops out at 10s, so every slower attempt lands in +Inf
+// and nothing distinguishes eleven seconds from three hundred. On the mainnet
+// canary 4.8% of observations were in that bucket over a 17h window, which put
+// the merged p99 above 10s and left it unimprovable: a p99 sitting in the
+// overflow bucket cannot be moved by any change, because no change to it is
+// measurable. Raised by ops on 2026-09-02.
+//
+// The added edges are the ones that mean something here rather than a round
+// series: 15s and 20s bracket where a slow supplier stops being usable, 30s is
+// the default relay timeout so the bucket below it is "made it, barely" while
+// anything above can only be a hedge or retry outliving its own deadline, and
+// 60s catches an attempt running with no deadline at all.
+var relayLatencyBuckets = []float64{
+	0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15, 20, 30, 60,
+}
+
 // Recorder records relay pipeline metrics to Prometheus.
 // It is safe for concurrent use.
 type Recorder struct {
@@ -77,8 +95,8 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.HistogramOpts{
 				Namespace: "sage",
 				Name:      "relay_latency_seconds",
-				Help:      "Upstream relay attempt latency in seconds — selection through response, one observation per attempt, split by request_type (client|probe). Not client-facing latency: a request that retried or hedged is several observations, none of them its total, and a health-check probe is not a client request at all.",
-				Buckets:   prometheus.DefBuckets,
+				Help:      "Upstream relay attempt latency in seconds — selection through response, one observation per attempt, split by request_type (client|probe). Not client-facing latency: a request that retried or hedged is several observations, none of them its total, and a health-check probe is not a client request at all. Buckets run past the default 10s to 60s, so a p99 in the tail is a number rather than +Inf.",
+				Buckets:   relayLatencyBuckets,
 			},
 			[]string{"service_id", "request_type"},
 		),

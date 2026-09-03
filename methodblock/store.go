@@ -40,6 +40,22 @@ type hostState struct {
 	methods   map[string]methodMark // method -> mark
 }
 
+// maxMethodsPerHost bounds how many distinct method marks one host may hold.
+//
+// The method comes from the client's request body, so without a cap the only
+// thing bounding this map is the TTL: a client sending a fresh made-up method
+// name on every relay grows one host's map for as long as a mark lives.
+// Recorded as a residual by the ever-seen-maps audit on 2026-09-01 — the map
+// does not grow per session, but it is the one here whose size a client
+// chooses.
+//
+// A hundred and twenty-eight is well above any real chain's method catalogue
+// (EVM is a few dozen) and small enough that the worst case is uninteresting.
+// Marks past the cap are dropped rather than evicting an existing one: an
+// established mark is evidence about a host, and a flood must not be able to
+// wash real evidence out of it.
+const maxMethodsPerHost = 128
+
 // Store holds method blocks for every service in the process.
 type Store struct {
 	ttl           time.Duration
@@ -164,8 +180,23 @@ func (s *Store) Mark(service, host, method string, escalates bool) (escalated bo
 		// Already blocked wholesale; a method mark adds nothing.
 		return false
 	}
+	prev, known := h.methods[method]
+	if !known && len(h.methods) >= maxMethodsPerHost {
+		// Drop what has expired before refusing: the cap is about live marks.
+		for m, mk := range h.methods {
+			if !now.Before(mk.expiry) {
+				delete(h.methods, m)
+			}
+		}
+		if len(h.methods) >= maxMethodsPerHost {
+			// Still full of live marks. This host already has more evidence
+			// against it than any real catalogue holds, so the honest reading
+			// is that the method names are made up. Refuse rather than evict.
+			return false
+		}
+	}
 	counts := escalates
-	if prev, ok := h.methods[method]; ok && now.Before(prev.expiry) && prev.escalates {
+	if known && now.Before(prev.expiry) && prev.escalates {
 		counts = true
 	}
 	h.methods[method] = methodMark{expiry: expiry, escalates: counts}
