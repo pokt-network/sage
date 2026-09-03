@@ -85,6 +85,11 @@ type Executor struct {
 	flags   featureflag.FlagStore
 	skipper *trafficSkipper
 
+	// probeTimeoutNanos bounds one health check, in nanoseconds. Atomic for
+	// the same reason configured is: a reload writes it while a cycle reads it.
+	// Zero means DefaultProbeTimeout.
+	probeTimeoutNanos atomic.Int64
+
 	// now is the clock the schedule reads; tests move it.
 	now func() time.Time
 	// lastRun is when each (service, backend, check) was last scheduled. Only
@@ -579,13 +584,68 @@ func (e *Executor) sendCheck(
 ) {
 	_ = plugin
 	_ = configured
-	result := e.probe(ctx, serviceID, ep, siblings, check)
+
+	// Bound the probe on its own, not on the relay timeout it would otherwise
+	// inherit. See probeTimeout: a hung backend costs one worker for the whole
+	// relay timeout, and with a small pool that is a large fraction of the
+	// fleet's probe capacity spent learning something a few seconds would have
+	// told us.
+	probeCtx, cancel := context.WithTimeout(ctx, e.probeTimeout())
+	defer cancel()
+
+	result := e.probe(probeCtx, serviceID, ep, siblings, check)
 	e.applyResult(ctx, result)
 	if e.sink != nil {
 		if err := e.sink.Publish(ctx, result); err != nil {
 			e.logger.Warn("healthcheck: publish probe result", "service_id", serviceID, "check", check.Name, "error", err)
 		}
 	}
+}
+
+// DefaultProbeTimeout bounds one health check.
+//
+// A probe inherits nothing useful from the relay path: without this it runs
+// under the client relay timeout (defaults.timeout.relay_timeout, 30s
+// unconfigured), because the executor passes its own long-lived context
+// straight down. One hung backend then holds a worker for thirty seconds, and
+// with the default pool of four that is a quarter of the fleet's entire probe
+// capacity spent waiting for an answer whose content no longer matters — a
+// backend that has not replied in five seconds is unhealthy either way, and
+// the check has already learned that.
+//
+// Five seconds is chosen against the two failure directions, not as a round
+// number. Too long is the state SAGE was in: on the mainnet canary on
+// 2026-09-03 the fleet averaged 1.39s per probe at four-way concurrency
+// (2.87 probes/s), which is almost entirely tail — a healthy eth_blockNumber
+// answers in tens of milliseconds — and the resulting sweep took five to
+// nineteen minutes against a sixty-second configured interval. Too short is
+// worse than slow: a probe cut off early is graded a minor error against a
+// supplier that was merely loaded, so the timeout manufactures the failure it
+// reports. Five seconds is an order of magnitude above a healthy response and
+// six times below the relay timeout, which leaves the grading honest.
+//
+// This lowers probe LOAD rather than raising it, which is the reason to prefer
+// it to a bigger worker pool: the same suppliers serve client traffic, and
+// more concurrency there competes with relays.
+const DefaultProbeTimeout = 5 * time.Second
+
+// SetProbeTimeout overrides how long one health check may take. Wire time,
+// from active_health_checks.probe_timeout. A non-positive value is stored as
+// given and read back as the default; see probeTimeout, which is the single
+// place that decision is made.
+func (e *Executor) SetProbeTimeout(d time.Duration) {
+	e.probeTimeoutNanos.Store(int64(d))
+}
+
+// probeTimeout is the live value, read once per probe. Atomic because a config
+// reload writes it from its own goroutine while a cycle is reading it, and the
+// one place a non-positive setting becomes the default — normalising on the
+// way in as well would be a second copy of the rule that could disagree.
+func (e *Executor) probeTimeout() time.Duration {
+	if d := e.probeTimeoutNanos.Load(); d > 0 {
+		return time.Duration(d)
+	}
+	return DefaultProbeTimeout
 }
 
 // recordProbeRelay reports one probe send to the relay-attempt metrics, so a

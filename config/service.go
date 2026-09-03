@@ -676,6 +676,20 @@ type HealthCheckConfig struct {
 	// the config rather than leave a field unset.
 	DisableBackendURLDedup bool `yaml:"disable_backend_url_dedup"`
 
+	// ProbeTimeout bounds one health check. Zero means 5s.
+	//
+	// It is deliberately separate from defaults.timeout.relay_timeout, which a
+	// probe would otherwise inherit: a hung backend then holds one of the few
+	// health-check workers for the whole relay timeout, and the sweep that is
+	// supposed to run every `interval` takes minutes instead. A backend that
+	// has not answered a health check in a few seconds is unhealthy, and
+	// waiting longer does not change that verdict.
+	//
+	// Raise it rather than lower it if probes start reporting timeouts against
+	// backends that are merely loaded: a probe cut off early is graded a minor
+	// error, so too short a value manufactures the failure it reports.
+	ProbeTimeout time.Duration `yaml:"probe_timeout"`
+
 	// MinTrafficSignals is how many client-traffic reputation signals a
 	// backend must record within one cycle before traffic-informed probing
 	// skips its check. Only consulted when the traffic_informed_probing

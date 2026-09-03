@@ -489,3 +489,93 @@ func TestRecordCycle_NilRecorder(t *testing.T) {
 	e := &Executor{logger: slog.New(slog.DiscardHandler), workers: 4}
 	e.recordCycle(10*time.Minute, time.Minute) // must not panic
 }
+
+// A probe must be bounded on its own, not by the client relay timeout it would
+// otherwise inherit.
+//
+// Without this a hung backend holds one of four workers for the whole relay
+// timeout — 30s unconfigured — so a handful of dead backends per sweep spends
+// most of the fleet's probe capacity waiting. On the mainnet canary on
+// 2026-09-03 that produced a mean probe latency of 1.39s at four-way
+// concurrency and a sweep of five to nineteen minutes against a sixty-second
+// configured interval.
+func TestProbeTimeout(t *testing.T) {
+	t.Run("defaults when unset", func(t *testing.T) {
+		e := &Executor{}
+		if got := e.probeTimeout(); got != DefaultProbeTimeout {
+			t.Errorf("probeTimeout = %v, want %v", got, DefaultProbeTimeout)
+		}
+	})
+
+	t.Run("zero and negative restore the default", func(t *testing.T) {
+		for _, d := range []time.Duration{0, -time.Second} {
+			e := &Executor{}
+			e.SetProbeTimeout(d)
+			if got := e.probeTimeout(); got != DefaultProbeTimeout {
+				t.Errorf("SetProbeTimeout(%v): got %v, want %v", d, got, DefaultProbeTimeout)
+			}
+		}
+	})
+
+	t.Run("an explicit value is honoured", func(t *testing.T) {
+		e := &Executor{}
+		e.SetProbeTimeout(2 * time.Second)
+		if got := e.probeTimeout(); got != 2*time.Second {
+			t.Errorf("probeTimeout = %v, want 2s", got)
+		}
+	})
+
+	// The bound that matters: well below the 30s relay timeout a probe would
+	// otherwise inherit, and well above a healthy response.
+	t.Run("the default is bounded on both sides", func(t *testing.T) {
+		if DefaultProbeTimeout >= 30*time.Second {
+			t.Errorf("DefaultProbeTimeout = %v: at or above the relay timeout it exists to escape", DefaultProbeTimeout)
+		}
+		if DefaultProbeTimeout < time.Second {
+			t.Errorf("DefaultProbeTimeout = %v: a probe cut off this early grades a loaded supplier as failing", DefaultProbeTimeout)
+		}
+	})
+}
+
+// The deadline has to reach the probe, not just sit on the executor.
+func TestSendCheck_AppliesTheProbeDeadline(t *testing.T) {
+	relayer := &deadlineRelayer{}
+	e := &Executor{
+		logger:          slog.New(slog.DiscardHandler),
+		protocol:        relayer,
+		qosRegistry:     qos.NewRegistry(),
+		coveredServices: make(map[domain.ServiceID]struct{}),
+	}
+	// Warm short-circuits markCovered, which would otherwise need a session
+	// manager this test has no use for.
+	e.warm.Store(true)
+	e.SetProbeTimeout(50 * time.Millisecond)
+
+	e.sendCheck(context.Background(), "eth", "supA-https://a.example.com", nil, nil, skipTestCheck(), nil)
+
+	if !relayer.called {
+		t.Fatal("probe was never sent")
+	}
+	if !relayer.hadDeadline {
+		t.Fatal("probe ran with no deadline; it would inherit the 30s relay timeout")
+	}
+	if relayer.remaining <= 0 || relayer.remaining > 50*time.Millisecond {
+		t.Errorf("probe deadline %v away, want within the 50ms budget", relayer.remaining)
+	}
+}
+
+// deadlineRelayer records what deadline the probe context carried.
+type deadlineRelayer struct {
+	called      bool
+	hadDeadline bool
+	remaining   time.Duration
+}
+
+func (d *deadlineRelayer) SendRelay(ctx context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.Payload) (*domain.Response, error) {
+	d.called = true
+	if dl, ok := ctx.Deadline(); ok {
+		d.hadDeadline = true
+		d.remaining = time.Until(dl)
+	}
+	return &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`)}, nil
+}

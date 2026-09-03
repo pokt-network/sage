@@ -603,6 +603,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 	healthExe.SetConfiguredChecks(configuredChecks)
 	healthExe.SetBackendURLDedup(!cfg.Gateway.HealthChecks.DisableBackendURLDedup)
+	healthExe.SetProbeTimeout(cfg.Gateway.HealthChecks.ProbeTimeout)
 	// Probe once, apply everywhere: only the leader sends probe relays (each
 	// one is paid for from the app's stake); it publishes every result to a
 	// Redis stream and every replica applies them. Without Redis the elector

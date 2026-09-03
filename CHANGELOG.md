@@ -250,6 +250,29 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **A health check is bounded on its own, not by the client relay timeout.**
+  Nothing on the probe path set a deadline, so a probe inherited
+  `defaults.timeout.relay_timeout` — 30s unconfigured — and one hung backend
+  held a worker for the whole of it. With the default pool of four that is a
+  quarter of the fleet's probe capacity spent learning something a few seconds
+  would have told us. The mainnet canary on 2026-09-03 measured 2.87 probes/s
+  at four-way concurrency, a mean of 1.39s per probe against a healthy
+  `eth_blockNumber` of tens of milliseconds: almost pure tail, and the reason a
+  sweep took five to nineteen minutes against a sixty-second configured
+  interval. `active_health_checks.probe_timeout` now bounds one check, default
+  5s — an order of magnitude above a healthy response and six times below the
+  relay timeout.
+
+  The value is chosen against both failure directions, not rounded. Too long
+  was the state SAGE was in. Too short is worse: a probe cut off early is
+  graded a minor error against a supplier that was merely loaded, so the
+  timeout would manufacture the failure it reports. Raise it rather than lower
+  it if timeouts start appearing against backends that are only slow.
+
+  This lowers probe load rather than raising it, which is why it is preferable
+  to a larger worker pool: the same suppliers serve client traffic, and more
+  probe concurrency competes with relays for them.
+
 - **`active_health_checks.interval` is a floor, not the cadence — and now it
   says so.** The cycle runs on the ticker's own goroutine and dispatch blocks
   on a fixed worker pool (four), so a cycle that outlasts its tick does not
