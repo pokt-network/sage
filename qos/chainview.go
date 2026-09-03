@@ -35,6 +35,29 @@ type ChainView struct {
 	// Newest is when the most recent observation arrived, zero if there is
 	// none inside the window.
 	Newest time.Time
+	// BlockRate is how many blocks this chain produces per second, and
+	// BlockRateKnown whether that could be derived at all. See
+	// BlockConsensus.BlockRate: a stalled chain has no rate, and it is
+	// reported as unknown rather than as zero.
+	BlockRate      float64
+	BlockRateKnown bool
+}
+
+// SpreadSeconds converts the block spread into time, and reports whether that
+// conversion was possible.
+//
+// Blocks are not comparable across chains and reading them as if they were
+// inverts the answer. On the mainnet canary on 2026-09-03, arb-one showed 534
+// blocks of spread against eth's 11 — a 48x difference that looks damning
+// until the block times go in: arb-one at roughly a quarter-second a block is
+// 133 seconds, eth at roughly twelve is 132. The same number. An operator
+// without both block times in their head reads the block figure backwards,
+// which is why this exists next to it.
+func (v ChainView) SpreadSeconds() (float64, bool) {
+	if !v.BlockRateKnown || v.BlockRate <= 0 {
+		return 0, false
+	}
+	return float64(v.Spread()) / v.BlockRate, true
 }
 
 // Spread is how far apart the endpoints in the window are. Zero with no
@@ -70,6 +93,7 @@ func (bc *BlockConsensus) ChainView() ChainView {
 	defer bc.mu.RUnlock()
 
 	view := ChainView{Perceived: bc.perceived.Load()}
+	view.BlockRate, view.BlockRateKnown = blockRate(bc.rateSamples)
 	seen := make(map[domain.EndpointAddr]struct{}, len(bc.observations))
 	first := true
 	for _, obs := range bc.observations {

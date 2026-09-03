@@ -28,6 +28,11 @@ type BlockConsensus struct {
 
 	perceived atomic.Uint64 // lock-free read on hot path
 
+	// rateSamples is a short history of (perceived height, when) used to derive
+	// how fast this chain produces blocks. Under mu, appended only when the
+	// perceived height moves. See BlockRate.
+	rateSamples []rateSample
+
 	externalFloor atomic.Uint64 // from external block sources
 	graceStart    time.Time
 	gracePeriod   time.Duration
@@ -119,6 +124,7 @@ func (bc *BlockConsensus) AddObservation(endpoint domain.EndpointAddr, height ui
 	// path nothing: mu is already held.
 	beforeStoreHook("add")
 	bc.perceived.Store(perceived)
+	bc.recordRateSampleLocked(perceived, now)
 	bc.mu.Unlock()
 }
 
@@ -155,6 +161,9 @@ func (bc *BlockConsensus) SetExternalFloor(height uint64) {
 func (bc *BlockConsensus) Reset() {
 	bc.mu.Lock()
 	bc.observations = bc.observations[:0]
+	// The rate history is part of what a reset discards: kept, it would let a
+	// poisoned chain's cadence outlive the heights it was derived from.
+	bc.rateSamples = bc.rateSamples[:0]
 	bc.graceStart = time.Now()
 	beforeStoreHook("reset")
 	bc.perceived.Store(0)
@@ -235,4 +244,67 @@ func (bc *BlockConsensus) applyExternalFloor(perceived uint64, now time.Time) ui
 		return floor
 	}
 	return perceived
+}
+
+// maxRateSamples bounds the block-rate history. Sixteen samples of a chain
+// that moves is minutes of history on a fast chain and an hour on a slow one,
+// which is the range the rate needs to be stable over; the cap exists because
+// entries are never removed individually.
+const maxRateSamples = 16
+
+// rateSample is a perceived height and when it was published.
+type rateSample struct {
+	height uint64
+	at     time.Time
+}
+
+// recordRateSampleLocked appends a sample when the perceived height moves.
+// Called under mu.
+//
+// Only on movement, deliberately. A chain observed every second and a chain
+// observed every minute should yield the same blocks-per-second, and sampling
+// on every observation would fill the history with repeats of one height on
+// the busy service and derive a rate of zero from them.
+func (bc *BlockConsensus) recordRateSampleLocked(perceived uint64, now time.Time) {
+	if perceived == 0 {
+		return
+	}
+	if n := len(bc.rateSamples); n > 0 && bc.rateSamples[n-1].height == perceived {
+		return
+	}
+	if len(bc.rateSamples) >= maxRateSamples {
+		bc.rateSamples = append(bc.rateSamples[:0], bc.rateSamples[1:]...)
+	}
+	bc.rateSamples = append(bc.rateSamples, rateSample{height: perceived, at: now})
+}
+
+// BlockRate reports how many blocks this chain produces per second, derived
+// from how far the perceived height has moved over how long, and whether that
+// is known at all.
+//
+// It is derived rather than configured because a per-chain block-time table is
+// a set of values that drift and duplicate what the consensus is already
+// watching. Two samples of a moving chain are enough, and the answer
+// self-corrects when a chain changes its cadence.
+//
+// Not known, and reported as such rather than guessed: fewer than two samples,
+// no elapsed time between them, or a height that has not advanced. A stalled
+// chain has no rate, and inventing one would turn a stalled chain into a
+// confident wrong number in every metric derived from it.
+func (bc *BlockConsensus) BlockRate() (float64, bool) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	return blockRate(bc.rateSamples)
+}
+
+func blockRate(samples []rateSample) (float64, bool) {
+	if len(samples) < 2 {
+		return 0, false
+	}
+	oldest, newest := samples[0], samples[len(samples)-1]
+	elapsed := newest.at.Sub(oldest.at).Seconds()
+	if elapsed <= 0 || newest.height <= oldest.height {
+		return 0, false
+	}
+	return float64(newest.height-oldest.height) / elapsed, true
 }

@@ -45,10 +45,11 @@ type ChainViewCollector struct {
 	services []domain.ServiceID
 	now      func() time.Time
 
-	height    *prometheus.Desc
-	spread    *prometheus.Desc
-	endpoints *prometheus.Desc
-	staleness *prometheus.Desc
+	height        *prometheus.Desc
+	spread        *prometheus.Desc
+	endpoints     *prometheus.Desc
+	staleness     *prometheus.Desc
+	spreadSeconds *prometheus.Desc
 }
 
 // NewChainViewCollector returns a collector for the given services. It does not
@@ -74,6 +75,11 @@ func NewChainViewCollector(source ChainViewSource, services []domain.ServiceID) 
 			"Distinct endpoints that reported a height inside the consensus window. One is not a consensus; zero means the service is selecting on a height nothing currently confirms.",
 			label, nil,
 		),
+		spreadSeconds: prometheus.NewDesc(
+			"sage_chain_view_spread_seconds",
+			"The block spread expressed as time, using a block rate derived from how fast this chain's perceived height moves. This is the figure to compare ACROSS services: blocks are not comparable between chains, so 534 blocks on a quarter-second chain and 11 blocks on a twelve-second chain are the same 133 seconds. Absent when the chain has not moved enough to derive a rate — a stalled chain has no rate, and guessing one would report a confident wrong number.",
+			label, nil,
+		),
 		staleness: prometheus.NewDesc(
 			"sage_chain_view_staleness_seconds",
 			"Age of the newest block-height observation for this service. A probed service refreshes every health-check cycle; one whose probes are skipped refreshes only when client traffic happens to carry a height, so this is what shows a chain view going stale. Absent when there is no observation in the window — sage_chain_view_endpoints reads 0 there.",
@@ -88,6 +94,7 @@ func (c *ChainViewCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.spread
 	ch <- c.endpoints
 	ch <- c.staleness
+	ch <- c.spreadSeconds
 }
 
 // Collect implements prometheus.Collector.
@@ -102,6 +109,9 @@ func (c *ChainViewCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.height, prometheus.GaugeValue, float64(view.Perceived), id)
 		ch <- prometheus.MustNewConstMetric(c.spread, prometheus.GaugeValue, float64(view.Spread()), id)
 		ch <- prometheus.MustNewConstMetric(c.endpoints, prometheus.GaugeValue, float64(view.Endpoints), id)
+		if secs, ok := view.SpreadSeconds(); ok {
+			ch <- prometheus.MustNewConstMetric(c.spreadSeconds, prometheus.GaugeValue, secs, id)
+		}
 		// Emitted only when there is something to be stale: a zero timestamp
 		// would otherwise export the age of the Unix epoch, which reads as a
 		// catastrophically stale chain rather than as no data.

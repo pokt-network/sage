@@ -34,7 +34,11 @@ func collectChainView(t *testing.T, src ChainViewSource, services []domain.Servi
 func TestChainViewCollector_ExportsTheView(t *testing.T) {
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	src := fakeChainViews{views: map[domain.ServiceID]qos.ChainView{
-		"eth": {Perceived: 1000, Highest: 1004, Lowest: 998, Endpoints: 3, Newest: now.Add(-45 * time.Second)},
+		"eth": {
+			Perceived: 1000, Highest: 1004, Lowest: 998, Endpoints: 3,
+			Newest:    now.Add(-45 * time.Second),
+			BlockRate: 0.5, BlockRateKnown: true,
+		},
 	}}
 
 	got := collectChainView(t, src, []domain.ServiceID{"eth"}, now)
@@ -44,6 +48,8 @@ func TestChainViewCollector_ExportsTheView(t *testing.T) {
 		`sage_chain_view_spread_blocks{service_id="eth"}`:     6,
 		`sage_chain_view_endpoints{service_id="eth"}`:         3,
 		`sage_chain_view_staleness_seconds{service_id="eth"}`: 45,
+		// 6 blocks at half a block a second.
+		`sage_chain_view_spread_seconds{service_id="eth"}`: 12,
 	}
 	for name, v := range want {
 		if got[name] != v {
@@ -102,6 +108,7 @@ func scrapeAll(t *testing.T, reg *prometheus.Registry) map[string]float64 {
 	out := make(map[string]float64)
 	for _, name := range []string{
 		"sage_chain_view_height",
+		"sage_chain_view_spread_seconds",
 		"sage_chain_view_spread_blocks",
 		"sage_chain_view_endpoints",
 		"sage_chain_view_staleness_seconds",
@@ -111,4 +118,23 @@ func scrapeAll(t *testing.T, reg *prometheus.Registry) map[string]float64 {
 		}
 	}
 	return out
+}
+
+// A chain with no derivable rate exports no seconds figure. Guessing one would
+// turn a stalled chain into a confident wrong number, and the block spread is
+// still there for anyone who knows the chain.
+func TestChainViewCollector_OmitsSpreadSecondsWithoutARate(t *testing.T) {
+	now := time.Now()
+	src := fakeChainViews{views: map[domain.ServiceID]qos.ChainView{
+		"eth": {Perceived: 1000, Highest: 1100, Lowest: 1000, Endpoints: 2, Newest: now},
+	}}
+
+	got := collectChainView(t, src, []domain.ServiceID{"eth"}, now)
+
+	if v, ok := got[`sage_chain_view_spread_seconds{service_id="eth"}`]; ok {
+		t.Errorf("exported %v seconds with no block rate; it must be absent", v)
+	}
+	if got[`sage_chain_view_spread_blocks{service_id="eth"}`] != 100 {
+		t.Error("the block spread must still be exported")
+	}
 }

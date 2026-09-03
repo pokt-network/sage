@@ -308,6 +308,18 @@ the source of truth for the design and the reasoning behind it.
   zero, and staleness is omitted rather than reported as the age of the Unix
   epoch when there is no observation at all.
 
+  `sage_chain_view_spread_seconds` was added within hours, because the block
+  figure alone reads backwards across chains. The canary showed arb-one at 534
+  blocks of spread against eth's 11 — a 48x gap that looks damning until the
+  block times go in: arb-one at roughly a quarter-second a block is 133
+  seconds, eth at roughly twelve is 132. The same number. The rate behind it is
+  derived from how fast the perceived height moves rather than configured per
+  chain, because a block-time table is a set of values that drift and duplicate
+  what the consensus is already watching; it self-corrects when a chain changes
+  cadence, and it reports unknown rather than guessing when a chain has not
+  moved. A stalled chain has no rate, and inventing one would turn it into a
+  confident wrong number in every figure derived from it.
+
 - **A WebSocket session expiry reached the client as an undecoded protobuf
   blob, and cost the supplier reputation.** The relay miner puts a backend's
   raw WebSocket frame straight into `RelayResponse.Payload`, so SAGE forwarded
