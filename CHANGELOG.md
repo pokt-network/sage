@@ -403,6 +403,24 @@ the source of truth for the design and the reasoning behind it.
   moved. A stalled chain has no rate, and inventing one would turn it into a
   confident wrong number in every figure derived from it.
 
+  `sage_chain_view_disagreement_seconds` followed within the day, because
+  spread cannot answer "do my endpoints agree?" and on a moving chain mostly
+  does not. Observations inside the window are taken at different moments — a
+  probe sweep visits each backend once per cycle — and the chain advances in
+  between, so the age of the readings reads as disagreement. The canary showed
+  nearly every service at 100-140 seconds of spread against a 74-second probe
+  cycle, which is very close to being entirely age. The disagreement figure
+  projects every observation to one instant at the chain's own rate first, so
+  what is left is endpoints that genuinely differ; gnosis and bera, at 45 and
+  46 days, stay exactly where they were.
+
+  Both figures cover every endpoint observed, not only the ones selection would
+  use, and that is deliberate: an endpoint on the wrong chain or stalled for
+  weeks is already excluded from serving traffic, and the point of the view is
+  that somebody can see it is there. It does make spread a worst-pair figure
+  that one bad reporter dominates, which is the other reason disagreement is
+  the one to read.
+
 - **A WebSocket session expiry reached the client as an undecoded protobuf
   blob, and cost the supplier reputation.** The relay miner puts a backend's
   raw WebSocket frame straight into `RelayResponse.Payload`, so SAGE forwarded

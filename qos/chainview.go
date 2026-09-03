@@ -41,6 +41,37 @@ type ChainView struct {
 	// reported as unknown rather than as zero.
 	BlockRate      float64
 	BlockRateKnown bool
+
+	// adjustedSpread is Spread with the time between observations taken out.
+	// See DisagreementSeconds. Only meaningful when BlockRateKnown.
+	adjustedSpread float64
+}
+
+// DisagreementSeconds is how far apart the endpoints are once the time between
+// their observations is removed, and whether that could be computed.
+//
+// Spread cannot answer "do my endpoints agree?" on its own, and on a moving
+// chain it mostly does not. Observations inside the consensus window are taken
+// at different moments — a probe sweep visits each backend once per cycle, so
+// two endpoints can be observed a whole cycle apart — and the chain advances in
+// between. On the mainnet canary on 2026-09-03, nearly every service showed
+// 100-140 seconds of spread, which at a 74-second cycle is very close to being
+// entirely the age of the observations rather than any disagreement at all.
+//
+// This projects every observation forward to one instant at the chain's own
+// rate before measuring, so what is left is endpoints that genuinely differ.
+// A service where the figure collapses toward zero was never disagreeing; one
+// where it does not has an endpoint on a different chain, a stalled node, or a
+// liar.
+//
+// Unknown when the block rate is: with no rate there is nothing to project at,
+// and projecting at a guessed rate would manufacture agreement or disagreement
+// out of the guess.
+func (v ChainView) DisagreementSeconds() (float64, bool) {
+	if !v.BlockRateKnown || v.BlockRate <= 0 || v.Endpoints == 0 {
+		return 0, false
+	}
+	return v.adjustedSpread / v.BlockRate, true
 }
 
 // SpreadSeconds converts the block spread into time, and reports whether that
@@ -80,6 +111,14 @@ type ChainViewer interface {
 // ChainView reports what this consensus currently holds, over the same window
 // the perceived height is computed from.
 //
+// It reports over EVERY endpoint that has been observed in the window, not
+// only the ones selection would use. That is deliberate and worth stating,
+// because a dashboard will assume otherwise: an endpoint on the wrong chain or
+// a node stalled for weeks is already excluded from serving traffic, and the
+// point of this view is that somebody can see it is there. Spread is therefore
+// a worst-pair figure and one bad reporter dominates it — DisagreementSeconds
+// is the one to read for whether the pool agrees.
+//
 // It prunes nothing: a read must not mutate what a concurrent write is
 // computing against, and an observation just outside the window is excluded
 // here by the same cutoff computeperceived would apply. That means a quiet
@@ -94,6 +133,16 @@ func (bc *BlockConsensus) ChainView() ChainView {
 
 	view := ChainView{Perceived: bc.perceived.Load()}
 	view.BlockRate, view.BlockRateKnown = blockRate(bc.rateSamples)
+
+	// adjusted projects an observation to `now` at the chain's own rate, so the
+	// time between observations does not read as disagreement.
+	adjusted := func(obs blockObs) float64 {
+		if !view.BlockRateKnown {
+			return float64(obs.Height)
+		}
+		return float64(obs.Height) + view.BlockRate*now.Sub(obs.Timestamp).Seconds()
+	}
+	var adjHigh, adjLow float64
 	seen := make(map[domain.EndpointAddr]struct{}, len(bc.observations))
 	first := true
 	for _, obs := range bc.observations {
@@ -104,16 +153,28 @@ func (bc *BlockConsensus) ChainView() ChainView {
 		switch {
 		case first:
 			view.Highest, view.Lowest = obs.Height, obs.Height
+			adjHigh, adjLow = adjusted(obs), adjusted(obs)
 			first = false
-		case obs.Height > view.Highest:
-			view.Highest = obs.Height
-		case obs.Height < view.Lowest:
-			view.Lowest = obs.Height
+		default:
+			if obs.Height > view.Highest {
+				view.Highest = obs.Height
+			}
+			if obs.Height < view.Lowest {
+				view.Lowest = obs.Height
+			}
+			if a := adjusted(obs); a > adjHigh {
+				adjHigh = a
+			} else if a < adjLow {
+				adjLow = a
+			}
 		}
 		if obs.Timestamp.After(view.Newest) {
 			view.Newest = obs.Timestamp
 		}
 	}
 	view.Endpoints = len(seen)
+	if adjHigh > adjLow {
+		view.adjustedSpread = adjHigh - adjLow
+	}
 	return view
 }

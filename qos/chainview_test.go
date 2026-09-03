@@ -268,3 +268,90 @@ func TestChainView_SpreadSecondsAbsentWithoutARate(t *testing.T) {
 		}
 	}
 }
+
+// The canary's finding, 2026-09-03: nearly every service showed 100-140s of
+// spread at a 74s probe cycle, which is very nearly all age and no
+// disagreement. A probe sweep visits each backend once per cycle, so two
+// endpoints are observed a cycle apart and the chain moves in between.
+func TestChainView_DisagreementRemovesObservationAge(t *testing.T) {
+	bc := newTestConsensus(t)
+	now := time.Now()
+
+	// A 12-second chain, three endpoints in perfect agreement, observed 37
+	// seconds apart — so their raw heights differ purely from time passing.
+	const rate = 1.0 / 12
+	bc.mu.Lock()
+	bc.rateSamples = []rateSample{
+		{height: 1000, at: now.Add(-120 * time.Second)},
+		{height: 1010, at: now},
+	}
+	bc.observations = []blockObs{
+		{Endpoint: "supA-https://a.example.com", Height: 1000, Timestamp: now.Add(-74 * time.Second)},
+		{Endpoint: "supB-https://b.example.com", Height: 1003, Timestamp: now.Add(-37 * time.Second)},
+		{Endpoint: "supC-https://c.example.com", Height: 1006, Timestamp: now},
+	}
+	bc.perceived.Store(1006)
+	bc.mu.Unlock()
+
+	view := bc.ChainView()
+
+	// Raw spread is six blocks, which at a twelve-second chain reads as 72
+	// seconds of "disagreement" that is not there.
+	if view.Spread() != 6 {
+		t.Fatalf("raw spread = %d blocks, want 6", view.Spread())
+	}
+	raw, ok := view.SpreadSeconds()
+	if !ok || raw < 60 {
+		t.Fatalf("raw spread in seconds = %v (ok=%v), want the misleading ~72s", raw, ok)
+	}
+
+	// Age-adjusted, they agree.
+	disagreement, ok := view.DisagreementSeconds()
+	if !ok {
+		t.Fatal("no disagreement figure with a known rate")
+	}
+	if disagreement > 15 {
+		t.Errorf("disagreement = %.1fs for endpoints that are exactly in step at %v blocks/s; "+
+			"the observation age is not being removed", disagreement, rate)
+	}
+}
+
+// A genuinely divergent endpoint stays divergent: the adjustment must not
+// explain away a node on the wrong chain or stalled for weeks, which is what
+// gnosis and bera showed on the canary at 45-46 days of spread.
+func TestChainView_DisagreementKeepsRealDivergence(t *testing.T) {
+	bc := newTestConsensus(t)
+	now := time.Now()
+
+	bc.mu.Lock()
+	bc.rateSamples = []rateSample{
+		{height: 1000, at: now.Add(-120 * time.Second)},
+		{height: 1010, at: now},
+	}
+	bc.observations = []blockObs{
+		{Endpoint: "supA-https://a.example.com", Height: 1000, Timestamp: now},
+		{Endpoint: "supB-https://b.example.com", Height: 1001, Timestamp: now},
+		// Stalled weeks ago, and still reporting.
+		{Endpoint: "supC-https://c.example.com", Height: 400, Timestamp: now},
+	}
+	bc.perceived.Store(1001)
+	bc.mu.Unlock()
+
+	disagreement, ok := bc.ChainView().DisagreementSeconds()
+	if !ok {
+		t.Fatal("no disagreement figure")
+	}
+	// 600 blocks at one per twelve seconds is 7,200 seconds.
+	if disagreement < 6_000 {
+		t.Errorf("disagreement = %.0fs for an endpoint 600 blocks behind; a stalled node must stay visible", disagreement)
+	}
+}
+
+// No rate means no projection, and a guessed one would manufacture agreement.
+func TestChainView_DisagreementAbsentWithoutARate(t *testing.T) {
+	bc := newTestConsensus(t)
+	bc.AddObservation("supA-https://a.example.com", 1000) // one height, no movement
+	if v, ok := bc.ChainView().DisagreementSeconds(); ok {
+		t.Errorf("reported %v seconds of disagreement with no derivable rate", v)
+	}
+}
