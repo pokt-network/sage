@@ -3,6 +3,7 @@ package healthcheck
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -239,7 +240,7 @@ func newSkipExecutor(t *testing.T, signals uint64, flagOn, warm bool) (*Executor
 	const ep = domain.EndpointAddr("supA-https://node.example.com")
 	c := &fakeCounter{signals: map[string]uint64{string(ep) + "|json_rpc": signals}}
 
-	e := &Executor{}
+	e := &Executor{qosRegistry: qos.NewRegistry()}
 	e.skipper = newTrafficSkipper(c, TrafficSkipConfig{MinSignals: 20})
 	e.flags = featureflag.NewMemoryStore(map[string]bool{
 		featureflag.FlagTrafficInformedProbing: flagOn,
@@ -251,8 +252,8 @@ func newSkipExecutor(t *testing.T, signals uint64, flagOn, warm bool) (*Executor
 	// Establish the baseline the diff needs, at zero traffic.
 	c.signals[string(ep)+"|json_rpc"] = 0
 	e.skipper.beginCycle()
-	e.skipCoveredByTraffic(context.Background(), "eth", ep, "https://node.example.com",
-		skipTestCheck(), time.Minute, skipTestClock)
+	e.skipCoveredByTraffic(context.Background(), "eth", ep, domain.EndpointAddrList{ep},
+		"https://node.example.com", skipTestCheck(), time.Minute, skipTestClock)
 	e.skipper.endCycle(skipTestClock)
 	c.signals[string(ep)+"|json_rpc"] = signals
 	return e, rec
@@ -272,9 +273,9 @@ func skipTestCheck() qos.HealthCheck {
 func askSkip(e *Executor) bool {
 	e.skipper.beginCycle()
 	defer e.skipper.endCycle(skipTestClock.Add(time.Minute))
-	return e.skipCoveredByTraffic(context.Background(), "eth",
-		"supA-https://node.example.com", "https://node.example.com", skipTestCheck(),
-		time.Minute, skipTestClock.Add(time.Minute))
+	const ep = domain.EndpointAddr("supA-https://node.example.com")
+	return e.skipCoveredByTraffic(context.Background(), "eth", ep, domain.EndpointAddrList{ep},
+		"https://node.example.com", skipTestCheck(), time.Minute, skipTestClock.Add(time.Minute))
 }
 
 // The three guards, each on its own. Traffic alone is not enough to stop a
@@ -310,11 +311,11 @@ func TestSkipCoveredByTraffic_Guards(t *testing.T) {
 
 // A pod with no skipper wired behaves exactly as it did before this existed.
 func TestSkipCoveredByTraffic_NoSkipperNeverSkips(t *testing.T) {
-	e := &Executor{}
+	e := &Executor{qosRegistry: qos.NewRegistry()}
 	e.warm.Store(true)
-	if e.skipCoveredByTraffic(context.Background(), "eth",
-		"supA-https://node.example.com", "https://node.example.com", skipTestCheck(),
-		time.Minute, skipTestClock) {
+	const ep = domain.EndpointAddr("supA-https://node.example.com")
+	if e.skipCoveredByTraffic(context.Background(), "eth", ep, domain.EndpointAddrList{ep},
+		"https://node.example.com", skipTestCheck(), time.Minute, skipTestClock) {
 		t.Error("skipped with no traffic skipper wired")
 	}
 }
@@ -408,39 +409,109 @@ func TestTrafficSkipper_WaitsForTheWindow(t *testing.T) {
 	}
 }
 
-// The check that feeds block height is never skipped, however much traffic a
-// backend carries.
+// The height check is skipped only when the plugin has actually received a
+// height for this backend inside the probe's own interval.
 //
-// Raised by ops from the canary on 2026-09-03, where arb-one reached 100% skip
-// and so had no probe-sourced observations at all. The traffic threshold
-// guarantees observation COUNT; only this guarantees observation CONTENT. EVM
-// reads a height out of eth_blockNumber alone, so a service carrying heavy
-// eth_call traffic can clear the gate by orders of magnitude and still teach
-// the block consensus nothing.
-func TestSkipCoveredByTraffic_NeverSkipsAnEssentialCheck(t *testing.T) {
+// The blunt version of this rule — never skip an essential check — was right
+// about the uncertainty and wrong about what to do with it. The traffic
+// threshold guarantees how many observations arrive, not that any contains a
+// height, because only one method per chain yields one. But the canary then
+// showed sixteen busy services at 2-5 seconds of chain-view staleness against
+// an 86-second cycle: client traffic was supplying heights continuously, and
+// refusing to skip there protected nothing. The question is not whether
+// traffic COULD carry a height, it is whether it DID.
+func TestSkipCoveredByTraffic_EssentialCheckFollowsTheObservation(t *testing.T) {
 	essential := skipTestCheck()
 	essential.Essential = true
+	const ep = domain.EndpointAddr("supA-https://node.example.com")
 
-	e, rec := newSkipExecutor(t, 100_000, true, true)
-	got := e.skipCoveredByTraffic(context.Background(), "eth",
-		"supA-https://node.example.com", "https://node.example.com", essential,
-		time.Minute, skipTestClock.Add(time.Minute))
+	ask := func(t *testing.T, plugin qos.Plugin) (bool, *recordingResultRecorder) {
+		t.Helper()
+		e, rec := newSkipExecutor(t, 100_000, true, true)
+		reg := qos.NewRegistry()
+		if err := reg.Register("eth", plugin); err != nil {
+			t.Fatal(err)
+		}
+		e.qosRegistry = reg
+		return e.skipCoveredByTraffic(context.Background(), "eth", ep, domain.EndpointAddrList{ep},
+			"https://node.example.com", essential, time.Minute, skipTestClock.Add(time.Minute)), rec
+	}
+	observedAgo := func(d time.Duration) qos.Plugin {
+		return &stubHeightObserver{seen: true, last: skipTestClock.Add(time.Minute).Add(-d)}
+	}
 
-	if got {
-		t.Error("skipped the block-height check on traffic volume; no amount of eth_call traffic contains a height")
-	}
-	if len(rec.skipped) != 0 {
-		t.Errorf("recorded %d skips for a check that was not skipped", len(rec.skipped))
-	}
+	t.Run("a height inside the interval makes the probe redundant", func(t *testing.T) {
+		got, rec := ask(t, observedAgo(5*time.Second))
+		if !got {
+			t.Error("did not skip: a height arrived 5s ago against a 60s interval, so the probe learns nothing")
+		}
+		if len(rec.skipped) != 1 {
+			t.Errorf("recorded %d skips, want 1", len(rec.skipped))
+		}
+	})
 
-	// And the non-essential check beside it still skips, so this is a carve-out
-	// rather than a switch that turned the feature off.
-	e2, _ := newSkipExecutor(t, 100_000, true, true)
-	if !e2.skipCoveredByTraffic(context.Background(), "eth",
-		"supA-https://node.example.com", "https://node.example.com", skipTestCheck(),
-		time.Minute, skipTestClock.Add(time.Minute)) {
-		t.Error("a non-essential check with the same traffic did not skip")
-	}
+	t.Run("a height older than the interval does not", func(t *testing.T) {
+		if got, _ := ask(t, observedAgo(2*time.Minute)); got {
+			t.Error("skipped on a height older than the interval — that is the staleness the probe exists to prevent")
+		}
+	})
+
+	t.Run("no height at all does not", func(t *testing.T) {
+		if got, _ := ask(t, &stubHeightObserver{}); got {
+			t.Error("skipped with no height observation; unknown is not fresh")
+		}
+	})
+
+	// The interface says the timestamp is meaningless when the bool is false,
+	// so the caller has to read the bool. BlockConsensus happens to return a
+	// zero time there, which the freshness arithmetic would reject on its own
+	// — but that is its accident, not the contract, and a future implementation
+	// returning a real time with false must not be read as fresh.
+	t.Run("a recent timestamp reported as unseen does not", func(t *testing.T) {
+		liar := &stubHeightObserver{seen: false, last: skipTestClock.Add(time.Minute)}
+		if got, _ := ask(t, liar); got {
+			t.Error("skipped on a timestamp the observer said was not real; the bool is the answer, not the time")
+		}
+	})
+
+	t.Run("a plugin that tracks no height does not", func(t *testing.T) {
+		if got, _ := ask(t, stubPluginNoHeight{}); got {
+			t.Error("skipped for a plugin that cannot report an observation")
+		}
+	})
+
+	// The non-essential check beside it is unaffected: it skips on traffic
+	// volume alone, which is what it always did.
+	t.Run("a non-essential check still skips on traffic", func(t *testing.T) {
+		e, _ := newSkipExecutor(t, 100_000, true, true)
+		if !e.skipCoveredByTraffic(context.Background(), "eth", ep, domain.EndpointAddrList{ep},
+			"https://node.example.com", skipTestCheck(), time.Minute, skipTestClock.Add(time.Minute)) {
+			t.Error("a non-essential check with the same traffic did not skip")
+		}
+	})
+}
+
+// stubHeightObserver is a plugin that reports a height observation.
+type stubHeightObserver struct {
+	stubPluginNoHeight
+	seen bool
+	last time.Time
+}
+
+func (s *stubHeightObserver) LastHeightObservation(domain.EndpointAddrList) (time.Time, bool) {
+	return s.last, s.seen
+}
+
+// stubPluginNoHeight is the core Plugin interface and nothing else — the shape
+// of a service whose plugin tracks no chain.
+type stubPluginNoHeight struct{}
+
+func (stubPluginNoHeight) ParseRequest(context.Context, *http.Request, []byte, domain.RPCType) ([]domain.Payload, error) {
+	return nil, nil
+}
+
+func (stubPluginNoHeight) SelectEndpoints(eps domain.EndpointAddrList, _ []domain.Payload) (domain.EndpointAddrList, error) {
+	return eps, nil
 }
 
 // The cadence a health checker achieves is the longer of its configured

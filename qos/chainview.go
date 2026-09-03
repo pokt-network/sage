@@ -108,6 +108,26 @@ type ChainViewer interface {
 	ChainView() ChainView
 }
 
+// HeightObserver reports when a backend last supplied a block height, from any
+// source — a probe or a client relay that happened to ask for one.
+//
+// It exists so the health-check executor can tell whether its own probe would
+// learn anything. The plugin's height check is normally unskippable, because
+// the traffic threshold guarantees how many observations arrive and not what
+// is in them: only one method per chain yields a height, and a client sends
+// whatever it likes. But that is an argument about uncertainty, and this
+// removes the uncertainty — if a height for this backend arrived within the
+// probe's own interval, the probe is buying a second copy of it.
+//
+// Takes the whole sibling set rather than one address because a height is a
+// fact about the BACKEND, not about the staked registration used to reach it.
+// Probe results already fan out to siblings for the same reason, and client
+// traffic reaches whichever registration selection picked, which is rarely the
+// one the probe rotation would have used.
+type HeightObserver interface {
+	LastHeightObservation(endpoints domain.EndpointAddrList) (time.Time, bool)
+}
+
 // ChainView reports what this consensus currently holds, over the same window
 // the perceived height is computed from.
 //
@@ -177,4 +197,35 @@ func (bc *BlockConsensus) ChainView() ChainView {
 		view.adjustedSpread = adjHigh - adjLow
 	}
 	return view
+}
+
+// LastHeightObservation returns when any of these endpoints last reported a
+// height inside the consensus window, and whether any did.
+//
+// One pass over the window rather than a lookup per endpoint: the window is
+// bounded (maxObservations) and the sibling set is small, and this is called
+// once per backend per cycle, so the scan is cheaper than the map it would
+// otherwise need maintaining on the hot observation path.
+func (bc *BlockConsensus) LastHeightObservation(endpoints domain.EndpointAddrList) (time.Time, bool) {
+	if len(endpoints) == 0 {
+		return time.Time{}, false
+	}
+	wanted := make(map[domain.EndpointAddr]struct{}, len(endpoints))
+	for _, ep := range endpoints {
+		wanted[ep] = struct{}{}
+	}
+
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+
+	var newest time.Time
+	for _, obs := range bc.observations {
+		if _, ok := wanted[obs.Endpoint]; !ok {
+			continue
+		}
+		if obs.Timestamp.After(newest) {
+			newest = obs.Timestamp
+		}
+	}
+	return newest, !newest.IsZero()
 }

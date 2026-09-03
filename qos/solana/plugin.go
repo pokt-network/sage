@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
@@ -161,6 +162,13 @@ func (p *Plugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck {
 // the metrics exporter. Delegates to the consensus that owns the observations.
 func (p *Plugin) ChainView() qos.ChainView { return p.consensus.ChainView() }
 
+// LastHeightObservation reports when any of these endpoints last supplied a
+// block height, so the executor can tell whether its height probe would learn
+// anything the plugin does not already know.
+func (p *Plugin) LastHeightObservation(endpoints domain.EndpointAddrList) (time.Time, bool) {
+	return p.consensus.LastHeightObservation(endpoints)
+}
+
 // --- qos.DataExtractor --- //
 
 // ExtractData parses structured data from a Solana relay response.
@@ -250,6 +258,7 @@ var (
 	_ qos.HealthChecker         = (*Plugin)(nil)
 	_ qos.DataExtractor         = (*Plugin)(nil)
 	_ qos.ChainViewer           = (*Plugin)(nil)
+	_ qos.HeightObserver        = (*Plugin)(nil)
 	_ qos.CoalescenceClassifier = (*Plugin)(nil)
 	_ qos.LifecycleHooks        = (*Plugin)(nil)
 	_ qos.StateResetter         = (*Plugin)(nil)

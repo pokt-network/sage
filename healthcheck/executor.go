@@ -445,7 +445,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 				// then skipping it is also what keeps the schedule honest — a
 				// skipped check is covered, not overdue, so it must not come
 				// back the moment traffic pauses.
-				if e.skipCoveredByTraffic(ctx, serviceID, probe, group.key, check, interval, now) {
+				if e.skipCoveredByTraffic(ctx, serviceID, probe, group.endpoints, group.key, check, interval, now) {
 					continue
 				}
 				checks = append(checks, check)
@@ -487,6 +487,7 @@ func (e *Executor) skipCoveredByTraffic(
 	ctx context.Context,
 	serviceID domain.ServiceID,
 	ep domain.EndpointAddr,
+	siblings domain.EndpointAddrList,
 	backend string,
 	check qos.HealthCheck,
 	interval time.Duration,
@@ -495,15 +496,22 @@ func (e *Executor) skipCoveredByTraffic(
 	if e.skipper == nil || !e.warm.Load() {
 		return false
 	}
-	// An essential check is one whose ANSWER client traffic cannot supply —
+	// An essential check is one whose ANSWER client traffic may not supply —
 	// the plugin's block-height probe. The traffic threshold guarantees that
-	// enough observations arrive, not that any of them contains a height: a
-	// service carrying heavy eth_call traffic clears the gate easily and
-	// teaches the block consensus nothing, because ExtractData reads a height
-	// out of eth_blockNumber alone. Skipping every check for a busy service
-	// would therefore trade the probe spend for a chain view that goes stale
-	// exactly when the service is most used.
-	if check.Essential {
+	// enough observations arrive, not that any of them contains a height: only
+	// one method per chain yields one, and a client sends whatever it likes,
+	// so a service carrying heavy eth_call traffic can clear the gate by
+	// orders of magnitude and teach the block consensus nothing.
+	//
+	// That is an argument about uncertainty, so the answer is to remove the
+	// uncertainty rather than to refuse outright. If a height for this backend
+	// arrived within the probe's own interval — from anywhere, a client relay
+	// as readily as a probe — then the probe is buying a second copy of a fact
+	// the plugin already has, and the reason to keep it does not apply. The
+	// canary showed sixteen busy services sitting at 2-5 seconds of chain-view
+	// staleness against an 86-second cycle, which is client traffic supplying
+	// heights continuously; refusing to skip there was protecting nothing.
+	if check.Essential && !e.heightIsFresh(serviceID, siblings, interval, now) {
 		return false
 	}
 	if !e.flags.IsEnabled(ctx, featureflag.FlagTrafficInformedProbing, serviceID) {
@@ -539,6 +547,34 @@ func (e *Executor) logSkipProgress() {
 		slog.Uint64("max_traffic_delta", d.maxDelta),
 		slog.Uint64("min_traffic_signals", e.skipper.minSignals),
 	)
+}
+
+// heightIsFresh reports whether this backend has supplied a block height
+// within one interval, from any source.
+//
+// The sibling set, not the one endpoint the rotation picked: a height is a
+// fact about the backend and not about the staked registration used to reach
+// it, which is the same reason probe results already fan out to siblings.
+// Client traffic reaches whichever registration selection chose, which is
+// rarely the one this cycle's rotation would have probed.
+//
+// A plugin that cannot answer — one that tracks no height at all — reports
+// nothing, and the caller then keeps probing. Unknown is not fresh.
+func (e *Executor) heightIsFresh(
+	serviceID domain.ServiceID,
+	siblings domain.EndpointAddrList,
+	interval time.Duration,
+	now time.Time,
+) bool {
+	observer, ok := e.qosRegistry.Get(serviceID).(qos.HeightObserver)
+	if !ok {
+		return false
+	}
+	last, seen := observer.LastHeightObservation(siblings)
+	if !seen {
+		return false
+	}
+	return now.Sub(last) < interval
 }
 
 // backendGroup is the set of endpoints sharing one backend URL.

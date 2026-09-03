@@ -301,6 +301,25 @@ the source of truth for the design and the reasoning behind it.
   global interval anyway, which is parity in name only. The file's real gap is
   archival and websocket rows, not intervals.
 
+- **The block-height probe is skippable after all, when the height is already
+  in hand.** `qos.HealthCheck.Essential` was a blunt rule: never skip the check
+  that carries a fact client traffic might not supply. It was right about the
+  uncertainty and wrong about what to do with it — the canary answered the
+  question the rule was hedging against. Sixteen busy services sat at 2-5
+  seconds of chain-view staleness against an 86-second probe cycle, which is
+  client traffic supplying block heights continuously; refusing to skip there
+  was protecting nothing and buying a second copy of a fact the plugin already
+  had. The executor now asks the plugin, through the new `qos.HeightObserver`,
+  whether a height for this backend arrived within the probe's own interval,
+  and skips only then. So the question is no longer whether traffic COULD carry
+  a height but whether it DID.
+
+  It asks about the whole sibling set rather than the one address the rotation
+  picked, because a height is a fact about the backend and not about the staked
+  registration used to reach it — the same reason probe results already fan out
+  to siblings — and client traffic reaches whichever registration selection
+  chose. A plugin that cannot answer keeps its probe: unknown is not fresh.
+
 - **The three maps the ever-seen audit left open are bounded.** From the
   2026-09-01 sweep that followed the reputation-timeline OOM: every map keyed
   by endpoint, supplier, URL, host, session or method had a bound except these,

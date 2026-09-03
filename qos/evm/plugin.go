@@ -344,6 +344,13 @@ const chainIDCheckInterval = 5 * time.Minute
 // the metrics exporter. Delegates to the consensus that owns the observations.
 func (p *Plugin) ChainView() qos.ChainView { return p.consensus.ChainView() }
 
+// LastHeightObservation reports when any of these endpoints last supplied a
+// block height, so the executor can tell whether its height probe would learn
+// anything the plugin does not already know.
+func (p *Plugin) LastHeightObservation(endpoints domain.EndpointAddrList) (time.Time, bool) {
+	return p.consensus.LastHeightObservation(endpoints)
+}
+
 // --- qos.DataExtractor ---
 
 // ExtractData parses health check responses for block number and chain ID.
