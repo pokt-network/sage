@@ -144,6 +144,9 @@ func (p *Plugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck {
 		{
 			Name:    "getEpochInfo",
 			Payload: epochInfoPayload(),
+			// The height source. getBlockHeight is accepted from configured
+			// checks too, but this is the one the plugin guarantees itself.
+			Essential: true,
 		},
 		{
 			Name:    "getHealth",

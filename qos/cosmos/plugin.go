@@ -283,6 +283,9 @@ func (p *Plugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck {
 		{
 			Name:    "comet_bft_status",
 			Payload: cometBFTStatusPayload(),
+			// The status response is where both the height and the chain id
+			// come from; an abci_query from a client carries neither.
+			Essential: true,
 		},
 	}
 }

@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"math"
+	"time"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/reputation"
@@ -63,24 +64,59 @@ func MinTrafficSignalsFor(sampleRate float64) uint64 {
 
 // trafficSkipper decides which probes client traffic has already paid for.
 //
-// It holds the previous cycle's cumulative signal counts and skips a check
-// whose backend gained MinSignals or more since then. The state is one uint64
-// per (service, backend, RPC type) actually probed, and it is rebuilt from
-// scratch every cycle rather than updated in place — a backend that leaves the
-// session takes its entry with it, the way lastRun works, so this cannot
-// become another map that only ever grows.
+// It holds one reading per (service, backend, RPC type) — a cumulative signal
+// count and when it was taken — and skips a check whose backend has gained
+// MinSignals or more over a window at least as long as the check's own
+// interval. Readings are carried forward until that window elapses, then
+// refreshed.
+//
+// The window is measured in TIME, not in cycles, and that is the whole design.
+// The first version diffed against "last cycle" and recorded a reading only
+// when a check was due, which coupled the baseline to the probe schedule: any
+// check whose interval was longer than the executor's tick had its reading
+// dropped on every cycle in between, so it never had a baseline and could
+// never skip. The tick is the shortest interval across ALL services, so one
+// fast check anywhere silently disabled skipping everywhere. It shipped that
+// way and the canary found it on 2026-09-03 — flag on, thousands of traffic
+// signals per key per interval, zero skips.
+//
+// State is one small struct per backend actually probed, rebuilt each cycle
+// from the backends seen, so a backend that leaves the session takes its entry
+// with it the way lastRun does. This is not another map that only grows.
 //
 // Two facts make the diff safe rather than clever. A key the counter does not
 // know yet is not a key with no traffic, so a first sighting never skips. And
 // a count that went backwards means the key was evicted and re-created between
-// cycles, which is a reset rather than negative traffic, so it does not skip
+// readings, which is a reset rather than negative traffic, so it does not skip
 // either.
 type trafficSkipper struct {
 	counter    reputation.TrafficCounter
 	minSignals uint64
 
-	prev map[trafficKey]uint64
-	next map[trafficKey]uint64
+	prev map[trafficKey]trafficReading
+	next map[trafficKey]trafficReading
+
+	// lastDecision records what the most recent cycle observed, for the log
+	// line that says why nothing is being skipped. Only runOnce's goroutine
+	// touches it.
+	lastDecision skipDecision
+}
+
+// trafficReading is a cumulative signal count and when it was taken. The
+// timestamp is what lets the window be a duration rather than a cycle count.
+type trafficReading struct {
+	signals uint64
+	at      time.Time
+}
+
+// skipDecision summarises one cycle for diagnostics: how many checks were
+// considered, how many were skipped, and the largest traffic delta seen
+// against the threshold that delta had to clear.
+type skipDecision struct {
+	considered int
+	skipped    int
+	maxDelta   uint64
+	waiting    int // readings whose window has not elapsed yet
 }
 
 // trafficKey identifies what a traffic reading is about: one backend of one
@@ -101,15 +137,16 @@ func newTrafficSkipper(counter reputation.TrafficCounter, cfg TrafficSkipConfig)
 	return &trafficSkipper{
 		counter:    counter,
 		minSignals: minSignals,
-		prev:       make(map[trafficKey]uint64),
-		next:       make(map[trafficKey]uint64),
+		prev:       make(map[trafficKey]trafficReading),
+		next:       make(map[trafficKey]trafficReading),
 	}
 }
 
-// beginCycle starts a fresh reading. Called once per cycle from runOnce's
-// goroutine, which is the only goroutine that touches the maps.
+// beginCycle starts a fresh set of readings. Called once per cycle from
+// runOnce's goroutine, which is the only goroutine that touches the maps.
 func (t *trafficSkipper) beginCycle() {
-	t.next = make(map[trafficKey]uint64, len(t.prev))
+	t.next = make(map[trafficKey]trafficReading, len(t.prev))
+	t.lastDecision = skipDecision{}
 }
 
 // endCycle promotes this cycle's readings to be the next cycle's baseline.
@@ -117,21 +154,54 @@ func (t *trafficSkipper) endCycle() {
 	t.prev = t.next
 }
 
-// skip reports whether client traffic has graded this backend enough since the
-// last cycle that a probe would only confirm what the score middleware has
-// already recorded. It records the reading either way: a probe that runs this
-// cycle still needs a baseline for the next one.
-func (t *trafficSkipper) skip(serviceID domain.ServiceID, ep domain.EndpointAddr, backend string, rpcType domain.RPCType) bool {
+// skip reports whether client traffic has graded this backend enough, over a
+// window at least as long as interval, that a probe would only confirm what
+// the score middleware already recorded.
+//
+// It carries a reading forward until its window elapses rather than replacing
+// it every cycle: the question is "how much traffic since a probe's worth of
+// time ago", and refreshing the baseline on a cycle shorter than that would
+// keep resetting the clock and never accumulate a window.
+func (t *trafficSkipper) skip(
+	serviceID domain.ServiceID,
+	ep domain.EndpointAddr,
+	backend string,
+	rpcType domain.RPCType,
+	interval time.Duration,
+	now time.Time,
+) bool {
+	t.lastDecision.considered++
+
 	signals, known := t.counter.TrafficSignals(serviceID, ep, rpcType)
 	if !known {
 		return false
 	}
 	key := trafficKey{service: serviceID, backend: backend, rpcType: rpcType}
-	t.next[key] = signals
 
 	before, seen := t.prev[key]
-	if !seen || signals < before {
+	if !seen {
+		t.next[key] = trafficReading{signals: signals, at: now}
 		return false
 	}
-	return signals-before >= t.minSignals
+	if now.Sub(before.at) < interval {
+		// Window still open: keep the baseline so it can accumulate.
+		t.next[key] = before
+		t.lastDecision.waiting++
+		return false
+	}
+
+	// Window elapsed: this reading becomes the next baseline either way.
+	t.next[key] = trafficReading{signals: signals, at: now}
+	if signals < before.signals {
+		return false
+	}
+	delta := signals - before.signals
+	if delta > t.lastDecision.maxDelta {
+		t.lastDecision.maxDelta = delta
+	}
+	if delta < t.minSignals {
+		return false
+	}
+	t.lastDecision.skipped++
+	return true
 }

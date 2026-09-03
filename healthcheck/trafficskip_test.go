@@ -3,6 +3,7 @@ package healthcheck
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
@@ -27,11 +28,24 @@ func (f *fakeCounter) TrafficSignals(_ domain.ServiceID, ep domain.EndpointAddr,
 	return v, ok
 }
 
-// cycle runs one skip decision inside a begin/end pair, the way runOnce does.
-func cycle(t *testing.T, s *trafficSkipper, ep domain.EndpointAddr) bool {
+// clock advances by hand so a window is a duration, not a cycle count.
+type clock struct{ t time.Time }
+
+func newClock() *clock { return &clock{t: time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)} }
+
+func (c *clock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+// cycle runs one skip decision inside a begin/end pair, the way runOnce does,
+// at the default 60s check interval.
+func cycle(t *testing.T, s *trafficSkipper, c *clock, ep domain.EndpointAddr) bool {
+	t.Helper()
+	return cycleEvery(t, s, c, ep, time.Minute)
+}
+
+func cycleEvery(t *testing.T, s *trafficSkipper, c *clock, ep domain.EndpointAddr, interval time.Duration) bool {
 	t.Helper()
 	s.beginCycle()
-	got := s.skip("eth", ep, "https://node.example.com", domain.RPCTypeJSONRPC)
+	got := s.skip("eth", ep, "https://node.example.com", domain.RPCTypeJSONRPC, interval, c.t)
 	s.endCycle()
 	return got
 }
@@ -43,27 +57,32 @@ func TestTrafficSkipper_SkipsOnlyAboveThreshold(t *testing.T) {
 	c := &fakeCounter{signals: map[string]uint64{string(ep) + "|json_rpc": 100}}
 	s := newTrafficSkipper(c, TrafficSkipConfig{MinSignals: 20})
 
+	clk := newClock()
+
 	// First sighting has no baseline to diff against, so it cannot skip
 	// however much traffic the key has seen in its life.
-	if cycle(t, s, ep) {
+	if cycle(t, s, clk, ep) {
 		t.Fatal("skipped on the first sighting; there was no window to measure")
 	}
 
 	// A window with traffic below the threshold still gets probed: one relay
 	// does not stand in for one probe.
+	clk.advance(time.Minute)
 	c.signals[string(ep)+"|json_rpc"] = 115
-	if cycle(t, s, ep) {
+	if cycle(t, s, clk, ep) {
 		t.Error("skipped on 15 signals with a threshold of 20")
 	}
 
 	// Enough traffic, and the probe is redundant.
+	clk.advance(time.Minute)
 	c.signals[string(ep)+"|json_rpc"] = 140
-	if !cycle(t, s, ep) {
+	if !cycle(t, s, clk, ep) {
 		t.Error("did not skip on 25 signals with a threshold of 20")
 	}
 
 	// Traffic stops: the next window has nothing new, so probing resumes.
-	if cycle(t, s, ep) {
+	clk.advance(time.Minute)
+	if cycle(t, s, clk, ep) {
 		t.Error("kept skipping after traffic stopped; a quiet backend must be probed")
 	}
 }
@@ -85,7 +104,8 @@ func TestTrafficSkipper_UnknownKeyRecordsNoBaseline(t *testing.T) {
 	}
 	s := newTrafficSkipper(c, TrafficSkipConfig{MinSignals: 20})
 
-	if cycle(t, s, ep) {
+	clk := newClock()
+	if cycle(t, s, clk, ep) {
 		t.Fatal("skipped a key the counter does not know")
 	}
 	if _, recorded := s.prev[trafficKey{service: "eth", backend: "https://node.example.com", rpcType: domain.RPCTypeJSONRPC}]; recorded {
@@ -93,14 +113,16 @@ func TestTrafficSkipper_UnknownKeyRecordsNoBaseline(t *testing.T) {
 	}
 
 	// The key becomes known, carrying the cumulative total it always had.
+	clk.advance(time.Minute)
 	c.known[key] = true
-	if cycle(t, s, ep) {
+	if cycle(t, s, clk, ep) {
 		t.Error("skipped on the first real reading: 5,000 lifetime signals are not 5,000 signals this window")
 	}
 	// And only now is there a baseline, so the cycle after can measure a real
 	// window against it.
+	clk.advance(time.Minute)
 	c.signals[key] = 5100
-	if !cycle(t, s, ep) {
+	if !cycle(t, s, clk, ep) {
 		t.Error("did not skip on 100 signals measured against a real baseline")
 	}
 }
@@ -111,9 +133,11 @@ func TestTrafficSkipper_ResetDoesNotSkip(t *testing.T) {
 	c := &fakeCounter{signals: map[string]uint64{string(ep) + "|json_rpc": 500}}
 	s := newTrafficSkipper(c, TrafficSkipConfig{MinSignals: 20})
 
-	cycle(t, s, ep) // establish the baseline at 500
+	clk := newClock()
+	cycle(t, s, clk, ep) // establish the baseline at 500
+	clk.advance(time.Minute)
 	c.signals[string(ep)+"|json_rpc"] = 3
-	if cycle(t, s, ep) {
+	if cycle(t, s, clk, ep) {
 		t.Error("skipped after the key was evicted and re-created; that is a reset, not traffic")
 	}
 }
@@ -128,14 +152,16 @@ func TestTrafficSkipper_RPCTypeIsPartOfTheKey(t *testing.T) {
 	}}
 	s := newTrafficSkipper(c, TrafficSkipConfig{MinSignals: 20})
 
+	clk := newClock()
 	probeBoth := func() (jsonRPC, ws bool) {
 		s.beginCycle()
-		jsonRPC = s.skip("eth", ep, "https://node.example.com", domain.RPCTypeJSONRPC)
-		ws = s.skip("eth", ep, "https://node.example.com", domain.RPCTypeWebSocket)
+		jsonRPC = s.skip("eth", ep, "https://node.example.com", domain.RPCTypeJSONRPC, time.Minute, clk.t)
+		ws = s.skip("eth", ep, "https://node.example.com", domain.RPCTypeWebSocket, time.Minute, clk.t)
 		s.endCycle()
 		return
 	}
 	probeBoth() // baselines
+	clk.advance(time.Minute)
 
 	// Busy JSON-RPC, silent WebSocket.
 	c.signals[string(ep)+"|json_rpc"] = 100
@@ -154,11 +180,12 @@ func TestTrafficSkipper_ForgetsBackendsItNoLongerProbes(t *testing.T) {
 	c := &fakeCounter{signals: map[string]uint64{}}
 	s := newTrafficSkipper(c, TrafficSkipConfig{MinSignals: 20})
 
+	clk := newClock()
 	s.beginCycle()
 	for _, host := range []string{"a", "b", "c"} {
 		ep := domain.EndpointAddr("supA-https://" + host + ".example.com")
 		c.signals[string(ep)+"|json_rpc"] = 1
-		s.skip("eth", ep, "https://"+host+".example.com", domain.RPCTypeJSONRPC)
+		s.skip("eth", ep, "https://"+host+".example.com", domain.RPCTypeJSONRPC, time.Minute, clk.t)
 	}
 	s.endCycle()
 	if len(s.prev) != 3 {
@@ -166,9 +193,10 @@ func TestTrafficSkipper_ForgetsBackendsItNoLongerProbes(t *testing.T) {
 	}
 
 	// Next cycle sees only one of them.
+	clk.advance(time.Minute)
 	s.beginCycle()
 	ep := domain.EndpointAddr("supA-https://a.example.com")
-	s.skip("eth", ep, "https://a.example.com", domain.RPCTypeJSONRPC)
+	s.skip("eth", ep, "https://a.example.com", domain.RPCTypeJSONRPC, time.Minute, clk.t)
 	s.endCycle()
 	if len(s.prev) != 1 {
 		t.Errorf("baseline holds %d entries after the other backends left, want 1", len(s.prev))
@@ -210,11 +238,16 @@ func newSkipExecutor(t *testing.T, signals uint64, flagOn, warm bool) (*Executor
 	// Establish the baseline the diff needs, at zero traffic.
 	c.signals[string(ep)+"|json_rpc"] = 0
 	e.skipper.beginCycle()
-	e.skipCoveredByTraffic(context.Background(), "eth", ep, "https://node.example.com", skipTestCheck())
+	e.skipCoveredByTraffic(context.Background(), "eth", ep, "https://node.example.com",
+		skipTestCheck(), time.Minute, skipTestClock)
 	e.skipper.endCycle()
 	c.signals[string(ep)+"|json_rpc"] = signals
 	return e, rec
 }
+
+// skipTestClock is the moment the baseline above is taken; askSkip asks a full
+// interval later so the window has elapsed.
+var skipTestClock = time.Date(2026, 9, 3, 9, 0, 0, 0, time.UTC)
 
 func skipTestCheck() qos.HealthCheck {
 	return qos.HealthCheck{
@@ -227,7 +260,8 @@ func askSkip(e *Executor) bool {
 	e.skipper.beginCycle()
 	defer e.skipper.endCycle()
 	return e.skipCoveredByTraffic(context.Background(), "eth",
-		"supA-https://node.example.com", "https://node.example.com", skipTestCheck())
+		"supA-https://node.example.com", "https://node.example.com", skipTestCheck(),
+		time.Minute, skipTestClock.Add(time.Minute))
 }
 
 // The three guards, each on its own. Traffic alone is not enough to stop a
@@ -266,7 +300,132 @@ func TestSkipCoveredByTraffic_NoSkipperNeverSkips(t *testing.T) {
 	e := &Executor{}
 	e.warm.Store(true)
 	if e.skipCoveredByTraffic(context.Background(), "eth",
-		"supA-https://node.example.com", "https://node.example.com", skipTestCheck()) {
+		"supA-https://node.example.com", "https://node.example.com", skipTestCheck(),
+		time.Minute, skipTestClock) {
 		t.Error("skipped with no traffic skipper wired")
+	}
+}
+
+// The canary bug, 2026-09-03: flag on, thousands of traffic signals per key
+// per interval, zero skips forever.
+//
+// The first version diffed against "the previous cycle" and recorded a reading
+// only when a check was due. The executor's tick is the SHORTEST interval
+// across all services, so a 60s check on a fleet with one 20s check runs on
+// one cycle in three — and on the two cycles in between, its key was absent
+// from the map that became the next baseline. The baseline was therefore never
+// present when the check was due, and the skip could never fire. One fast
+// check anywhere silently disabled the feature everywhere.
+func TestTrafficSkipper_SurvivesATickShorterThanTheCheckInterval(t *testing.T) {
+	const ep = domain.EndpointAddr("supA-https://node.example.com")
+	key := string(ep) + "|json_rpc"
+	c := &fakeCounter{signals: map[string]uint64{key: 1000}}
+	s := newTrafficSkipper(c, TrafficSkipConfig{MinSignals: 20})
+
+	const (
+		tick     = 20 * time.Second // some other service probes this fast
+		interval = time.Minute      // this check's own cadence
+	)
+	clk := newClock()
+
+	// Six ticks: the check is due on ticks 3 and 6, and traffic accrues
+	// steadily throughout.
+	skipped := 0
+	for i := 1; i <= 6; i++ {
+		clk.advance(tick)
+		c.signals[key] += 500
+		if i%3 != 0 {
+			// Not due: the executor does not even ask about this check.
+			continue
+		}
+		if cycleEvery(t, s, clk, ep, interval) {
+			skipped++
+		}
+	}
+
+	if skipped == 0 {
+		t.Fatal("never skipped across two full check intervals with 1,500 signals in each; " +
+			"the baseline is being dropped on the cycles where the check is not due")
+	}
+}
+
+// The window is a duration, so a check asked about more often than its own
+// interval must not have its baseline reset each time and never accumulate.
+func TestTrafficSkipper_CarriesTheBaselineUntilTheWindowElapses(t *testing.T) {
+	const ep = domain.EndpointAddr("supA-https://node.example.com")
+	key := string(ep) + "|json_rpc"
+	c := &fakeCounter{signals: map[string]uint64{key: 0}}
+	s := newTrafficSkipper(c, TrafficSkipConfig{MinSignals: 20})
+
+	clk := newClock()
+	cycleEvery(t, s, clk, ep, time.Minute) // baseline at t=0
+
+	// Six 10-second cycles at 5 signals each: never enough inside one cycle,
+	// plenty across the minute.
+	var skipped bool
+	for range 6 {
+		clk.advance(10 * time.Second)
+		c.signals[key] += 5
+		if cycleEvery(t, s, clk, ep, time.Minute) {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Error("never skipped: 30 signals accrued over a full minute against a threshold of 20, " +
+			"so the baseline was being reset before the window could elapse")
+	}
+}
+
+// And the window is respected in the other direction: a burst inside a window
+// shorter than the interval does not skip, because the probe it replaces
+// covers the whole interval.
+func TestTrafficSkipper_WaitsForTheWindow(t *testing.T) {
+	const ep = domain.EndpointAddr("supA-https://node.example.com")
+	key := string(ep) + "|json_rpc"
+	c := &fakeCounter{signals: map[string]uint64{key: 0}}
+	s := newTrafficSkipper(c, TrafficSkipConfig{MinSignals: 20})
+
+	clk := newClock()
+	cycleEvery(t, s, clk, ep, time.Minute)
+
+	clk.advance(5 * time.Second)
+	c.signals[key] = 10_000
+	if cycleEvery(t, s, clk, ep, time.Minute) {
+		t.Error("skipped after 5s of a 60s window; the probe covers the interval, not the instant")
+	}
+}
+
+// The check that feeds block height is never skipped, however much traffic a
+// backend carries.
+//
+// Raised by ops from the canary on 2026-09-03, where arb-one reached 100% skip
+// and so had no probe-sourced observations at all. The traffic threshold
+// guarantees observation COUNT; only this guarantees observation CONTENT. EVM
+// reads a height out of eth_blockNumber alone, so a service carrying heavy
+// eth_call traffic can clear the gate by orders of magnitude and still teach
+// the block consensus nothing.
+func TestSkipCoveredByTraffic_NeverSkipsAnEssentialCheck(t *testing.T) {
+	essential := skipTestCheck()
+	essential.Essential = true
+
+	e, rec := newSkipExecutor(t, 100_000, true, true)
+	got := e.skipCoveredByTraffic(context.Background(), "eth",
+		"supA-https://node.example.com", "https://node.example.com", essential,
+		time.Minute, skipTestClock.Add(time.Minute))
+
+	if got {
+		t.Error("skipped the block-height check on traffic volume; no amount of eth_call traffic contains a height")
+	}
+	if len(rec.skipped) != 0 {
+		t.Errorf("recorded %d skips for a check that was not skipped", len(rec.skipped))
+	}
+
+	// And the non-essential check beside it still skips, so this is a carve-out
+	// rather than a switch that turned the feature off.
+	e2, _ := newSkipExecutor(t, 100_000, true, true)
+	if !e2.skipCoveredByTraffic(context.Background(), "eth",
+		"supA-https://node.example.com", "https://node.example.com", skipTestCheck(),
+		time.Minute, skipTestClock.Add(time.Minute)) {
+		t.Error("a non-essential check with the same traffic did not skip")
 	}
 }

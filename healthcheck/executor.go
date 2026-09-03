@@ -361,7 +361,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 				// then skipping it is also what keeps the schedule honest — a
 				// skipped check is covered, not overdue, so it must not come
 				// back the moment traffic pauses.
-				if e.skipCoveredByTraffic(ctx, serviceID, probe, group.key, check) {
+				if e.skipCoveredByTraffic(ctx, serviceID, probe, group.key, check, interval, now) {
 					continue
 				}
 				checks = append(checks, check)
@@ -383,6 +383,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 
 	e.lastRun = next
 	if e.skipper != nil {
+		e.logSkipProgress()
 		e.skipper.endCycle()
 	}
 	e.cycle++
@@ -404,20 +405,56 @@ func (e *Executor) skipCoveredByTraffic(
 	ep domain.EndpointAddr,
 	backend string,
 	check qos.HealthCheck,
+	interval time.Duration,
+	now time.Time,
 ) bool {
 	if e.skipper == nil || !e.warm.Load() {
+		return false
+	}
+	// An essential check is one whose ANSWER client traffic cannot supply —
+	// the plugin's block-height probe. The traffic threshold guarantees that
+	// enough observations arrive, not that any of them contains a height: a
+	// service carrying heavy eth_call traffic clears the gate easily and
+	// teaches the block consensus nothing, because ExtractData reads a height
+	// out of eth_blockNumber alone. Skipping every check for a busy service
+	// would therefore trade the probe spend for a chain view that goes stale
+	// exactly when the service is most used.
+	if check.Essential {
 		return false
 	}
 	if !e.flags.IsEnabled(ctx, featureflag.FlagTrafficInformedProbing, serviceID) {
 		return false
 	}
-	if !e.skipper.skip(serviceID, ep, backend, check.Payload.RPCType()) {
+	if !e.skipper.skip(serviceID, ep, backend, check.Payload.RPCType(), interval, now) {
 		return false
 	}
 	if e.recorder != nil {
 		e.recorder.RecordHealthCheckSkipped(serviceID)
 	}
 	return true
+}
+
+// logSkipProgress says why traffic-informed probing is skipping nothing.
+//
+// It is WARN and once per cycle, for the reason the warm-up log is: a feature
+// that is switched on and does nothing is indistinguishable from a feature
+// that is not wired, and on the mainnet canary on 2026-09-03 telling those two
+// apart cost an experiment and a round trip. It goes silent the moment
+// anything is skipped, so a working deployment never sees it.
+//
+// Nothing considered means the flag is off everywhere, which is the default
+// and not worth a line.
+func (e *Executor) logSkipProgress() {
+	d := e.skipper.lastDecision
+	if d.considered == 0 || d.skipped > 0 {
+		return
+	}
+	e.logger.Warn("traffic-informed probing skipped nothing this cycle",
+		slog.Int("considered", d.considered),
+		slog.Int("awaiting_window", d.waiting),
+		slog.Uint64("max_traffic_delta", d.maxDelta),
+		slog.Uint64("min_traffic_signals", e.skipper.minSignals),
+	)
 }
 
 // backendGroup is the set of endpoints sharing one backend URL.

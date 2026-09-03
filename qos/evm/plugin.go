@@ -317,6 +317,9 @@ func (p *Plugin) HealthChecks(endpoint domain.EndpointAddr) []qos.HealthCheck {
 		{
 			Name:    "eth_blockNumber",
 			Payload: domain.NewPayload(blockNumberBody, domain.RPCTypeJSONRPC, "eth_blockNumber"),
+			// The only method ExtractData reads a height out of, so client
+			// traffic cannot stand in for it however much of it there is.
+			Essential: true,
 		},
 		{
 			Name:    "eth_chainId",

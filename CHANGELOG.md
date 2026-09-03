@@ -292,12 +292,32 @@ the source of truth for the design and the reasoning behind it.
   metric being absent. That distinction is this counter's whole job, since it
   is read as a ratio against `sage_health_check_results_total`.
 
-  Three things it will not do. It never skips before the pod is warm, because
-  readiness counts coverage from applied probe results. It never treats a
-  reputation key it is seeing for the first time as a window with no traffic,
-  which would let a lifetime's cumulative count skip a probe on its first real
-  reading. And one transport's traffic never excuses another's probe, because
-  the RPC type is part of the reputation key.
+  Four things it will not do. It never skips the plugin's block-height check,
+  which is marked `qos.HealthCheck.Essential`: the threshold guarantees how
+  many observations arrive, not what is in them, and a plugin reads a height
+  out of one method — `eth_blockNumber` for EVM — while a client sends whatever
+  it likes. A service under heavy `eth_call` traffic clears the gate by orders
+  of magnitude and teaches the block consensus nothing. It never skips before
+  the pod is warm, because readiness counts coverage from applied probe
+  results. It never treats a reputation key it is seeing for the first time as
+  a window with no traffic, which would let a lifetime's cumulative count skip
+  a probe on its first real reading. And one transport's traffic never excuses
+  another's probe, because the RPC type is part of the reputation key.
+
+  The traffic window is measured in time, not in cycles. The first version
+  diffed against the previous cycle and took a reading only when a check was
+  due, which tied the baseline to the probe schedule: the executor's tick is
+  the shortest interval across ALL services, so one fast check anywhere dropped
+  every slower check's baseline on the cycles in between and silently disabled
+  skipping for it. Found by inspection after the canary experiment rather than
+  by the canary, whose intervals happened to line up.
+
+  A WARN once per cycle says why nothing is being skipped — how many checks
+  were considered, how many are still accumulating a window, the largest
+  traffic delta seen and the threshold it had to clear. It goes silent the
+  moment anything skips. A feature that is switched on and does nothing is
+  indistinguishable from one that is not wired, and telling those apart cost an
+  experiment and a round trip on 2026-09-03.
 
 - **The reputation timeline never evicted a key, and it OOMKilled a canary
   pod.** After 14.7 h one of two pods died (exit 137, 1 Gi limit), working set

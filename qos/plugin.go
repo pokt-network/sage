@@ -71,6 +71,23 @@ type HealthCheck struct {
 	// longer of this and the service's interval, and always on the first cycle
 	// a backend is seen.
 	Interval time.Duration
+
+	// Essential marks a check that client traffic cannot stand in for, so
+	// traffic-informed probing never skips it.
+	//
+	// The distinction is about what an observation CONTAINS, not how many
+	// there are. A probe sends a payload the plugin chose because its response
+	// yields a specific fact — for EVM, eth_blockNumber is the only method
+	// ExtractData reads a height out of. A sampled client relay is whatever
+	// the client asked for, so a service carrying heavy eth_call traffic can
+	// produce thousands of observations a minute and not one block height.
+	// Traffic-informed probing's threshold guarantees observation count; only
+	// this flag guarantees the plugin still learns what it probes for.
+	//
+	// Mark the minimum: every essential check is a probe relay that gets paid
+	// for on every cycle regardless of traffic, which is exactly the cost the
+	// skipping exists to avoid.
+	Essential bool
 }
 
 // DataExtractor is implemented by plugins that extract structured data from responses.
