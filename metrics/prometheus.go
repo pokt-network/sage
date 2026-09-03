@@ -229,6 +229,8 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.reputationAttempts,
 	)
 
+	r.initHealthCheckSkipped(knownServices)
+
 	return r
 }
 
@@ -369,6 +371,27 @@ func (r *Recorder) RecordHealthCheckResult(serviceID domain.ServiceID, source st
 // traffic had already graded the backend.
 func (r *Recorder) RecordHealthCheckSkipped(serviceID domain.ServiceID) {
 	r.healthCheckSkipped.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
+}
+
+// initHealthCheckSkipped creates the skipped-probe series at zero for every
+// configured service.
+//
+// Prometheus does not export a CounterVec child that has never been
+// incremented, so without this the metric has no series at all until the first
+// skip happens — and "no series" is not "zero". A query like
+// sum(sage_health_check_skipped_total) returns empty rather than 0, an alert
+// shaped on it never matches, and an operator cannot tell traffic-informed
+// probing being off from the metric being missing. That distinction is the
+// whole point of this counter, which exists to be compared against
+// sage_health_check_results_total.
+//
+// Only this counter gets the treatment. The rest of the recorder's series are
+// read as rates, where absence and zero mean the same thing; this one is read
+// as a ratio against a baseline, where they do not.
+func (r *Recorder) initHealthCheckSkipped(knownServices []domain.ServiceID) {
+	for _, serviceID := range knownServices {
+		r.healthCheckSkipped.WithLabelValues(r.services.serviceValue(serviceID)).Add(0)
+	}
 }
 
 // RecordMethodBlockEvent counts one method-block event. method comes from

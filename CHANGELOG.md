@@ -284,6 +284,14 @@ the source of truth for the design and the reasoning behind it.
   rate, ten times that at 1%. `health_checks.min_traffic_signals` overrides it.
   There is deliberately no setting meaning "skip on any traffic".
 
+  `sage_health_check_skipped_total` is pre-registered at zero for every
+  configured service. Prometheus exports no child of a counter vec until one is
+  incremented, so without that the metric has no series at all until the first
+  skip — and "no series" is not "zero": a query returns empty, an alert shaped
+  on it never matches, and an operator cannot tell the flag being off from the
+  metric being absent. That distinction is this counter's whole job, since it
+  is read as a ratio against `sage_health_check_results_total`.
+
   Three things it will not do. It never skips before the pod is warm, because
   readiness counts coverage from applied probe results. It never treats a
   reputation key it is seeing for the first time as a window with no traffic,

@@ -73,6 +73,10 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "circuit_breaks_total"},
 			[]string{"service_id", "domain"},
 		),
+		healthCheckSkipped: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "health_check_skipped_total"},
+			[]string{"service_id"},
+		),
 		circuitBreakerOutcome: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "circuit_breaker_outcome_total"},
 			[]string{"service_id", "domain", "outcome"},
@@ -97,7 +101,11 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 		r.degradedTotal,
 		r.circuitBreaks,
 		r.reputationAttempts,
+		r.healthCheckSkipped,
 	)
+	// Mirrors NewRecorder: the skipped counter is pre-registered at zero so
+	// its absence is never mistaken for not skipping.
+	r.initHealthCheckSkipped(knownServices)
 	return r, reg
 }
 
@@ -280,6 +288,12 @@ func TestServeHTTP_BodyContainsSageMetrics(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, "sage_relay_total") {
 		t.Errorf("expected sage_relay_total in /metrics body, got:\n%s", body[:min(len(body), 500)])
+	}
+	// The real construction path, not the isolated builder: a counter that is
+	// read as a ratio has to be exported before it is ever incremented, and
+	// nothing here has skipped a health check.
+	if !strings.Contains(body, `sage_health_check_skipped_total{service_id="eth"} 0`) {
+		t.Error("sage_health_check_skipped_total is not exported at zero; a query for it returns empty, not 0")
 	}
 }
 
@@ -475,5 +489,37 @@ func TestRecorder_ReputationAttempts(t *testing.T) {
 		if got, ok := values[tc.labels]; !ok || got != 1 {
 			t.Errorf("series %s = %v (present=%v), want 1", tc.labels, got, ok)
 		}
+	}
+}
+
+// A counter read as a ratio against a baseline must exist before it is
+// non-zero. Prometheus exports no child of a CounterVec until one is
+// incremented, so "no series" would be indistinguishable from "not skipping" —
+// and an alert shaped on sum(...) == 0 would never match. Reported from the
+// canary on 2026-09-03, where the post-roll check for this metric was
+// unmeasurable for exactly this reason.
+func TestRecorder_HealthCheckSkippedSeriesExistAtZero(t *testing.T) {
+	services := []domain.ServiceID{"eth", "poly"}
+	rec, reg := newIsolatedRecorderWithReg(t, services...)
+
+	got := scrapeValues(t, reg, "sage_test_health_check_skipped_total")
+	if len(got) != len(services) {
+		t.Fatalf("scraped %d series before any skip, want one per configured service (%d): %v",
+			len(got), len(services), got)
+	}
+	for labels, v := range got {
+		if v != 0 {
+			t.Errorf("%s = %v at startup, want 0", labels, v)
+		}
+	}
+
+	// And it still counts.
+	rec.RecordHealthCheckSkipped("eth")
+	after := scrapeValues(t, reg, "sage_test_health_check_skipped_total")
+	if after[`{service_id="eth"}`] != 1 {
+		t.Errorf("after one skip: %v, want eth at 1", after)
+	}
+	if after[`{service_id="poly"}`] != 0 {
+		t.Errorf("poly moved on eth's skip: %v", after)
 	}
 }

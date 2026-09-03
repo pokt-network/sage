@@ -65,11 +65,16 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
   The experiment: enable it for one high-saving service (`arb-one` or `mantle`),
   and watch `sage_health_check_skipped_total` against
   `sage_health_check_results_total{source="probe"}` for the saving, and that
-  service's block-height agreement and `sage_relay_total{status="200"}` share
-  for the cost. Roll it back with the same admin call if either moves. Then
-  repeat at whatever traffic share this would run at, because both halves of
-  the tradeoff scale with it — more keys become trafficked, so the saving rises
-  and so does the exposure.
+  service's block-height agreement plus
+  `sage_client_requests_total{service_id="…"}` for the cost. **Judge on the
+  client counter, not on `sage_relay_total`** — the latter counts attempts
+  inside retry, hedge and batch, so its status shares move when retry volume
+  moves and say nothing directly about what a caller got. That distinction is
+  what took a day to establish during the 408 incident; do not re-learn it
+  here. Roll it back with the same admin call if either moves. Then repeat at
+  whatever traffic share this would run at, because both halves of the tradeoff
+  scale with it — more keys become trafficked, so the saving rises and so does
+  the exposure.
 
   What the code already guards, so the experiment does not have to: the skip
   only fires once the pod is warm (readiness counts coverage from applied probe
