@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -105,10 +106,9 @@ var inertFields = []inertField{
 // keys an operator wrote are distinguished from the fields a struct has: a
 // zero-valued field says nothing about whether anyone set it.
 func InertKeys(tree any) []string {
-	var found []string
-	walkRegistry(tree, "", "", inertFields, "is parsed but not implemented", &found)
-	sort.Strings(found)
-	return found
+	var found []finding
+	walkRegistry(tree, "", "", inertFields, &found)
+	return summarise(found, "is parsed but not implemented")
 }
 
 // unimplementedFields names config keys SAGE has NO field for, where "unknown
@@ -139,10 +139,80 @@ var unimplementedFields = []inertField{
 // UnimplementedKeys reports the keys in a decoded YAML tree that are
 // registered above, each with what governs the behaviour instead.
 func UnimplementedKeys(tree any) []string {
-	var found []string
-	walkRegistry(tree, "", "", unimplementedFields, "is not implemented", &found)
-	sort.Strings(found)
-	return found
+	var found []finding
+	walkRegistry(tree, "", "", unimplementedFields, &found)
+	return summarise(found, "is not implemented")
+}
+
+// finding is one registered key seen at one place in the tree.
+type finding struct {
+	path   string
+	key    string
+	reason string
+}
+
+// summarise turns findings into operator-facing lines, collapsing a key that
+// appears many times into one line that says how many.
+//
+// The startup report exists to be read, and a key repeated per service defeats
+// that by volume alone: the canary's first boot report on 2026-09-03 was 97
+// lines, 73 of which were services[N].latency_profile saying the identical
+// thing 73 times. The other 18 were the actual list an operator would act on,
+// and they were buried. One line per distinct key, with a count, says the same
+// and leaves the list readable.
+//
+// The first path is kept so a line still points somewhere real; for a repeated
+// key the bracket index is dropped, because naming services[0] would invite
+// someone to go and look at that one service as though it were special.
+func summarise(found []finding, verb string) []string {
+	if len(found) == 0 {
+		return nil
+	}
+	type group struct {
+		path  string
+		count int
+	}
+	groups := make(map[string]*group, len(found))
+	order := make([]string, 0, len(found))
+	for _, f := range found {
+		// Grouped by the SHAPE of the path, not by the key. A key repeated down
+		// a list is one finding said many times; the same key under two
+		// different parents is two findings, and an operator wants both —
+		// retry_config.connect_timeout at the gateway level and inside a
+		// service block are different places to go and edit.
+		id := generalisePath(f.path) + "\x00" + f.reason
+		g, seen := groups[id]
+		if !seen {
+			groups[id] = &group{path: f.path, count: 1}
+			order = append(order, id)
+			continue
+		}
+		g.count++
+	}
+
+	out := make([]string, 0, len(order))
+	for _, id := range order {
+		g := groups[id]
+		shape, reason, _ := strings.Cut(id, "\x00")
+		if g.count == 1 {
+			out = append(out, fmt.Sprintf("%s %s: %s", g.path, verb, reason))
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s %s, on %d of them: %s", shape, verb, g.count, reason))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sequenceIndex matches a list index in a config path.
+var sequenceIndex = regexp.MustCompile(`\[\d+\]`)
+
+// generalisePath strips sequence indexes, so services[0].latency_profile reads
+// as services[].latency_profile — the shape a key appears at rather than one
+// arbitrary instance of it. Two paths that differ only by index are the same
+// finding repeated; two that differ otherwise are not.
+func generalisePath(path string) string {
+	return sequenceIndex.ReplaceAllString(path, "[]")
 }
 
 // walkRegistry descends the YAML tree, reporting any key in the given
@@ -150,7 +220,7 @@ func UnimplementedKeys(tree any) []string {
 // of the mapping that holds it — sequence indexes are left out of the parent so
 // an entry under services[3] still matches Parent: "retry_config". verb is how
 // the finding is phrased, since the two registries describe different failures.
-func walkRegistry(node any, path, parent string, registry []inertField, verb string, found *[]string) {
+func walkRegistry(node any, path, parent string, registry []inertField, found *[]finding) {
 	switch n := node.(type) {
 	case map[string]any:
 		for key, child := range n {
@@ -159,17 +229,17 @@ func walkRegistry(node any, path, parent string, registry []inertField, verb str
 				childPath = path + "." + key
 			}
 			if reason, ok := matchField(registry, parent, key); ok {
-				*found = append(*found, fmt.Sprintf("%s %s: %s", childPath, verb, reason))
+				*found = append(*found, finding{path: childPath, key: key, reason: reason})
 				// Do not descend: a block-level entry has already said what
 				// every key inside it would say.
 				continue
 			}
-			walkRegistry(child, childPath, key, registry, verb, found)
+			walkRegistry(child, childPath, key, registry, found)
 		}
 
 	case []any:
 		for i, child := range n {
-			walkRegistry(child, fmt.Sprintf("%s[%d]", path, i), parent, registry, verb, found)
+			walkRegistry(child, fmt.Sprintf("%s[%d]", path, i), parent, registry, found)
 		}
 	}
 }

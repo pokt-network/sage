@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -355,5 +356,78 @@ func TestRegistriesDoNotOverlap(t *testing.T) {
 		if reason, ok := matchInert(u.Parent, u.Key); ok {
 			t.Errorf("%s.%s is in both registries; inert says %q", u.Parent, u.Key, reason)
 		}
+	}
+}
+
+// The startup report exists to be read. A key repeated once per service
+// defeats that by volume: the canary's first boot report on 2026-09-03 was 97
+// lines, 73 of them services[N].latency_profile saying the identical thing,
+// and the 18 lines an operator would act on were buried under them.
+func TestInertKeys_CollapsesAKeyRepeatedDownAList(t *testing.T) {
+	var services []any
+	for i := range 73 {
+		services = append(services, map[string]any{
+			"service_id":      fmt.Sprintf("svc-%d", i),
+			"latency_profile": "fast",
+		})
+	}
+	tree := map[string]any{"gateway_config": map[string]any{"services": services}}
+
+	got := InertKeys(tree)
+
+	if len(got) != 1 {
+		t.Fatalf("got %d lines for one key on 73 services, want 1:\n%s", len(got), strings.Join(got, "\n"))
+	}
+	line := got[0]
+	for _, want := range []string{"services[].latency_profile", "on 73 of them"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("line does not mention %q: %s", want, line)
+		}
+	}
+	// The index of one arbitrary service must not be named: it would invite
+	// somebody to go and look at that one as though it were special.
+	if strings.Contains(line, "[0]") {
+		t.Errorf("line names one instance of a repeated key: %s", line)
+	}
+}
+
+// Collapsing is by path SHAPE, not by key. The same key under two different
+// parents is two findings and an operator wants both — they are two different
+// places to go and edit.
+func TestInertKeys_KeepsTheSameKeyAtDifferentShapes(t *testing.T) {
+	tree := map[string]any{
+		"gateway_config": map[string]any{
+			"retry_config": map[string]any{"connect_timeout": "1s"},
+			"services": []any{
+				map[string]any{"retry_config": map[string]any{"connect_timeout": "1s"}},
+				map[string]any{"retry_config": map[string]any{"connect_timeout": "1s"}},
+			},
+		},
+	}
+
+	got := InertKeys(tree)
+	if len(got) != 2 {
+		t.Fatalf("got %d lines, want 2 (the gateway one and the services one):\n%s", len(got), strings.Join(got, "\n"))
+	}
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "gateway_config.retry_config.connect_timeout is parsed") {
+		t.Errorf("the gateway-level finding is missing:\n%s", joined)
+	}
+	if !strings.Contains(joined, "services[].retry_config.connect_timeout") || !strings.Contains(joined, "on 2 of them") {
+		t.Errorf("the per-service findings did not collapse into one shaped line:\n%s", joined)
+	}
+}
+
+// A single occurrence keeps its real path — there is nothing to generalise and
+// the operator should be sent to the exact key.
+func TestInertKeys_SingleOccurrenceKeepsItsPath(t *testing.T) {
+	tree := map[string]any{
+		"gateway_config": map[string]any{
+			"services": []any{map[string]any{"latency_profile": "fast"}},
+		},
+	}
+	got := InertKeys(tree)
+	if len(got) != 1 || !strings.Contains(got[0], "services[0].latency_profile") {
+		t.Errorf("want the exact path for a single occurrence, got: %v", got)
 	}
 }

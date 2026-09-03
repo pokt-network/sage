@@ -280,6 +280,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 	)
 
 	r.initHealthCheckSkipped(knownServices)
+	r.initHealthCheckLastCycle(knownServices)
 
 	return r
 }
@@ -450,6 +451,21 @@ func (r *Recorder) RecordHealthCheckCycleProbes(perService map[domain.ServiceID]
 		if _, ok := seen[known]; !ok {
 			r.healthCheckLastCycle.WithLabelValues(known).Set(0)
 		}
+	}
+}
+
+// initHealthCheckLastCycle creates the per-cycle probe gauge at zero for every
+// configured service, so the metric exists before the first cycle completes.
+//
+// Same reasoning as initHealthCheckSkipped and the same lesson learned twice:
+// without it the series appears only after a cycle finishes, and on a
+// deployment whose cycle is minutes long an operator scraping in between sees
+// nothing and cannot tell "no cycle yet" from "probing is dead". That cost a
+// minute on the canary on 2026-09-03 — less than the skipped counter cost,
+// because that one had already taught everybody to suspect it.
+func (r *Recorder) initHealthCheckLastCycle(knownServices []domain.ServiceID) {
+	for _, serviceID := range knownServices {
+		r.healthCheckLastCycle.WithLabelValues(r.services.serviceValue(serviceID)).Set(0)
 	}
 }
 

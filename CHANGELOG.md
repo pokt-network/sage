@@ -280,13 +280,26 @@ the source of truth for the design and the reasoning behind it.
   refused: this was an unimplemented key until the same day, and turning it
   into one that stops the gateway would punish an operator for a value that had
   been inert.
+- **The startup report collapses a key repeated down a list.** The canary's
+  first boot report was 97 lines, 73 of them `services[N].latency_profile`
+  saying the identical thing once per service, and the 18 lines an operator
+  would act on were buried under them. A repeated key is now one line naming
+  the shape and the count — `services[].latency_profile … on 73 of them`.
+  Collapsing is by path shape rather than by key, so `retry_config` at the
+  gateway level and inside a service block stay separate findings: they are two
+  different places to go and edit. A single occurrence keeps its exact path,
+  since there is nothing to generalise and the operator should be sent to the
+  key itself.
 - **`sage_health_check_last_cycle_probes`** — probes issued per service in the
   last completed cycle. With a short cycle inside a long interval every probe
   for a service lands within a second or two, so any rate over a window shorter
   than the interval alternates between the whole burst and zero, which cost an
   operator twenty minutes of rate arithmetic on the canary. A service the cycle
   did not probe reads zero rather than keeping its last count: a service that
-  stopped being probed is the thing worth seeing.
+  stopped being probed is the thing worth seeing. Pre-registered at zero for
+  every configured service, so on a deployment whose cycle is minutes long an
+  operator scraping before the first one completes can tell "no cycle yet" from
+  "probing is dead".
 - **`GET /admin/tuning/{knob}`** returns what is in force — the config file's
   value, the global override if there is one, and which applies. The list
   endpoint showed what had been SET, which is a different question: an operator

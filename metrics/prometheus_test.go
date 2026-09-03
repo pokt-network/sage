@@ -112,6 +112,7 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 	// Mirrors NewRecorder: the skipped counter is pre-registered at zero so
 	// its absence is never mistaken for not skipping.
 	r.initHealthCheckSkipped(knownServices)
+	r.initHealthCheckLastCycle(knownServices)
 	return r, reg
 }
 
@@ -602,5 +603,24 @@ func TestRecordHealthCheckCycleProbes_ReplacesTheLastCycle(t *testing.T) {
 	if got[`{service_id="poly"}`] != 0 {
 		t.Errorf("poly = %v, want 0 — it was not probed this cycle and a stale 12 would say it was",
 			got[`{service_id="poly"}`])
+	}
+}
+
+// The gauge has to exist before the first cycle completes. On a deployment
+// whose cycle is minutes long, an operator scraping in between otherwise sees
+// no series and cannot tell "no cycle yet" from "probing is dead".
+func TestRecorder_HealthCheckLastCycleExistsBeforeAnyCycle(t *testing.T) {
+	services := []domain.ServiceID{"eth", "poly"}
+	_, reg := newIsolatedRecorderWithReg(t, services...)
+
+	got := scrapeValues(t, reg, "sage_test_health_check_last_cycle_probes")
+	if len(got) != len(services) {
+		t.Fatalf("scraped %d series before any cycle, want one per configured service (%d): %v",
+			len(got), len(services), got)
+	}
+	for labels, v := range got {
+		if v != 0 {
+			t.Errorf("%s = %v before any cycle ran, want 0", labels, v)
+		}
 	}
 }
