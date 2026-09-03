@@ -48,7 +48,7 @@ func cycleEvery(t *testing.T, s *trafficSkipper, c *clock, ep domain.EndpointAdd
 	t.Helper()
 	s.beginCycle()
 	got := s.skip("eth", ep, "https://node.example.com", domain.RPCTypeJSONRPC, interval, c.t)
-	s.endCycle()
+	s.endCycle(c.t)
 	return got
 }
 
@@ -159,7 +159,7 @@ func TestTrafficSkipper_RPCTypeIsPartOfTheKey(t *testing.T) {
 		s.beginCycle()
 		jsonRPC = s.skip("eth", ep, "https://node.example.com", domain.RPCTypeJSONRPC, time.Minute, clk.t)
 		ws = s.skip("eth", ep, "https://node.example.com", domain.RPCTypeWebSocket, time.Minute, clk.t)
-		s.endCycle()
+		s.endCycle(clk.t)
 		return
 	}
 	probeBoth() // baselines
@@ -189,19 +189,30 @@ func TestTrafficSkipper_ForgetsBackendsItNoLongerProbes(t *testing.T) {
 		c.signals[string(ep)+"|json_rpc"] = 1
 		s.skip("eth", ep, "https://"+host+".example.com", domain.RPCTypeJSONRPC, time.Minute, clk.t)
 	}
-	s.endCycle()
+	s.endCycle(clk.t)
 	if len(s.prev) != 3 {
 		t.Fatalf("baseline holds %d entries, want 3", len(s.prev))
 	}
 
-	// Next cycle sees only one of them.
+	// The next cycle sees only one of them. The other two are CARRIED, not
+	// dropped: a check that is not due this cycle must keep its baseline, and
+	// from in here that is indistinguishable from a backend that has left.
 	clk.advance(time.Minute)
 	s.beginCycle()
 	ep := domain.EndpointAddr("supA-https://a.example.com")
 	s.skip("eth", ep, "https://a.example.com", domain.RPCTypeJSONRPC, time.Minute, clk.t)
-	s.endCycle()
+	s.endCycle(clk.t)
+	if len(s.prev) != 3 {
+		t.Errorf("baseline holds %d entries, want all 3 carried: an unvisited key may simply not be due", len(s.prev))
+	}
+
+	// Age is what evicts. Past maxBaselineAge the departed backends go.
+	clk.advance(maxBaselineAge + time.Minute)
+	s.beginCycle()
+	s.skip("eth", ep, "https://a.example.com", domain.RPCTypeJSONRPC, time.Minute, clk.t)
+	s.endCycle(clk.t)
 	if len(s.prev) != 1 {
-		t.Errorf("baseline holds %d entries after the other backends left, want 1", len(s.prev))
+		t.Errorf("baseline holds %d entries after %v, want 1 — stale readings must not accumulate", len(s.prev), maxBaselineAge)
 	}
 }
 
@@ -242,7 +253,7 @@ func newSkipExecutor(t *testing.T, signals uint64, flagOn, warm bool) (*Executor
 	e.skipper.beginCycle()
 	e.skipCoveredByTraffic(context.Background(), "eth", ep, "https://node.example.com",
 		skipTestCheck(), time.Minute, skipTestClock)
-	e.skipper.endCycle()
+	e.skipper.endCycle(skipTestClock)
 	c.signals[string(ep)+"|json_rpc"] = signals
 	return e, rec
 }
@@ -260,7 +271,7 @@ func skipTestCheck() qos.HealthCheck {
 
 func askSkip(e *Executor) bool {
 	e.skipper.beginCycle()
-	defer e.skipper.endCycle()
+	defer e.skipper.endCycle(skipTestClock.Add(time.Minute))
 	return e.skipCoveredByTraffic(context.Background(), "eth",
 		"supA-https://node.example.com", "https://node.example.com", skipTestCheck(),
 		time.Minute, skipTestClock.Add(time.Minute))
@@ -578,4 +589,59 @@ func (d *deadlineRelayer) SendRelay(ctx context.Context, _ domain.ServiceID, _ d
 		d.remaining = time.Until(dl)
 	}
 	return &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`)}, nil
+}
+
+// The canary bug of 2026-09-03, second instance: 0% skip on a service with
+// plenty of traffic, an hour after the same code skipped 40%.
+//
+// A reading is taken only when a check is DUE, and endCycle used to promote
+// only what the cycle visited. So a check whose interval is longer than a
+// cycle — the EVM chain-id check at five minutes against a cycle of about
+// seventy seconds — lost its baseline on the three cycles in between, had none
+// when it was finally due, and could never skip. It worked an hour earlier
+// only because cycles were then SLOWER than every check interval, so every key
+// was visited every cycle; the probe timeout made cycles short enough for the
+// gap to open.
+//
+// The Essential carve-out makes this total rather than partial on an EVM
+// service: eth_blockNumber never reaches the skipper, so the five-minute
+// chain-id check is the ONLY skippable one, and it was the one being broken.
+func TestTrafficSkipper_SlowCheckKeepsItsBaselineAcrossCycles(t *testing.T) {
+	const ep = domain.EndpointAddr("supA-https://node.example.com")
+	key := string(ep) + "|json_rpc"
+	c := &fakeCounter{signals: map[string]uint64{key: 0}}
+	s := newTrafficSkipper(c, TrafficSkipConfig{MinSignals: 4})
+
+	const (
+		cycle         = 74 * time.Second // what the probe timeout produced
+		checkInterval = 5 * time.Minute  // eth_chainId
+	)
+	clk := newClock()
+
+	// The check is due roughly every fourth cycle. Traffic accrues throughout
+	// at a rate that clears the threshold many times over.
+	skipped, dueCount := 0, 0
+	nextDue := clk.t
+	for range 20 {
+		clk.advance(cycle)
+		c.signals[key] += 10
+
+		s.beginCycle()
+		if !clk.t.Before(nextDue) {
+			dueCount++
+			if s.skip("eth", ep, "https://node.example.com", domain.RPCTypeJSONRPC, checkInterval, clk.t) {
+				skipped++
+			}
+			nextDue = clk.t.Add(checkInterval)
+		}
+		s.endCycle(clk.t)
+	}
+
+	if dueCount < 4 {
+		t.Fatalf("check was due only %d times in 20 cycles; test is not exercising the gap", dueCount)
+	}
+	if skipped == 0 {
+		t.Fatalf("skipped 0 of %d due checks with 10 signals per cycle against a threshold of 4: "+
+			"the baseline is being dropped on the cycles where the check is not due", dueCount)
+	}
 }

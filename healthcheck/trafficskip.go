@@ -149,8 +149,48 @@ func (t *trafficSkipper) beginCycle() {
 	t.lastDecision = skipDecision{}
 }
 
-// endCycle promotes this cycle's readings to be the next cycle's baseline.
-func (t *trafficSkipper) endCycle() {
+// maxBaselineAge bounds how long an untouched reading is carried.
+//
+// It has to exceed the longest check interval by a margin, or the baseline for
+// a slow check is thrown away before that check comes round again — which is
+// the bug this constant exists to close. It also has to be finite, so a
+// backend that leaves the session takes its entry with it rather than the map
+// growing for the life of the process: the reputation timeline was OOMKilled
+// on 2026-09-01 for exactly that, and nothing here is allowed to repeat it.
+// Thirty minutes is six times the slowest check a plugin declares (the EVM
+// chain-id check, five minutes) and bounds the map at live keys plus half an
+// hour of churn.
+const maxBaselineAge = 30 * time.Minute
+
+// endCycle promotes this cycle's readings to be the next cycle's baseline,
+// carrying forward the readings this cycle did not visit.
+//
+// The carry-forward is the whole point. A reading is only taken when a check
+// is DUE, and a check whose interval is longer than a cycle is not due on most
+// cycles — the EVM chain-id check runs every five minutes against a cycle of
+// about seventy seconds. Without this, that key is absent from the new
+// baseline on the three cycles in between, so it has no baseline when it is
+// finally due, and it can never skip. The mainnet canary measured that as
+// exactly 0% skip on 2026-09-03, immediately after the probe timeout made
+// cycles short enough for the gap to open; the same code skipped 40% an hour
+// earlier, when cycles were slower than every check interval and every key
+// was therefore visited every cycle.
+//
+// This is the second version of this mistake. The first tied the window to a
+// cycle count instead of a duration; this one tied the baseline's SURVIVAL to
+// the probe schedule. Both came from the same wrong instinct — that a cycle is
+// the unit of time here — and it is not: the interval is.
+func (t *trafficSkipper) endCycle(now time.Time) {
+	cutoff := now.Add(-maxBaselineAge)
+	for key, reading := range t.prev {
+		if _, visited := t.next[key]; visited {
+			continue
+		}
+		if reading.at.Before(cutoff) {
+			continue
+		}
+		t.next[key] = reading
+	}
 	t.prev = t.next
 }
 

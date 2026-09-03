@@ -362,13 +362,23 @@ the source of truth for the design and the reasoning behind it.
   a probe on its first real reading. And one transport's traffic never excuses
   another's probe, because the RPC type is part of the reputation key.
 
-  The traffic window is measured in time, not in cycles. The first version
-  diffed against the previous cycle and took a reading only when a check was
-  due, which tied the baseline to the probe schedule: the executor's tick is
-  the shortest interval across ALL services, so one fast check anywhere dropped
-  every slower check's baseline on the cycles in between and silently disabled
-  skipping for it. Found by inspection after the canary experiment rather than
-  by the canary, whose intervals happened to line up.
+  The traffic window is measured in time, not in cycles, and a baseline
+  survives the cycles on which its check is not due. That took two goes. The
+  first version diffed against the previous cycle, which tied the WINDOW to the
+  probe schedule. The second still recorded a reading only when a check was
+  due, and promoted only what the cycle visited — which tied the baseline's
+  SURVIVAL to the same schedule: a check slower than a cycle lost its baseline
+  in between, had none when it came round, and could never skip. Both came from
+  treating a cycle as the unit of time here. It is not; the interval is.
+
+  The canary measured both. The second showed up as exactly 0% skip on a
+  service with ample traffic, an hour after the same code skipped 40% — the
+  probe timeout had made cycles short enough (about 70s) for a five-minute
+  chain-id check to fall into the gap, where before, cycles were slower than
+  every check interval and every key was visited every cycle. The `Essential`
+  carve-out made it total rather than partial: with `eth_blockNumber` never
+  reaching the skipper, the five-minute chain-id check is the only skippable
+  one on an EVM service, and it was the one being broken.
 
   A WARN once per cycle says why nothing is being skipped — how many checks
   were considered, how many are still accumulating a window, the largest

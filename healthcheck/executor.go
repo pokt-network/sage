@@ -391,7 +391,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 	e.lastRun = next
 	if e.skipper != nil {
 		e.logSkipProgress()
-		e.skipper.endCycle()
+		e.skipper.endCycle(now)
 	}
 	e.cycle++
 }
