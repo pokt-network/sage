@@ -16,6 +16,23 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
 
 ## Explore next (raised 2026-09-01)
 
+- **Export the chain view: per-service spread and staleness of the
+  per-endpoint block height.** Raised by ops 2026-09-03, and the gap is real:
+  SAGE exports 31 metrics and not one of them is about block height, consensus
+  or QoS state, and no admin route serves it either. So the whole
+  block-consensus mechanism — the thing endpoint selection tiers on — is
+  unobservable from outside the process.
+
+  It matters twice over now. Traffic-informed probing's threshold guarantees
+  how many observations arrive and not what is in them (see
+  `qos.HealthCheck.Essential`), so a service whose height source lapses goes
+  stale silently; that defect was found by reading the code, and nothing in the
+  metric set could have caught it. And the `Essential` carve-out that fixes it
+  is equally invisible — an operator cannot see it earning its keep. A gauge
+  per service for the spread between the highest and lowest endpoint height,
+  and the age of the newest observation, answers both and would have made the
+  canary experiment on 2026-09-03 a query instead of an experiment.
+
 - **Confirm the WebSocket control-frame path fires on mainnet.** The envelope
   decoding added 2026-09-03 (see the CHANGELOG) is a port of a PATH fix found
   by a live session-cycle test; SAGE's own exposure is inferred from the miner
