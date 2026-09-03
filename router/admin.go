@@ -128,6 +128,7 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 
 	// Runtime tuning overrides
 	mux.HandleFunc("GET /admin/tuning", a.handleListTuning)
+	mux.HandleFunc("GET /admin/tuning/{knob}", a.handleGetTuning)
 	mux.HandleFunc("PUT /admin/tuning/{knob}", a.handleSetTuning)
 	mux.HandleFunc("PUT /admin/tuning/{knob}/{serviceID}", a.handleSetTuningForService)
 	mux.HandleFunc("DELETE /admin/tuning/{knob}", a.handleClearTuning)

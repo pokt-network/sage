@@ -58,6 +58,7 @@ type Recorder struct {
 	healthCheckResults    *prometheus.CounterVec
 	healthCheckSkipped    *prometheus.CounterVec
 	healthCheckCycle      prometheus.Histogram
+	healthCheckLastCycle  *prometheus.GaugeVec
 	healthCheckOverruns   prometheus.Counter
 
 	// codespaces bounds the relay miner error codespace label, which is a
@@ -238,6 +239,15 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		},
 	)
 
+	r.healthCheckLastCycle = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "health_check_last_cycle_probes",
+			Help:      "Probes issued for this service in the last COMPLETED health-check cycle. A gauge rather than a rate because probes arrive as a burst: with a short cycle inside a long interval, every probe for a service lands within a second or two and any rate over a window shorter than the interval alternates between the whole burst and zero. Divide by sage_health_check_cycle_seconds' period for a rate that means something, or read this directly for what one pass actually costs.",
+		},
+		[]string{"service_id"},
+	)
+
 	r.healthCheckOverruns = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: "sage",
@@ -250,6 +260,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.healthCheckResults,
 		r.healthCheckSkipped,
 		r.healthCheckCycle,
+		r.healthCheckLastCycle,
 		r.healthCheckOverruns,
 		r.relayTotal,
 		r.clientRequestsTotal,
@@ -418,6 +429,27 @@ func (r *Recorder) RecordHealthCheckCycle(d time.Duration, tick time.Duration) {
 	r.healthCheckCycle.Observe(d.Seconds())
 	if tick > 0 && d > tick {
 		r.healthCheckOverruns.Inc()
+	}
+}
+
+// RecordHealthCheckCycleProbes publishes how many probes one completed cycle
+// issued per service, replacing the previous cycle's figures.
+//
+// Services absent from the map are set to zero rather than left alone: a
+// service that stopped being probed is the thing worth seeing, and a stale
+// non-zero gauge would say the opposite. Services never probed at all are
+// absent entirely, the same as every other per-service series here.
+func (r *Recorder) RecordHealthCheckCycleProbes(perService map[domain.ServiceID]int) {
+	seen := make(map[string]struct{}, len(perService))
+	for serviceID, n := range perService {
+		label := r.services.serviceValue(serviceID)
+		seen[label] = struct{}{}
+		r.healthCheckLastCycle.WithLabelValues(label).Set(float64(n))
+	}
+	for _, known := range r.services.values() {
+		if _, ok := seen[known]; !ok {
+			r.healthCheckLastCycle.WithLabelValues(known).Set(0)
+		}
 	}
 }
 

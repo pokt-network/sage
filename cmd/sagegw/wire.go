@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -479,6 +480,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// last stored. A knob that is NOT read through a closure like this cannot be
 	// made runtime-changeable by registering it — see the tuning package doc.
 	tuningStore := tuning.NewStore()
+	// What the config file says, so GET /admin/tuning/{knob} can answer "what
+	// is in force" rather than only "what has been overridden". Display only —
+	// every reader still passes its own base when resolving.
+	registerTuningBases(tuningStore, cfg)
 	retryFn := newRetryFn(app.Config.Load, tuningStore)
 	timeoutFn := newTimeoutFn(app.Config.Load, tuningStore)
 
@@ -577,10 +582,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	leader.Start(ctx)
 	app.Leader = leader
 
-	healthCheckInterval := cfg.Gateway.HealthChecks.Interval
-	if healthCheckInterval <= 0 {
-		healthCheckInterval = defaultHealthCheckInterval
-	}
+	healthCheckInterval := effectiveHealthCheckInterval(cfg)
 	healthExe := healthcheck.NewExecutor(
 		proto, proto, proto,
 		qosReg, repSvc, obsQueue,
@@ -821,6 +823,29 @@ func (r healthCheckIntervalResolver) Shortest() time.Duration {
 		}
 	}
 	return shortest
+}
+
+// effectiveHealthCheckInterval is the probe cadence the config asks for, with
+// the default applied — resolved in one place so the executor and the tuning
+// store's advertised base cannot disagree about it.
+func effectiveHealthCheckInterval(cfg *config.Config) time.Duration {
+	if d := cfg.Gateway.HealthChecks.Interval; d > 0 {
+		return d
+	}
+	return defaultHealthCheckInterval
+}
+
+// registerTuningBases tells the tuning store what the config file says each
+// knob is. The values are the gateway-level defaults, which is what a knob
+// with no per-service config resolves against.
+func registerTuningBases(store *tuning.Store, cfg *config.Config) {
+	retry := cfg.Gateway.Defaults.Retry
+	store.SetBase(tuning.KnobRetryMaxRetries, strconv.Itoa(retry.MaxRetries))
+	store.SetBase(tuning.KnobRetryMaxLatency, retry.MaxLatency.String())
+	store.SetBase(tuning.KnobHedgeDelay, retry.HedgeDelay.String())
+	store.SetBase(tuning.KnobRelayTimeout, cfg.Gateway.Defaults.Timeout.RelayTimeout.String())
+	store.SetBase(tuning.KnobHealthCheckInterval, effectiveHealthCheckInterval(cfg).String())
+	store.SetBase(tuning.KnobHealthCheckWorkers, strconv.Itoa(cfg.Gateway.HealthChecks.MaxWorkers))
 }
 
 func newRetryFn(cfgFn func() *config.Config, store *tuning.Store) func(domain.ServiceID) config.RetryConfig {

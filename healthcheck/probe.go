@@ -104,4 +104,7 @@ type ResultRecorder interface {
 	// RecordHealthCheckCycle records how long one cycle took and whether it
 	// overran the tick it was scheduled on.
 	RecordHealthCheckCycle(elapsed, tick time.Duration)
+	// RecordHealthCheckCycleProbes publishes how many probes the completed
+	// cycle issued per service.
+	RecordHealthCheckCycleProbes(perService map[domain.ServiceID]int)
 }

@@ -127,7 +127,7 @@ var Knobs = []Knob{
 		// lands on somebody else.
 		Description: "Health-check probes in flight at once. Raising it shortens the cycle — the cadence actually achieved is the longer of health_checks.interval and one cycle — but probe concurrency competes with client traffic for the same suppliers. Read sage_health_check_cycle_seconds before and after; a longer interval cuts probe count outright, this only spreads the same probes over less time.",
 		Min:         1,
-		Max:         64,
+		Max:         512, // healthcheck.MaxProbeWorkers; one ceiling, both paths
 		Unit:        "workers",
 	},
 }

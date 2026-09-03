@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sort"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -150,4 +151,24 @@ func (p *labelPolicy) value(v string) string {
 // metric here carries.
 func (p *labelPolicy) serviceValue(id domain.ServiceID) string {
 	return p.value(string(id))
+}
+
+// values returns the admitted set, sorted, or nil for a policy that admits
+// everything.
+//
+// It exists for a gauge that has to publish a zero for a service it did NOT
+// hear about this round — where absence and zero mean different things and the
+// caller cannot enumerate the services itself. A capped policy has no such set
+// to return: its membership is decided by arrival order, so there is nothing
+// it could honestly list.
+func (p *labelPolicy) values() []string {
+	if p.allowed == nil {
+		return nil
+	}
+	out := make([]string, 0, len(p.allowed))
+	for v := range p.allowed {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }

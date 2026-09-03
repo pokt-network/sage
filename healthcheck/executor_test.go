@@ -1212,16 +1212,23 @@ func TestExecutor_WarmWhenNoServices(t *testing.T) {
 // --- probe relay metrics ---
 
 type recordingResultRecorder struct {
-	mu      sync.Mutex
-	applied []string
-	relays  []probeRelayCall
-	skipped []domain.ServiceID
-	cycles  []cycleRecord
+	mu          sync.Mutex
+	applied     []string
+	relays      []probeRelayCall
+	skipped     []domain.ServiceID
+	cycles      []cycleRecord
+	cycleProbes map[domain.ServiceID]int
 }
 
 type cycleRecord struct {
 	elapsed time.Duration
 	tick    time.Duration
+}
+
+func (r *recordingResultRecorder) RecordHealthCheckCycleProbes(perService map[domain.ServiceID]int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cycleProbes = perService
 }
 
 func (r *recordingResultRecorder) RecordHealthCheckCycle(elapsed, tick time.Duration) {

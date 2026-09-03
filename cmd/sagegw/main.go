@@ -44,26 +44,30 @@ func main() {
 	level := parseLogLevel(cfg.Logger.Level)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
+	// What SAGE made of the config it was given, said once at boot through a
+	// logger the configured level cannot silence. See startupReporter.
+	report := startupReporter(cfg.Logger.Level)
+
 	// Config keys SAGE parsed but has no field for. Not fatal — SAGE is meant to
 	// load a PATH config unmodified, so a key describing a feature it does not
 	// have is expected. Saying so is the point: an ignored key looks live to
 	// whoever wrote it.
 	for _, f := range cfg.Ignored {
-		logger.Warn("config key ignored: SAGE does not implement this setting, and it has no effect", "detail", f)
+		report.Warn("config key ignored: SAGE does not implement this setting, and it has no effect", "detail", f)
 	}
 
 	// The few ignored keys where "unknown key" is true and unhelpful, because
 	// the key looks like it governs something the operator is reasoning about.
 	// Said separately and with what governs it instead.
 	for _, f := range cfg.Unimplemented {
-		logger.Warn("config key is not implemented, and here is what decides this instead", "detail", f)
+		report.Warn("config key is not implemented, and here is what decides this instead", "detail", f)
 	}
 
 	// The quieter half: keys that DO parse into a field and are read by
 	// nothing. These are worse than unknown keys, because they survive the
 	// round trip and show up in GET /admin/config looking live.
 	for _, f := range cfg.Inert {
-		logger.Warn("config key has no effect: SAGE parses this setting but nothing reads it", "detail", f)
+		report.Warn("config key has no effect: SAGE parses this setting but nothing reads it", "detail", f)
 	}
 
 	// The third case: a setting that is read, does something, and probably
@@ -71,7 +75,7 @@ func main() {
 	// config over it would break the compatibility promise — so this line is
 	// the only place it is ever mentioned.
 	for _, f := range cfg.Warnings {
-		logger.Warn("config setting is probably not what was meant", "detail", f)
+		report.Warn("config setting is probably not what was meant", "detail", f)
 	}
 
 	// Background context for all services
@@ -166,7 +170,7 @@ func main() {
 		// by here the API is either authenticated or unreachable from off-host.
 		adminToken := cfg.Admin.EffectiveAuthToken()
 		if adminToken == "" {
-			logger.Warn("admin API is unauthenticated and reachable from this host only: anyone with local access can toggle feature flags, reset reputation and clear circuit breakers — set admin_config.auth_token or "+config.EnvAdminToken+" to require a bearer token",
+			report.Warn("admin API is unauthenticated and reachable from this host only: anyone with local access can toggle feature flags, reset reputation and clear circuit breakers — set admin_config.auth_token or "+config.EnvAdminToken+" to require a bearer token",
 				"addr", cfg.Admin.Addr,
 			)
 		}
@@ -316,6 +320,31 @@ func loadConfig(path string) (*config.Config, error) {
 		return cfg, nil
 	}
 	return nil, fmt.Errorf("no config: provide -config flag or GATEWAY_CONFIG env var")
+}
+
+// startupReporter returns the logger the boot-time config report is written
+// with: the configured one when it would emit at WARN, and one pinned to WARN
+// when it would not.
+//
+// SAGE's whole "lenient but never silent" arrangement — ignored keys, inert
+// keys, unimplemented keys, settings that are probably not what was meant —
+// is a set of WARN lines, and a deployment running logger_config.level "error"
+// silences every one of them. The mainnet canary ran exactly that: it carried
+// a rule file SAGE does not read and a max_workers SAGE did not implement, and
+// the lines saying so were emitted and dropped. An operator then spent an
+// afternoon asking questions the startup log had already answered.
+//
+// A one-time boot report is not runtime noise and does not belong under the
+// runtime level. This deliberately does not promote anything to ERROR: these
+// are not errors, and making them errors to defeat a filter would be lying
+// about severity to win an argument with a config. Anything logged after this
+// point still honours the configured level.
+func startupReporter(configured string) *slog.Logger {
+	level := parseLogLevel(configured)
+	if level <= slog.LevelWarn {
+		return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	}
+	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
 }
 
 func parseLogLevel(level string) slog.Level {

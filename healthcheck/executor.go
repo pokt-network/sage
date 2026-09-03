@@ -121,8 +121,46 @@ type probeKey struct {
 	check   string
 }
 
+// MaxProbeWorkers is the ceiling on health-check concurrency, applied wherever
+// the value comes from.
+//
+// It exists because there were briefly two ceilings. The tuning knob refused
+// anything above 64 while the config path accepted any number at all, so the
+// mainnet canary ran 500-wide probe bursts on 2026-09-03 through a build that
+// would have rejected 65 from an operator's own hand. Declaring a value
+// unreasonable on one path and waving it through on the other is worse than
+// either choice alone.
+//
+// 512 rather than 64, because the canary answered the question the low ceiling
+// was guessing at. Half an hour of 500-wide bursts moved nothing the wrong
+// way: probe 502s fell from 0.70 to 0.58 per second, 408s fell, and
+// per-supplier transport failures got FLATTER, not sharper. The likely reason
+// is that a burst and a trickle cost a supplier the same concurrency-seconds
+// — the same ~1,100 probes either way — but 500 workers hold a connection for
+// a second while 4 hold one continuously, and connection limits care about the
+// shape rather than the integral. That is one fleet at one traffic share and
+// not a general law, which is why there is still a ceiling.
+const MaxProbeWorkers = 512
+
+// clampWorkers bounds a worker count from any source. Out-of-range is clamped
+// and reported rather than refused: this was an unimplemented key until
+// 2026-09-03, and turning it into one that stops the gateway would make the
+// upgrade path punish an operator for a value that had been inert.
+func clampWorkers(n int, logger *slog.Logger) int {
+	if n <= MaxProbeWorkers {
+		return n
+	}
+	if logger != nil {
+		logger.Warn("active_health_checks.max_workers is above the ceiling and has been reduced to it",
+			slog.Int("requested", n),
+			slog.Int("using", MaxProbeWorkers),
+		)
+	}
+	return MaxProbeWorkers
+}
+
 // NewExecutor constructs an Executor. Interval and worker count fall back to
-// defaults (30s, 4) if zero.
+// defaults (30s, 4) if zero, and a count above MaxProbeWorkers is clamped.
 func NewExecutor(
 	protocol protocol.Relayer,
 	endpoints protocol.EndpointProvider,
@@ -140,6 +178,7 @@ func NewExecutor(
 	if workers <= 0 {
 		workers = defaultWorkers
 	}
+	workers = clampWorkers(workers, logger)
 	e := &Executor{
 		protocol:        protocol,
 		endpoints:       endpoints,
@@ -273,7 +312,7 @@ func (e *Executor) SetWorkerResolver(fn func() int) { e.workersFn = fn }
 func (e *Executor) workerCount() int {
 	if e.workersFn != nil {
 		if n := e.workersFn(); n > 0 {
-			return n
+			return clampWorkers(n, nil)
 		}
 	}
 	return e.workers
@@ -387,6 +426,10 @@ func (e *Executor) runOnce(ctx context.Context) {
 	if e.skipper != nil {
 		e.skipper.beginCycle()
 	}
+	// Probes issued this cycle, per service. Counted in the scheduling loop,
+	// which is single-goroutine, so no lock: the workers it dispatches to run
+	// concurrently but do not touch this.
+	issued := make(map[domain.ServiceID]int, len(services))
 
 	// Semaphore limits concurrent workers. Sized once per cycle: resolving it
 	// per dispatch would put two differently-sized pools in play for one pass.
@@ -454,6 +497,8 @@ func (e *Executor) runOnce(ctx context.Context) {
 				continue
 			}
 
+			issued[serviceID] += len(checks)
+
 			sem <- struct{}{}
 			e.wg.Add(1)
 			go func() {
@@ -466,6 +511,9 @@ func (e *Executor) runOnce(ctx context.Context) {
 	}
 
 	e.lastRun = next
+	if e.recorder != nil {
+		e.recorder.RecordHealthCheckCycleProbes(issued)
+	}
 	if e.skipper != nil {
 		e.logSkipProgress()
 		e.skipper.endCycle(now)

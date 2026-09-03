@@ -118,6 +118,7 @@ failureThreshold) here.
 | `PUT` | `/admin/blocked-domains/{domain}` | Bans a domain on every service, for every RPC type or only the listed ones, without a redeploy. |
 | `DELETE` | `/admin/blocked-domains/{domain}` | Lifts an admin-set ban. |
 | `GET` | `/admin/tuning` | Returns every knob that can be overridden at runtime, with whatever has been set on it. |
+| `GET` | `/admin/tuning/{knob}` | Returns what is in force for one knob: the config file's value, the global override if there is one, and which of the two applies. |
 | `PUT` | `/admin/tuning/{knob}` | Sets a knob globally. |
 | `PUT` | `/admin/tuning/{knob}/{serviceID}` | Sets a knob for one service only. |
 | `DELETE` | `/admin/tuning/{knob}` | Removes the global override for a knob, returning the config file's value to effect. |
@@ -316,6 +317,18 @@ it.
 
 Overrides live in memory and are lost on restart, which the response states
 rather than leaving to be discovered.
+
+### `GET /admin/tuning/{knob}`
+
+Returns what is in force for one knob: the config file's
+value, the global override if there is one, and which of the two applies.
+
+The list endpoint shows what has been SET, which is not the same question. An
+operator who has just changed a knob wants to know what it is now, and
+before this the only honest answer available to them was to read the config
+file and the override list and combine the two themselves — which on the
+mainnet canary on 2026-09-03 meant nobody could tell whether a configured
+500 workers had been clamped, rejected or honoured.
 
 ### `PUT /admin/tuning/{knob}`
 

@@ -250,6 +250,52 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **The startup config report survives the log level.** Everything SAGE says
+  about the config it was handed — ignored keys, inert keys, unimplemented
+  keys, settings that are probably not what was meant, an unauthenticated admin
+  API — is a set of WARN lines, and a deployment running
+  `logger_config.level: error` silences every one. The mainnet canary ran
+  exactly that: it carried a rule file SAGE does not read and a `max_workers`
+  SAGE did not implement, the lines saying so were emitted and dropped, and an
+  operator spent an afternoon asking what the startup log had already answered.
+  The boot report now goes through a logger pinned to at least WARN. Nothing is
+  promoted to ERROR — these are not errors, and making them errors to defeat a
+  filter would be lying about severity to win an argument with a config — and
+  everything logged after the report still honours the configured level.
+- **One ceiling on health-check concurrency, wherever the value comes from.**
+  There were briefly two: the tuning knob refused anything above 64 while the
+  config path accepted any number at all, so the canary ran 500-wide probe
+  bursts through a build that would have rejected 65 from an operator's own
+  hand. `healthcheck.MaxProbeWorkers` is now the single bound and the knob
+  advertises it, with a test that fails if the two disagree. It is 512 rather
+  than 64 because the canary answered the question the low ceiling was
+  guessing at: half an hour of 500-wide bursts moved nothing the wrong way —
+  probe 502s fell from 0.70 to 0.58 per second, 408s fell, and per-supplier
+  transport failures got flatter. The likely reason is that a burst and a
+  trickle cost a supplier the same concurrency-seconds while 500 workers hold a
+  connection for a second and 4 hold one continuously, and connection limits
+  care about shape rather than the integral. One fleet at one traffic share, so
+  there is still a ceiling. Out-of-range is clamped and reported rather than
+  refused: this was an unimplemented key until the same day, and turning it
+  into one that stops the gateway would punish an operator for a value that had
+  been inert.
+- **`sage_health_check_last_cycle_probes`** — probes issued per service in the
+  last completed cycle. With a short cycle inside a long interval every probe
+  for a service lands within a second or two, so any rate over a window shorter
+  than the interval alternates between the whole burst and zero, which cost an
+  operator twenty minutes of rate arithmetic on the canary. A service the cycle
+  did not probe reads zero rather than keeping its last count: a service that
+  stopped being probed is the thing worth seeing.
+- **`GET /admin/tuning/{knob}`** returns what is in force — the config file's
+  value, the global override if there is one, and which applies. The list
+  endpoint showed what had been SET, which is a different question: an operator
+  who had just changed a knob had to read the config file and the override list
+  and combine them, which on the canary meant nobody could tell whether a
+  configured 500 workers had been clamped, rejected or honoured. Deliberately
+  global-only, because a per-service answer would have to invent that service's
+  config base, which the store does not have and cannot derive; the per-service
+  overrides are listed instead.
+
 - **`active_health_checks.max_workers` was a config key with no Go field.** The
   mainnet canary's config set it to 500 and the executor ran 4, which is the
   hardcoded default — and four-way concurrency was the whole reason a

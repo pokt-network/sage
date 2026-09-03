@@ -3,6 +3,7 @@ package router
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/tuning"
@@ -26,6 +27,26 @@ func (a *AdminAPI) handleListTuning(w http.ResponseWriter, _ *http.Request) {
 		"knobs": a.tuning.All(),
 		"note":  "overrides are held in memory and are lost on restart; the config file is authoritative again after one",
 	})
+}
+
+// handleGetTuning returns what is in force for one knob: the config file's
+// value, the global override if there is one, and which of the two applies.
+//
+// The list endpoint shows what has been SET, which is not the same question. An
+// operator who has just changed a knob wants to know what it is now, and
+// before this the only honest answer available to them was to read the config
+// file and the override list and combine the two themselves — which on the
+// mainnet canary on 2026-09-03 meant nobody could tell whether a configured
+// 500 workers had been clamped, rejected or honoured.
+func (a *AdminAPI) handleGetTuning(w http.ResponseWriter, req *http.Request) {
+	name := req.PathValue("knob")
+	effective, ok := a.tuning.EffectiveFor(name)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound,
+			"unknown knob "+name+"; registered knobs are: "+strings.Join(tuning.KnobNames(), ", "))
+		return
+	}
+	writeJSON(w, http.StatusOK, effective)
 }
 
 // handleSetTuning sets a knob globally. Body: `{"value": "3"}` — the value is a

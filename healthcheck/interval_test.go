@@ -10,6 +10,7 @@ import (
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
+	"github.com/pokt-network/sage/tuning"
 )
 
 // fakeResolver is a live cadence source the test can move.
@@ -161,5 +162,56 @@ func TestRunOnce_SizesThePoolOncePerCycle(t *testing.T) {
 
 	if got := calls.Load(); got != 1 {
 		t.Errorf("resolver called %d times in one cycle, want 1: the pool must be sized once", got)
+	}
+}
+
+// One ceiling, applied wherever the value comes from. There were briefly two:
+// the tuning knob refused anything above 64 while the config path accepted any
+// number, so the mainnet canary ran 500-wide bursts through a build that would
+// have rejected 65 from an operator's own hand.
+func TestClampWorkers(t *testing.T) {
+	cases := []struct {
+		in, want int
+	}{
+		{in: 4, want: 4},
+		{in: MaxProbeWorkers, want: MaxProbeWorkers},
+		{in: MaxProbeWorkers + 1, want: MaxProbeWorkers},
+		{in: 100_000, want: MaxProbeWorkers},
+	}
+	for _, tc := range cases {
+		if got := clampWorkers(tc.in, nil); got != tc.want {
+			t.Errorf("clampWorkers(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The ceiling reaches the config path, which is the one that was open.
+func TestNewExecutor_ClampsAConfiguredWorkerCount(t *testing.T) {
+	e := NewExecutor(nil, nil, nil, nil, nil, nil, time.Minute, 100_000, slog.New(slog.DiscardHandler))
+	if got := e.workerCount(); got != MaxProbeWorkers {
+		t.Errorf("worker count = %d from a configured 100000, want the ceiling %d", got, MaxProbeWorkers)
+	}
+}
+
+// And the runtime path, which the knob's own bound already guarded — belt and
+// braces, because a resolver is an interface anyone can implement.
+func TestWorkerCount_ClampsAnOverride(t *testing.T) {
+	e := &Executor{workers: 4}
+	e.SetWorkerResolver(func() int { return 100_000 })
+	if got := e.workerCount(); got != MaxProbeWorkers {
+		t.Errorf("worker count = %d from an override of 100000, want %d", got, MaxProbeWorkers)
+	}
+}
+
+// The knob must not advertise a range the executor will not honour: an
+// operator who submits the advertised maximum has to get it.
+func TestKnobCeilingMatchesTheExecutor(t *testing.T) {
+	knob, ok := tuning.Lookup(tuning.KnobHealthCheckWorkers)
+	if !ok {
+		t.Fatal("health_checks.max_workers is not registered")
+	}
+	if int(knob.Max) != MaxProbeWorkers {
+		t.Errorf("knob advertises max %v, executor clamps at %d — one of them is lying to an operator",
+			knob.Max, MaxProbeWorkers)
 	}
 }

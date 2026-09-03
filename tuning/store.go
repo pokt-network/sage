@@ -39,6 +39,16 @@ type Store struct {
 	mu      sync.RWMutex
 	global  map[string]Override
 	service map[string]map[domain.ServiceID]Override
+	// base holds what the config file says, as the operator would read it back.
+	// The store does not otherwise know: every reader passes its own base to
+	// Int/Duration/Float, because the base for a per-service knob comes from
+	// that service's config block and only the reader can resolve it. That is
+	// fine for resolving a value and useless for ANSWERING one — an operator
+	// asking what is in force gets overrides and no idea what they are
+	// overriding. SetBase is how a reader tells the store the answer it
+	// already has. Empty for a knob nobody registered, which reads as unknown
+	// rather than as zero.
+	base map[string]string
 }
 
 // NewStore returns an empty store. Nothing is seeded from config: an entry here
@@ -48,6 +58,7 @@ func NewStore() *Store {
 	return &Store{
 		global:  make(map[string]Override),
 		service: make(map[string]map[domain.ServiceID]Override),
+		base:    make(map[string]string),
 	}
 }
 
@@ -213,4 +224,65 @@ func (s *Store) ServiceOverrides(name string) map[domain.ServiceID]Override {
 		out[id] = o
 	}
 	return out
+}
+
+// SetBase records what the config file says a knob is, so a reader of the
+// admin API can see what an override is overriding. Wire time, from the same
+// value the resolving closure was built with.
+//
+// It is display only. Nothing reads it to decide behaviour — the base still
+// travels with each Int/Duration/Float call, because that is where a
+// per-service config value can actually be resolved — so a stale or missing
+// entry costs an operator context and costs a relay nothing.
+func (s *Store) SetBase(name, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.base[name] = value
+}
+
+// Effective describes what is in force for one knob, for an operator asking
+// rather than for a reader resolving.
+type Effective struct {
+	Knob Knob `json:"knob"`
+	// Base is the config file's value, empty when nothing registered one.
+	Base string `json:"base,omitempty"`
+	// Value is what applies now: the global override if set, else Base.
+	Value string `json:"value"`
+	// Overridden says whether Value came from an override rather than config.
+	Overridden bool `json:"overridden"`
+	// Global and ServiceOverrides are the raw overrides behind the answer.
+	Global           *Override                     `json:"global,omitempty"`
+	ServiceOverrides map[domain.ServiceID]Override `json:"service_overrides,omitempty"`
+}
+
+// EffectiveFor reports what is in force for one knob globally, and whether the
+// knob exists at all.
+//
+// Deliberately global-only. A per-service answer would have to invent the
+// service's config base, which the store does not have and cannot derive — so
+// it would be a confident guess, and the per-service overrides are listed here
+// instead for the caller to read against their own config.
+func (s *Store) EffectiveFor(name string) (Effective, bool) {
+	knob, ok := Lookup(name)
+	if !ok {
+		return Effective{}, false
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	eff := Effective{Knob: knob, Base: s.base[name], Value: s.base[name]}
+	if o, set := s.global[name]; set {
+		override := o
+		eff.Global = &override
+		eff.Value = o.Value.Raw
+		eff.Overridden = true
+	}
+	if byService := s.service[name]; len(byService) > 0 {
+		eff.ServiceOverrides = make(map[domain.ServiceID]Override, len(byService))
+		for id, o := range byService {
+			eff.ServiceOverrides[id] = o
+		}
+	}
+	return eff, true
 }

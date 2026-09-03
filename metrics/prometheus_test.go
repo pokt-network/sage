@@ -78,6 +78,10 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "health_check_skipped_total"},
 			[]string{"service_id"},
 		),
+		healthCheckLastCycle: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{Namespace: "sage_test", Name: "health_check_last_cycle_probes"},
+			[]string{"service_id"},
+		),
 		circuitBreakerOutcome: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "circuit_breaker_outcome_total"},
 			[]string{"service_id", "domain", "outcome"},
@@ -103,6 +107,7 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 		r.circuitBreaks,
 		r.reputationAttempts,
 		r.healthCheckSkipped,
+		r.healthCheckLastCycle,
 	)
 	// Mirrors NewRecorder: the skipped counter is pre-registered at zero so
 	// its absence is never mistaken for not skipping.
@@ -552,5 +557,50 @@ func TestRelayLatencyBuckets_ResolveTheTailPastTenSeconds(t *testing.T) {
 	// barely" fall in different buckets.
 	if !slices.Contains(relayLatencyBuckets, float64(30)) {
 		t.Error("30s is not a bucket edge; a timed-out attempt shares a bucket with a slow success")
+	}
+}
+
+// Probes arrive as a burst — a short cycle inside a long interval puts every
+// probe for a service inside a second or two — so any rate over a window
+// shorter than the interval alternates between the whole burst and zero. The
+// gauge is what makes one pass legible without that arithmetic.
+func TestRecordHealthCheckCycleProbes(t *testing.T) {
+	services := []domain.ServiceID{"eth", "poly", "kava"}
+	rec, reg := newIsolatedRecorderWithReg(t, services...)
+
+	rec.RecordHealthCheckCycleProbes(map[domain.ServiceID]int{"eth": 40, "poly": 12})
+
+	got := scrapeValues(t, reg, "sage_test_health_check_last_cycle_probes")
+	want := map[string]float64{
+		`{service_id="eth"}`:  40,
+		`{service_id="poly"}`: 12,
+		// A configured service the cycle did not probe reads zero, not absent:
+		// a service that stopped being probed is the thing worth seeing.
+		`{service_id="kava"}`: 0,
+	}
+	for label, v := range want {
+		if got[label] != v {
+			t.Errorf("%s = %v, want %v (all: %v)", label, got[label], v, got)
+		}
+	}
+}
+
+// The gauge replaces the previous cycle rather than accumulating, and a
+// service that drops out of the cycle goes to zero rather than keeping a stale
+// count that says the opposite of what happened.
+func TestRecordHealthCheckCycleProbes_ReplacesTheLastCycle(t *testing.T) {
+	services := []domain.ServiceID{"eth", "poly"}
+	rec, reg := newIsolatedRecorderWithReg(t, services...)
+
+	rec.RecordHealthCheckCycleProbes(map[domain.ServiceID]int{"eth": 40, "poly": 12})
+	rec.RecordHealthCheckCycleProbes(map[domain.ServiceID]int{"eth": 5})
+
+	got := scrapeValues(t, reg, "sage_test_health_check_last_cycle_probes")
+	if got[`{service_id="eth"}`] != 5 {
+		t.Errorf("eth = %v, want 5 — the gauge is the last cycle, not a total", got[`{service_id="eth"}`])
+	}
+	if got[`{service_id="poly"}`] != 0 {
+		t.Errorf("poly = %v, want 0 — it was not probed this cycle and a stale 12 would say it was",
+			got[`{service_id="poly"}`])
 	}
 }
