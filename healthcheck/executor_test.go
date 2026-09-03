@@ -79,7 +79,7 @@ func (p *checkOnlyPlugin) SelectEndpoints(eps domain.EndpointAddrList, _ []domai
 	return eps, nil
 }
 
-func (p *checkOnlyPlugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck {
+func (p *checkOnlyPlugin) HealthChecks() []qos.HealthCheck {
 	return p.checks
 }
 

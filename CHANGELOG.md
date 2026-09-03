@@ -250,6 +250,26 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **A service staked only for REST was never health-checked, and said nothing
+  about it.** The executor fetched one endpoint list per service, hardcoded to
+  JSON-RPC, and ran every check against it whatever RPC type the check's
+  payload carried. A service with no JSON-RPC staking returns an empty list, so
+  the loop found no backends and moved on — silently, every cycle, for the life
+  of the process. Five services on the mainnet canary sat at zero probes on
+  2026-09-03, and it took reading the code to say why.
+
+  Endpoints are now fetched once per RPC type the service's checks actually
+  need. The CometBFT case is unchanged: `AvailableEndpoints` applies
+  `rpc_type_fallbacks` at the pool level, so a `comet_bft` check still reaches
+  JSON-RPC-staked suppliers exactly as before — that behaviour lives there and
+  the executor does not have to arrange it.
+
+  `qos.HealthChecker.HealthChecks` lost its endpoint parameter to make this
+  possible. Every implementation ignored it, and holding it cost more than a
+  dead argument: the executor could not learn which RPC types a service needed
+  until it had already fetched endpoints for one type it had to guess at. The
+  checks are a property of the plugin, not of an endpoint.
+
 - **The startup config report survives the log level.** Everything SAGE says
   about the config it was handed — ignored keys, inert keys, unimplemented
   keys, settings that are probably not what was meant, an unauthenticated admin

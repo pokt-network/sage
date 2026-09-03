@@ -498,7 +498,7 @@ func TestIsArchivalRequest_NotArchival(t *testing.T) {
 
 func TestHealthChecks(t *testing.T) {
 	p := newTestPlugin(5)
-	checks := p.HealthChecks("ep1")
+	checks := p.HealthChecks()
 	if len(checks) != 2 {
 		t.Fatalf("expected 2 health checks, got %d", len(checks))
 	}
@@ -931,7 +931,7 @@ func TestResetState(t *testing.T) {
 // block number stays on the service's.
 func TestHealthChecks_ChainIDIsSlowCadence(t *testing.T) {
 	p := newTestPlugin(100)
-	for _, c := range p.HealthChecks("supplier-https://node.example.com") {
+	for _, c := range p.HealthChecks() {
 		switch c.Name {
 		case "eth_chainId":
 			if c.Interval < 5*time.Minute {

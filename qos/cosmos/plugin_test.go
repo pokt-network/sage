@@ -302,9 +302,8 @@ func TestSelectEndpoints_DegradedFallback(t *testing.T) {
 
 func TestHealthChecks_DefaultCometBFT(t *testing.T) {
 	p := newPlugin(10)
-	ep := endpointAddr("pokt1abc-https://node.example.com")
 
-	checks := p.HealthChecks(ep)
+	checks := p.HealthChecks()
 	if len(checks) != 1 {
 		t.Fatalf("expected 1 health check, got %d", len(checks))
 	}

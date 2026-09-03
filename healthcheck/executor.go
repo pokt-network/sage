@@ -456,65 +456,77 @@ func (e *Executor) runOnce(ctx context.Context) {
 
 		serviceInterval := e.serviceInterval(serviceID, configured)
 
-		eps, err := e.endpoints.AvailableEndpoints(ctx, serviceID, domain.RPCTypeJSONRPC)
-		if err != nil {
-			// Debug: the protocol reports the cause once when it changes; a
-			// service with no suppliers would otherwise say so every cycle.
-			e.logger.Debug("healthcheck: failed to get endpoints",
-				"service_id", serviceID,
-				"error", err,
-			)
-			continue
-		}
+		// Plugin checks first: they feed block height and chain ID tracking,
+		// so they must run even when a config adds its own.
+		//
+		// slices.Concat, not append: the slice a plugin returns is the
+		// plugin's, and appending to it writes into its backing array whenever
+		// it has spare capacity — one service's configured checks landing in
+		// the array a plugin hands to every service. Concat always allocates.
+		all := slices.Concat(checker.HealthChecks(), configured.For(serviceID))
 
-		for _, group := range e.groupByBackend(eps) {
-			group := group // capture for goroutine
-			probe := group.probe(e.cycle)
-			// Plugin checks first: they feed block height and chain ID
-			// tracking, so they must run even when a config adds its own.
-			//
-			// slices.Concat, not append: the slice a plugin returns is the
-			// plugin's, and appending to it writes into its backing array
-			// whenever it has spare capacity — one service's configured checks
-			// landing in the array a plugin hands to every service. Concat
-			// always allocates.
-			all := slices.Concat(checker.HealthChecks(probe), configured.For(serviceID))
-
-			// Keep the checks that are due on this backend. A check's own
-			// interval only ever slows it down: it runs at the longer of its
-			// spacing and the service's cadence.
-			checks := make([]qos.HealthCheck, 0, len(all))
-			for _, check := range all {
-				interval := max(check.Interval, serviceInterval)
-				if !e.due(probeKey{serviceID, group.key, check.Name}, interval, tick, now, next) {
-					continue
-				}
-				// After due, not before: the skip decision needs this cycle's
-				// traffic reading recorded for every backend that was going to
-				// be probed, and a check whose own interval has not elapsed
-				// was not going to be probed either way. Stamping it due and
-				// then skipping it is also what keeps the schedule honest — a
-				// skipped check is covered, not overdue, so it must not come
-				// back the moment traffic pauses.
-				if e.skipCoveredByTraffic(ctx, serviceID, probe, group.endpoints, group.key, check, interval, now) {
-					continue
-				}
-				checks = append(checks, check)
-			}
-			if len(checks) == 0 {
+		// One endpoint list per RPC type the checks actually need, rather than
+		// one JSON-RPC list for all of them. A check carries its own type in
+		// its payload, and a service is staked per type: asking for JSON-RPC
+		// endpoints on a REST-only service returns nothing, so it was never
+		// probed at all and said nothing about it. AvailableEndpoints applies
+		// rpc_type_fallbacks at the pool level, so a CometBFT check still
+		// reaches JSON-RPC-staked suppliers exactly as before — that behaviour
+		// lives there and is not something this loop has to arrange.
+		for rpcType, checks := range checksByRPCType(all) {
+			eps, err := e.endpoints.AvailableEndpoints(ctx, serviceID, rpcType)
+			if err != nil {
+				// Debug: the protocol reports the cause once when it changes; a
+				// service with no suppliers would otherwise say so every cycle.
+				e.logger.Debug("healthcheck: failed to get endpoints",
+					"service_id", serviceID,
+					"rpc_type", rpcType,
+					"error", err,
+				)
 				continue
 			}
 
-			issued[serviceID] += len(checks)
+			for _, group := range e.groupByBackend(eps) {
+				group := group // capture for goroutine
+				probe := group.probe(e.cycle)
 
-			sem <- struct{}{}
-			e.wg.Add(1)
-			go func() {
-				defer safego.Recover(e.logger, "healthcheck.endpoint")
-				defer e.wg.Done()
-				defer func() { <-sem }()
-				e.checkEndpoint(ctx, serviceID, probe, group.endpoints, plugin, checks, configured)
-			}()
+				// Keep the checks that are due on this backend. A check's own
+				// interval only ever slows it down: it runs at the longer of
+				// its spacing and the service's cadence.
+				due := make([]qos.HealthCheck, 0, len(checks))
+				for _, check := range checks {
+					interval := max(check.Interval, serviceInterval)
+					if !e.due(probeKey{serviceID, group.key, check.Name}, interval, tick, now, next) {
+						continue
+					}
+					// After due, not before: the skip decision needs this
+					// cycle's traffic reading recorded for every backend that
+					// was going to be probed, and a check whose own interval
+					// has not elapsed was not going to be probed either way.
+					// Stamping it due and then skipping it is also what keeps
+					// the schedule honest — a skipped check is covered, not
+					// overdue, so it must not come back the moment traffic
+					// pauses.
+					if e.skipCoveredByTraffic(ctx, serviceID, probe, group.endpoints, group.key, check, interval, now) {
+						continue
+					}
+					due = append(due, check)
+				}
+				if len(due) == 0 {
+					continue
+				}
+
+				issued[serviceID] += len(due)
+
+				sem <- struct{}{}
+				e.wg.Add(1)
+				go func() {
+					defer safego.Recover(e.logger, "healthcheck.endpoint")
+					defer e.wg.Done()
+					defer func() { <-sem }()
+					e.checkEndpoint(ctx, serviceID, probe, group.endpoints, plugin, due, configured)
+				}()
+			}
 		}
 	}
 
@@ -631,6 +643,23 @@ func (e *Executor) heightIsFresh(
 		return false
 	}
 	return now.Sub(last) < interval
+}
+
+// checksByRPCType groups checks by the RPC type their payload carries, which
+// is the type the endpoints they run against must be staked for.
+func checksByRPCType(checks []qos.HealthCheck) map[domain.RPCType][]qos.HealthCheck {
+	if len(checks) == 0 {
+		return nil
+	}
+	out := make(map[domain.RPCType][]qos.HealthCheck, 2)
+	for _, check := range checks {
+		rpcType := check.Payload.RPCType()
+		if rpcType == "" {
+			rpcType = domain.RPCTypeJSONRPC
+		}
+		out[rpcType] = append(out[rpcType], check)
+	}
+	return out
 }
 
 // backendGroup is the set of endpoints sharing one backend URL.

@@ -310,7 +310,7 @@ func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, re
 // --- qos.HealthChecker ---
 
 // HealthChecks returns the standard EVM health check payloads for an endpoint.
-func (p *Plugin) HealthChecks(endpoint domain.EndpointAddr) []qos.HealthCheck {
+func (p *Plugin) HealthChecks() []qos.HealthCheck {
 	blockNumberBody := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
 	chainIDBody := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":2}`)
 

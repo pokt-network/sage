@@ -28,7 +28,7 @@ func (f *fullPlugin) StartSync(_ context.Context)                       {}
 func (f *fullPlugin) ParseBlockHeight(_ []byte) (uint64, error)         { return 0, nil }
 func (f *fullPlugin) IsArchivalRequest(_ []domain.Payload) bool         { return false }
 func (f *fullPlugin) IsArchivalEndpoint(_ domain.EndpointAddr) bool     { return false }
-func (f *fullPlugin) HealthChecks(_ domain.EndpointAddr) []HealthCheck  { return nil }
+func (f *fullPlugin) HealthChecks() []HealthCheck                       { return nil }
 func (f *fullPlugin) ExtractData(_ domain.EndpointAddr, _, _ []byte) (*ExtractedData, error) {
 	return nil, nil
 }

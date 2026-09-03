@@ -57,8 +57,15 @@ type ArchivalDetector interface {
 }
 
 // HealthChecker is implemented by plugins that provide health check payloads.
+//
+// The checks are a property of the plugin rather than of any one endpoint —
+// every implementation ignored the endpoint it used to be handed — and holding
+// that parameter had a cost beyond a dead argument: the executor could not
+// learn which RPC types a service's checks needed until it had already fetched
+// endpoints for one type it had to guess. It guessed JSON-RPC, so a service
+// staked only for REST was never health-checked at all.
 type HealthChecker interface {
-	HealthChecks(endpoint domain.EndpointAddr) []HealthCheck
+	HealthChecks() []HealthCheck
 }
 
 // HealthCheck describes a single health check request for an endpoint.

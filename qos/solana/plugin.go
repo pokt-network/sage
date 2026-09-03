@@ -140,7 +140,7 @@ func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
 
 // HealthChecks returns the health check payloads for the given endpoint.
 // Solana health checks: getEpochInfo (for block height) and getHealth.
-func (p *Plugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck {
+func (p *Plugin) HealthChecks() []qos.HealthCheck {
 	return []qos.HealthCheck{
 		{
 			Name:    "getEpochInfo",

@@ -281,7 +281,7 @@ func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
 // the GET works there. There used to be a JSON-RPC variant here selected on a
 // store field nothing wrote, so it never ran; the fallback is the live
 // version of that idea.
-func (p *Plugin) HealthChecks(_ domain.EndpointAddr) []qos.HealthCheck {
+func (p *Plugin) HealthChecks() []qos.HealthCheck {
 	return []qos.HealthCheck{
 		{
 			Name:    "comet_bft_status",

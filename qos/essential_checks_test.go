@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/qos/cosmos"
 	"github.com/pokt-network/sage/qos/evm"
@@ -27,7 +26,6 @@ import (
 // package cannot import.
 func TestPlugins_MarkTheirBlockHeightCheckEssential(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
-	const ep = domain.EndpointAddr("supA-https://node.example.com")
 
 	plugins := map[string]qos.HealthChecker{
 		"evm":    evm.NewPlugin(logger, evm.Config{}),
@@ -37,7 +35,7 @@ func TestPlugins_MarkTheirBlockHeightCheckEssential(t *testing.T) {
 
 	for name, plugin := range plugins {
 		t.Run(name, func(t *testing.T) {
-			checks := plugin.HealthChecks(ep)
+			checks := plugin.HealthChecks()
 			if len(checks) == 0 {
 				t.Fatal("no health checks declared")
 			}
