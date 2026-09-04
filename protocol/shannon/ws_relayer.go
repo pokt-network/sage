@@ -27,9 +27,6 @@ import (
 )
 
 const (
-	// wsFeatureFlag gates WS relays per-service. Default off.
-	wsFeatureFlag = "websocket_relays"
-
 	// wsStallTimeout is how long a connection with established subscriptions
 	// may receive nothing before its supplier is replaced. A minute: longer
 	// than any chain's block time by a wide margin, so a quiet-but-honest
@@ -196,10 +193,10 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	logger := r.deps.Logger.With("component", "ws_relayer", "service_id", serviceID)
 
 	// Feature-flag gate.
-	if !r.deps.Flags.IsEnabled(ctx, wsFeatureFlag, serviceID) {
+	if !r.deps.Flags.IsEnabled(ctx, featureflag.FlagWebsocketRelays, serviceID) {
 		logger.Info("ws open: feature flag off")
 		http.Error(w, "websocket relays disabled for this service", http.StatusServiceUnavailable)
-		return fmt.Errorf("ws open: %s flag disabled for %q", wsFeatureFlag, serviceID)
+		return fmt.Errorf("ws open: %s flag disabled for %q", featureflag.FlagWebsocketRelays, serviceID)
 	}
 
 	// Reserve a connection slot before doing any work for this client.

@@ -497,9 +497,9 @@ func TestRetry_RolloverReasonLabel(t *testing.T) {
 // blackholeThenOK hangs the first attempt until its context deadline (a
 // supplier that accepts the connection but never responds), then succeeds.
 type blackholeThenOK struct {
-	calls          int
-	firstBudget    time.Duration
-	secondBudget   time.Duration
+	calls        int
+	firstBudget  time.Duration
+	secondBudget time.Duration
 }
 
 func (h *blackholeThenOK) HandleRelay(ctx *relay.Context) error {

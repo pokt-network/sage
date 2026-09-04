@@ -74,6 +74,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			primaryDetached, primaryCancel := context.WithCancel(context.WithoutCancel(ctx.Ctx))
 			primaryCtx.Ctx = primaryDetached
 			go func() {
+				defer safego.Recover(primaryCtx.Logger, "hedge.primary.goroutine")
 				defer primaryCancel()
 				// safego.Call rather than a bare recover: an arm that recovered
 				// without sending would leave the select below waiting on a
@@ -146,6 +147,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			hedgeDetached, hedgeCancel := context.WithCancel(context.WithoutCancel(ctx.Ctx))
 			hedgeCtx.Ctx = hedgeDetached
 			go func() {
+				defer safego.Recover(hedgeCtx.Logger, "hedge.hedge.goroutine")
 				defer hedgeCancel()
 				err := safego.Call(hedgeCtx.Logger, "hedge.hedge", func() error {
 					return next.HandleRelay(hedgeCtx)

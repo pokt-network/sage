@@ -372,6 +372,11 @@ func (e *Executor) Start(ctx context.Context) {
 
 	e.wg.Add(1)
 	go func() {
+		// First, so it runs last: the per-tick safego.Run below contains a
+		// panic inside a cycle, and this contains one in the bookkeeping
+		// around it. Either way the process survives and the panic is
+		// counted (sage_recovered_panics_total).
+		defer safego.Recover(e.logger, "healthcheck.loop")
 		defer e.wg.Done()
 		tick := e.tick()
 		ticker := time.NewTicker(tick)
@@ -402,6 +407,7 @@ func (e *Executor) Start(ctx context.Context) {
 	if e.source != nil {
 		e.wg.Add(1)
 		go func() {
+			defer safego.Recover(e.logger, "healthcheck.probe.source.loop")
 			defer e.wg.Done()
 			for ctx.Err() == nil {
 				safego.Run(e.logger, "healthcheck.probe.source", func() {

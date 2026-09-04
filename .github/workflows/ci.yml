@@ -213,3 +213,8 @@ jobs:
         with:
           version: v2.11.3
           args: --timeout 10m
+
+      # Unreachable functions fail the build: a constructor nothing calls is
+      # the "built but never wired" failure the 2026-09-04 audit was full of.
+      - name: deadcode
+        run: make deadcode

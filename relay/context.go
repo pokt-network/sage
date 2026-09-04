@@ -13,13 +13,24 @@ import (
 )
 
 // Context carries state through the middleware chain.
-// Each field is set by exactly one middleware and read by others.
+//
+// Each field names the middleware that write it. Most have one writer; the
+// ones that have more are the ones a new middleware is most likely to get
+// wrong, so the set is written out rather than summarised as "one". The
+// discipline the comments enforce: a field is written by the middleware
+// listed and read by anyone, and a writer not on the list is a review
+// finding. (This header used to claim exactly one writer per field, which
+// was false for four of them and checkable for none.)
 type Context struct {
-	// Immutable: set at creation
+	// Set at creation, and re-wrapped — not replaced — by the middleware
+	// that scope it: timeout derives a deadline, retry and hedge detach a
+	// per-attempt context, request_id enriches the logger. Everything else
+	// reads.
 	Ctx         context.Context
 	HTTPRequest *http.Request
 	Logger      *slog.Logger
-	RequestID   string
+	// RequestID is set by request_id only.
+	RequestID string
 
 	// Set by ClientIP middleware: the address this request is attributed to,
 	// resolved once from the peer and any trusted forwarded headers so every
@@ -36,8 +47,14 @@ type Context struct {
 	// Set by QoS parsing
 	Payloads []domain.Payload
 
-	// Set by SelectEndpoint middleware
-	Endpoint  domain.EndpointAddr
+	// Endpoint is the pick for this attempt: written by select_endpoint only.
+	Endpoint domain.EndpointAddr
+	// Endpoints is the candidate list select_endpoint chooses from. It is
+	// filled by select_endpoint (from the protocol) and PRUNED, in chain
+	// order, by supplier_affinity (reordered), circuit_break (broken domains
+	// out), method_blocks (blocked hosts out), retry and hedge (the attempt
+	// that just failed out). Every pruner runs before select_endpoint; the
+	// mustPrecede rules in chain_order.go hold that order.
 	Endpoints domain.EndpointAddrList
 
 	// SelectedEndpoint, when non-nil, receives a copy of Endpoint as soon as
@@ -57,12 +74,21 @@ type Context struct {
 	// two arms onto the same slot.
 	SelectedEndpoint *atomic.Pointer[domain.EndpointAddr]
 
-	// Set by SendRelay middleware
+	// Response is what the client gets. Written by send_relay for a relay
+	// that reached a supplier; by cache and singleflight for one that did
+	// not need to; by batch, which assembles the sub-relays' responses into
+	// one. Shared through Clone(): every fan-out resets it on the clone
+	// before running, and nothing writes through the pointer.
 	Response *domain.Response
-	Err      error
+	// Err is why the relay failed. Written by whichever middleware refused
+	// the request before a relay (parse, validate, batch — each renders the
+	// rejection too), by send_relay for a failed attempt, and by heuristic
+	// when its verdict is to try elsewhere (domain.ErrRetryVerdict).
+	Err error
 
-	// Set by Heuristic middleware after SendRelay runs.
-	// Nil when the heuristic flag is disabled or there is no response to analyse.
+	// HeuristicResult is written by heuristic after send_relay returns; nil
+	// when the flag is off or there was nothing to analyse. Shared through
+	// Clone() like Response, and reset by every fan-out for the same reason.
 	HeuristicResult *heuristic.AnalysisResult
 
 	// ScoreSink, when non-nil, collects this request tree's per-attempt
@@ -72,10 +98,14 @@ type Context struct {
 	// purpose — see ScoreSink.
 	ScoreSink *ScoreSink
 
-	// Metadata flags set by middleware
-	Degraded  bool // true if fallback strategy was used
-	Cached    bool // true if response came from cache
-	Coalesced bool // true if response was shared via singleflight
+	// Degraded means some stage settled for less than it wanted: set by
+	// select_endpoint (a below-floor pick), method_blocks (a blocked host
+	// served anyway) and batch (merged from its sub-relays, atomically). The
+	// router turns it into X-Degraded and sage_degraded_total.
+	Degraded bool
+	// Cached is set by cache; Coalesced by singleflight.
+	Cached    bool
+	Coalesced bool
 
 	// For writing the final HTTP response
 	Writer ResponseWriter

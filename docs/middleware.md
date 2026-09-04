@@ -4,8 +4,10 @@ A middleware is one file in `relay/middleware/` that wraps `next.HandleRelay(ctx
 with a single concern. It is the seam for extending the gateway without touching
 protocol code — most new behaviour belongs here rather than anywhere else.
 
-Existing middleware run 50–150 lines each. If yours is heading past that, it is
-probably two concerns.
+Most existing middleware run well under 200 lines. If yours is heading past
+that, it is probably two concerns — the exceptions in the tree (parse, batch,
+retry, hedge) are each one concern that happens to be a fan-out or a
+rejection point.
 
 ## The six steps
 

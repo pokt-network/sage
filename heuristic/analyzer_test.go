@@ -446,6 +446,20 @@ func TestAnalyze_4xxWithoutEnvelopeOnJSONRPC_IsSupplierFault(t *testing.T) {
 		t.Errorf("HTML 404 on REST: retry=%v attribution=%v; want no retry, client", got.ShouldRetry, got.Attribution)
 	}
 
+	// A plain-text 403 on REST is not: the gateway signs every relay, so no
+	// client can be refused access. That is the supplier's front door. On
+	// the 2026-09-04 canary two hosts answered "Access Denied" to 40% of
+	// eth-beacon relays and client traffic never moved their score.
+	got = Analyze([]byte("Access Denied"), 403, domain.RPCTypeREST)
+	if !got.ShouldRetry || !got.ShouldPenalize || got.Attribution != AttrSupplier || got.Reason != "http_4xx_page" {
+		t.Errorf("plain 403 on REST: retry=%v penalize=%v attribution=%v reason=%s; want retry, penalize, supplier", got.ShouldRetry, got.ShouldPenalize, got.Attribution, got.Reason)
+	}
+	// A JSON 403 is the backend speaking, and stays the client's.
+	got = Analyze([]byte(`{"error":"forbidden"}`), 403, domain.RPCTypeREST)
+	if got.Attribution != AttrClient {
+		t.Errorf("JSON 403 on REST: attribution=%v, want client", got.Attribution)
+	}
+
 	// A JSON-RPC error envelope with a 4xx status stays the client's.
 	got = Analyze([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"invalid request"}}`), 400, domain.RPCTypeJSONRPC)
 	if got.ShouldRetry || got.Attribution != AttrClient {

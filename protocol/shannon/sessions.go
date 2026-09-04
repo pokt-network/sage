@@ -119,6 +119,7 @@ func (sm *sessionManager) StartBlockPoller(ctx context.Context) {
 	sm.loadGracePeriod(ctx)
 
 	go func() {
+		defer safego.Recover(sm.logger, "shannon.blockpoll.loop")
 		ticker := time.NewTicker(blockPollInterval)
 		defer ticker.Stop()
 

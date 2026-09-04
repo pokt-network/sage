@@ -60,6 +60,11 @@ func (l *LeaderElector) Start(ctx context.Context) {
 	}
 
 	go func() {
+		// First, so it runs last and contains a panic from the first acquire
+		// below, which runs outside the per-tick safego.Run. Recovering here
+		// stops the renew loop, which is a lost leadership and a logged,
+		// counted panic; not recovering was an exited process.
+		defer safego.Recover(l.logger, "healthcheck.leader")
 		// Attempt immediately, then on every renewInterval tick.
 		l.tryAcquire(ctx)
 		ticker := time.NewTicker(renewInterval)

@@ -184,6 +184,17 @@ func ValidateChainOrder(names []string) error {
 		{MWHedge, MWMetrics, "each hedge arm is one relay attempt"},
 		{MWBatch, MWMetrics, "each batch sub-relay is one relay attempt"},
 		{MWMetrics, MWSelectEndpoint, "metrics reads ctx.Endpoint, which select_endpoint sets for this attempt"},
+
+		// Every link below is a field one middleware writes and another reads.
+		// Without a rule, a YAML chain that swaps two of them disables the
+		// reader silently: supplier_affinity after select_endpoint rewrites a
+		// list nothing reads any more.
+		{MWSupplierAffinity, MWSelectEndpoint, "supplier_affinity reorders ctx.Endpoints before selection reads it"},
+		{MWClientIP, MWSupplierAffinity, "supplier_affinity keys on ctx.ClientIP, which client_ip sets"},
+		{MWTimeout, MWHedge, "the deadline must bound the whole race, not one arm"},
+		{MWObserve, MWHeuristic, "observe reads ctx.HeuristicResult on the way out"},
+		{MWCrossValidate, MWSendRelay, "cross_validate digests ctx.Response after send_relay fills it"},
+		{MWDebugLog, MWSendRelay, "debug_log reads ctx.Endpoint and ctx.Response after send_relay"},
 	}
 
 	for _, rule := range mustPrecede {

@@ -219,8 +219,12 @@ func main() {
 	// Start HTTP server (blocking in goroutine)
 	errCh := make(chan error, 1)
 	go func() {
-		// Call, not Go: main selects on errCh, so a recovery that sent nothing
-		// would hang the process instead of crashing it.
+		// Recover first so the goroutine obeys the one rule every bare go
+		// statement does; it cannot fire, since Call below already converts
+		// the server's panic into the error sent on errCh. Call, not Go: main
+		// selects on errCh, so a recovery that sent nothing would hang the
+		// process instead of crashing it.
+		defer safego.Recover(logger, "server.relay.goroutine")
 		errCh <- safego.Call(logger, "server.relay", app.Router.Start)
 	}()
 

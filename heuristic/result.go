@@ -3,15 +3,20 @@ package heuristic
 // ErrorAttribution identifies who is at fault for a failed response.
 type ErrorAttribution int
 
+// AttrUnknown is the zero value on purpose. An AnalysisResult built without
+// naming an attribution used to mean AttrSupplier — penalise, and maybe
+// break — which is the one default that must never be reached by accident.
+// Every literal in this package sets the field; the zero value is for the
+// one that will not.
 const (
+	// AttrUnknown means the cause is ambiguous — minor penalty at most.
+	AttrUnknown ErrorAttribution = iota
 	// AttrSupplier means the supplier is at fault — penalize and potentially circuit-break.
-	AttrSupplier ErrorAttribution = iota
+	AttrSupplier
 	// AttrBlockchain means the blockchain itself had an issue — retry, but no penalty.
 	AttrBlockchain
 	// AttrClient means the client sent a bad request — no retry, no penalty.
 	AttrClient
-	// AttrUnknown means the cause is ambiguous — minor penalty at most.
-	AttrUnknown
 )
 
 func (a ErrorAttribution) String() string {

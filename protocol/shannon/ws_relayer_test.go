@@ -398,7 +398,7 @@ func newCappedRelayer(t *testing.T, max int) *WSRelayer {
 		Protocol:                 &Protocol{logger: newTestLogger()},
 		Reputation:               &spyRepSvc{},
 		Observe:                  newDisabledQueue(),
-		Flags:                    featureflag.NewMemoryStore(map[string]bool{wsFeatureFlag: true}),
+		Flags:                    featureflag.NewMemoryStore(map[string]bool{featureflag.FlagWebsocketRelays: true}),
 		Logger:                   newTestLogger(),
 		MaxConcurrentConnections: max,
 	})
@@ -473,7 +473,7 @@ func TestWSRelayer_FlagOffDoesNotConsumeASlot(t *testing.T) {
 		Protocol:                 &Protocol{},
 		Reputation:               &spyRepSvc{},
 		Observe:                  newDisabledQueue(),
-		Flags:                    featureflag.NewMemoryStore(map[string]bool{wsFeatureFlag: false}),
+		Flags:                    featureflag.NewMemoryStore(map[string]bool{featureflag.FlagWebsocketRelays: false}),
 		Logger:                   newTestLogger(),
 		MaxConcurrentConnections: 1,
 	})
@@ -520,7 +520,7 @@ func TestWSRelayer_OpenRejectsAtCapacity_IsCounted(t *testing.T) {
 		Protocol:                 &Protocol{logger: newTestLogger()},
 		Reputation:               &spyRepSvc{},
 		Observe:                  newDisabledQueue(),
-		Flags:                    featureflag.NewMemoryStore(map[string]bool{wsFeatureFlag: true}),
+		Flags:                    featureflag.NewMemoryStore(map[string]bool{featureflag.FlagWebsocketRelays: true}),
 		Logger:                   newTestLogger(),
 		MaxConcurrentConnections: 1,
 		Metrics:                  spy,

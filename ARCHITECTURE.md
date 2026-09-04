@@ -22,7 +22,7 @@ SAGE supports 72 blockchain services across 4 chain types (EVM, Cosmos, Solana, 
 
 ### Middleware Chain Architecture
 
-Every request flows through a composable chain of middleware components. Each middleware is a single file (~50-150 lines) that wraps a `next.HandleRelay(ctx)` call with one concern:
+Every request flows through a composable chain of middleware components. Each middleware is a single file that wraps a `next.HandleRelay(ctx)` call with one concern. Most are short; the four fan-out and rejection points (parse, batch, retry, hedge) run to a few hundred lines because that is where the concern lives, not because two are folded together:
 
 ```
 HTTP Request
@@ -41,8 +41,8 @@ HTTP Request
                           [Retry]  — retry with endpoint rotation
                             [Hedge]    — race primary vs delayed secondary
                               [Metrics]  — one sage_relay_total + latency observation per attempt
-                              [Affinity] — sticky supplier after writes
-                                [CircuitBreak] — skip broken domains
+                                [Affinity] — sticky supplier after writes
+                                  [CircuitBreak] — skip broken domains
                                   [MethodBlocks] — skip hosts blocked for this method
                                     [SelectEndpoint] — reputation + QoS filtering
                                       [Score]        — one reputation signal per attempt
@@ -51,7 +51,7 @@ HTTP Request
                                             [SendRelay] — sign, send, validate
 ```
 
-Each middleware can be **enabled/disabled at runtime** per-service via feature flags (Redis-backed, no redeploy needed).
+Most middleware can be **enabled/disabled at runtime** per-service via feature flags (Redis-backed, no redeploy needed). The structural ones — request_id, client_ip, parse, validate, timeout, metrics, send_relay — always run; they are what makes a request a relay, not a policy about it. Every link where one middleware reads a field another writes is a `mustPrecede` rule in `relay/chain_order.go`, so a YAML chain cannot silently disable a reader by placing it before its writer.
 
 ### Core Abstraction
 
@@ -84,12 +84,16 @@ type Plugin interface {
 
 Optional extension interfaces add capabilities (block height tracking, archival detection, response caching, etc.) without changing the core.
 
-| Plugin | Chain Type | Interfaces Implemented |
+| Plugin | Chain Type | What it adds beyond the core two methods |
 |---|---|---|
-| `qos/evm/` | Ethereum, Polygon, Base, etc. | 10 (full feature set) |
-| `qos/cosmos/` | Osmosis, Akash, Sei, etc. | 6 (dual block height formats) |
-| `qos/solana/` | Solana | 7 (slot + epoch tracking) |
-| `qos/noop/` | Generic (Near, Sui, Tron) | 2 (passthrough) |
+| `qos/evm/` | Ethereum, Polygon, Base, etc. | height consensus, chain-id assertion, archival marks, caching, coalescing, subscriptions |
+| `qos/cosmos/` | Osmosis, Akash, Sei, etc. | height from CometBFT and Cosmos REST, chain-id assertion, subscriptions |
+| `qos/solana/` | Solana | slot consensus, subscriptions |
+| `qos/tron/` | TRON | the EVM plugin, plus TRON's REST framing |
+| `qos/jsonheight/` | Near, Sui, eth-beacon, and any chain declared by one probe and one response path | height consensus from a declaration (`docs/qos-plugins.md`) |
+| `qos/noop/` | Anything undeclared | passthrough: no health checks, no chain view, reputation-only selection |
+
+The interfaces each implements are the `var _ qos.X = (*Plugin)(nil)` assertions at the bottom of its file; nothing here counts them.
 
 All plugins share a generic `EndpointStore[T]` and `BlockConsensus` — no code duplication.
 
@@ -497,11 +501,19 @@ sage/
   qos/evm/             — EVM plugin
   qos/cosmos/          — Cosmos plugin
   qos/solana/          — Solana plugin
+  qos/tron/            — TRON plugin (EVM plus REST)
+  qos/jsonheight/      — declaration-driven plugin for small chains
   qos/noop/            — passthrough plugin
   reputation/          — scoring, tiered selection, timeline, storage
   heuristic/           — 4-tier response analysis
   circuitbreaker/      — Redis-backed domain circuit breaker
   featureflag/         — runtime per-service toggles
+  methodblock/         — per-host, per-method blocks consulted at selection
+  blocklist/           — dynamic blocked domains (admin API, Redis)
+  drain/               — operator drains
+  traffic/             — request-shape sampler behind the admin API
+  tuning/              — runtime knobs (retry, hedge, probe cadence) with a base/override split
+  reload/              — config reload result types
   observe/             — async observation pipeline
   crossvalidation/     — response consensus + outlier detection
   responsecache/       — LRU response cache with TTL
@@ -513,6 +525,7 @@ sage/
   cmd/docgen/          — `make docs` entry point
   docs/                — generated reference + hand-written operator guides
   e2e/                 — end-to-end tests (works against SAGE and PATH)
+  bench/               — mock-backend load harness and its configs
 ```
 
 ---

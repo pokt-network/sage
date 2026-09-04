@@ -96,7 +96,16 @@ func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (Anal
 	// for a backend that never saw the request: a misrouted vhost, a proxy
 	// with no upstream. That is the supplier's, and another supplier will
 	// answer; the host should not see this method again for a while.
-	case statusCode >= 400 && statusCode < 500 && rpcType == domain.RPCTypeJSONRPC && !gjson.ValidBytes(response):
+	//
+	// On a REST or CometBFT request only a 401 or 403 without JSON is read
+	// the same way. The gateway signs every relay, so a client cannot be
+	// refused access: a plain-text "Access Denied" is the supplier's front
+	// door, not the chain's API. A non-JSON 404 stays the client's — it is
+	// what asking for a path that does not exist looks like. Until
+	// 2026-09-04 every REST 4xx was the client's, so a supplier answering
+	// 403 to valid requests was graded by probes alone and client traffic
+	// never moved its score — the canary's eth-beacon case.
+	case statusCode >= 400 && statusCode < 500 && frontDoorRefusal(rpcType, statusCode) && !gjson.ValidBytes(response):
 		return AnalysisResult{
 			ShouldRetry:        true,
 			ShouldCircuitBreak: false,
@@ -106,7 +115,7 @@ func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (Anal
 			Attribution:        AttrSupplier,
 			Confidence:         0.85,
 			Reason:             "http_4xx_page",
-			Details:            fmt.Sprintf("HTTP %d with no JSON-RPC body on a JSON-RPC request", statusCode),
+			Details:            fmt.Sprintf("HTTP %d with a non-JSON body on a %s request", statusCode, rpcType),
 		}, true
 
 	case statusCode >= 400 && statusCode < 500:
@@ -264,4 +273,18 @@ func analyzeTier2(body []byte, rpcType domain.RPCType) (AnalysisResult, bool) {
 	}
 
 	return AnalysisResult{}, false
+}
+
+// frontDoorRefusal reports whether a 4xx with no JSON body is the supplier's
+// HTTP layer rather than the client's mistake: any such 4xx on JSON-RPC
+// (the backend would have answered in an envelope), and an access refusal
+// on REST or CometBFT, where a wrong path is legitimately a bare 404.
+func frontDoorRefusal(rpcType domain.RPCType, statusCode int) bool {
+	switch rpcType {
+	case domain.RPCTypeJSONRPC:
+		return true
+	case domain.RPCTypeREST, domain.RPCTypeCometBFT:
+		return statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
+	}
+	return false
 }

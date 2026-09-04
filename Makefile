@@ -58,8 +58,21 @@ test_cover: ## Run tests and open HTML coverage report
 ##########################
 
 .PHONY: go_lint
-go_lint: ## Run golangci-lint
+go_lint: ## Run golangci-lint, then fail on any unreachable function
 	golangci-lint run --timeout 5m
+	$(MAKE) deadcode
+
+# deadcode is what catches "built but never wired" at the function level: a
+# constructor nothing calls, an option nothing passes. The 2026-09-04 audit
+# found five of those, all of which had been sitting in the tree for weeks.
+# -test counts test callers as reachable, since a test-only helper is a
+# choice; lines from test files themselves are compile-time interface stubs
+# and are filtered out.
+DEADCODE_VERSION ?= v0.49.0
+.PHONY: deadcode
+deadcode: ## Fail on unreachable functions (excluding test files)
+	@out=$$(go run golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION) -test ./... | grep -v '_test\.go:' || true); \
+	if [ -n "$$out" ]; then echo "$$out"; echo "deadcode: unreachable functions above; wire them or delete them"; exit 1; fi
 
 ##########################
 ### Docs                ###

@@ -250,6 +250,34 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **The principles in CLAUDE.md are tests now, not memory.** The 2026-09-04
+  audit checked each stated rule against the code. Five goroutines broke the
+  "never a bare `go` statement" rule in the part of their body outside the
+  per-tick `safego.Run` — the leader elector's first acquire, the executor's
+  cycle bookkeeping, the batch clone and result write — and nothing had
+  noticed; `internal/safego` now has a test that parses the tree and fails on
+  any `go func()` whose first statement is not `defer safego.Recover`. The
+  `health_checks` flag had no reader for a month; `featureflag` now has a
+  test that fails on any `DefaultFlags` row no code references. `deadcode`
+  runs in `make go_lint` and CI, since the four unreachable functions the
+  audit found had been in the tree for weeks. `relay/chain_order.go` gains a
+  `mustPrecede` rule for every remaining link where one middleware reads a
+  field another writes (affinity before selection, timeout around hedge,
+  observe around heuristic, cross_validate and debug_log around send_relay),
+  so a YAML chain can no longer disable a reader by placing it first.
+
+  Also: `heuristic.ErrorAttribution`'s zero value is `AttrUnknown`, not
+  `AttrSupplier` — an unset attribution meant "penalise" before; a REST or
+  CometBFT 401/403 with no JSON body is the supplier's front door
+  (`http_4xx_page`), since a gateway that signs every relay has no client
+  that can be refused — on the canary two eth-beacon hosts answered "Access
+  Denied" to 40% of relays and client traffic never moved their score;
+  `relay.Context`'s comments name the real writer set per field instead of
+  claiming one; the WebSocket relayer references the flag constant instead
+  of a string literal; `timer.go` and `tracing.go` have tests;
+  `ARCHITECTURE.md`'s plugin table lists six plugins without hand-counted
+  interface totals and its tree names every package.
+
 - **Built-but-unwired machinery, wired or removed.** Found by the 2026-09-04
   audit's rule of grepping for constructors and following them to
   `wire.go`. `sage_singleflight_coalesced_total` was registered and

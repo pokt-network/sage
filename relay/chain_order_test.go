@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -232,5 +233,26 @@ func TestValidateChainOrder_MetricsPosition(t *testing.T) {
 	}
 	if pos(MWMetrics) < pos(MWHedge) || pos(MWMetrics) > pos(MWSelectEndpoint) {
 		t.Fatalf("default order puts metrics at %d, hedge at %d, select_endpoint at %d", pos(MWMetrics), pos(MWHedge), pos(MWSelectEndpoint))
+	}
+}
+
+// The links added on 2026-09-04: a chain that placed affinity after selection,
+// or hedge outside timeout, loaded fine and silently disabled the reader.
+func TestValidateChainOrder_FieldLinksAreRules(t *testing.T) {
+	swap := func(a, b string) []string {
+		order := DefaultChainOrder()
+		ia, ib := slices.Index(order, a), slices.Index(order, b)
+		order[ia], order[ib] = order[ib], order[ia]
+		return order
+	}
+	for _, tc := range []struct{ before, after string }{
+		{MWSupplierAffinity, MWSelectEndpoint},
+		{MWTimeout, MWHedge},
+		{MWObserve, MWHeuristic},
+		{MWClientIP, MWSupplierAffinity},
+	} {
+		if err := ValidateChainOrder(swap(tc.before, tc.after)); err == nil {
+			t.Errorf("%s after %s was accepted; the reader would run before its writer", tc.before, tc.after)
+		}
 	}
 }

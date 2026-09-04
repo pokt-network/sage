@@ -300,4 +300,3 @@ func matchField(registry []inertField, parent, key string) (string, bool) {
 func InertReason(parent, key string) (string, bool) {
 	return matchInert(parent, key)
 }
-

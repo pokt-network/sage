@@ -124,6 +124,12 @@ func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, re
 				}
 
 				go func() {
+					// First, so it runs last: safego.Call below converts a
+					// panic inside the relay into this payload's error, and
+					// this contains one in the clone and result bookkeeping
+					// around it — after wg.Done has already run, so the batch
+					// still completes.
+					defer safego.Recover(ctx.Logger, "batch.payload.goroutine")
 					defer func() {
 						if sem != nil {
 							<-sem
