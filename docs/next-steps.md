@@ -6,59 +6,41 @@ ordered by priority within each section. Update this file when an item lands
 or a decision changes it; delete items rather than marking them done, so the
 file only ever lists open work.
 
-Last updated: 2026-09-04 (the principles audit landed as six commits, baf236a
-through the contract-docs commit; the canary runs `41db74a` with four
-services on real QoS and the audit image is not yet built. PATH
+Last updated: 2026-09-04 evening (audit commits baf236a..71b3d8f plus fixes
+3377e68 and c838f4c live on the canary at 1%, verified by ops. PATH
 `origin/main` at `274e9791`, 2026-08-25).
 
-## Roll the audit image (raised 2026-09-04)
+## After the audit roll (2026-09-04, image c838f4c at 1%)
 
-The six audit commits change what a client and a probe see. Before the
-image rolls, ops needs to know, and after it rolls these are the checks:
+The six audit commits plus two same-day fixes are live and verified by ops:
+gateway failures are 5xx and the 200 share is unchanged once they are
+added back; `/health` is liveness; the boot burst is gone; pool collapses
+are down 85% on arb-one and to zero elsewhere; shentu's 200 share went from
+6% under the first fix to 100%. What remains is decisions and watches.
 
-- **Gateway-made failures are 5xx now, not 200.** Status-share panels on the
-  canary move on rollout: what was a 200 with `-32603` in the body is a 500
-  (504 on timeout, 429 on rate limit, 400 on a client mistake). Judge the
-  roll on `sage_client_requests_total` by status *and* the JSON-RPC error
-  rate together, not on the 200 share alone.
-- **`/health` is liveness, `/healthz` is readiness.** Any manifest or LB
-  rule that used `/health` as readiness must move to `/healthz` or `/ready`;
-  the canary manifest in `docs/operations.md` uses `/livez` and `/ready` and
-  is unaffected. `/ready/{service}` can now answer 503.
-- **Client-side plain-text 403/401 on REST now grades the supplier.** The
-  kalorius arc (44% to 0% over 80 minutes, probes alone) should shorten on
-  the next such supplier; watch `http_4xx_page` in the timeline reasons on
-  eth-beacon and tron.
-- **`active_health_checks.enabled`** is honoured by presence. The canary
-  config writes `enabled: true`; confirm the startup report carries no
-  "probes are off" line after the roll.
-- **`sage_singleflight_coalesced_total` and `sage_degraded_total` start
-  moving.** A non-zero value is the counter working, not a regression.
-- **The startup report** carries new line kinds: per-service RPC types no
-  probe covers, and `enabled: false` decisions. Read it once.
-- **Judging the status shift without a JSON-RPC error series.** SAGE exports
-  no counter for a 200 that carries a JSON-RPC error body, so the pre-roll
-  200 count includes gateway-made `-32603` failures and the post-roll one
-  does not. Compare pre-roll 200 share against post-roll `200 + 500 + 504`;
-  408/400/502/404 and attempts-per-client-request should be unchanged.
-- **Keep the last few 4xx envelopes per service in the request sampler.**
-  On 2026-09-04 the solana and tron 400 rates doubled (to ~1/min each) after
-  gateway-made errors stopped being 200s, and nothing could say what the
-  bodies were: the router logs no body, synthetic requests did not reproduce
-  it, and the sampler keeps request shapes, not rejections. A ring of the
-  last N rejection envelopes per service on `GET /admin/traffic/{service}`
-  would have named it in one call.
-- **Export `sage_client_jsonrpc_errors_total{service_id}`** — a 200 whose
-  body carries a top-level `error`, counted at the router. Ops asked for it
-  on 2026-09-04 and it is what the 408 investigation lacks: the split
-  between a supplier's own error delivered as 200 and a gateway failure.
-  One gjson top-level lookup per JSON-RPC response; measure it on the mock
-  backend before shipping rather than assuming it is free.
-
-
-
-
-
+- **External floor semantics (Otto's call).** `sage_chain_view_external_floor`
+  shows the floor engaging on robinhood (+74 blocks) and arb-one (+31) from
+  a source ahead of the entire pool. That is propagation, not a pool that is
+  behind, and it pushes selection onto the stale-ranking fallback more than
+  the config intends. Proposal: the floor engages only when the pool is
+  collectively behind the trusted node by more than the allowance —
+  `perceived = max(consensus, floor - sync_allowance)`. One line in
+  `applyExternalFloor` plus a test; not done without a decision because it
+  changes what `external_block_sources` means.
+- **bsc `sync_allowance` 100 → 500-600 (Otto's config).** Against a steady
+  spread of ~250 the strict filter rejects the tail every cycle by
+  construction. robinhood at 3000 sits at its edge (spread 1,200-3,240).
+- **base 408s, watch.** Zero before 15:25Z on 2026-09-04, then 11-19 per
+  5m, then 86 per 15m by 17:00, while base 200s hold at ~1,700 per 5m. Not
+  tied to any roll (began 18 minutes after 71b3d8f, unchanged across two
+  more). base's tier 1 is dominated by rm02.kalorius, whose latency EWMA
+  rose 66 → 175 ms over the afternoon; a supplier slowing toward the 8s
+  relay timeout shows as 408 without moving its score. Ops leaves it unless
+  it keeps climbing; the per-key latency in `GET /admin/reputation/base`
+  is the read.
+- **base got faster at the 71b3d8f roll, unexplained.** p50 202 → 81 ms,
+  p95 flat, same suppliers carrying the traffic. Nothing in the audit set
+  touches base's pick or send path. Recorded, not claimed.
 
 ## Explore next (raised 2026-09-01)
 
