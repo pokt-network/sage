@@ -250,6 +250,17 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **The external floor engages only when the pool is behind by more than
+  the allowance.** `sage_chain_view_external_floor`, exported the same day,
+  showed robinhood's source 74 blocks ahead of every supplier and arb-one's
+  31. Taken as the head, a source merely ahead made every supplier look
+  behind, which is what the strict height filter rejects; selection then ran
+  on the stale-ranking fallback more than the config intends. The floor now
+  lifts perceived to the source's height minus `sync_allowance`, and only
+  when consensus is further behind than that: "the pool may not sit more
+  than an allowance behind the truth", which is what a trusted source is
+  for. A source ahead by less changes nothing.
+
 - **A host that never answers can no longer be the sole survivor of the
   height filter.** Found on the 2026-09-04 canary roll: at pod boot one pod
   sent 508 relays in one second to a bsc host scoring zero, and bsc's

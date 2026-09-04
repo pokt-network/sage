@@ -426,7 +426,13 @@ func (c *RetryConfig) disable() {
 // HedgeEnabled returns true if hedge racing is configured.
 func (c RetryConfig) HedgeEnabled() bool { return c.HedgeDelay > 0 }
 
-// ExternalBlockSource defines an external RPC endpoint for ground-truth block heights.
+// ExternalBlockSource defines an external RPC endpoint for ground-truth block
+// heights. Its height is a floor under the perceived head, applied as
+// "the pool may not sit more than sync_allowance behind this node": when the
+// consensus height is further behind the source than the allowance,
+// perceived is lifted to the source's height minus the allowance. A source
+// merely ahead of the pool by less than that changes nothing, since a few
+// blocks of propagation are not a pool that is behind.
 type ExternalBlockSource struct {
 	// URL is the external RPC endpoint to poll. It is trusted as ground truth,
 	// so it should be a node you control, not one of the suppliers being

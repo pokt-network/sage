@@ -269,6 +269,17 @@ func (bc *BlockConsensus) computePerceived(now time.Time) uint64 {
 }
 
 // applyExternalFloor applies the external floor if past the grace period.
+//
+// The floor engages only when the pool is collectively behind the trusted
+// node by more than the sync allowance, and then lifts perceived to
+// floor minus allowance, not to the floor itself. A trusted node a few
+// dozen blocks ahead of every supplier is propagation, not a pool that is
+// behind: on the 2026-09-04 canary robinhood's source ran 74 blocks ahead of
+// the highest supplier and arb-one's 31, and with the floor taken as the
+// head every supplier looked behind at once, which is what the strict height
+// filter rejects. Taken this way the floor says what it is for — "the pool
+// may not be more than an allowance behind the truth" — and a source that is
+// merely ahead changes nothing.
 func (bc *BlockConsensus) applyExternalFloor(perceived uint64, now time.Time) uint64 {
 	floor := bc.externalFloor.Load()
 	if floor == 0 {
@@ -278,8 +289,12 @@ func (bc *BlockConsensus) applyExternalFloor(perceived uint64, now time.Time) ui
 	if now.Before(bc.graceStart.Add(bc.gracePeriod)) {
 		return perceived
 	}
-	if floor > perceived {
-		return floor
+	effective := floor
+	if floor > bc.syncAllowance {
+		effective = floor - bc.syncAllowance
+	}
+	if effective > perceived {
+		return effective
 	}
 	return perceived
 }

@@ -80,9 +80,34 @@ func TestBlockConsensus_ExternalFloor_AfterGrace(t *testing.T) {
 	bc.SetExternalFloor(500)
 	bc.AddObservation("ep1", 100)
 
-	// External floor > perceived, should use floor.
-	if got := bc.PerceivedBlock(); got != 500 {
-		t.Fatalf("expected 500, got %d", got)
+	// The pool is 400 behind a trusted node with an allowance of 5: the
+	// floor engages, and lifts perceived to floor minus allowance, the
+	// lowest height the pool would be allowed to sit at.
+	if got := bc.PerceivedBlock(); got != 495 {
+		t.Fatalf("expected 495 (floor 500 minus allowance 5), got %d", got)
+	}
+}
+
+// A trusted node merely ahead of the pool — by less than the allowance — is
+// propagation, not a pool that is behind, and must not move perceived. On the
+// canary this was robinhood's source 74 blocks ahead of every supplier with
+// an allowance of 3000, and the old rule made every supplier look behind.
+func TestBlockConsensus_ExternalFloor_WithinAllowanceDoesNotEngage(t *testing.T) {
+	bc := NewBlockConsensus(nil, 100)
+	bc.gracePeriod = 0
+	bc.graceStart = time.Now().Add(-time.Hour)
+
+	// The floor is applied when perceived is recomputed, on observation.
+	bc.SetExternalFloor(1074)
+	bc.AddObservation("ep1", 1000)
+	bc.AddObservation("ep2", 1000)
+	if got := bc.PerceivedBlock(); got != 1000 {
+		t.Fatalf("a source 74 ahead within an allowance of 100 moved perceived to %d; want 1000", got)
+	}
+	bc.SetExternalFloor(1150)
+	bc.AddObservation("ep2", 1000)
+	if got := bc.PerceivedBlock(); got != 1050 {
+		t.Fatalf("a source 150 ahead should lift perceived to 1050 (floor minus allowance), got %d", got)
 	}
 }
 
