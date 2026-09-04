@@ -1,5 +1,7 @@
 package domain
 
+import "strings"
+
 // RPCType identifies the RPC protocol of a request.
 type RPCType string
 
@@ -35,4 +37,18 @@ func AllRPCTypes() []RPCType {
 		RPCTypeWebSocket,
 		RPCTypeGRPC,
 	}
+}
+
+// ParseRPCType resolves the spelling a client or config uses for an RPC type
+// — "json_rpc", "REST", "comet_bft" — to the RPCType it names. Matching is
+// case-insensitive because PATH's RPC-Type header is documented in upper case
+// while its config keys are lower case, and a client copying either must not
+// be refused. Unknown spellings, including "unknown" itself, report false.
+func ParseRPCType(s string) (RPCType, bool) {
+	for _, t := range AllRPCTypes() {
+		if strings.EqualFold(s, string(t)) {
+			return t, true
+		}
+	}
+	return RPCTypeUnknown, false
 }

@@ -66,17 +66,9 @@ func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, re
 			}
 
 			if maxPayloads > 0 && len(ctx.Payloads) > maxPayloads {
-				ctx.Err = domain.NewRelayError(
-					domain.ErrValidation,
-					fmt.Sprintf("batch has %d payloads, limit is %d", len(ctx.Payloads), maxPayloads),
-					nil,
-					false,
-				)
-				if ctx.Writer != nil {
-					ctx.Writer.SetStatusCode(http.StatusRequestEntityTooLarge)
-					_ = ctx.Writer.Write(errorJSON(ctx.Err.Error()))
-				}
-				return ctx.Err
+				return rejectRequest(ctx, nil, http.StatusRequestEntityTooLarge, domain.ErrValidation,
+					fmt.Sprintf("batch has %d payloads, limit is %d", len(ctx.Payloads), maxPayloads), nil,
+					map[string]any{"max_batch_payloads": maxPayloads})
 			}
 
 			// One signal per endpoint for the whole batch (docs/scoring.md
@@ -242,8 +234,8 @@ func jsonRPCErrorItem(id json.RawMessage, msg string) json.RawMessage {
 	return json.RawMessage(b)
 }
 
-// errorJSON returns a minimal JSON error object as a raw message. It answers a
-// whole request the batch middleware rejected up front, not one item of it.
+// errorJSON returns a minimal JSON error object as a raw message, the
+// fallback for an item whose id could not be rendered.
 func errorJSON(msg string) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{
 		"error": map[string]any{

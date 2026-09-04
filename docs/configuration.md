@@ -53,9 +53,11 @@ Controls the HTTP server.
 | Key | Type | Description |
 |---|---|---|
 | `port` | integer | The public relay listener, serving /v1 plus the health and readiness endpoints. Default: 3069. The admin API and Prometheus listen elsewhere on purpose — see AdminConfig and MetricsConfig. |
-| `read_timeout` | duration | Bounds reading a request. Default: 30s. |
-| `write_timeout` | duration | Bounds writing a response. Default: 30s. It does not apply to an upgraded WebSocket connection, which is long-lived by definition; WS deadlines live in the websockets package. |
-| `idle_timeout` | duration | Bounds how long a keep-alive connection may sit unused. Default: 120s. |
+| `read_timeout` | duration | Bounds reading a request. Default: 60s, PATH's. |
+| `write_timeout` | duration | Bounds writing a response. Default: 120s, PATH's; the 30s this used to be cut off slow archival calls PATH would have served. It does not apply to an upgraded WebSocket connection, which is long-lived by definition; WS deadlines live in the websockets package. |
+| `idle_timeout` | duration | Bounds how long a keep-alive connection may sit unused. Default: 180s, PATH's. |
+| `max_request_body_bytes` | integer | Caps a relay request body; a larger one is refused with 413 before anything is parsed. Default: 75 MiB, PATH's, so a batch PATH accepts is accepted here. Same key as PATH's. |
+| `max_request_header_bytes` | integer | Caps the request header block, per net/http. Default: 2 MB, PATH's. Same key as PATH's. |
 | `websocket_message_buffer_size` | integer | **⚠️ Parsed, not implemented:** WebSocket buffering is fixed in the websockets package; the field exists so a PATH config carrying the key still loads. |
 | `trusted_proxies` | list of string | Lists the CIDR ranges of proxies in front of the gateway (haproxy, a load balancer, a CDN). X-Forwarded-For is believed only when a request's immediate peer is inside one of these ranges; from any other peer it is client-supplied and ignored when resolving ctx.ClientIP. Empty means trust no proxy, so the client is always the direct peer. That is the un-spoofable default, and the safe zero value: the dangerous mistake is trusting a proxy that is not actually there, which lets a client forge its address — never the reverse. Set this to the addresses SAGE actually sits behind, not to 0.0.0.0/0. |
 

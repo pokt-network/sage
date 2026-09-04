@@ -60,12 +60,12 @@ func jsonRPCErrorValue(code int, message string, id json.RawMessage) jsonRPCErro
 // concatenated onto the first. Writing to the raw w bypassed that guard, which
 // is the bug this exists to close. It also means an error in shadow mode is
 // suppressed, since the guard's shadow check is honoured too.
-func renderJSONRPCError(rw relay.ResponseWriter, code int, message string, id json.RawMessage) {
+func renderJSONRPCError(rw relay.ResponseWriter, statusCode, code int, message string, id json.RawMessage) {
 	body, err := json.Marshal(jsonRPCErrorValue(code, message, id))
 	if err != nil {
 		return
 	}
-	renderJSON(rw, http.StatusOK, body)
+	renderJSON(rw, statusCode, body)
 }
 
 func renderJSONError(rw relay.ResponseWriter, statusCode int, message string) {

@@ -11,9 +11,10 @@ import (
 
 var baseURL = envOrDefault("SAGE_URL", "http://localhost:3069")
 
-// TestHealth verifies the /health endpoint returns 200.
-func TestHealth(t *testing.T) {
-	resp, body := sendRaw(t, http.MethodGet, "/health", nil, nil)
+// TestHealthz verifies the readiness route returns 200 against a gateway that
+// has sessions. Liveness (/health) is pinned in contract_test.go.
+func TestHealthz(t *testing.T) {
+	resp, body := sendRaw(t, http.MethodGet, "/healthz", nil, nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
 	}

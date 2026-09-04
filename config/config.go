@@ -169,16 +169,24 @@ type RouterConfig struct {
 	// readiness endpoints. Default: 3069. The admin API and Prometheus listen
 	// elsewhere on purpose — see AdminConfig and MetricsConfig.
 	Port int `yaml:"port"`
-	// ReadTimeout bounds reading a request. Default: 30s.
+	// ReadTimeout bounds reading a request. Default: 60s, PATH's.
 	ReadTimeout time.Duration `yaml:"read_timeout"`
-	// WriteTimeout bounds writing a response. Default: 30s.
+	// WriteTimeout bounds writing a response. Default: 120s, PATH's; the 30s
+	// this used to be cut off slow archival calls PATH would have served.
 	//
 	// It does not apply to an upgraded WebSocket connection, which is
 	// long-lived by definition; WS deadlines live in the websockets package.
 	WriteTimeout time.Duration `yaml:"write_timeout"`
 	// IdleTimeout bounds how long a keep-alive connection may sit unused.
-	// Default: 120s.
+	// Default: 180s, PATH's.
 	IdleTimeout time.Duration `yaml:"idle_timeout"`
+	// MaxRequestBodyBytes caps a relay request body; a larger one is refused
+	// with 413 before anything is parsed. Default: 75 MiB, PATH's, so a batch
+	// PATH accepts is accepted here. Same key as PATH's.
+	MaxRequestBodyBytes int64 `yaml:"max_request_body_bytes"`
+	// MaxRequestHeaderBytes caps the request header block, per net/http.
+	// Default: 2 MB, PATH's. Same key as PATH's.
+	MaxRequestHeaderBytes int `yaml:"max_request_header_bytes"`
 	// WebsocketMessageBufferSize is parsed and not implemented. WebSocket
 	// buffering is fixed in the websockets package; the field exists so a PATH
 	// config carrying the key still loads.

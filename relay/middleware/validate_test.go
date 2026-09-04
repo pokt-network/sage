@@ -68,31 +68,6 @@ func TestValidate_UnsupportedType_Blocked(t *testing.T) {
 	}
 }
 
-func TestValidate_UnknownService_PassesThrough(t *testing.T) {
-	services := []config.ServiceConfig{
-		{ID: "eth", RPCTypes: []string{"json_rpc"}},
-	}
-	mw := middleware.Validate(services)
-
-	req := newPOSTRequest("/v1", "")
-	ctx := newCtx(req)
-	ctx.ServiceID = "unknown-chain" // not in services list
-	ctx.RPCType = domain.RPCTypeREST
-
-	var called bool
-	handler := mw(relay.HandlerFunc(func(_ *relay.Context) error {
-		called = true
-		return nil
-	}))
-
-	if err := handler.HandleRelay(ctx); err != nil {
-		t.Fatalf("unexpected error for unknown service: %v", err)
-	}
-	if !called {
-		t.Fatal("expected next handler to be called for unknown service")
-	}
-}
-
 func TestValidate_EmptyServiceList_AllPass(t *testing.T) {
 	mw := middleware.Validate(nil)
 

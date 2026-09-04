@@ -250,6 +250,41 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **The client-visible contract is now true, and tested.** Layer 1 of
+  `docs/path-compat.md` says a client must not be able to tell which gateway
+  it is talking to. An audit on 2026-09-04 found it could, from the first
+  response header: no `Content-Type` on relay responses (net/http sniffed
+  `text/plain`), no CORS and a 405 on `OPTIONS /v1` so a browser dapp could
+  not finish preflight, only POST and GET routed so a REST service's PUT or
+  DELETE was 405, gateway-made failures delivered as HTTP 200 so every load
+  balancer counted them as successes, a hard-coded 1 MiB body cap where PATH
+  allows 75 MiB, a typo in `Target-Service-Id` coming back as 200 `relay
+  failed`, and `/health` meaning readiness — so a livenessProbe written for
+  PATH would restart SAGE pods during a full-node outage, the exact loop
+  `/livez` was added to prevent.
+
+  All of it is fixed in one pass. `/health` is liveness and `/healthz` is
+  readiness, as on PATH; `/ready/{service}` is 503 until that service holds a
+  session with endpoints. Every pre-relay rejection — unconfigured service,
+  undeclared RPC type, malformed JSON-RPC, a bad `RPC-Type` header, an
+  oversized batch — goes through one renderer: 400 (413 for size), a JSON-RPC
+  envelope with the request's own id when the request was JSON-RPC, code
+  `-32600`, and `data` saying what would have been accepted; the plugin's
+  reason for refusing a body reaches the client instead of only the log. A
+  gateway-made failure is 500, 504 on timeout, 429 on rate limit, keeping the
+  standard `-32603` rather than PATH's `-31001`. The `RPC-Type` request header
+  is honoured. `router_config.max_request_body_bytes` and
+  `max_request_header_bytes` are read with PATH's defaults, and the server's
+  read/write/idle timeouts default to PATH's 60/120/180 s — the old 30 s write
+  timeout cut off slow archival calls PATH served. What SAGE deliberately does
+  not emulate (PATH's metadata response headers, `/config` on the relay port)
+  is now in the register with its reason.
+
+  `router/contract_test.go` pins SAGE's side of every row, and
+  `e2e/contract_test.go` asserts the rows that hold for both gateways, so the
+  suite can be pointed at PATH and pass. Operators: the status-share panels on
+  the canary move on rollout, because failures that were 200s are 5xx now.
+
 - **Small chains get real QoS, from a declaration rather than a plugin each.**
   Four services on the canary — near, sui, eth-beacon and radix — ran on the
   passthrough, which tracks no block height, so their `sync_allowance` governed

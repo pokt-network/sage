@@ -3,6 +3,7 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -55,7 +57,19 @@ type Router struct {
 	// clientMetrics records the client-facing status per relay request. Nil
 	// disables recording. Set via SetClientMetrics at wire time.
 	clientMetrics ClientMetrics
-	logger        *slog.Logger
+	// serviceRPCTypes reports what a service declares in config, for the
+	// WebSocket path, which bypasses the middleware chain and so the Validate
+	// gate. Nil means ungated. Set via SetServiceRPCTypes at wire time.
+	serviceRPCTypes func(domain.ServiceID) (rpcTypes []string, configured bool)
+	logger          *slog.Logger
+}
+
+// EndpointLister is the optional capability behind per-service readiness:
+// a session with at least one endpoint. protocol.Protocol satisfies it; a
+// session manager that does not makes /ready/{service} answer on
+// configuration alone.
+type EndpointLister interface {
+	AvailableEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error)
 }
 
 // SetClientMetrics installs the client-facing request-status recorder. Wire
@@ -65,6 +79,13 @@ func (r *Router) SetClientMetrics(m ClientMetrics) { r.clientMetrics = m }
 // SetWarmup installs the readiness warm-up gate consulted by /ready. Wire time
 // only; nil leaves /ready ungated (session readiness alone).
 func (r *Router) SetWarmup(w Warmup) { r.warmup = w }
+
+// SetServiceRPCTypes installs the config lookup the WebSocket path uses to
+// refuse, before upgrading, a service that is not configured or does not
+// declare websocket. Wire time only; nil leaves the path ungated.
+func (r *Router) SetServiceRPCTypes(fn func(domain.ServiceID) ([]string, bool)) {
+	r.serviceRPCTypes = fn
+}
 
 // New creates a Router and registers all routes.
 // wsRelayer may be nil — in that case, WebSocket upgrade requests receive a
@@ -91,34 +112,80 @@ func New(
 		logger:    logger,
 	}
 
-	// Relay endpoints — the main traffic path.
-	mux.HandleFunc("POST /v1", r.handleRelay)
-	mux.HandleFunc("POST /v1/{path...}", r.handleRelay)
-	mux.HandleFunc("GET /v1", r.handleMaybeWebSocket)
-	mux.HandleFunc("GET /v1/{path...}", r.handleMaybeWebSocket)
+	// Relay endpoints — the main traffic path. Registered without a method,
+	// as PATH's are: a REST service is addressed with whatever verb its API
+	// uses, and a method-qualified pattern answered PUT and DELETE with 405.
+	mux.HandleFunc("/v1", r.handleV1)
+	mux.HandleFunc("/v1/{path...}", r.handleV1)
 
-	// Health / readiness.
-	mux.HandleFunc("GET /health", r.handleHealth)
-	// /healthz is PATH's spelling of the same check, so a Kubernetes probe
-	// or load-balancer rule written for PATH works unchanged.
-	mux.HandleFunc("GET /healthz", r.handleHealth)
-	// /livez is process liveness only: 200 whenever the server answers. A
-	// liveness probe on /health would restart pods whenever the full node is
-	// unreachable, turning one dependency's outage into a restart loop.
+	// Health / readiness. The split follows PATH's and Kubernetes' meanings:
+	// /health and /livez are liveness (200 whenever the process serves),
+	// /healthz and /ready are readiness (503 until the gateway can relay).
+	// /health used to be readiness here, which made a liveness probe written
+	// for PATH restart pods during a full-node outage — the one dependency's
+	// outage became a restart loop, which is exactly what /livez exists to
+	// prevent.
+	mux.HandleFunc("GET /health", r.handleLive)
 	mux.HandleFunc("GET /livez", r.handleLive)
+	mux.HandleFunc("GET /healthz", r.handleHealthz)
 	mux.HandleFunc("GET /ready/{service}", r.handleReadyService)
 	mux.HandleFunc("GET /ready", r.handleReadyAll)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	r.server = &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  withDefault(cfg.ReadTimeout, 30*time.Second),
-		WriteTimeout: withDefault(cfg.WriteTimeout, 30*time.Second),
-		IdleTimeout:  withDefault(cfg.IdleTimeout, 120*time.Second),
+		Addr:    addr,
+		Handler: mux,
+		// PATH's defaults, so a config that sets none behaves the same behind
+		// either gateway. The 30s write timeout this used to carry cut off
+		// slow archival calls PATH would have served.
+		ReadTimeout:    withDefault(cfg.ReadTimeout, 60*time.Second),
+		WriteTimeout:   withDefault(cfg.WriteTimeout, 120*time.Second),
+		IdleTimeout:    withDefault(cfg.IdleTimeout, 180*time.Second),
+		MaxHeaderBytes: withDefaultInt(cfg.MaxRequestHeaderBytes, defaultMaxHeaderBytes),
 	}
 
 	return r
+}
+
+// defaultMaxHeaderBytes is PATH's default request header cap.
+const defaultMaxHeaderBytes = 2_000_000
+
+// corsAllowHeaders is what a browser may send to /v1: the JSON-RPC content
+// type, the two headers SAGE itself reads, and the two PATH allows so a dapp
+// written against it keeps working (Authorization for portal keys,
+// solana-client for the Solana web3 library).
+const corsAllowHeaders = "Content-Type, Target-Service-Id, RPC-Type, Authorization, solana-client"
+
+// setCORS grants the request's own origin, as PATH does: this gateway has no
+// notion of a client, so it has no basis on which to refuse one. The grant is
+// only stamped when there is an Origin to mirror, and Vary says so, so a
+// shared cache never serves one origin's grant to another.
+func setCORS(w http.ResponseWriter, req *http.Request) {
+	origin := req.Header.Get("Origin")
+	if origin == "" {
+		return
+	}
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", origin)
+	h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+	h.Set("Access-Control-Allow-Headers", corsAllowHeaders)
+	h.Add("Vary", "Origin")
+}
+
+// handleV1 is the front door for everything under /v1: a CORS preflight is
+// answered here, a WebSocket upgrade goes to the WS relayer, and everything
+// else — any verb — goes down the relay chain.
+func (r *Router) handleV1(w http.ResponseWriter, req *http.Request) {
+	setCORS(w, req)
+	if req.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if isWebSocketUpgrade(req) {
+		r.handleWebSocket(w, req)
+		return
+	}
+	r.handleRelay(w, req)
 }
 
 // Start binds the HTTP server and blocks until it stops.
@@ -133,22 +200,32 @@ func (r *Router) Shutdown(ctx context.Context) error {
 	return r.server.Shutdown(ctx)
 }
 
-// handleMaybeWebSocket routes GET /v1[/...] requests to the WebSocket relayer
-// when the client is attempting an upgrade, and to the normal relay chain
-// otherwise. If no WS relayer is configured, upgrade attempts return 503.
-func (r *Router) handleMaybeWebSocket(w http.ResponseWriter, req *http.Request) {
-	if !isWebSocketUpgrade(req) {
-		r.handleRelay(w, req)
-		return
-	}
+// handleWebSocket hands an upgrade request to the WebSocket relayer once the
+// gate the HTTP path gets from Validate has been applied here too: the service
+// must be configured and must declare websocket. Refusing before the upgrade
+// is what PATH does; upgrading first and failing with a 502 from inside the
+// bridge told the client nothing about what it got wrong. If no WS relayer is
+// configured, upgrade attempts return 503.
+func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request) {
 	if r.wsRelayer == nil {
-		http.Error(w, "websocket relays not configured", http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "websocket relays not configured")
 		return
 	}
 	serviceID := domain.ServiceID(req.Header.Get("Target-Service-Id"))
 	if serviceID == "" {
-		http.Error(w, "missing Target-Service-Id header", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "missing Target-Service-Id header")
 		return
+	}
+	if r.serviceRPCTypes != nil {
+		types, configured := r.serviceRPCTypes(serviceID)
+		if !configured {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("service %q is not configured", serviceID))
+			return
+		}
+		if !slices.Contains(types, string(domain.RPCTypeWebSocket)) {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("websocket not supported for service %q", serviceID))
+			return
+		}
 	}
 	if err := r.wsRelayer.Open(req.Context(), serviceID, req, w); err != nil {
 		// Post-upgrade errors are surfaced via WS close codes by the bridge;
@@ -248,6 +325,8 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 		body := ctx.Response.Body
 		if ctx.RPCType == domain.RPCTypeGRPC {
 			body = finishGRPCResponse(rw, ctx)
+		} else if ct := responseContentType(ctx.RPCType, body); ct != "" {
+			rw.SetHeader("Content-Type", ct)
 		}
 
 		rw.SetStatusCode(status)
@@ -255,6 +334,25 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 			r.logger.Error("failed to write relay response", "error", writeErr)
 		}
 	}
+}
+
+// responseContentType names the body's media type. JSON-RPC and CometBFT are
+// JSON by definition; a REST reply is JSON when it looks like it and is left
+// for net/http to sniff otherwise, since the upstream's own header is not
+// carried through the relay. Without this every relay response was sniffed
+// as text/plain, which PATH never did.
+func responseContentType(rpcType domain.RPCType, body []byte) string {
+	switch rpcType {
+	case domain.RPCTypeJSONRPC, domain.RPCTypeCometBFT:
+		return "application/json"
+	case domain.RPCTypeGRPC, domain.RPCTypeWebSocket:
+		return ""
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+		return "application/json"
+	}
+	return ""
 }
 
 // finishGRPCResponse types the reply and, for a gRPC-Web client, appends the
@@ -308,24 +406,51 @@ func encodeGRPCWebTrailers(code int, message string) []byte {
 // wrote — a deep failure like a send error — this is the write that answers the
 // client.
 func (r *Router) writeRelayError(rw relay.ResponseWriter, ctx *relay.Context, err error) {
+	status := statusForError(err)
+	// domain.ClientMessage, not err.Error(): the cause chain carries the
+	// operator's own infrastructure (a dial failure names the fullnode's
+	// host and port), and this gateway authenticates no one. The chain is
+	// already in the log line above, which is where it is useful.
+	message := domain.ClientMessage(err)
+
 	if ctx.RPCType == domain.RPCTypeJSONRPC || isJSONRPCRequest(ctx) {
 		var id json.RawMessage = []byte("null")
 		if len(ctx.Payloads) > 0 {
 			id = ctx.Payloads[0].JSONRPCID()
 		}
-		// domain.ClientMessage, not err.Error(): the cause chain carries the
-		// operator's own infrastructure (a dial failure names the fullnode's
-		// host and port), and this gateway authenticates no one. The chain is
-		// already in the log line above, which is where it is useful.
-		renderJSONRPCError(rw, -32603, domain.ClientMessage(err), id)
+		renderJSONRPCError(rw, status, -32603, message, id)
 		return
 	}
 
-	renderJSONError(rw, http.StatusBadGateway, domain.ClientMessage(err))
+	renderJSONError(rw, status, message)
 }
 
-// handleHealth returns 200 when the protocol layer is ready, 503 otherwise.
-func (r *Router) handleHealth(w http.ResponseWriter, req *http.Request) {
+// statusForError maps a gateway-made failure to the HTTP status a client
+// sees. The body carries the JSON-RPC code either way; the status is what a
+// load balancer, a dashboard and a client's retry policy branch on, and a
+// 200 on every failure — which is what this used to be for JSON-RPC — hid
+// them from all three. PATH answers 500; SAGE keeps the standard -32603
+// rather than PATH's -31001 (docs/path-compat.md, gateway errors).
+func statusForError(err error) int {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout
+	}
+	var re *domain.RelayError
+	if errors.As(err, &re) {
+		switch re.Kind {
+		case domain.ErrValidation:
+			return http.StatusBadRequest
+		case domain.ErrRateLimit:
+			return http.StatusTooManyRequests
+		}
+	}
+	return http.StatusInternalServerError
+}
+
+// handleHealthz is readiness in PATH's spelling: 200 when the protocol layer
+// has a session, 503 otherwise. A load-balancer rule written for PATH's
+// /healthz takes a pod out on the same condition here.
+func (r *Router) handleHealthz(w http.ResponseWriter, req *http.Request) {
 	if r.sessions.IsReady(req.Context()) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
@@ -333,7 +458,10 @@ func (r *Router) handleHealth(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
 }
 
-// handleReadyService checks whether a specific service is configured and ready.
+// handleReadyService answers whether one service can be served: configured,
+// and — when the session manager can say — holding a session with at least
+// one endpoint. 503 otherwise, as on PATH; it used to be 200 for anything
+// configured, which made a per-service readiness probe unable to fail.
 func (r *Router) handleReadyService(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("service"))
 	services := r.sessions.ConfiguredServices()
@@ -341,16 +469,44 @@ func (r *Router) handleReadyService(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("service %q not found", serviceID))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ready":   true,
-		"service": string(serviceID),
-	})
+	ready, count, reason := r.serviceReady(req.Context(), serviceID)
+	body := map[string]any{
+		"ready":          ready,
+		"service":        string(serviceID),
+		"endpoint_count": count,
+	}
+	if reason != "" {
+		body["error"] = reason
+	}
+	status := http.StatusOK
+	if !ready {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, body)
+}
+
+// serviceReady reports a configured service's readiness. With no
+// EndpointLister the answer is the session layer's, which is all that used
+// to be known.
+func (r *Router) serviceReady(ctx context.Context, serviceID domain.ServiceID) (ready bool, count int, reason string) {
+	lister, ok := r.sessions.(EndpointLister)
+	if !ok {
+		return r.sessions.IsReady(ctx), 0, ""
+	}
+	endpoints, err := lister.AvailableEndpoints(ctx, serviceID, domain.RPCTypeUnknown)
+	if err != nil {
+		return false, 0, "no session"
+	}
+	if len(endpoints) == 0 {
+		return false, 0, "no endpoints"
+	}
+	return true, len(endpoints), ""
 }
 
 // handleLive answers 200 unconditionally: the process is up and serving.
-// Readiness (sessions, full node) is /health and /ready.
+// Readiness (sessions, full node) is /healthz and /ready.
 func (r *Router) handleLive(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // handleReadyAll is the readiness endpoint. Unlike /healthz (a session exists)
@@ -396,4 +552,12 @@ func withDefault(dur, d time.Duration) time.Duration {
 		return d
 	}
 	return dur
+}
+
+// withDefaultInt returns d if n is zero.
+func withDefaultInt(n, d int) int {
+	if n == 0 {
+		return d
+	}
+	return n
 }

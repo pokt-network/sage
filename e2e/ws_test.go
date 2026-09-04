@@ -21,7 +21,7 @@ import (
 
 // TestWebSocket_FlagOff_Returns503 asserts that an Upgrade request returns
 // 503 when the websocket_relays feature flag is disabled (default).
-// This verifies the full routing path: GET /v1 → handleMaybeWebSocket →
+// This verifies the full routing path: GET /v1 → handleV1 → handleWebSocket →
 // wsRelayer.Open → flag gate. If the flag is on globally the test is skipped
 // because the assertion would fail for the expected reason.
 func TestWebSocket_FlagOff_Returns503(t *testing.T) {

@@ -528,7 +528,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		}
 		return nil
 	}
-	mwReg.Register(relay.MWParse, func() relay.Middleware { return middleware.ParseWithServices(qosReg, rpcTypesFn) })
+	mwReg.Register(relay.MWParse, func() relay.Middleware {
+		return middleware.ParseWithOptions(qosReg, middleware.ParseOptions{
+			RPCTypes:     rpcTypesFn,
+			MaxBodyBytes: cfg.Router.MaxRequestBodyBytes,
+		})
+	})
 	mwReg.Register(relay.MWValidate, func() relay.Middleware {
 		return middleware.Validate(cfg.Gateway.AllServices())
 	})
@@ -787,6 +792,15 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 	app.Router = router.New(cfg.Router, chain, proto, wsRelayer, logger)
 	app.Router.SetClientMetrics(recorder)
+	// The WebSocket path bypasses the middleware chain, so the service and
+	// RPC-type gate Validate applies to HTTP has to be applied here.
+	app.Router.SetServiceRPCTypes(func(svcID domain.ServiceID) ([]string, bool) {
+		sc := cfg.Gateway.GetServiceConfig(string(svcID))
+		if sc == nil {
+			return nil, false
+		}
+		return sc.RPCTypes, true
+	})
 	// Gate /ready on reputation warm-up so a fresh or rolled pod is not put
 	// into the Service until it can steer selection. Only when health checks
 	// are enabled — otherwise nothing warms and readiness must not stall.

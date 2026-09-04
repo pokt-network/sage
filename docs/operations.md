@@ -103,12 +103,15 @@ volumes:
   readiness alone served failures for the ~90s until reputation warmed. A
   follower warms in seconds from the `sage:probes` stream; a pod that boots as
   leader waits up to one probe interval, which is what the startupProbe's
-  failureThreshold covers. `/healthz` (or `/health`; `/healthz` is PATH's
-  spelling) stays the session-only check and answers 503
-  until the protocol layer has a session, and again whenever the full node
-  is unreachable — right for taking a pod out of the Service, wrong for
-  restarting it, which is what a liveness probe on it would do during a
-  full-node outage. `/livez` is 200 whenever the process serves.
+  failureThreshold covers. `/healthz` is the session-only readiness check,
+  as on PATH: 503 until the protocol layer has a session, and again whenever
+  the full node is unreachable — right for taking a pod out of the Service,
+  wrong for restarting it, which is what a liveness probe on it would do
+  during a full-node outage. `/health` and `/livez` are liveness, 200
+  whenever the process serves; `/health` is what a PATH manifest's
+  livenessProbe points at, and it means the same thing here.
+  `/ready/{service}` is 503 until that service holds a session with at least
+  one endpoint, so a per-service probe can fail.
 - The relay port is the only one to expose through the Service. Reach the
   admin port through `kubectl port-forward` or an internal Service with the
   token; scrape metrics from the pod.

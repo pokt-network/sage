@@ -47,43 +47,37 @@ reaches the supplier as `/status`, not `/v1/status`.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1` | The main relay handler. |
-| `POST` | `/v1/{path...}` | The main relay handler. |
-| `GET` | `/v1` | Routes GET /v1[/...] requests to the WebSocket relayer when the client is attempting an upgrade, and to the normal relay chain otherwise. |
-| `GET` | `/v1/{path...}` | Routes GET /v1[/...] requests to the WebSocket relayer when the client is attempting an upgrade, and to the normal relay chain otherwise. |
-| `GET` | `/health` | Returns 200 when the protocol layer is ready, 503 otherwise. |
-| `GET` | `/healthz` | Returns 200 when the protocol layer is ready, 503 otherwise. |
+| `ANY` | `/v1` | The front door for everything under /v1: a CORS preflight is answered here, a WebSocket upgrade goes to the WS relayer, and everything else — any verb — goes down the relay chain. |
+| `ANY` | `/v1/{path...}` | The front door for everything under /v1: a CORS preflight is answered here, a WebSocket upgrade goes to the WS relayer, and everything else — any verb — goes down the relay chain. |
+| `GET` | `/health` | Answers 200 unconditionally: the process is up and serving. |
 | `GET` | `/livez` | Answers 200 unconditionally: the process is up and serving. |
-| `GET` | `/ready/{service}` | Checks whether a specific service is configured and ready. |
+| `GET` | `/healthz` | Readiness in PATH's spelling: 200 when the protocol layer has a session, 503 otherwise. |
+| `GET` | `/ready/{service}` | Answers whether one service can be served: configured, and — when the session manager can say — holding a session with at least one endpoint. |
 | `GET` | `/ready` | The readiness endpoint. |
 
-### `POST /v1`, `POST /v1/{path...}`
+### `ANY /v1`, `ANY /v1/{path...}`
 
-The main relay handler. It:
- 1. Wraps the http.ResponseWriter with HTTPResponseWriter.
- 2. Creates a relay.Context.
- 3. Invokes the middleware chain.
- 4. On success the chain (or a Write middleware) commits the response.
- 5. On error, writes an appropriate error response.
+The front door for everything under /v1: a CORS preflight is
+answered here, a WebSocket upgrade goes to the WS relayer, and everything
+else — any verb — goes down the relay chain.
 
-### `GET /v1`, `GET /v1/{path...}`
-
-Routes GET /v1[/...] requests to the WebSocket relayer
-when the client is attempting an upgrade, and to the normal relay chain
-otherwise. If no WS relayer is configured, upgrade attempts return 503.
-
-### `GET /health`, `GET /healthz`
-
-Returns 200 when the protocol layer is ready, 503 otherwise.
-
-### `GET /livez`
+### `GET /health`, `GET /livez`
 
 Answers 200 unconditionally: the process is up and serving.
-Readiness (sessions, full node) is /health and /ready.
+Readiness (sessions, full node) is /healthz and /ready.
+
+### `GET /healthz`
+
+Readiness in PATH's spelling: 200 when the protocol layer
+has a session, 503 otherwise. A load-balancer rule written for PATH's
+/healthz takes a pod out on the same condition here.
 
 ### `GET /ready/{service}`
 
-Checks whether a specific service is configured and ready.
+Answers whether one service can be served: configured,
+and — when the session manager can say — holding a session with at least
+one endpoint. 503 otherwise, as on PATH; it used to be 200 for anything
+configured, which made a per-service readiness probe unable to fail.
 
 ### `GET /ready`
 

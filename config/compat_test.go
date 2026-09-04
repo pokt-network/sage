@@ -66,6 +66,10 @@ func TestConfigCompatibility_GlobalSections(t *testing.T) {
 		if cfg.Router.IdleTimeout != 121*time.Second {
 			t.Errorf("idle_timeout = %v, want 121s", cfg.Router.IdleTimeout)
 		}
+		if cfg.Router.MaxRequestBodyBytes != 78643200 || cfg.Router.MaxRequestHeaderBytes != 2000000 {
+			t.Errorf("max_request_{body,header}_bytes = %d/%d, want 78643200/2000000",
+				cfg.Router.MaxRequestBodyBytes, cfg.Router.MaxRequestHeaderBytes)
+		}
 		if cfg.Router.WebsocketMessageBufferSize != 8192 {
 			t.Errorf("websocket_message_buffer_size = %d, want 8192", cfg.Router.WebsocketMessageBufferSize)
 		}

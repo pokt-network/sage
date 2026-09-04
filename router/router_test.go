@@ -144,9 +144,10 @@ func TestHandleRelay_ChainError_WritesJSONRPCError(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	// JSON-RPC errors are delivered with HTTP 200.
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("JSON-RPC errors should be 200, got %d", resp.StatusCode)
+	// A gateway-made failure carries a failing status, not 200: see
+	// TestContract_GatewayErrorStatusFollowsTheCause for the mapping.
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("gateway-made JSON-RPC error should be 500, got %d", resp.StatusCode)
 	}
 
 	var out map[string]any
@@ -282,13 +283,13 @@ func TestHandleHealth_Ready(t *testing.T) {
 	}
 }
 
-func TestHandleHealth_NotReady(t *testing.T) {
+func TestHandleHealthz_NotReady(t *testing.T) {
 	sessions := &mockSessions{ready: false}
 	r := newTestRouter(t, relay.Noop, sessions)
 	srv := httptest.NewServer(r.mux)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/health")
+	resp, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -704,10 +705,11 @@ func TestHandleRelay_GRPCResponseFraming(t *testing.T) {
 	}
 }
 
-// /healthz is PATH's spelling of /health; a Kubernetes probe written for PATH
-// must work unchanged. /livez answers 200 whenever the process serves at all:
-// a liveness probe on /health would restart pods during a full-node outage,
-// which turns one dependency's outage into a restart loop.
+// /healthz is readiness in PATH's spelling; a Kubernetes probe written for PATH
+// must work unchanged. /health and /livez answer 200 whenever the process
+// serves at all: a liveness probe on a readiness route would restart pods
+// during a full-node outage, turning one dependency's outage into a restart
+// loop.
 func TestHealthzAliasAndLivez(t *testing.T) {
 	sessions := &mockSessions{ready: false}
 	r := newTestRouter(t, relay.Noop, sessions)
@@ -715,7 +717,7 @@ func TestHealthzAliasAndLivez(t *testing.T) {
 	defer srv.Close()
 
 	for path, want := range map[string]int{
-		"/health":  http.StatusServiceUnavailable,
+		"/health":  http.StatusOK,
 		"/healthz": http.StatusServiceUnavailable,
 		"/livez":   http.StatusOK,
 	} {
@@ -882,7 +884,7 @@ func TestHandleRelay_RecordsClientStatus(t *testing.T) {
 		t.Fatalf("success should record client status 200, got %v", rec.statuses)
 	}
 
-	// A transport failure with no response -> 502 to the client.
+	// A transport failure with no response -> 500 to the client.
 	failChain := &mockChain{err: domain.NewRelayError(domain.ErrTransport, "dial failed", nil, true)}
 	rec2 := &recordingClientRec{}
 	r2 := New(config.RouterConfig{Port: 0}, failChain, &mockSessions{ready: true}, nil, discardLogger())
@@ -894,8 +896,7 @@ func TestHandleRelay_RecordsClientStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp2.Body.Close()
-	// JSON-RPC error is delivered at HTTP 200 by convention.
-	if len(rec2.statuses) != 1 || rec2.statuses[0] != 200 {
-		t.Fatalf("a JSON-RPC-shaped failure records the client status 200, got %v", rec2.statuses)
+	if len(rec2.statuses) != 1 || rec2.statuses[0] != 500 {
+		t.Fatalf("a gateway-made failure records the client status 500, got %v", rec2.statuses)
 	}
 }

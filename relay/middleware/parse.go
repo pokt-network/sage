@@ -61,22 +61,37 @@ func Parse(registry *qos.Registry) relay.Middleware {
 // classified REST rather than defaulting to JSON-RPC. Nil keeps the old
 // default.
 func ParseWithServices(registry *qos.Registry, rpcTypes func(domain.ServiceID) []string) relay.Middleware {
+	return ParseWithOptions(registry, ParseOptions{RPCTypes: rpcTypes})
+}
+
+// ParseOptions carries what Parse needs from config. Every field has a
+// working zero value so the two older constructors stay valid.
+type ParseOptions struct {
+	// RPCTypes reports the RPC types a service declares in config; nil means
+	// nothing is known and an unrecognised path defaults to JSON-RPC.
+	RPCTypes func(domain.ServiceID) []string
+	// MaxBodyBytes caps the request body. Zero takes DefaultMaxBodyBytes.
+	MaxBodyBytes int64
+}
+
+// rpcTypeHeader is the request header a client uses to say which surface it
+// is addressing, ahead of any detection. PATH reads the same header.
+const rpcTypeHeader = "RPC-Type"
+
+// ParseWithOptions returns the parse middleware with every knob supplied.
+func ParseWithOptions(registry *qos.Registry, opts ParseOptions) relay.Middleware {
+	rpcTypes := opts.RPCTypes
+	maxBody := opts.MaxBodyBytes
+	if maxBody <= 0 {
+		maxBody = DefaultMaxBodyBytes
+	}
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			// Extract service ID.
 			serviceID := ctx.HTTPRequest.Header.Get(serviceIDHeader)
 			if serviceID == "" {
-				ctx.Err = domain.NewRelayError(
-					domain.ErrValidation,
-					"missing Target-Service-Id header",
-					nil,
-					false,
-				)
-				if ctx.Writer != nil {
-					ctx.Writer.SetStatusCode(http.StatusBadRequest)
-					_ = ctx.Writer.Write([]byte(`{"error":"missing Target-Service-Id header"}`))
-				}
-				return ctx.Err
+				return rejectRequest(ctx, nil, http.StatusBadRequest, domain.ErrValidation,
+					"missing "+serviceIDHeader+" header", nil, nil)
 			}
 			ctx.ServiceID = domain.ServiceID(serviceID)
 
@@ -86,39 +101,43 @@ func ParseWithServices(registry *qos.Registry, rpcTypes func(domain.ServiceID) [
 
 			// Read the body once, bounded; the same slice is shared by RPC type
 			// detection and plugin parsing (plugins must not re-read req.Body).
-			body, err := readBody(ctx.HTTPRequest)
+			body, err := readBody(ctx.HTTPRequest, maxBody)
 			if err != nil {
-				ctx.Err = domain.NewRelayError(
-					domain.ErrValidation,
-					"failed to read request body",
-					err,
-					false,
-				)
-				if ctx.Writer != nil {
-					ctx.Writer.SetStatusCode(http.StatusBadRequest)
-					_ = ctx.Writer.Write([]byte(`{"error":"failed to read request body"}`))
+				if errors.Is(err, errBodyTooLarge) {
+					return rejectRequest(ctx, nil, http.StatusRequestEntityTooLarge, domain.ErrValidation,
+						fmt.Sprintf("request body exceeds %d bytes", maxBody), err, nil)
 				}
-				return ctx.Err
+				return rejectRequest(ctx, nil, http.StatusBadRequest, domain.ErrValidation,
+					"failed to read request body", err, nil)
 			}
 
-			// Detect RPC type.
-			ctx.RPCType = detectRPCType(ctx.HTTPRequest, body, serviceDeclaresREST(rpcTypes, ctx.ServiceID))
+			// The client's own declaration wins over detection: a REST call
+			// whose body happens to look like JSON-RPC is still REST if the
+			// caller says so. An unknown value is refused rather than ignored —
+			// silently detecting instead would hand the request to the wrong
+			// surface and make the header look honoured.
+			if declared := ctx.HTTPRequest.Header.Get(rpcTypeHeader); declared != "" {
+				rt, ok := domain.ParseRPCType(declared)
+				if !ok {
+					return rejectRequest(ctx, body, http.StatusBadRequest, domain.ErrValidation,
+						fmt.Sprintf("invalid %s header value %q", rpcTypeHeader, declared), nil,
+						map[string]any{"allowed_rpc_types": domain.AllRPCTypes()})
+				}
+				ctx.RPCType = rt
+			} else {
+				ctx.RPCType = detectRPCType(ctx.HTTPRequest, body, serviceDeclaresREST(rpcTypes, ctx.ServiceID))
+			}
 
 			// Parse request via plugin if available.
 			if plugin != nil {
 				payloads, err := plugin.ParseRequest(ctx.Ctx, ctx.HTTPRequest, body, ctx.RPCType)
 				if err != nil {
-					ctx.Err = domain.NewRelayError(
-						domain.ErrValidation,
-						"failed to parse request",
-						err,
-						false,
-					)
-					if ctx.Writer != nil {
-						ctx.Writer.SetStatusCode(http.StatusBadRequest)
-						_ = ctx.Writer.Write([]byte(`{"error":"failed to parse request"}`))
-					}
-					return ctx.Err
+					// The plugin's reason is SAGE-written ("batch array is
+					// empty", "missing method") and is the one thing the
+					// client needs to fix its request; it used to reach only
+					// the log.
+					return rejectRequest(ctx, body, http.StatusBadRequest, domain.ErrValidation,
+						"invalid request: "+domain.ClientMessage(err), err, nil)
 				}
 				ctx.Payloads = payloads
 			} else {
@@ -251,9 +270,15 @@ func isWebSocketUpgrade(req *http.Request) bool {
 		strings.Contains(strings.ToLower(req.Header.Get("Connection")), "upgrade")
 }
 
-// maxBodyBytes bounds request bodies to avoid unbounded allocation. Typical
-// JSON-RPC requests are well under 1 KiB; anything past 1 MiB is pathological.
-const maxBodyBytes = 1 << 20 // 1 MiB
+// DefaultMaxBodyBytes bounds request bodies when config sets no cap. It is
+// PATH's default, so a batch that PATH accepts is accepted here; the 1 MiB
+// this used to be turned large batches into 400s that only SAGE produced.
+// Config: router_config.max_request_body_bytes.
+const DefaultMaxBodyBytes int64 = 75 << 20 // 75 MiB
+
+// errBodyTooLarge is the cause when a body exceeds the cap, so the rejection
+// can be a 413 rather than the 400 a body that failed to read gets.
+var errBodyTooLarge = errors.New("request body too large")
 
 // readDeclaredLength reads a body whose length Content-Length already states,
 // into a buffer sized to exactly that. Returns nil — not an error — when the
@@ -269,7 +294,7 @@ const maxBodyBytes = 1 << 20 // 1 MiB
 // body at the declared length, but this is reachable with any *http.Request, so
 // a short body is returned at its real length and a long one is read to the end
 // rather than silently truncated.
-func readDeclaredLength(contentLength int64, r io.Reader) ([]byte, error) {
+func readDeclaredLength(contentLength int64, r io.Reader, maxBodyBytes int64) ([]byte, error) {
 	if contentLength <= 0 || contentLength > maxBodyBytes {
 		return nil, nil
 	}
@@ -302,7 +327,7 @@ func readDeclaredLength(contentLength int64, r io.Reader) ([]byte, error) {
 
 // readBody reads the full request body (bounded by maxBodyBytes) and replaces
 // the Body so it can be read again by downstream handlers.
-func readBody(req *http.Request) ([]byte, error) {
+func readBody(req *http.Request, maxBodyBytes int64) ([]byte, error) {
 	if req.Body == nil || req.Body == http.NoBody {
 		return nil, nil
 	}
@@ -310,7 +335,7 @@ func readBody(req *http.Request) ([]byte, error) {
 	// apart from one that exceeds it.
 	limited := io.LimitReader(req.Body, maxBodyBytes+1)
 
-	data, err := readDeclaredLength(req.ContentLength, limited)
+	data, err := readDeclaredLength(req.ContentLength, limited, maxBodyBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -321,8 +346,8 @@ func readBody(req *http.Request) ([]byte, error) {
 		}
 		data = buf.Bytes()
 	}
-	if len(data) > maxBodyBytes {
-		return nil, fmt.Errorf("request body exceeds %d bytes", maxBodyBytes)
+	if int64(len(data)) > maxBodyBytes {
+		return nil, fmt.Errorf("%w: exceeds %d bytes", errBodyTooLarge, maxBodyBytes)
 	}
 	req.Body = io.NopCloser(bytes.NewReader(data))
 	return data, nil

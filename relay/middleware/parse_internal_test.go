@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,14 +38,14 @@ func TestReadBody_ContentLengthCases(t *testing.T) {
 		{"understated: body outran its header", body, 10, body},
 		{"overstated: body shorter than declared", body, int64(len(body)) + 50, body},
 		{"empty body, declared", nil, 0, nil},
-		{"over the cap falls back to the buffer path", body, maxBodyBytes + 1, body},
+		{"over the cap falls back to the buffer path", body, testBodyCap + 1, body},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			req := newRequestWithBody(t, tc.body, tc.declared)
 
-			got, err := readBody(req)
+			got, err := readBody(req, testBodyCap)
 			if err != nil {
 				t.Fatalf("readBody: %v", err)
 			}
@@ -64,29 +65,32 @@ func TestReadBody_ContentLengthCases(t *testing.T) {
 	}
 }
 
+// testBodyCap is a small cap so the over-the-cap cases stay cheap.
+const testBodyCap = 1 << 12
+
 func TestReadBody_RejectsOversizedBody(t *testing.T) {
-	oversized := bytes.Repeat([]byte("x"), maxBodyBytes+1)
+	oversized := bytes.Repeat([]byte("x"), testBodyCap+1)
 
 	// Declared truthfully (so the cap check rejects it before sizing) and
 	// understated (so the read path discovers the overrun itself).
 	for _, declared := range []int64{int64(len(oversized)), 1} {
 		req := newRequestWithBody(t, oversized, declared)
-		if _, err := readBody(req); err == nil {
-			t.Errorf("declared=%d: want an error for a body over the cap", declared)
+		if _, err := readBody(req, testBodyCap); !errors.Is(err, errBodyTooLarge) {
+			t.Errorf("declared=%d: err = %v, want errBodyTooLarge", declared, err)
 		}
 	}
 }
 
 func TestReadBody_AtExactlyTheCap(t *testing.T) {
-	atCap := bytes.Repeat([]byte("x"), maxBodyBytes)
+	atCap := bytes.Repeat([]byte("x"), testBodyCap)
 
 	req := newRequestWithBody(t, atCap, int64(len(atCap)))
-	got, err := readBody(req)
+	got, err := readBody(req, testBodyCap)
 	if err != nil {
 		t.Fatalf("a body exactly at the cap must be accepted: %v", err)
 	}
-	if len(got) != maxBodyBytes {
-		t.Errorf("len = %d, want %d", len(got), maxBodyBytes)
+	if len(got) != testBodyCap {
+		t.Errorf("len = %d, want %d", len(got), testBodyCap)
 	}
 }
 
@@ -98,7 +102,7 @@ func BenchmarkReadBody(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1", bodyReader{bytes.NewReader(body)})
 		req.ContentLength = int64(len(body))
-		if _, err := readBody(req); err != nil {
+		if _, err := readBody(req, DefaultMaxBodyBytes); err != nil {
 			b.Fatal(err)
 		}
 	}
