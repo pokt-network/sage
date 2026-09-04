@@ -712,10 +712,17 @@ type SignalImpactsConfig struct {
 // rather than parsing into a field that does nothing; see docs/path-compat.md.
 // If remote rules are wanted later, add them as a live feature then.
 type HealthCheckConfig struct {
-	// Enabled turns active health checking on. Checks probe endpoints on a
-	// schedule rather than waiting for client traffic to reveal a problem, and
-	// are what keep block height and chain ID tracking current.
+	// Enabled turns active health checking off when written as `enabled:
+	// false`; absent, probing is on, which is PATH's default too. Checks probe
+	// endpoints on a schedule rather than waiting for client traffic to reveal
+	// a problem, and are what keep block height and chain ID tracking current.
+	// Off, selection is graded by client traffic alone and readiness does not
+	// wait for a warm-up. The key's presence is read from the YAML itself,
+	// since a bool cannot tell absent from false; until 2026-09-04 the value
+	// gated only the readiness warm-up and probing ran regardless.
 	Enabled bool `yaml:"enabled"`
+	// disabled is set by the loader when the YAML carried `enabled: false`.
+	disabled bool
 
 	// Interval is how often every backend of every service is probed. Zero
 	// means 30s. Each probe is a paid relay against the app's stake, and the
@@ -842,6 +849,10 @@ type HealthCheck struct {
 	// a check is meant to notice a slow endpoint, not to wait one out.
 	Timeout time.Duration `yaml:"timeout"`
 }
+
+// Disabled reports whether the YAML turned active health checks off with
+// `enabled: false`.
+func (h HealthCheckConfig) Disabled() bool { return h.disabled }
 
 // IsDeclaredButOff reports a block that defines checks and never runs them —
 // the failure mode this config shape invites, worth saying out loud at startup.

@@ -236,6 +236,10 @@ func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) 
 	p.consensus.AddObservation(endpoint, height)
 }
 
+// SetExternalFloor takes a trusted outside height as the floor the perceived
+// head may not fall below (qos.ExternalFloorSetter).
+func (p *Plugin) SetExternalFloor(height uint64) { p.consensus.SetExternalFloor(height) }
+
 // PerceivedBlockHeight returns the current consensus-derived perceived block height.
 func (p *Plugin) PerceivedBlockHeight() uint64 {
 	return p.consensus.PerceivedBlock()

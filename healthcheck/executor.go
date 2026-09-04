@@ -345,6 +345,25 @@ func (e *Executor) SetTrafficSkip(counter reputation.TrafficCounter, flags featu
 // SetResultRecorder installs the metric hook for applied results.
 func (e *Executor) SetResultRecorder(r ResultRecorder) { e.recorder = r }
 
+// SetFlags installs the flag store the health_checks flag is read from, per
+// cycle and per service. Nil leaves probing ungated. The flag had a row in
+// the defaults table and an admin route since the start and no reader until
+// 2026-09-04, so toggling it changed nothing.
+func (e *Executor) SetFlags(flags featureflag.FlagStore) {
+	if flags != nil {
+		e.flags = flags
+	}
+}
+
+// probingEnabled reads the health_checks flag: globally with an empty
+// service, or for one service, which falls back to the global value.
+func (e *Executor) probingEnabled(ctx context.Context, serviceID domain.ServiceID) bool {
+	if e.flags == nil {
+		return true
+	}
+	return e.flags.IsEnabled(ctx, featureflag.FlagHealthChecks, serviceID)
+}
+
 // Start begins the background health check loop. It is safe to call Start
 // only once; subsequent calls do nothing.
 func (e *Executor) Start(ctx context.Context) {
@@ -422,6 +441,12 @@ func (e *Executor) runOnce(ctx context.Context) {
 	if len(services) == 0 {
 		return
 	}
+	if !e.probingEnabled(ctx, "") {
+		// Off by the runtime flag: no probe is sent, and the cycle's
+		// bookkeeping is left alone so turning it back on resumes cleanly.
+		e.logger.Debug("healthcheck: probing is off by the health_checks flag")
+		return
+	}
 
 	// Read the configured checks once per cycle rather than per service: a
 	// reload landing mid-cycle should change the next round, not half of this
@@ -446,25 +471,27 @@ func (e *Executor) runOnce(ctx context.Context) {
 
 	for serviceID := range services {
 		serviceID := serviceID // capture for goroutine
+		if !e.probingEnabled(ctx, serviceID) {
+			continue
+		}
 		plugin := e.qosRegistry.Get(serviceID)
-		if plugin == nil {
-			continue
-		}
-		checker, ok := plugin.(qos.HealthChecker)
-		if !ok {
-			continue
-		}
 
 		serviceInterval := e.serviceInterval(serviceID, configured)
 
 		// Plugin checks first: they feed block height and chain ID tracking,
-		// so they must run even when a config adds its own.
+		// so they must run even when a config adds its own. A plugin with no
+		// checks of its own (the passthrough) still gets the configured ones:
+		// a YAML rule for such a service used to be built, listed in the
+		// startup report, and never sent.
 		//
 		// slices.Concat, not append: the slice a plugin returns is the
 		// plugin's, and appending to it writes into its backing array whenever
 		// it has spare capacity — one service's configured checks landing in
 		// the array a plugin hands to every service. Concat always allocates.
-		all := slices.Concat(checker.HealthChecks(), configured.For(serviceID))
+		all := slices.Concat(pluginChecks(plugin), configured.For(serviceID))
+		if len(all) == 0 {
+			continue
+		}
 
 		// One endpoint list per RPC type the checks actually need, rather than
 		// one JSON-RPC list for all of them. A check carries its own type in
@@ -758,6 +785,11 @@ func checkSignal(checkName string, statusCode int, statusOK bool, extractErr err
 	case errors.Is(extractErr, qos.ErrWrongChain):
 		return reputation.NewCriticalErrorSignal(reason+": wrong chain", latency)
 
+	// A 2xx that carried none of what the probe asked for: the endpoint is
+	// answering, and not the question.
+	case errors.Is(extractErr, errProbeAnsweredNothing):
+		return reputation.NewMinorErrorSignal(reason+": answered without the fact asked for", latency)
+
 	// A 200 we cannot parse is a real failure but a milder one — most causes are
 	// transient or an endpoint quirk rather than an imposter.
 	case extractErr != nil:
@@ -944,13 +976,61 @@ func (e *Executor) Warm() bool {
 	return false
 }
 
+// errProbeAnsweredNothing grades a 2xx that carried none of the facts an
+// Essential probe asked for.
+var errProbeAnsweredNothing = errors.New("probe answered without the fact it asked for")
+
+// isEssentialCheck reports whether the named check is one the plugin marked
+// Essential. Plugins declare a handful of checks, so the scan is cheap.
+func (e *Executor) isEssentialCheck(plugin qos.Plugin, name string) bool {
+	for _, c := range pluginChecks(plugin) {
+		if c.Name == name {
+			return c.Essential
+		}
+	}
+	return false
+}
+
+// pluginChecks returns a plugin's own health checks, or none for a plugin
+// that declares none (the passthrough) or is missing.
+func pluginChecks(plugin qos.Plugin) []qos.HealthCheck {
+	if checker, ok := plugin.(qos.HealthChecker); ok {
+		return checker.HealthChecks()
+	}
+	return nil
+}
+
+// probeable reports whether some check can grade the service: the plugin's
+// own or a configured one. A service with neither never produces a result,
+// so it cannot be waited on.
+func (e *Executor) probeable(serviceID domain.ServiceID, configured *ConfiguredChecks) bool {
+	return len(pluginChecks(e.qosRegistry.Get(serviceID))) > 0 || len(configured.For(serviceID)) > 0
+}
+
+// probeableServices counts the configured services that are probeable.
+func (e *Executor) probeableServices() int {
+	configured := e.configured.Load()
+	n := 0
+	for serviceID := range e.sessions.ConfiguredServices() {
+		if e.probeable(serviceID, configured) {
+			n++
+		}
+	}
+	return n
+}
+
 // ensureWarmThresholdLocked computes the warm threshold once, from the
-// configured service count. Called under warmMu.
+// count of services that can be probed at all. Called under warmMu.
+//
+// Counting every configured service, as this did until 2026-09-04, held
+// readiness at 503 forever on a config with more than a quarter of its
+// services on the passthrough: those never mark themselves covered, and
+// 75% of everything was more than 100% of the rest.
 func (e *Executor) ensureWarmThresholdLocked() {
 	if e.warmThresholdSet {
 		return
 	}
-	n := len(e.sessions.ConfiguredServices())
+	n := e.probeableServices()
 	// ceil(0.75 * n); 0 stays 0 (warm immediately).
 	e.warmThreshold = (n*3 + 3) / 4
 	e.warmThresholdSet = true
@@ -1036,8 +1116,15 @@ func (e *Executor) logWarmProgress() {
 	covered, threshold := len(e.coveredServices), e.warmThreshold
 	missing := make([]string, 0, maxUnwarmedServicesLogged)
 	truncated := 0
+	configured := e.configured.Load()
 	for svc := range e.sessions.ConfiguredServices() {
 		if _, ok := e.coveredServices[svc]; ok {
+			continue
+		}
+		// Only what a probe could still cover: a passthrough service is
+		// never awaited, so naming it would send an operator looking for a
+		// probe that does not exist.
+		if !e.probeable(svc, configured) {
 			continue
 		}
 		if len(missing) < maxUnwarmedServicesLogged {
@@ -1115,6 +1202,14 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 	if extractor, ok := plugin.(qos.DataExtractor); ok {
 		var data *qos.ExtractedData
 		data, extractErr = extractor.ExtractData(r.Endpoint, r.Request, r.Body)
+		// A probe the plugin marked Essential exists to learn one fact. A
+		// 2xx that yields none is the endpoint not answering the question,
+		// and is graded as such — a REST probe cannot recognise itself by
+		// its (empty) body, so an HTML 200 on eth-beacon's header path used
+		// to pass as healthy.
+		if extractErr == nil && data.Empty() && e.isEssentialCheck(plugin, r.Check) {
+			extractErr = errProbeAnsweredNothing
+		}
 		switch {
 		case extractErr != nil:
 			e.logger.Debug("healthcheck: extract error",

@@ -103,3 +103,33 @@ func serviceIndex(path, prefix string) (int, bool) {
 	}
 	return i, true
 }
+
+// applyHealthChecksDisabled honours `active_health_checks: {enabled: false}`
+// the same way: by the key's presence in the YAML, since PATH's default for
+// an absent key is on and a value-typed bool cannot say which it saw.
+func applyHealthChecksDisabled(cfg *Config, tree any) []string {
+	v, present := boolAt(tree, "gateway_config", "active_health_checks", "enabled")
+	if !present || v {
+		return nil
+	}
+	cfg.Gateway.HealthChecks.disabled = true
+	return []string{"gateway_config.active_health_checks.enabled is false, so no health-check probes are sent: selection is graded by client traffic alone, and readiness does not wait for a warm-up"}
+}
+
+// boolAt reads a bool at a mapping path in the decoded YAML tree, reporting
+// whether the key was written at all.
+func boolAt(tree any, path ...string) (value, present bool) {
+	node := tree
+	for _, key := range path {
+		m, ok := node.(map[string]any)
+		if !ok {
+			return false, false
+		}
+		node, ok = m[key]
+		if !ok {
+			return false, false
+		}
+	}
+	v, ok := node.(bool)
+	return v, ok
+}

@@ -250,6 +250,34 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **Two health-check controls that controlled nothing now do, and four probe
+  gaps are closed.** `active_health_checks.enabled: false` stopped nothing:
+  the executor started regardless and the key gated only the readiness
+  warm-up. The `health_checks` feature flag had a defaults row and an admin
+  route and no reader, so `PUT /admin/flags/health_checks` was a no-op. Both
+  are honoured now — the config key by its presence in the YAML (PATH's
+  default for an absent key is on), the flag per cycle and per service, so
+  probing can be paused from the admin API without a restart.
+
+  The gaps: a YAML `local[].checks` rule for a service whose plugin declares
+  no checks (the passthrough) was built, listed in the startup report and
+  never sent, because the loop skipped such services before reading the
+  configured checks. `external_block_sources` were fed into consensus as an
+  ordinary observation from a fake endpoint named `external` — one vote among
+  many, counted as an endpoint in the chain view — while the floor the
+  consensus code always had went uncalled; they set the floor now, through
+  `qos.ExternalFloorSetter`, and a plugin that tracks no height gets no
+  fetcher and a startup line. The readiness warm-up counted every configured
+  service in its 75% denominator, so a config with more than a quarter of its
+  services on the passthrough could never go ready without hydration; it
+  counts services some check can grade. An Essential probe that answered 2xx
+  with none of the fact it asked for graded success — a REST probe cannot
+  recognise itself by its empty body, so an HTML 200 on eth-beacon's header
+  path passed; it is a minor error now. And which declared RPC types no probe
+  covers is said at startup per service, since TRON's REST surface (about a
+  quarter of its traffic) was ungraded by anything but client traffic and
+  nothing had said so.
+
 - **Layer 2 of the config contract is enforced, and four keys it had missed are
   honest.** `docs/path-compat.md` promises every key SAGE parses and does not
   act on is reported at startup. The registry test that guaranteed it compared

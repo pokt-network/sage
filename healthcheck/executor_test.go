@@ -83,6 +83,20 @@ func (p *checkOnlyPlugin) HealthChecks() []qos.HealthCheck {
 	return p.checks
 }
 
+// probeableRegistry registers a plugin with one check for each service, so
+// the warm gate has something to wait for on each of them.
+func probeableRegistry(t *testing.T, services ...domain.ServiceID) *qos.Registry {
+	t.Helper()
+	reg := qos.NewRegistry()
+	payload := domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	for _, svc := range services {
+		if err := reg.Register(svc, &checkOnlyPlugin{checks: []qos.HealthCheck{{Name: "block_number", Payload: payload}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return reg
+}
+
 // --- reputation stub ---
 
 type stubRepService struct {
@@ -1171,7 +1185,7 @@ func TestExecutor_WarmAfterResultsCoverServices(t *testing.T) {
 	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{
 		"eth": {}, "poly": {}, "base": {}, "solana": {},
 	}}
-	reg := qos.NewRegistry()
+	reg := probeableRegistry(t, "eth", "poly", "base", "solana")
 	rep := &stubRepService{}
 	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{}, sessions, reg, rep, nil,
 		defaultInterval, 4, slog.Default())
@@ -1376,7 +1390,7 @@ func TestSeedCoverage_WarmsWithoutAnyResult(t *testing.T) {
 		"eth": {}, "poly": {}, "kava": {}, "sei": {},
 	}}
 	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{}, sessions,
-		qos.NewRegistry(), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
+		probeableRegistry(t, "eth", "poly", "kava", "sei"), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
 
 	if exec.Warm() {
 		t.Fatal("precondition: a fresh executor must not be warm")
@@ -1397,7 +1411,7 @@ func TestSeedCoverage_IgnoresUnconfiguredServices(t *testing.T) {
 		"eth": {}, "poly": {}, "kava": {}, "sei": {},
 	}}
 	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{}, sessions,
-		qos.NewRegistry(), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
+		probeableRegistry(t, "eth", "poly", "kava", "sei"), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
 
 	// Three real services would be enough; two real plus two strangers is not.
 	exec.SeedCoverage([]domain.ServiceID{"eth", "poly", "avax", "moonriver"})
@@ -1423,7 +1437,7 @@ func TestLogWarmProgress(t *testing.T) {
 		}}
 		logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 		return NewExecutor(&stubRelayer{}, &stubEndpointProvider{}, sessions,
-			qos.NewRegistry(), &stubRepService{}, nil, defaultInterval, 4, logger)
+			probeableRegistry(t, "eth", "poly", "kava", "sei"), &stubRepService{}, nil, defaultInterval, 4, logger)
 	}
 
 	t.Run("names what is missing, at WARN so production sees it", func(t *testing.T) {
@@ -1468,13 +1482,16 @@ func TestLogWarmProgress(t *testing.T) {
 // A fleet with dozens of services must not turn one log line into a page.
 func TestLogWarmProgress_BoundsTheServiceList(t *testing.T) {
 	services := make(map[domain.ServiceID]struct{}, 40)
+	ids := make([]domain.ServiceID, 0, 40)
 	for i := range 40 {
-		services[domain.ServiceID(fmt.Sprintf("svc-%02d", i))] = struct{}{}
+		id := domain.ServiceID(fmt.Sprintf("svc-%02d", i))
+		services[id] = struct{}{}
+		ids = append(ids, id)
 	}
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{},
-		&stubSessionManager{services: services}, qos.NewRegistry(),
+		&stubSessionManager{services: services}, probeableRegistry(t, ids...),
 		&stubRepService{}, nil, defaultInterval, 4, logger)
 
 	exec.logWarmProgress()

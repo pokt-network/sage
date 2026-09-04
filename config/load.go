@@ -41,6 +41,7 @@ func parse(data []byte) (*Config, error) {
 	applyDefaults(&cfg)
 	cfg.Warnings = reputationWarnings(cfg.Gateway.Reputation)
 	cfg.Warnings = append(cfg.Warnings, applyRetryDisabled(&cfg, tree)...)
+	cfg.Warnings = append(cfg.Warnings, applyHealthChecksDisabled(&cfg, tree)...)
 	cfg.Warnings = append(cfg.Warnings, gatewayModeWarnings(cfg.Gateway.GatewayMode)...)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)

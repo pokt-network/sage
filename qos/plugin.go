@@ -117,6 +117,22 @@ type ExtractedData struct {
 	IsArchival  *bool
 }
 
+// Empty reports that a response yielded no fact at all. For a probe that
+// exists to learn one, an empty answer is the endpoint failing to answer.
+func (d *ExtractedData) Empty() bool {
+	return d == nil || (d.BlockHeight == nil && d.ChainID == nil && d.IsSyncing == nil && d.IsArchival == nil)
+}
+
+// ExternalFloorSetter is implemented by plugins whose block consensus can
+// take a height from outside the pool (services[].external_block_sources): a
+// node the operator trusts, whose height is a floor the perceived head may
+// not fall below. Feeding such a height in as an ordinary endpoint
+// observation — which is what wiring did until 2026-09-04 — gave it one vote
+// among many and a fake endpoint in the chain view.
+type ExternalFloorSetter interface {
+	SetExternalFloor(height uint64)
+}
+
 // MethodOther is the bucket NormalizeMethod returns for a method the plugin
 // does not catalogue. One bucket, so unknown methods cost one key, not one
 // per client-chosen string.

@@ -648,6 +648,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// is always leader and there is nothing to publish to — unchanged.
 	healthExe.SetLeader(leader)
 	healthExe.SetResultRecorder(recorder)
+	// The health_checks flag: off globally or per service stops the probes
+	// for the next cycle, from the admin API, without a restart.
+	healthExe.SetFlags(flags)
+	// Which declared RPC types no probe covers, said once at boot.
+	app.StartupWarnings = append(app.StartupWarnings,
+		healthcheck.RPCTypeCoverageGaps(cfg.Gateway.AllServices(), qosReg, configuredChecks)...)
 	// Traffic-informed probing: skip a check against a backend client traffic
 	// has already graded this cycle. Gated by the traffic_informed_probing
 	// flag, which is off by default, and inert until the pod is warm.
@@ -737,24 +743,41 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		prometheus.MustRegister(metrics.NewHydratedGauges(loaded.Keys, len(loaded.Services))...)
 	}
 
-	healthExe.Start(ctx)
+	// active_health_checks.enabled: false means no probes at all. The
+	// executor is still built — the reload and admin seams hold it — and
+	// nothing starts it. It used to start regardless, with the key gating
+	// only the readiness warm-up.
+	if cfg.Gateway.HealthChecks.Disabled() {
+		logger.Warn("health checks: disabled by active_health_checks.enabled: false; no probes are sent")
+	} else {
+		healthExe.Start(ctx)
+	}
 	app.HealthExe = healthExe
 
-	// 14. External block height fetchers
+	// 14. External block height fetchers. A trusted outside height is a
+	// FLOOR under the perceived head, not one more endpoint's vote: fed in as
+	// an observation from a fake endpoint named "external" — which is what
+	// this did until 2026-09-04 — it was outvoted by the pool it was meant to
+	// correct and counted as an endpoint in the chain view. A plugin whose
+	// consensus cannot take a floor gets no fetcher and a startup line.
 	for _, svc := range cfg.Gateway.AllServices() {
 		if len(svc.ExternalBlockSources) == 0 {
 			continue
 		}
+		plugin := qosReg.Get(domain.ServiceID(svc.ID))
+		setter, ok := plugin.(qos.ExternalFloorSetter)
+		if !ok {
+			app.StartupWarnings = append(app.StartupWarnings, fmt.Sprintf(
+				"services[%s].external_block_sources: the service's QoS plugin tracks no block height, so the sources are not polled", svc.ID))
+			continue
+		}
 		fetcher := healthcheck.NewExternalBlockFetcher(domain.ServiceID(svc.ID), svc.ExternalBlockSources, logger)
 		heights := fetcher.Start(ctx)
-		plugin := qosReg.Get(domain.ServiceID(svc.ID))
-		if tracker, ok := plugin.(qos.BlockHeightTracker); ok {
-			safego.Go(logger, "external.blockheight.fanin", func() {
-				for h := range heights {
-					tracker.UpdateBlockHeight("external", h.Height)
-				}
-			})
-		}
+		safego.Go(logger, "external.blockheight.floor", func() {
+			for h := range heights {
+				setter.SetExternalFloor(h.Height)
+			}
+		})
 	}
 
 	// 15. WebSocket relayer — single public entry point for WS upgrades.
@@ -810,7 +833,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// Gate /ready on reputation warm-up so a fresh or rolled pod is not put
 	// into the Service until it can steer selection. Only when health checks
 	// are enabled — otherwise nothing warms and readiness must not stall.
-	if cfg.Gateway.HealthChecks.Enabled {
+	if !cfg.Gateway.HealthChecks.Disabled() {
 		app.Router.SetWarmup(healthExe)
 	}
 

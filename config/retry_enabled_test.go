@@ -118,3 +118,27 @@ gateway_config:
 		t.Errorf("delegated mode loads silently: %v", cfg.Warnings)
 	}
 }
+
+func TestHealthChecksEnabledFalse_IsHonouredByPresence(t *testing.T) {
+	absent := loadRetry(t, ``)
+	if absent.Gateway.HealthChecks.Disabled() {
+		t.Fatal("an absent enabled key means probing is on, as on PATH")
+	}
+	off := loadRetry(t, `
+  active_health_checks:
+    enabled: false
+`)
+	if !off.Gateway.HealthChecks.Disabled() {
+		t.Fatal("enabled: false must turn probing off")
+	}
+	if !strings.Contains(strings.Join(off.Warnings, "\n"), "no health-check probes are sent") {
+		t.Errorf("no warning says probing is off: %v", off.Warnings)
+	}
+	on := loadRetry(t, `
+  active_health_checks:
+    enabled: true
+`)
+	if on.Gateway.HealthChecks.Disabled() {
+		t.Fatal("enabled: true must not disable")
+	}
+}
