@@ -250,6 +250,25 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **SAGE says which services it has no QoS for, and why.** `services[].type`
+  selects the QoS plugin, and anything the switch does not recognise falls
+  through to the passthrough — which relays and scores but runs no health
+  checks, observes no block heights and publishes no chain view, leaving
+  selection to reputation from client relays alone. Nothing said that was
+  happening. The mainnet canary carried five such services, one of them tron,
+  which is the largest service on the sibling PATH fleet by relay count and was
+  running with no probes and no chain view because a field said `generic`.
+  Nobody had decided that; it had simply never been reported.
+
+  The two cases are reported separately because they need different answers. A
+  declared `generic` is a choice, and the line exists so somebody can confirm
+  it is still the right one. An unrecognised type is almost always a typo — and
+  `type` was never validated, so a misspelling silently cost a service all of
+  its QoS while still looking like a configured chain, which is the same shape
+  as a config key that parses into nothing. One line per case rather than per
+  service, since a fleet can carry dozens and the report is read by somebody
+  deciding whether to act.
+
 - **A service staked only for REST was never health-checked, and said nothing
   about it.** The executor fetched one endpoint list per service, hardcoded to
   JSON-RPC, and ran every check against it whatever RPC type the check's

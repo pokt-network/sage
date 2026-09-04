@@ -78,6 +78,14 @@ func main() {
 		report.Warn("config setting is probably not what was meant", "detail", f)
 	}
 
+	// Which services have no chain-specific QoS, and why. A `type` the plugin
+	// switch does not recognise falls through to the passthrough silently, so
+	// a typo costs a service its health checks, its block-height tracking and
+	// its chain view while still looking configured.
+	for _, line := range config.QoSCoverageFor(cfg.Gateway.AllServices()).Lines() {
+		report.Warn("QoS coverage", "detail", line)
+	}
+
 	// Background context for all services
 	ctx, cancel := context.WithCancel(context.Background())
 
