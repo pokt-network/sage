@@ -41,6 +41,13 @@ image rolls, ops needs to know, and after it rolls these are the checks:
   200 count includes gateway-made `-32603` failures and the post-roll one
   does not. Compare pre-roll 200 share against post-roll `200 + 500 + 504`;
   408/400/502/404 and attempts-per-client-request should be unchanged.
+- **Keep the last few 4xx envelopes per service in the request sampler.**
+  On 2026-09-04 the solana and tron 400 rates doubled (to ~1/min each) after
+  gateway-made errors stopped being 200s, and nothing could say what the
+  bodies were: the router logs no body, synthetic requests did not reproduce
+  it, and the sampler keeps request shapes, not rejections. A ring of the
+  last N rejection envelopes per service on `GET /admin/traffic/{service}`
+  would have named it in one call.
 - **Export `sage_client_jsonrpc_errors_total{service_id}`** — a 200 whose
   body carries a top-level `error`, counted at the router. Ops asked for it
   on 2026-09-04 and it is what the 408 investigation lacks: the split

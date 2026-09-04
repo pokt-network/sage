@@ -50,6 +50,10 @@ the *Image* workflow (`gh workflow run image.yml --ref <branch>`) publishes
 demand without touching `latest`), and a mock backend for running without a full node or
 suppliers at all:
 
+Quote a short-SHA tag in YAML. A tag such as `3377e68` is all digits and one
+letter, and an unquoted `3377e68` parses as the float 3377×10⁶⁸, which
+kustomize then rejects; `newTag: "3377e68"` does not.
+
 ```bash
 ./bin/sagegw -config bench/mock-config.yaml
 ```
