@@ -102,6 +102,9 @@ func main() {
 	for _, w := range app.StartupWarnings {
 		report.Warn("config setting is probably not what was meant", "detail", w)
 	}
+	for _, n := range app.StartupNotes {
+		report.Warn("boot", "detail", n)
+	}
 	// Build only takes the already-parsed *config.Config, not the path it came
 	// from, so a reload (which needs to re-read the file) is threaded through
 	// here instead. Empty when config came from GATEWAY_CONFIG rather than

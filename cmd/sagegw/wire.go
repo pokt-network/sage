@@ -76,6 +76,13 @@ type App struct {
 	// captured in a closure cannot be made reloadable this way — see the
 	// tuning package doc.
 	Config atomic.Pointer[config.Config]
+	// StartupNotes is what Build wants an operator to see once at boot that
+	// is not a warning: the reputation warm-up summary. main reports them
+	// through the startup reporter, which the configured log level cannot
+	// silence — the canary runs at "error", and the INFO line saying whether
+	// a pod booted warm or cold was the first thing an investigation needed
+	// and the one thing the log did not have.
+	StartupNotes []string
 	// StartupWarnings is what Build found wrong with the config that was not
 	// wrong enough to refuse: a flag name SAGE does not have, a health-check
 	// rule that could not be built. main reports them through the startup
@@ -732,11 +739,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 				}
 			}
 			healthExe.SeedCoverage(ready)
-			logger.Info("reputation warmed from storage",
-				"keys", loaded.Keys,
-				"services", len(loaded.Services),
-				"credited", len(ready),
-				"skipped", loaded.Skipped)
+			app.StartupNotes = append(app.StartupNotes, fmt.Sprintf(
+				"reputation warmed from storage: keys=%d services=%d credited=%d skipped=%d",
+				loaded.Keys, len(loaded.Services), len(ready), loaded.Skipped))
 		}
 		// The durable form of that line: a log entry can be filtered out by
 		// level, a gauge cannot.

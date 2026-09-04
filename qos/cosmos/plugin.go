@@ -209,7 +209,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	}
 
 	ranker := qos.LeastStaleFallback(getHeight, perceived)
-	result := qos.Select(endpoints, baseFilters, relaxedFilters, nonBlockFilters, ranker)
+	result := qos.SelectWithKnownHeights(endpoints, getHeight, baseFilters, relaxedFilters, nonBlockFilters, ranker)
 
 	if result.Degraded {
 		p.logger.Warn("cosmos: endpoint selection degraded",

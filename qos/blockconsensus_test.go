@@ -299,3 +299,15 @@ func TestAddObservation_WarnsOnAHeightFarBelowTheHead(t *testing.T) {
 		t.Fatalf("a near-zero height entered the window without naming the endpoint: %s", buf.String())
 	}
 }
+
+func TestChainView_ReportsTheExternalFloor(t *testing.T) {
+	bc := NewBlockConsensus(nil, 5)
+	bc.AddObservation("a", 100)
+	if got := bc.ChainView().ExternalFloor; got != 0 {
+		t.Fatalf("no floor set, got %d", got)
+	}
+	bc.SetExternalFloor(150)
+	if got := bc.ChainView().ExternalFloor; got != 150 {
+		t.Fatalf("floor = %d, want 150 reported whether or not it has engaged", got)
+	}
+}

@@ -250,6 +250,26 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **A host that never answers can no longer be the sole survivor of the
+  height filter.** Found on the 2026-09-04 canary roll: at pod boot one pod
+  sent 508 relays in one second to a bsc host scoring zero, and bsc's
+  pool-collapse rate went from ~116 to ~800 an hour. The strict height
+  filter lets an endpoint with an unknown height through on purpose; a host
+  that never answers never gets a height, so it passes every height filter
+  forever. At any moment when every answering host looks behind — stored
+  heights go stale between probe visits while perceived moves on, or the
+  external floor lifts perceived past the pool — the strict set is exactly
+  the hosts that never answered, returned as a non-degraded tier 1, and
+  reputation then sees only score-zero keys, collapses, and serves the
+  least-bad of them. `qos.SelectWithKnownHeights` treats a tier-1 or tier-2
+  set made only of unknown-height endpoints, while known ones exist, as not
+  a pass; selection falls through to the ranked full list. All four
+  height-tracking plugins use it. `sage_chain_view_external_floor` and the
+  chain-state route's `external_floor` field export the floor, so a spread
+  excursion can be told apart from the floor engaging; the boot warm-up
+  summary goes through the startup reporter, since the canary's log level
+  had dropped it.
+
 - **The principles in CLAUDE.md are tests now, not memory.** The 2026-09-04
   audit checked each stated rule against the code. Five goroutines broke the
   "never a bare `go` statement" rule in the part of their body outside the

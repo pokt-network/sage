@@ -64,6 +64,73 @@ func Select(
 	return SelectResult{Endpoints: rankFallback(endpoints, fallbackRanker), Degraded: true, Tier: 3}
 }
 
+// SelectWithKnownHeights is Select with one more rule, for the height
+// filters every plugin builds: a tier-1 or tier-2 set made only of endpoints
+// whose height is UNKNOWN, while some endpoint's height is known, is not a
+// pass. Selection falls through to the next tier, and tier 3 ranks the known
+// endpoints least-stale first.
+//
+// The height filter lets an unknown endpoint through on purpose (it may be
+// fine; nothing has asked it yet). The consequence nobody drew: a host that
+// never answers never gets a height, so it passes every height filter
+// forever, and at any moment when every answering host looks behind — stored
+// heights go stale between probe visits while perceived moves on, or an
+// external floor lifts perceived past the pool — the strict set is exactly
+// the hosts that never answered. That set is non-empty, so it was returned as
+// tier 1, not degraded, and reputation then saw only score-0 keys, collapsed,
+// and served the least-bad one. On the 2026-09-04 canary that was 508 relays
+// to one dead bsc host in one second at pod boot, and ~800 pool collapses an
+// hour on bsc after. An unknown-only set says "we know nothing here", and
+// the answer to that is everyone, ranked, not the strangers alone.
+func SelectWithKnownHeights(
+	endpoints domain.EndpointAddrList,
+	getHeight func(domain.EndpointAddr) (uint64, bool),
+	filters []FilterFunc,
+	relaxedFilters []FilterFunc,
+	nonBlockHeightFilters []FilterFunc,
+	fallbackRanker func(domain.EndpointAddrList) domain.EndpointAddrList,
+) SelectResult {
+	if len(endpoints) == 0 {
+		return SelectResult{Endpoints: nil, Degraded: false, Tier: 0}
+	}
+	anyKnown := false
+	for _, ep := range endpoints {
+		if _, ok := getHeight(ep); ok {
+			anyKnown = true
+			break
+		}
+	}
+	// A pass must carry at least one endpoint we know something about,
+	// unless we know nothing about any of them (cold start), when the
+	// unknowns are all there is and the ordinary rule stands.
+	informed := func(set domain.EndpointAddrList) bool {
+		if !anyKnown {
+			return true
+		}
+		for _, ep := range set {
+			if _, ok := getHeight(ep); ok {
+				return true
+			}
+		}
+		return false
+	}
+
+	if result := applyFilters(endpoints, filters); len(result) > 0 && informed(result) {
+		return SelectResult{Endpoints: result, Degraded: false, Tier: 1}
+	}
+	if relaxedFilters != nil {
+		if result := applyFilters(endpoints, relaxedFilters); len(result) > 0 && informed(result) {
+			return SelectResult{Endpoints: result, Degraded: true, Tier: 2}
+		}
+	}
+	if nonBlockHeightFilters != nil {
+		if result := applyFilters(endpoints, nonBlockHeightFilters); len(result) > 0 {
+			return SelectResult{Endpoints: rankFallback(result, fallbackRanker), Degraded: true, Tier: 3}
+		}
+	}
+	return SelectResult{Endpoints: rankFallback(endpoints, fallbackRanker), Degraded: true, Tier: 3}
+}
+
 // rankFallback applies the optional fallback ranker, guarding against a ranker
 // that returns nothing (never hand back an empty candidate set).
 func rankFallback(eps domain.EndpointAddrList, ranker func(domain.EndpointAddrList) domain.EndpointAddrList) domain.EndpointAddrList {

@@ -196,7 +196,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	nonBlockFilters := []qos.FilterFunc{archivalFilter}
 
 	ranker := qos.LeastStaleFallback(getHeight, perceived)
-	result := qos.Select(endpoints, filters, relaxedFilters, nonBlockFilters, ranker)
+	result := qos.SelectWithKnownHeights(endpoints, getHeight, filters, relaxedFilters, nonBlockFilters, ranker)
 
 	if result.Degraded {
 		p.logger.Warn("endpoint selection degraded",

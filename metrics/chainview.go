@@ -22,6 +22,7 @@ type ChainViewSource interface {
 //	sage_chain_view_disagreement_seconds{service_id}  the same, age-adjusted
 //	sage_chain_view_endpoints{service_id}          endpoints inside the window
 //	sage_chain_view_staleness_seconds{service_id}  age of the newest observation
+//	sage_chain_view_external_floor{service_id}     height the external sources supplied
 //
 // None of this was exported before. SAGE published 31 metrics and not one was
 // about block height, consensus or QoS state, so the mechanism endpoint
@@ -50,6 +51,7 @@ type ChainViewCollector struct {
 	spread        *prometheus.Desc
 	endpoints     *prometheus.Desc
 	staleness     *prometheus.Desc
+	externalFloor *prometheus.Desc
 	spreadSeconds *prometheus.Desc
 	disagreement  *prometheus.Desc
 }
@@ -88,6 +90,11 @@ func NewChainViewCollector(source ChainViewSource, services []domain.ServiceID) 
 			"How far apart the endpoints are once the time between their observations is removed. THIS is the one to alert on for endpoint disagreement, not spread: observations inside the window are taken at different moments — a probe sweep visits each backend once per cycle — so on a moving chain a large part of the raw spread is the age of the readings rather than any disagreement. Absent when the chain has not moved enough to derive a rate to project at.",
 			[]string{"service_id"}, nil,
 		),
+		externalFloor: prometheus.NewDesc(
+			"sage_chain_view_external_floor",
+			"Height the service's external_block_sources last supplied: a floor under the perceived height once the cold-start grace has passed. Emitted only when a source has answered. sage_chain_view_height above the pool's highest endpoint is this floor engaging.",
+			[]string{"service_id"}, nil,
+		),
 		staleness: prometheus.NewDesc(
 			"sage_chain_view_staleness_seconds",
 			"Age of the newest block-height observation for this service. A probed service refreshes every health-check cycle; one whose probes are skipped refreshes only when client traffic happens to carry a height, so this is what shows a chain view going stale. Absent when there is no observation in the window — sage_chain_view_endpoints reads 0 there.",
@@ -102,6 +109,7 @@ func (c *ChainViewCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.spread
 	ch <- c.endpoints
 	ch <- c.staleness
+	ch <- c.externalFloor
 	ch <- c.spreadSeconds
 	ch <- c.disagreement
 }
@@ -118,6 +126,9 @@ func (c *ChainViewCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.height, prometheus.GaugeValue, float64(view.Perceived), id)
 		ch <- prometheus.MustNewConstMetric(c.spread, prometheus.GaugeValue, float64(view.Spread()), id)
 		ch <- prometheus.MustNewConstMetric(c.endpoints, prometheus.GaugeValue, float64(view.Endpoints), id)
+		if view.ExternalFloor > 0 {
+			ch <- prometheus.MustNewConstMetric(c.externalFloor, prometheus.GaugeValue, float64(view.ExternalFloor), id)
+		}
 		if secs, ok := view.DisagreementSeconds(); ok {
 			ch <- prometheus.MustNewConstMetric(c.disagreement, prometheus.GaugeValue, secs, id)
 		}

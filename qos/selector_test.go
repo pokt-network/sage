@@ -259,3 +259,66 @@ func TestMinAllowedHeight(t *testing.T) {
 		})
 	}
 }
+
+// The canary shape of 2026-09-04: every host that answers is behind (stale
+// stored heights, or a floor ahead of the pool) and the one host that never
+// answers has no height at all. The strict filter's "unknown passes" rule
+// made that host the whole tier-1 set, and reputation then collapsed onto
+// it. An unknown-only set is not a pass when anything is known.
+func TestSelectWithKnownHeights_UnknownOnlySetIsNotAPass(t *testing.T) {
+	heights := map[domain.EndpointAddr]uint64{"a": 90, "b": 92, "c": 91}
+	getHeight := func(ep domain.EndpointAddr) (uint64, bool) {
+		h, ok := heights[ep]
+		return h, ok
+	}
+	eps := domain.EndpointAddrList{"a", "b", "dead", "c"}
+	const perceived = 200 // far ahead of every known height
+	strict := []FilterFunc{BlockHeightFilter(getHeight, MinAllowedHeight(perceived, 5))}
+	relaxed := []FilterFunc{BlockHeightFilter(getHeight, MinAllowedHeight(perceived, 10))}
+
+	// The old rule, for contrast: tier 1 is exactly the dead host.
+	if old := Select(eps, strict, relaxed, nil, LeastStaleFallback(getHeight, perceived)); len(old.Endpoints) != 1 || old.Endpoints[0] != "dead" || old.Degraded {
+		t.Fatalf("precondition: Select should hand back only the dead host as a non-degraded tier 1, got %+v", old)
+	}
+
+	got := SelectWithKnownHeights(eps, getHeight, strict, relaxed, nil, LeastStaleFallback(getHeight, perceived))
+	if !got.Degraded || got.Tier != 3 {
+		t.Fatalf("want a degraded tier-3 fallback, got %+v", got)
+	}
+	for _, ep := range got.Endpoints {
+		if ep == "dead" {
+			t.Fatalf("the host that never answered survived as a candidate: %v", got.Endpoints)
+		}
+	}
+	if len(got.Endpoints) == 0 || got.Endpoints[0] != "b" {
+		t.Fatalf("want the least-stale known host first, got %v", got.Endpoints)
+	}
+}
+
+// Cold start: nothing is known, so the unknowns are all there is and the
+// ordinary rule stands — a fresh pod must still select.
+func TestSelectWithKnownHeights_ColdStartPassesEveryone(t *testing.T) {
+	getHeight := func(domain.EndpointAddr) (uint64, bool) { return 0, false }
+	eps := domain.EndpointAddrList{"a", "b", "c"}
+	strict := []FilterFunc{BlockHeightFilter(getHeight, 100)}
+	got := SelectWithKnownHeights(eps, getHeight, strict, nil, nil, nil)
+	if got.Degraded || got.Tier != 1 || len(got.Endpoints) != 3 {
+		t.Fatalf("cold start must pass everyone as tier 1, got %+v", got)
+	}
+}
+
+// A mixed set that includes a known, in-range host is a pass, unknowns and
+// all: the rule only bites when the survivors are strangers alone.
+func TestSelectWithKnownHeights_MixedSetStillPasses(t *testing.T) {
+	heights := map[domain.EndpointAddr]uint64{"a": 100, "b": 90}
+	getHeight := func(ep domain.EndpointAddr) (uint64, bool) {
+		h, ok := heights[ep]
+		return h, ok
+	}
+	eps := domain.EndpointAddrList{"a", "b", "new"}
+	strict := []FilterFunc{BlockHeightFilter(getHeight, MinAllowedHeight(100, 5))}
+	got := SelectWithKnownHeights(eps, getHeight, strict, nil, nil, nil)
+	if got.Degraded || got.Tier != 1 || len(got.Endpoints) != 2 {
+		t.Fatalf("want tier 1 with a and new, got %+v", got)
+	}
+}

@@ -31,6 +31,7 @@ func (a *AdminAPI) handleGetChainState(w http.ResponseWriter, req *http.Request)
 		out["highest"] = view.Highest
 		out["lowest"] = view.Lowest
 		out["endpoints"] = view.Endpoints
+		out["external_floor"] = view.ExternalFloor
 	}
 	if lister, ok := plugin.(qos.EndpointHeightLister); ok {
 		out["heights"] = lister.EndpointHeights()

@@ -126,8 +126,9 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 	perceived := p.consensus.PerceivedBlock()
 
 	getHeight := qos.HeightGetter(p.store, func(s endpointState) uint64 { return s.blockHeight })
-	result := qos.Select(
+	result := qos.SelectWithKnownHeights(
 		endpoints,
+		getHeight,
 		[]qos.FilterFunc{qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance))},
 		[]qos.FilterFunc{qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance*2))},
 		nil,

@@ -98,8 +98,9 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 	// Relaxed tier: twice the allowance.
 	relaxedFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance*2))
 
-	result := qos.Select(
+	result := qos.SelectWithKnownHeights(
 		endpoints,
+		getHeight,
 		[]qos.FilterFunc{blockFilter},
 		[]qos.FilterFunc{relaxedFilter},
 		nil, // tier 3: return all (no other filters)

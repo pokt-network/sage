@@ -32,6 +32,13 @@ type ChainView struct {
 	// inside the window. One is not a consensus; zero means the service is
 	// flying on whatever Perceived last was.
 	Endpoints int
+	// ExternalFloor is the height the external block sources last supplied,
+	// zero when none is configured or none has answered. It is a floor under
+	// Perceived once the cold-start grace has passed; Perceived above Highest
+	// is this floor and nothing else. Exported so a spread excursion after a
+	// deploy can be told apart from the floor engaging, which on 2026-09-04
+	// it could not be.
+	ExternalFloor uint64
 	// Newest is when the most recent observation arrived, zero if there is
 	// none inside the window.
 	Newest time.Time
@@ -151,7 +158,7 @@ func (bc *BlockConsensus) ChainView() ChainView {
 	bc.mu.RLock()
 	defer bc.mu.RUnlock()
 
-	view := ChainView{Perceived: bc.perceived.Load()}
+	view := ChainView{Perceived: bc.perceived.Load(), ExternalFloor: bc.externalFloor.Load()}
 	view.BlockRate, view.BlockRateKnown = blockRate(bc.rateSamples)
 
 	// adjusted projects an observation to `now` at the chain's own rate, so the
