@@ -19,6 +19,9 @@ const (
 	ServiceTypeNEAR      ServiceType = "near"
 	ServiceTypeSui       ServiceType = "sui"
 	ServiceTypeEthBeacon ServiceType = "eth-beacon"
-	ServiceTypeRadix     ServiceType = "radix"
-	ServiceTypeGeneric   ServiceType = "generic"
+	// ServiceTypeRadix is declared but NOT served: its probe is unverified and
+	// deliberately unwired (see qos/jsonheight). A service naming it falls to
+	// the passthrough and is reported as such at startup.
+	ServiceTypeRadix   ServiceType = "radix"
+	ServiceTypeGeneric ServiceType = "generic"
 )

@@ -274,3 +274,32 @@ func TestParseRequest_CarriesRESTShapeThrough(t *testing.T) {
 		t.Errorf("body was altered: %q", payloads[0].Bytes())
 	}
 }
+
+// A declaration is only wired once its probe and path have been seen working
+// against live suppliers. An unverified probe is worse than no probe: it runs
+// every cycle and grades a healthy endpoint down for refusing a request nobody
+// confirmed it serves.
+//
+// radix is the case. Verification was attempted on 2026-09-04 and could not be
+// done — no staked suppliers, and a config declaring json_rpc for what is a
+// REST API, so SAGE refuses the request before any session lookup.
+func TestRadixIsDeclaredButNotWired(t *testing.T) {
+	if _, wired := ByServiceType(domain.ServiceTypeRadix); wired {
+		t.Error("radix is wired: its probe has never been seen working against a supplier")
+	}
+	if Radix.HeightPath == "" || Radix.Probe.Path() == "" {
+		t.Error("the radix declaration was lost rather than parked; keep it so the next person knows what to test")
+	}
+}
+
+// And the ones that were verified are wired, or the verification bought
+// nothing.
+func TestVerifiedChainsAreWired(t *testing.T) {
+	for _, serviceType := range []domain.ServiceType{
+		domain.ServiceTypeNEAR, domain.ServiceTypeSui, domain.ServiceTypeEthBeacon,
+	} {
+		if _, wired := ByServiceType(serviceType); !wired {
+			t.Errorf("%s was verified against live suppliers and is not wired", serviceType)
+		}
+	}
+}

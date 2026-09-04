@@ -266,6 +266,14 @@ the source of truth for the design and the reasoning behind it.
   read, tested and reviewed rather than in YAML where a wrong path grades
   suppliers on a request they never agreed to serve.
 
+  Verified before shipping, the way tron's were: near, sui and eth-beacon each
+  returned the declared path through SAGE with a value that moved between two
+  sends a minute apart. radix could not be tested — no staked suppliers, and a
+  config declaring `json_rpc` for a REST API — so its declaration is parked and
+  deliberately unwired. An unverified probe is worse than none, because it runs
+  every cycle and grades a healthy endpoint down for refusing a request nobody
+  confirmed it serves.
+
   Heights come from client traffic as well as probes where a chain can say how
   a client names the method, so a busy service's chain view stays fresh between
   cycles. The rule is the response and not the request — a body carrying the

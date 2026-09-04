@@ -99,7 +99,9 @@ func TestQoSCoverage_OneLinePerCase(t *testing.T) {
 // nobody knew; the report saying so afterwards would be worse than useless.
 func TestQoSCoverage_RecognisesEveryTypeWithAPlugin(t *testing.T) {
 	var services []ServiceConfig
-	for _, id := range []string{"evm", "cosmos", "solana", "tron", "near", "sui", "eth-beacon", "radix"} {
+	// radix is deliberately absent: its probe is unverified and unwired, so a
+	// service naming it IS on the passthrough and should be reported as such.
+	for _, id := range []string{"evm", "cosmos", "solana", "tron", "near", "sui", "eth-beacon"} {
 		services = append(services, ServiceConfig{ID: id + "-svc", Type: id})
 	}
 

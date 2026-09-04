@@ -54,6 +54,17 @@ var (
 	// Radix reports a state version rather than a height. It counts up and it
 	// is what "how far behind is this node" means there, which is all the
 	// filter needs.
+	//
+	// UNVERIFIED, and deliberately not wired below. Verification was attempted
+	// on the mainnet canary on 2026-09-04 and could not be done, for two
+	// reasons: radix has no staked suppliers there, and the canary's
+	// PATH-inherited config declares rpc_types ["json_rpc"] for what is a REST
+	// gateway API, so SAGE refuses a REST request to it before any session
+	// lookup. Both have to be fixed before a single relay can prove this
+	// declaration right, and an unverified probe is worse than none — it would
+	// run every cycle and grade a healthy endpoint down for refusing a request
+	// nobody confirmed it serves. Kept here so the work is not lost and the
+	// next person knows exactly what to test.
 	Radix = Chain{
 		Name:       "radix",
 		CheckName:  "radix_gateway_status",
@@ -63,11 +74,16 @@ var (
 )
 
 // byServiceType maps a configured service type to its chain declaration.
+// byServiceType holds only the chains whose probe and path have been VERIFIED
+// against live suppliers through SAGE. near, sui and eth-beacon were, on
+// 2026-09-04: each returned the declared path with a value that moved between
+// two sends a minute apart. Radix is absent because it could not be tested at
+// all — see its declaration. A service naming an absent type falls to the
+// passthrough, which is the safe direction and is reported at startup.
 var byServiceType = map[domain.ServiceType]Chain{
 	domain.ServiceTypeNEAR:      NEAR,
 	domain.ServiceTypeSui:       Sui,
 	domain.ServiceTypeEthBeacon: EthBeacon,
-	domain.ServiceTypeRadix:     Radix,
 }
 
 // ByServiceType returns the chain a service type declares, if any.

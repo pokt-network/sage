@@ -16,6 +16,29 @@ was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
 
 ## Explore next (raised 2026-09-01)
 
+- **eth-beacon: one supplier answers 403 "Access Denied" for ~40% of relays.**
+  Found on 2026-09-04 while verifying the beacon probe: 4 of 9 client relays
+  through SAGE came back 403 in 0.24-0.49s with a plain-text body, from a
+  supplier rather than from SAGE. PATH over the same 24h saw 251,959 × 200
+  against 8 × 4xx on the same service, so it is not endemic to eth-beacon —
+  SAGE is putting a large share of its relays on a supplier PATH effectively
+  never selects. It stays in rotation because eth-beacon has no probes and no
+  grading today.
+
+  `qos/jsonheight` fixes it on the first cycle once eth-beacon is
+  `type: eth-beacon`, because a 403 to the height probe grades the endpoint
+  down and selection routes away. That is a better argument for shipping the
+  plugin than the coverage statement was, and it is worth re-measuring the
+  403 share after the type change to confirm the mechanism rather than assume
+  it.
+
+- **radix cannot be probed until its config is fixed.** The canary declares
+  `rpc_types: ["json_rpc"]` for what is a REST gateway API, so SAGE refuses a
+  REST request to it with a 400 before any session lookup — inherited from the
+  PATH config. It also has no staked suppliers. Both have to change before the
+  parked radix declaration in `qos/jsonheight` can be verified, and it stays
+  unwired until it is.
+
 - **Choose the probe cadence on the histogram, now that it is a live knob.**
   `health_checks.interval` is tunable at runtime as of 2026-09-03, so this is
   an experiment rather than a rollout: set it, read

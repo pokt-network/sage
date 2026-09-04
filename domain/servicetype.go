@@ -10,7 +10,7 @@ package domain
 func KnownServiceTypes() []ServiceType {
 	return []ServiceType{
 		ServiceTypeEVM, ServiceTypeCosmos, ServiceTypeSolana, ServiceTypeTron,
-		ServiceTypeNEAR, ServiceTypeSui, ServiceTypeEthBeacon, ServiceTypeRadix,
+		ServiceTypeNEAR, ServiceTypeSui, ServiceTypeEthBeacon,
 	}
 }
 
