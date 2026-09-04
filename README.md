@@ -30,8 +30,10 @@ core in place of PATH's monolith. It loads a PATH config unmodified.
   and gRPC (native + gRPC-Web fallback).
 - **Redis-optional** — shares reputation, flags, and circuit-breaker state across
   instances when present; runs local-only when not.
-- **PATH-compatible** — loads a PATH config unmodified; unknown keys are reported,
-  never silently dropped.
+- **PATH-compatible, in three layers** — loads a PATH config unmodified; every
+  key it does not honour is reported at startup; the client-visible contract
+  (headers, error envelopes, health routes) is a table in
+  [`docs/path-compat.md`](docs/path-compat.md), each row pinned by a test.
 
 ## Quick start
 

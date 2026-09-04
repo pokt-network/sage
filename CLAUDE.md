@@ -35,7 +35,7 @@ silently upgrade past it.
 
 ## Key Conventions
 
-- **One concern per middleware**: each file in `relay/middleware/` is ~50–150 lines, wraps `next.HandleRelay(ctx)`, and is registered by name. Tests live next to the file (`<name>_test.go`).
+- **One concern per middleware**: each file in `relay/middleware/` wraps `next.HandleRelay(ctx)` with one concern and is registered by name. Most are short; parse, batch, retry and hedge are longer because they are the fan-out and rejection points, not because they hold two concerns. Tests live next to the file (`<name>_test.go`).
 - **Chain order is driven by YAML — don't hard-code it**: add a middleware by registering a name on the `relay.MiddlewareRegistry` in `cmd/sagegw.Build`, then naming it in `gateway_config.middleware_chain`. Omitting the key takes `relay.DefaultChainOrder()`. An unknown name is a startup error listing what *is* registered; a duplicate registration is an error, not an overwrite. A name `relay/chain_order.go` doesn't know is allowed anywhere in the chain — which also means it gets no ordering protection, so if your middleware must sit before another, add a `mustPrecede` rule rather than trusting the default order to hold.
 - **Middleware ordering matters**: see the chain in `ARCHITECTURE.md`. `SelectEndpoint` runs inside `Retry`/`Hedge` so rotation works; heuristic runs after `SendRelay`. Don't rearrange without understanding why.
 - **Config uses value types, no `*bool`/`*int`**: zero values are sensible defaults. Don't introduce pointer fields to represent "unset." Choose the zero value so that "unconfigured" is the safe state — `pprof_addr: ""` means off, not `:6060` on every interface.
@@ -50,9 +50,31 @@ silently upgrade past it.
 - **Redis is optional**: the gateway must run in local-only mode when Redis is unreachable (`wire.go` degrades gracefully). Don't write code that hard-requires Redis on the hot path.
 - **Observation pipeline is async and sampled** (10% of relays, 100% of health checks). Don't do deep parsing in the hot path; publish to `observe.Queue` instead.
 
+## Rules of engagement
+
+The contract with PATH and with operators is in `docs/path-compat.md`, and
+since 2026-09-04 each of its rules is held by a test. The short form:
+
+- **Built is not shipped.** A feature exists when `wire.go` constructs it and
+  a test drives it through config or the admin API. `deadcode` runs in
+  `make go_lint`; an extension interface nothing asserts is deleted.
+- **A control must control.** Every `DefaultFlags` row has a reader
+  (`featureflag/readers_test.go`); every parsed config key has a reader or an
+  entry in `config/inert.go` (`internal/docgen`'s unwired test); a mutating
+  admin route has a test that observes the mutation.
+- **The client contract is a table, not a sentence.** SAGE-generated headers,
+  error envelopes and health routes are in the register in
+  `docs/path-compat.md` beside PATH's; `router/contract_test.go` pins each
+  row. Add a row before you change a shape.
+- **PATH keys that SAGE spells differently or does not honour say so at
+  startup**, through `Config.Ignored`, `Unimplemented`, `Inert` and
+  `Warnings`. Silence is only acceptable when the behaviour is identical.
+
 ## Goroutines
 
-**Never write a bare `go` statement.** `net/http` recovers a panic in the
+**Never write a bare `go` statement** — and `internal/safego/bare_go_test.go`
+fails on one whose function does not open with `defer safego.Recover`.
+`net/http` recovers a panic in the
 goroutine serving a request; that protection stops at the goroutine boundary,
 and every `go` in this codebase crosses it. Before `internal/safego` a panic on
 a hedge arm killed the process while the identical panic on the identical

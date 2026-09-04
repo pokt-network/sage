@@ -6,31 +6,51 @@ ordered by priority within each section. Update this file when an item lands
 or a decision changes it; delete items rather than marking them done, so the
 file only ever lists open work.
 
-Last updated: 2026-09-02 (mainnet canary at 1% traffic on `01a96ca`; the
-reputation memory bound is verified and closed, and the 408 attribution change
-was shipped and reverted the same day. PATH `origin/main` at `274e9791`,
-2026-08-25).
+Last updated: 2026-09-04 (the principles audit landed as six commits, baf236a
+through the contract-docs commit; the canary runs `41db74a` with four
+services on real QoS and the audit image is not yet built. PATH
+`origin/main` at `274e9791`, 2026-08-25).
+
+## Roll the audit image (raised 2026-09-04)
+
+The six audit commits change what a client and a probe see. Before the
+image rolls, ops needs to know, and after it rolls these are the checks:
+
+- **Gateway-made failures are 5xx now, not 200.** Status-share panels on the
+  canary move on rollout: what was a 200 with `-32603` in the body is a 500
+  (504 on timeout, 429 on rate limit, 400 on a client mistake). Judge the
+  roll on `sage_client_requests_total` by status *and* the JSON-RPC error
+  rate together, not on the 200 share alone.
+- **`/health` is liveness, `/healthz` is readiness.** Any manifest or LB
+  rule that used `/health` as readiness must move to `/healthz` or `/ready`;
+  the canary manifest in `docs/operations.md` uses `/livez` and `/ready` and
+  is unaffected. `/ready/{service}` can now answer 503.
+- **Client-side plain-text 403/401 on REST now grades the supplier.** The
+  kalorius arc (44% to 0% over 80 minutes, probes alone) should shorten on
+  the next such supplier; watch `http_4xx_page` in the timeline reasons on
+  eth-beacon and tron.
+- **`active_health_checks.enabled`** is honoured by presence. The canary
+  config writes `enabled: true`; confirm the startup report carries no
+  "probes are off" line after the roll.
+- **`sage_singleflight_coalesced_total` and `sage_degraded_total` start
+  moving.** A non-zero value is the counter working, not a regression.
+- **The startup report** carries new line kinds: per-service RPC types no
+  probe covers, and `enabled: false` decisions. Read it once.
+
+
 
 
 
 
 ## Explore next (raised 2026-09-01)
 
-- **eth-beacon: one supplier answers 403 "Access Denied" for ~40% of relays.**
-  Found on 2026-09-04 while verifying the beacon probe: 4 of 9 client relays
-  through SAGE came back 403 in 0.24-0.49s with a plain-text body, from a
-  supplier rather than from SAGE. PATH over the same 24h saw 251,959 × 200
-  against 8 × 4xx on the same service, so it is not endemic to eth-beacon —
-  SAGE is putting a large share of its relays on a supplier PATH effectively
-  never selects. It stays in rotation because eth-beacon has no probes and no
-  grading today.
-
-  `qos/jsonheight` fixes it on the first cycle once eth-beacon is
-  `type: eth-beacon`, because a 403 to the height probe grades the endpoint
-  down and selection routes away. That is a better argument for shipping the
-  plugin than the coverage statement was, and it is worth re-measuring the
-  403 share after the type change to confirm the mechanism rather than assume
-  it.
+- **eth-beacon 403: mechanism confirmed, hole closed, re-measure after the
+  audit image.** Ops measured the arc on 2026-09-04: the two kalorius hosts
+  fell from 44% of client relays to a permanent 0% over about 80 minutes,
+  moved by probes alone, because client-side REST 4xx was never graded. The
+  heuristic now attributes a plain-text 401/403 on REST to the supplier
+  (`cd3eb39`). What is left to see is the arc on the next such supplier,
+  which should be one probe cycle rather than eighty minutes.
 
 - **radix cannot be probed until its config is fixed.** The canary declares
   `rpc_types: ["json_rpc"]` for what is a REST gateway API, so SAGE refuses a

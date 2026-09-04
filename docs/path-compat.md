@@ -3,14 +3,28 @@
 SAGE is a restructured fork of PATH. It is meant to be droppable into PATH's
 place, and it is also meant not to inherit the bugs that came out of PATH's
 structure. Those two goals only conflict if "compatible" is treated as one
-thing. It is three, and they have different rules.
+thing. It is three, and they have different rules — and since 2026-09-04
+each rule is held by a test, because the previous version of this document
+described a contract the code did not keep. An audit that day found a
+client could tell the gateways apart from the first response header, and an
+operator could set four config keys that parsed and changed nothing.
 
 ## The three layers
 
-**1. What a client sees — must match.**
-Request and response shapes, headers, status codes, the `Target-Service-Id`
-routing, batch semantics, WebSocket framing. A client must not be able to tell
-which gateway it is talking to. Divergence here is a bug, not a decision.
+**1. What a client sees — the wire contract.**
+Anything a supplier produced passes through unchanged: response bodies,
+JSON-RPC ids, WebSocket frames. Everything SAGE itself produces — response
+headers, gateway-made error envelopes, the health routes — is SAGE's own,
+follows HTTP and JSON-RPC semantics, and is listed in the register below
+with PATH's value beside it. Where PATH's behaviour is what any client would
+reasonably expect (`Content-Type`, CORS, any verb on `/v1`, a 4xx for a
+client mistake, `/health` as liveness), SAGE matches it. Where PATH's
+behaviour is a PATH-ism (its metadata response headers, its `-31001` error
+code), SAGE does not emulate it, and the register says so and why.
+
+Held by `router/contract_test.go`, which pins SAGE's side of every row, and
+`e2e/contract_test.go`, which asserts the rows that hold for both gateways
+and can be pointed at either.
 
 **2. What an operator configures and observes — must match, or be loud.**
 Config keys, admin routes, metric names. SAGE loads a PATH config unmodified,
@@ -19,48 +33,81 @@ same as pretending, so every key SAGE does not act on is reported at startup:
 
 - `Config.Ignored` — the key has no Go field at all. Caught by a second decode
   with `KnownFields` (`config/load.go`).
+- `Config.Unimplemented` — no Go field either, but "unknown key" would mislead:
+  the key looks like it governs something an operator is reasoning about, or
+  SAGE spells it differently. One sentence saying what governs it instead.
 - `Config.Inert` — the key parses into a field that nothing reads. Caught by the
   registry in `config/inert.go`. Two tests hold it in place:
   `TestInertRegistryCoversDocComments` holds the registry to the doc comments
-  (on parent *and* key, since 2026-09-04 — a leaf-only match let
-  `retry_config.enabled` pass on the strength of `reputation_config.enabled`),
-  and `TestUnwiredConfigKeysAreRegistered` in `internal/docgen` fails on any
-  field the generator finds unread that the registry does not name. A key can
-  no longer be parsed, unread and unreported.
+  (on parent *and* key — a leaf-only match let `retry_config.enabled` pass on
+  the strength of `reputation_config.enabled`), and
+  `TestUnwiredConfigKeysAreRegistered` in `internal/docgen` fails on any field
+  the reference generator finds unread that the registry does not name. A key
+  can no longer be parsed, unread and unreported.
 - `Config.Warnings` — the key parses, *is* read, and probably does not do what
   whoever wrote it expected. One sentence saying what the gateway will actually
   do with the value, because refusing the file would break the compatibility
   promise and accepting it silently would mislead.
+
+Two keys need the YAML's own word: PATH treats an absent `retry_config.enabled`
+or `active_health_checks.enabled` as on and a written `false` as off, and a
+value-typed bool cannot tell the two apart. The loader reads presence from the
+decoded tree and reports what it decided.
 
 Most of the reputation-tuning surface is honoured rather than reported:
 `signal_impacts` for the five signal types SAGE still has, the
 `tiered_selection` thresholds, `probation.{threshold,traffic_percent}` and
 `min_threshold` are read by the selector and the scorer — globally, because one
 selector serves every service, so a per-service copy of them changes nothing.
-
-Thresholds that do not descend — the beta config we run has `tier2_threshold:
-30` above `probation.threshold: 50` — still load. PATH accepts that file and
-the selector copes, classifying probation before tier 2 so a band simply ends
-up narrower than it reads. Refusing to boot on it would break the whole point
-of layer 2 over something that works. It is not silent either: it produces a
-third kind of startup complaint, `Config.Warnings`, one sentence saying what
-the selector will actually do with the numbers given. Only values that describe
-no behaviour at all (a traffic share above 100%, a chronic onset rate at or
-above the full rate) are refused.
+Thresholds that do not descend still load, with a `Warnings` line saying what
+the selector will do with them; only values that describe no behaviour at all
+(a traffic share above 100%, a chronic onset rate at or above the full rate)
+are refused.
 
 What stays `Inert` is what SAGE has no mechanism for: `latency_profiles` and the
 two latency signal impacts (latency reports, it does not penalise),
 `recovery_success` (the type is gone), `recovery_timeout` and
 `probation.recovery_multiplier` (there is no cooldown and no multiplier),
-`tiered_selection.enabled` and `probation.enabled` (both always run). An
-operator who tuned those on PATH and moved the file across was, until this
-existed, editing structs no code reads — and nothing said so.
+`tiered_selection.enabled` and `probation.enabled` (both always run), and the
+per-cause retry switches (`retry_on_*`: retryability is the heuristic's
+verdict). An operator who tuned those on PATH and moved the file across is
+told so at startup.
 
 **3. How it works inside — free to diverge.**
 Middleware decomposition, reputation mechanics, QoS plugin interfaces, session
 handling. This is where PATH's incidents live, and copying a mechanism is how
 you inherit the failure mode that comes with it. Divergence here is the point of
 the fork.
+
+## Rules of engagement
+
+The failures the 2026-09-04 audit found had one shape: a thing was built,
+documented as if it shipped, and never wired. These rules exist so "built"
+cannot pass for "shipped" again. Each names the check that holds it.
+
+1. **A feature exists when `cmd/sagegw/wire.go` constructs it and a test
+   drives it through config or the admin API.** A constructor nothing calls
+   fails `make go_lint` (`deadcode`). An extension interface nothing asserts
+   is deleted, not documented.
+2. **A control must control.** A config key, a feature flag or an admin route
+   that changes nothing is a bug of the first order, because an operator will
+   believe it. Every `DefaultFlags` row needs a reader
+   (`featureflag/readers_test.go`); every parsed key needs a reader or a
+   registry entry (`internal/docgen`); a mutating admin route needs a test
+   that observes the mutation on live state, and one that crosses replicas
+   goes through Redis unconditionally.
+3. **Goroutines are enforced, not remembered.** Every bare `go` statement
+   opens with `defer safego.Recover` (`internal/safego/bare_go_test.go`), or
+   is not a bare `go` statement.
+4. **Ordering is a rule, not a default.** A middleware that reads a field
+   another writes gets a `mustPrecede` entry in `relay/chain_order.go`, and
+   `relay.Context` names the writer set per field.
+5. **Anything countable is generated.** Config keys, metrics, routes, and
+   nothing hand-counted in prose; the golden tests in `internal/docgen` fail
+   on drift.
+6. **PATH is read for incidents, not patches.** The register grows only with
+   an observable difference attached: a startup line, a refusal, a test, or a
+   row here.
 
 ## The dangerous middle
 
