@@ -72,6 +72,13 @@ type HealthChecker interface {
 type HealthCheck struct {
 	Payload domain.Payload
 	Name    string
+	// Timeout bounds this one check. Zero means the executor's probe timeout.
+	// A configured check may name its own (local[].checks[].timeout); a
+	// plugin's checks leave it zero.
+	Timeout time.Duration
+	// ExpectedStatus is the one HTTP status graded as healthy. Zero means any
+	// 2xx, which is what nearly every check wants.
+	ExpectedStatus int
 	// Interval is the check's own minimum spacing per backend, for a fact that
 	// does not change between cycles (a chain id). Zero means the service's
 	// cadence. It only ever slows a check down: the executor runs it at the

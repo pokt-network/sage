@@ -768,6 +768,7 @@ async function reloadConfig() {
       reloadResultList("warnings", res.warnings),
       reloadResultList("ignored", res.ignored),
       reloadResultList("inert", res.inert),
+      reloadResultList("unimplemented", res.unimplemented),
     );
     toast("config reloaded");
     loadConfig();

@@ -404,7 +404,7 @@ func TestDiffConfig_NewTopLevelFieldNeedsRestart(t *testing.T) {
 	// and the parse-metadata fields describe the parse rather than the
 	// configuration. Everything else has to be fail-safe.
 	seams := map[string]bool{"Gateway": true, "FeatureFlags": true}
-	metadata := map[string]bool{"Ignored": true, "Inert": true, "Warnings": true}
+	metadata := map[string]bool{"Ignored": true, "Inert": true, "Unimplemented": true, "Warnings": true}
 
 	typ := reflect.TypeOf(config.Config{})
 	for i := range typ.NumField() {

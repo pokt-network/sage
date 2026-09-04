@@ -35,10 +35,13 @@ func parse(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("parse config YAML: %w", err)
 	}
 	cfg.Ignored = ignoredFields(data)
-	cfg.Inert = inertKeysFromYAML(data)
-	cfg.Unimplemented = unimplementedKeysFromYAML(data)
+	tree := yamlTree(data)
+	cfg.Inert = InertKeys(tree)
+	cfg.Unimplemented = UnimplementedKeys(tree)
 	applyDefaults(&cfg)
 	cfg.Warnings = reputationWarnings(cfg.Gateway.Reputation)
+	cfg.Warnings = append(cfg.Warnings, applyRetryDisabled(&cfg, tree)...)
+	cfg.Warnings = append(cfg.Warnings, gatewayModeWarnings(cfg.Gateway.GatewayMode)...)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
@@ -90,28 +93,32 @@ func ignoredFields(data []byte) []string {
 	return out
 }
 
-// inertKeysFromYAML reports the parsed-but-unimplemented keys the operator
-// actually wrote. It decodes a second time into generic maps rather than
-// reading the struct, because a zero-valued field cannot say whether anyone
-// set it.
-// unimplementedKeysFromYAML reports keys with no Go field at all where the
-// bare "unknown key" warning would leave an operator guessing what governs the
-// behaviour instead.
-func unimplementedKeysFromYAML(data []byte) []string {
+// yamlTree decodes the file a second time into generic maps and slices. It
+// is how the keys an operator actually wrote are told apart from the fields
+// a struct has: a zero-valued field cannot say whether anyone set it, and a
+// value-typed bool cannot say whether "false" was written or defaulted. The
+// inert and unimplemented registries walk it, and so does the retry switch.
+// A parse failure yields nil; the real decode has already reported it.
+func yamlTree(data []byte) any {
 	var tree any
 	if err := yaml.Unmarshal(data, &tree); err != nil {
 		return nil
 	}
-	return UnimplementedKeys(tree)
+	return tree
 }
 
-func inertKeysFromYAML(data []byte) []string {
-	var tree any
-	if err := yaml.Unmarshal(data, &tree); err != nil {
-		// The real decode reports parse failures; nothing to add.
+// gatewayModeWarnings says what SAGE makes of a mode other than centralized.
+// The key is required and its value is not acted on: SAGE signs with the
+// keys it holds. A config that says "delegated" was written for a gateway
+// that honours App-Address per request, and this one does not
+// (docs/path-compat.md), which a client can notice; so it is said here.
+func gatewayModeWarnings(mode string) []string {
+	switch mode {
+	case "", "centralized":
 		return nil
 	}
-	return InertKeys(tree)
+	return []string{fmt.Sprintf(
+		"gateway_config.gateway_mode is %q, but SAGE signs every relay with its configured owned_apps_private_keys_hex and ignores the App-Address header; a per-request delegated app is not supported", mode)}
 }
 
 func applyDefaults(cfg *Config) {
@@ -119,14 +126,18 @@ func applyDefaults(cfg *Config) {
 	if cfg.Router.Port == 0 {
 		cfg.Router.Port = 3069
 	}
+	// PATH's server defaults; see RouterConfig. The router applies the same
+	// ones for a RouterConfig built without this, but this is where a loaded
+	// file gets them, and the 30/30/120 that used to be here would have made
+	// the router's defaults unreachable from a config file.
 	if cfg.Router.ReadTimeout == 0 {
-		cfg.Router.ReadTimeout = 30 * time.Second
+		cfg.Router.ReadTimeout = 60 * time.Second
 	}
 	if cfg.Router.WriteTimeout == 0 {
-		cfg.Router.WriteTimeout = 30 * time.Second
+		cfg.Router.WriteTimeout = 120 * time.Second
 	}
 	if cfg.Router.IdleTimeout == 0 {
-		cfg.Router.IdleTimeout = 120 * time.Second
+		cfg.Router.IdleTimeout = 180 * time.Second
 	}
 
 	// Redis defaults

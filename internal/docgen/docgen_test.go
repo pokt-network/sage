@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pokt-network/sage/config"
 )
 
 // repoRoot is this package's directory two levels up: internal/docgen → root.
@@ -142,4 +144,32 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// TestUnwiredConfigKeysAreRegistered is the layer-2 contract of
+// docs/path-compat.md as a test: every config key that parses into a field
+// nothing reads must be in config/inert.go, so that startup reports it.
+//
+// The reference generator has always computed this list and printed it at the
+// end of docs/configuration.md; what it never did was fail. A key could sit in
+// that list, marked with a bare warning, for as long as nobody happened to
+// read the bottom of the reference. retry_config.enabled and
+// retry_config.retry_on_5xx did, each parsed and unread while their doc
+// comments claimed otherwise.
+func TestUnwiredConfigKeysAreRegistered(t *testing.T) {
+	unwired, err := UnwiredConfigKeys(repoRoot)
+	if err != nil {
+		t.Fatalf("UnwiredConfigKeys: %v", err)
+	}
+	var unregistered []string
+	for _, k := range unwired {
+		if _, ok := config.InertReason(k.Parent, k.Key); !ok {
+			unregistered = append(unregistered, k.Path)
+		}
+	}
+	if len(unregistered) > 0 {
+		t.Fatalf("config keys that parse into a field nothing reads, and are not registered as inert: %v\n"+
+			"either wire the field (read it somewhere that changes behaviour) or add an entry to config/inert.go "+
+			"with its parent key, so the startup report says it has no effect", unregistered)
+	}
 }

@@ -1,6 +1,7 @@
 package docgen
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -8,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/pokt-network/sage/config"
 )
 
 // usage records how the codebase reads struct fields, in the two forms the
@@ -105,4 +108,67 @@ func collectUsage(root string, skipDirs ...string) (usage, error) {
 		return usage{}, err
 	}
 	return u, nil
+}
+
+// UnwiredKey is a config key that parses into a field nothing reads.
+type UnwiredKey struct {
+	// Path is the full YAML path, with "[]" for lists.
+	Path string
+	// Parent is the key of the block holding it — what config.InertReason
+	// is asked with.
+	Parent string
+	// Key is the leaf key.
+	Key string
+}
+
+// UnwiredConfigKeys walks the config structs the way the reference generator
+// does and returns every key no code reads, outside blocks the inert registry
+// already covers whole. It is the mechanical half of the
+// layer-2 contract in docs/path-compat.md: a key SAGE parses but does not act
+// on must be registered in config/inert.go so startup says so. The test in
+// this package holds the two together.
+func UnwiredConfigKeys(root string) ([]UnwiredKey, error) {
+	configDir := filepath.Join(root, "config")
+	pkg, err := parseStructs(configDir)
+	if err != nil {
+		return nil, err
+	}
+	reads, err := collectUsage(root, "docgen")
+	if err != nil {
+		return nil, err
+	}
+	rootStruct, ok := pkg.structs["Config"]
+	if !ok {
+		return nil, fmt.Errorf("no Config struct found in %s", configDir)
+	}
+
+	var out []UnwiredKey
+	seen := map[string]bool{"Config": true}
+	var walk func(s *structDoc, path, parentGoName string)
+	walk = func(s *structDoc, path, parentGoName string) {
+		parentKey := lastKey(path)
+		for _, f := range s.fields {
+			childPath := joinPath(path, f.yamlKey) + pathSuffix(f.typeExpr)
+			c, isStruct := pkg.isStructRef(f.typeExpr)
+			if !isStruct {
+				if !reads.used(parentGoName, f.goName) {
+					out = append(out, UnwiredKey{Path: joinPath(path, f.yamlKey), Parent: parentKey, Key: f.yamlKey})
+				}
+				continue
+			}
+			if seen[c.name] {
+				continue
+			}
+			// A block registered as inert covers every key inside it, as the
+			// startup walk (config.walkRegistry) treats it: nothing under
+			// latency_profiles needs its own entry.
+			if _, registered := config.InertReason(parentKey, f.yamlKey); registered {
+				continue
+			}
+			seen[c.name] = true
+			walk(c, childPath, f.goName)
+		}
+	}
+	walk(rootStruct, "", "")
+	return out, nil
 }

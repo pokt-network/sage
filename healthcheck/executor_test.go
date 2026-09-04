@@ -531,7 +531,8 @@ func TestCheckSignal_Grading(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sig := checkSignal("eth_chainId", tc.statusCode, tc.extractErr, 5*time.Millisecond)
+			statusOK := tc.statusCode >= 200 && tc.statusCode < 300
+			sig := checkSignal("eth_chainId", tc.statusCode, statusOK, tc.extractErr, 5*time.Millisecond)
 			if sig.Type != tc.want {
 				t.Errorf("checkSignal type = %q, want %q", sig.Type, tc.want)
 			}

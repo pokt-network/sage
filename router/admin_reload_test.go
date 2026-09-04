@@ -57,9 +57,10 @@ func TestHandleReload_OK(t *testing.T) {
 	stub := &stubReloader{result: reload.Result{
 		Applied:      []string{"gateway_config.defaults", "feature_flags"},
 		NeedsRestart: []string{"gateway_config.services[eth].chain_id"},
-		Ignored:      []string{},
-		Inert:        []string{},
-		Warnings:     []string{},
+		Ignored:       []string{},
+		Inert:         []string{},
+		Unimplemented: []string{},
+		Warnings:      []string{},
 	}}
 	rec := doReload(t, newReloadAdmin(t, stub))
 

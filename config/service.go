@@ -173,21 +173,58 @@ func (g *GatewayConfig) GetServiceConfig(id string) *ServiceConfig {
 	return nil
 }
 
-// EffectiveDefaults returns defaults from whichever config format was used.
-// Checks gateway-level retry_config, then Defaults, then UnifiedServices.Defaults.
+// EffectiveDefaults returns the defaults a service resolves against, merged
+// field by field from the three places a PATH config can carry them:
+// gateway_config.defaults, gateway_config.retry_config (the production
+// layout), and gateway_config.unified_services.defaults — in that order of
+// precedence, each field taken from the first source that sets it. The order
+// is the one the block-level rule already had (defaults beat the gateway
+// block when both named a count); only the granularity changes.
+//
+// Field by field, not block by block. This used to pick one whole block on
+// the strength of its max_retries, so a production config carrying
+// `retry_config: {hedge_delay: 100ms}` and nothing else lost the hedge delay
+// entirely, and one setting max_retries in both places silently discarded the
+// gateway block's other fields. Neither was reported anywhere.
 func (g *GatewayConfig) EffectiveDefaults() ServiceDefaults {
-	// Gateway-level retry_config (production format: gateway_config.retry_config)
-	if g.Retry.MaxRetries > 0 {
-		defaults := g.Defaults
-		if defaults.Retry.MaxRetries == 0 {
-			defaults.Retry = g.Retry
-		}
-		return defaults
+	return ServiceDefaults{
+		Retry:   mergeRetry(g.Defaults.Retry, mergeRetry(g.Retry, g.UnifiedServices.Defaults.Retry)),
+		Timeout: mergeTimeout(g.Defaults.Timeout, g.UnifiedServices.Defaults.Timeout),
+		// The inert reputation block is not merged: nothing reads it either way.
+		Reputation: g.Defaults.Reputation,
 	}
-	if g.Defaults.Retry.MaxRetries > 0 || g.Defaults.Timeout.RelayTimeout > 0 {
-		return g.Defaults
+}
+
+// mergeRetry overlays a on b: every field a sets wins, every field it leaves
+// zero comes from b. A block that says `enabled: false` disables retries for
+// whatever it governs, and that decision is not undone by a lower layer.
+func mergeRetry(a, b RetryConfig) RetryConfig {
+	out := a
+	if out.MaxRetries == 0 {
+		out.MaxRetries = b.MaxRetries
 	}
-	return g.UnifiedServices.Defaults
+	if out.HedgeDelay == 0 {
+		out.HedgeDelay = b.HedgeDelay
+	}
+	if out.MaxLatency == 0 {
+		out.MaxLatency = b.MaxLatency
+	}
+	if out.disabled {
+		out.MaxRetries = 0
+	} else if b.disabled && a.MaxRetries == 0 {
+		// a did not speak to the count and b turned retries off: off it is.
+		out.disabled = true
+		out.MaxRetries = 0
+	}
+	return out
+}
+
+// mergeTimeout overlays a on b the same way.
+func mergeTimeout(a, b TimeoutConfig) TimeoutConfig {
+	if a.RelayTimeout == 0 {
+		a.RelayTimeout = b.RelayTimeout
+	}
+	return a
 }
 
 // EffectiveMiddlewareChain returns the configured middleware order from
@@ -230,9 +267,12 @@ type ServiceConfig struct {
 	// services are on the passthrough and which named a type nothing
 	// implements; see config.QoSCoverageFor.
 	Type string `yaml:"type"`
-	// RPCTypes lists the protocols this service is expected to serve
-	// ("json_rpc", "rest", "comet_bft", "websocket", "grpc"). Read by the
-	// Cosmos plugin, which fronts several protocols on one service.
+	// RPCTypes lists the protocols this service serves ("json_rpc", "rest",
+	// "comet_bft", "websocket", "grpc"). A client request of any other type
+	// is refused with 400 before a session is looked up, and a WebSocket
+	// upgrade is refused unless "websocket" is listed. Also read by RPC-type
+	// detection (a REST-capable service classifies unknown paths as REST) and
+	// by the Cosmos plugin, which fronts several protocols on one service.
 	RPCTypes []string `yaml:"rpc_types"`
 	// SyncAllowance is how many blocks behind the perceived chain head an
 	// endpoint may fall and still be selected. Too tight and a healthy pool
@@ -324,9 +364,18 @@ type TimeoutConfig struct {
 
 // RetryConfig controls retry behavior. Zero values = disabled.
 type RetryConfig struct {
-	// Enabled is not read on its own — retries are on when MaxRetries > 0, so
-	// the count is the switch. See IsEnabled.
+	// Enabled turns retries off when written as `enabled: false`; retries are
+	// otherwise on whenever MaxRetries > 0, which is PATH's rule too (its
+	// default for an absent key is true). The key's presence is what matters,
+	// and a bool cannot tell "absent" from "false", so the loader reads an
+	// explicit false from the YAML itself. The startup report says when it
+	// did. An `enabled: false` under max_retries: 3 used to retry three times
+	// and say nothing.
 	Enabled bool `yaml:"enabled"`
+	// disabled is set by the loader when the YAML carried `enabled: false`.
+	// It survives EffectiveRetry, so a service that turned retries off does
+	// not fall back to the defaults' count.
+	disabled bool
 	// MaxRetries is how many further endpoints a failed relay may be tried on.
 	// Zero disables retry. Each attempt re-selects, so a retry rotates away
 	// from the endpoint that failed rather than asking it again.
@@ -337,7 +386,7 @@ type RetryConfig struct {
 	// MaxRetryLatency is parsed and not implemented. Bound total time with
 	// timeout_config.relay_timeout per attempt instead.
 	MaxRetryLatency time.Duration `yaml:"max_retry_latency"`
-	// RetryOn5xx retries when an endpoint answers 5xx.
+	// RetryOn5xx is parsed and not implemented. See RetryOnTimeout.
 	RetryOn5xx bool `yaml:"retry_on_5xx"`
 	// RetryOnTimeout is parsed and not implemented. Whether a failure is
 	// retryable is decided by heuristic analysis of the response, not by
@@ -355,13 +404,24 @@ type RetryConfig struct {
 	// duplicate relay only on those. Set it too low and every request is sent
 	// twice.
 	HedgeDelay time.Duration `yaml:"hedge_delay"`
-	// MaxLatency is the threshold above which a response is treated as slow
-	// and penalised in reputation.
+	// MaxLatency is the total time budget across every retry attempt of one
+	// request: once it is spent, the retry middleware stops rotating and
+	// delivers what it has. It does not penalise latency in reputation —
+	// latency has reporting power only (docs/scoring.md §7.2).
 	MaxLatency time.Duration `yaml:"max_latency"`
 }
 
-// IsEnabled returns true if retries are configured.
-func (c RetryConfig) IsEnabled() bool { return c.MaxRetries > 0 }
+// IsEnabled returns true if retries are configured and not switched off.
+func (c RetryConfig) IsEnabled() bool { return c.MaxRetries > 0 && !c.disabled }
+
+// Disabled reports whether the YAML turned retries off with `enabled: false`.
+func (c RetryConfig) Disabled() bool { return c.disabled }
+
+// disable records an explicit `enabled: false` from the YAML.
+func (c *RetryConfig) disable() {
+	c.disabled = true
+	c.MaxRetries = 0
+}
 
 // HedgeEnabled returns true if hedge racing is configured.
 func (c RetryConfig) HedgeEnabled() bool { return c.HedgeDelay > 0 }
@@ -379,12 +439,13 @@ type ExternalBlockSource struct {
 	// Path is the request path, for REST and CometBFT sources.
 	Path string `yaml:"path"`
 	// Interval is how often to poll. Keep it well below the chain's block time
-	// or the reference height is itself stale.
+	// or the reference height is itself stale. A service with several sources
+	// polls them all on one ticker, at the shortest interval any of them
+	// names.
 	Interval time.Duration `yaml:"interval"`
 	// Timeout bounds a single poll.
 	Timeout time.Duration `yaml:"timeout"`
-	// GracePeriod is parsed and not implemented; the block-consensus package
-	// applies its own.
+	// GracePeriod is parsed and not implemented.
 	GracePeriod time.Duration `yaml:"grace_period"`
 }
 
@@ -815,22 +876,10 @@ func (u *UnifiedServicesConfig) GetServiceConfig(id string) *ServiceConfig {
 	return nil
 }
 
-// EffectiveRetry returns the retry config for a service, falling back to defaults.
+// EffectiveRetry returns the retry config for a service, falling back to
+// defaults field by field. A service's own `enabled: false` sticks.
 func (s *ServiceConfig) EffectiveRetry(defaults ServiceDefaults) RetryConfig {
-	r := s.Retry
-	if r.MaxRetries == 0 {
-		r.MaxRetries = defaults.Retry.MaxRetries
-	}
-	if r.HedgeDelay == 0 {
-		r.HedgeDelay = defaults.Retry.HedgeDelay
-	}
-	if r.MaxLatency == 0 {
-		r.MaxLatency = defaults.Retry.MaxLatency
-	}
-	if !r.RetryOn5xx && defaults.Retry.RetryOn5xx {
-		r.RetryOn5xx = defaults.Retry.RetryOn5xx
-	}
-	return r
+	return mergeRetry(s.Retry, defaults.Retry)
 }
 
 // EffectiveTimeout returns the timeout config, falling back to defaults.

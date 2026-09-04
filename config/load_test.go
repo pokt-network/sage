@@ -178,9 +178,6 @@ func TestServiceConfig_EffectiveRetry(t *testing.T) {
 	if effective.HedgeDelay != 100 {
 		t.Errorf("HedgeDelay = %d, want 100 (from defaults)", effective.HedgeDelay)
 	}
-	if !effective.RetryOn5xx {
-		t.Error("RetryOn5xx should be inherited from defaults")
-	}
 }
 
 func TestGetServiceConfig(t *testing.T) {

@@ -250,6 +250,39 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **Layer 2 of the config contract is enforced, and four keys it had missed are
+  honest.** `docs/path-compat.md` promises every key SAGE parses and does not
+  act on is reported at startup. The registry test that guaranteed it compared
+  on the leaf key only, so `retry_config.enabled` counted as registered on the
+  strength of `reputation_config.enabled`, and an entry filed under the wrong
+  parent (`grace_period`) satisfied the test while matching nothing at boot.
+  Through that hole: `retry_config.enabled: false` was parsed and never read,
+  so a PATH config that turned retries off retried; `retry_on_5xx` was
+  documented as honoured and was not; `max_latency` was documented as a
+  reputation penalty and is the retry time budget; and a retry block without
+  `max_retries` was dropped whole, so `gateway_config.retry_config:
+  {hedge_delay: 100ms}` produced no hedging.
+
+  Now: `enabled: false` is honoured wherever a `retry_config` block carries it,
+  read from the YAML's own presence of the key (a value-typed bool cannot tell
+  absent from false), and the startup report says when it was; the three retry
+  sources merge field by field; `retry_on_5xx` is registered inert with the
+  same reason as `retry_on_timeout`; the `max_latency` doc says what the code
+  does; per-check `expected_status_code` and `timeout` are honoured rather than
+  parsed; `gateway_mode: delegated` loads with a warning that SAGE ignores
+  `App-Address`. The registry test compares parent and key, and a second test
+  in `internal/docgen` fails on any unread field the registry does not name —
+  the generator had computed that list for months and printed it at the bottom
+  of the reference, where nobody read it. Five PATH keys SAGE spells
+  differently (`backend_dedup`, `coordination`,
+  `max_concurrent_websocket_connections`, `local[].sync_allowance`,
+  `defaults.max_operator_share`) now say which SAGE key governs them instead
+  of "unknown key". Also: the tuning UI's retry bases come from the merged
+  defaults rather than one block; unknown flag names and unbuildable
+  health-check rules reach the unsilenceable startup reporter; a reload no
+  longer reports a bogus `needs_restart: unimplemented`; a failed probe's
+  timeline reason carries the HTTP status (ops asked, attributing a 403).
+
 - **The client-visible contract is now true, and tested.** Layer 1 of
   `docs/path-compat.md` says a client must not be able to tell which gateway
   it is talking to. An audit on 2026-09-04 found it could, from the first

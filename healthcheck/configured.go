@@ -28,6 +28,10 @@ type ConfiguredChecks struct {
 	// signals maps a check name to the penalty its failure carries, since
 	// qos.HealthCheck has nowhere to put one.
 	signals map[string]string
+	// expectedStatus maps a check name to the one HTTP status it treats as
+	// healthy, for checks that named one. Kept by name because a result can
+	// arrive from another replica's probe, carrying only the check's name.
+	expectedStatus map[string]int
 }
 
 // BuildConfiguredChecks converts the config blocks into health checks. It
@@ -36,9 +40,10 @@ type ConfiguredChecks struct {
 // stop a gateway from starting.
 func BuildConfiguredChecks(cfg config.HealthCheckConfig) (*ConfiguredChecks, []string) {
 	out := &ConfiguredChecks{
-		byService: make(map[domain.ServiceID][]qos.HealthCheck),
-		intervals: make(map[domain.ServiceID]time.Duration),
-		signals:   make(map[string]string),
+		byService:      make(map[domain.ServiceID][]qos.HealthCheck),
+		intervals:      make(map[domain.ServiceID]time.Duration),
+		signals:        make(map[string]string),
+		expectedStatus: make(map[string]int),
 	}
 
 	var warnings []string
@@ -70,6 +75,9 @@ func BuildConfiguredChecks(cfg config.HealthCheckConfig) (*ConfiguredChecks, []s
 			out.byService[serviceID] = append(out.byService[serviceID], built)
 			if check.ReputationSignal != "" {
 				out.signals[built.Name] = check.ReputationSignal
+			}
+			if check.ExpectedStatusCode != 0 {
+				out.expectedStatus[built.Name] = check.ExpectedStatusCode
 			}
 		}
 	}
@@ -107,7 +115,12 @@ func buildCheck(serviceID string, check config.HealthCheck) (qos.HealthCheck, er
 	payload := domain.NewPayload([]byte(check.Body), rpcType, check.Name).
 		WithHTTP(path, method)
 
-	return qos.HealthCheck{Name: name, Payload: payload}, nil
+	return qos.HealthCheck{
+		Name:           name,
+		Payload:        payload,
+		Timeout:        check.Timeout,
+		ExpectedStatus: check.ExpectedStatusCode,
+	}, nil
 }
 
 // parseCheckRPCType maps the configured type name onto an RPC type. Empty means
@@ -158,6 +171,17 @@ func (c *ConfiguredChecks) For(serviceID domain.ServiceID) []qos.HealthCheck {
 		return nil
 	}
 	return c.byService[serviceID]
+}
+
+// StatusHealthy reports whether a status satisfies the named check: the one
+// status it declared, or any 2xx when it declared none.
+func (c *ConfiguredChecks) StatusHealthy(checkName string, status int) bool {
+	if c != nil {
+		if want, ok := c.expectedStatus[checkName]; ok {
+			return status == want
+		}
+	}
+	return status >= 200 && status < 300
 }
 
 // SignalFor grades a failure of the named check according to its configured

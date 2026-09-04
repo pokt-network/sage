@@ -211,7 +211,7 @@ Services supports the production config format (gateway_config.services[])
 |---|---|---|
 | `id` | string | The service identifier clients name in the Target-Service-Id header, and the key everything per-service is looked up by. |
 | `type` | string | Selects the QoS plugin: "evm", "cosmos", "solana", "tron", or anything else for the passthrough plugin, which relays and scores but understands nothing about the payload. A service on the passthrough gets no health checks, no block-height tracking and no chain view, and its selection is reputation alone — so an unrecognised value here is a serious typo. Startup reports which services are on the passthrough and which named a type nothing implements; see config.QoSCoverageFor. |
-| `rpc_types` | list of string | Lists the protocols this service is expected to serve ("json_rpc", "rest", "comet_bft", "websocket", "grpc"). Read by the Cosmos plugin, which fronts several protocols on one service. |
+| `rpc_types` | list of string | Lists the protocols this service serves ("json_rpc", "rest", "comet_bft", "websocket", "grpc"). A client request of any other type is refused with 400 before a session is looked up, and a WebSocket upgrade is refused unless "websocket" is listed. Also read by RPC-type detection (a REST-capable service classifies unknown paths as REST) and by the Cosmos plugin, which fronts several protocols on one service. |
 | `sync_allowance` | integer | How many blocks behind the perceived chain head an endpoint may fall and still be selected. Too tight and a healthy pool empties on every block; too loose and clients read stale state. Zero means the plugin's own default, and the plugins do not agree on what that is, because their chains do not. EVM and Cosmos read zero as "no block-height filtering" — a block there is seconds to tens of seconds, so an unset allowance costs a bounded amount of staleness. Solana reads it as 1500 blocks (~10 minutes), because zero there means a strict height >= perceived comparison rather than no comparison, and at ~400ms per block that starves every endpoint except the one that reported last. See qos/solana.defaultSyncAllowance. |
 | `latency_profile` | string | **⚠️ Parsed, not implemented:** names an entry in latency_profiles, which nothing reads. It names an entry in gateway_config.latency_profiles, which is itself not wired. |
 | `chain_id` | string | The chain identifier this service is expected to serve, as the chain itself reports it. When set, health checks assert the endpoint agrees; one serving a different chain is ejected rather than left to answer with another chain's data under this service's name. The value is opaque here on purpose. Its format and how it compares are chain semantics, so they belong to the QoS plugin, not to config: EVM reports hex from eth_chainId ("0x1") and must compare numerically, since "0x531" and "0x0531" are the same chain; CometBFT reports a name from /status ("cosmoshub-4") that compares exactly. Validation therefore lives in the plugin's own Config.Validate, called at wire time — still a startup failure, without teaching config about any one chain. Empty disables the assertion — the zero value keeps existing services behaving exactly as before, so this is opt-in per service. |
@@ -237,9 +237,9 @@ Defines an external RPC endpoint for ground-truth block heights.
 | `type` | string | The RPC type to poll it as ("json_rpc", "rest", "comet_bft"). |
 | `method` | string | The JSON-RPC method to call, e.g. "eth_blockNumber". |
 | `path` | string | The request path, for REST and CometBFT sources. |
-| `interval` | duration | How often to poll. Keep it well below the chain's block time or the reference height is itself stale. |
+| `interval` | duration | How often to poll. Keep it well below the chain's block time or the reference height is itself stale. A service with several sources polls them all on one ticker, at the shortest interval any of them names. |
 | `timeout` | duration | Bounds a single poll. |
-| `grace_period` | duration | **⚠️ Parsed, not implemented.** Parsed and not implemented; the block-consensus package applies its own. |
+| `grace_period` | duration | **⚠️ Parsed, not implemented:** block-consensus tolerance covers the same window. Parsed and not implemented. |
 
 ### `gateway_config.unified_services`
 
@@ -258,15 +258,15 @@ Retry at gateway level (gateway_config.retry_config in production config)
 
 | Key | Type | Description |
 |---|---|---|
-| `enabled` | boolean | Not read on its own — retries are on when MaxRetries > 0, so the count is the switch. See IsEnabled. |
+| `enabled` | boolean | Turns retries off when written as `enabled: false`; retries are otherwise on whenever MaxRetries > 0, which is PATH's rule too (its default for an absent key is true). The key's presence is what matters, and a bool cannot tell "absent" from "false", so the loader reads an explicit false from the YAML itself. The startup report says when it did. An `enabled: false` under max_retries: 3 used to retry three times and say nothing. |
 | `max_retries` | integer | How many further endpoints a failed relay may be tried on. Zero disables retry. Each attempt re-selects, so a retry rotates away from the endpoint that failed rather than asking it again. Retrying never escalates to a circuit break on its own; those are independent decisions. See the heuristic package. |
 | `max_retry_latency` | duration | **⚠️ Parsed, not implemented:** bound total retry time with retry_config.max_latency instead. Bound total time with timeout_config.relay_timeout per attempt instead. |
-| `retry_on_5xx` | boolean | Retries when an endpoint answers 5xx. |
+| `retry_on_5xx` | boolean | **⚠️ Parsed, not implemented:** retryability is decided by the error's own classification, not per-cause switches. See RetryOnTimeout. |
 | `retry_on_timeout` | boolean | **⚠️ Parsed, not implemented:** retryability is decided by the error's own classification, not per-cause switches. Whether a failure is retryable is decided by heuristic analysis of the response, not by per-cause switches. |
 | `retry_on_connection` | boolean | **⚠️ Parsed, not implemented:** retryability is decided by the error's own classification, not per-cause switches. See RetryOnTimeout. |
 | `connect_timeout` | duration | **⚠️ Parsed, not implemented:** the protocol's HTTP client bounds connection setup. Parsed and not implemented. |
 | `hedge_delay` | duration | How long to wait before racing a second endpoint against an in-flight relay. Zero disables hedging. This is the tail-latency control: set it near the service's p95 so the hedge fires only for requests already running long, and costs a duplicate relay only on those. Set it too low and every request is sent twice. |
-| `max_latency` | duration | The threshold above which a response is treated as slow and penalised in reputation. |
+| `max_latency` | duration | The total time budget across every retry attempt of one request: once it is spent, the retry middleware stops rotating and delivers what it has. It does not penalise latency in reputation — latency has reporting power only (docs/scoring.md §7.2). |
 
 ### `gateway_config.blocked_domains[]`
 
@@ -339,7 +339,7 @@ service.
 | `path` | string | The request path, for REST and CometBFT checks. |
 | `body` | string | The raw request body, typically a JSON-RPC envelope. |
 | `type` | string | Names the RPC type to relay as ("json_rpc", "rest", "comet_bft"). Empty means json_rpc, which is what the overwhelming majority of checks are. |
-| `expected_status_code` | integer | **⚠️ Parsed, not implemented.** The HTTP status treated as healthy. Zero means any 2xx, which is the sane default and keeps a check from failing because a backend answered 204 instead of 200. |
+| `expected_status_code` | integer | The HTTP status treated as healthy. Zero means any 2xx, which is the sane default and keeps a check from failing because a backend answered 204 instead of 200. |
 | `reputation_signal` | string | Names the penalty on failure: "minor_error" (default), "major_error", "critical_error". |
 | `timeout` | duration | Bounds this check. It should be tighter than a relay timeout — a check is meant to notice a slow endpoint, not to wait one out. |
 
@@ -451,10 +451,10 @@ exists. Treat them as documentation of PATH's format, not as SAGE settings.
 - `gateway_config.services[].latency_profile`
 - `gateway_config.services[].external_block_sources[].grace_period`
 - `gateway_config.retry_config.max_retry_latency`
+- `gateway_config.retry_config.retry_on_5xx`
 - `gateway_config.retry_config.retry_on_timeout`
 - `gateway_config.retry_config.retry_on_connection`
 - `gateway_config.retry_config.connect_timeout`
-- `gateway_config.active_health_checks.local[].checks[].expected_status_code`
 - `gateway_config.latency_profiles.<name>.fast_threshold`
 - `gateway_config.latency_profiles.<name>.normal_threshold`
 - `gateway_config.latency_profiles.<name>.slow_threshold`

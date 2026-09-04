@@ -79,6 +79,7 @@ func (a *App) Reload(ctx context.Context) (reload.Result, error) {
 
 	res.Ignored = append(res.Ignored, next.Ignored...)
 	res.Inert = append(res.Inert, next.Inert...)
+	res.Unimplemented = append(res.Unimplemented, next.Unimplemented...)
 	// Settings that load and probably do not mean what they look like. Carried
 	// here for the same reason as Ignored and Inert: a reload is the moment an
 	// operator is most likely to have just introduced one, and the startup log
@@ -276,9 +277,11 @@ func diffConfig(old, next *config.Config) configDiff {
 	for i := range typ.NumField() {
 		field := typ.Field(i)
 		switch field.Name {
-		case "Ignored", "Inert", "Warnings":
+		case "Ignored", "Inert", "Unimplemented", "Warnings":
 			// Not configuration: these describe the parse of the file, and are
-			// reported to the operator on their own.
+			// reported to the operator on their own. Unimplemented used to be
+			// missing from this list, so a reload that changed which PATH-only
+			// keys the file carried reported a bogus needs_restart.
 
 		case "Gateway":
 			d.diffGateway(old.Gateway, next.Gateway)

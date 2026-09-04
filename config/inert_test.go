@@ -124,30 +124,32 @@ gateway_config:
 // are the source of truth and this test holds the registry to them.
 func TestInertRegistryCoversDocComments(t *testing.T) {
 	demanded := documentedInertKeys(t)
-	registered := make(map[string]bool)
-	for _, key := range InertRegistryKeys() {
-		// Registry keys are "parent.key" or bare "key"; the doc scan knows only
-		// the leaf, so compare on the leaf.
-		parts := strings.Split(key, ".")
-		registered[parts[len(parts)-1]] = true
-	}
 
 	var missing []string
-	for _, key := range demanded {
-		if !registered[key] {
-			missing = append(missing, key)
+	for _, d := range demanded {
+		// Compared on parent AND key. A leaf-only comparison let
+		// retry_config.enabled pass as "registered" on the strength of
+		// reputation_config.enabled, and let a mis-parented entry match nothing
+		// at startup while satisfying the test.
+		if _, ok := matchField(inertFields, d.parent, d.key); !ok {
+			missing = append(missing, d.parent+"."+d.key)
 		}
 	}
 	if len(missing) > 0 {
 		t.Fatalf("config fields documented as unimplemented but missing from inertFields: %v\n"+
-			"add them to config/inert.go so they are reported at startup, or drop the doc comment if they are implemented now",
+			"add them to config/inert.go (with that parent) so they are reported at startup, or drop the doc comment if they are implemented now",
 			missing)
 	}
 }
 
-// documentedInertKeys returns the yaml key of every config field whose own doc
-// comment, or whose type's doc comment, says it is not implemented.
-func documentedInertKeys(t *testing.T) []string {
+// inertDemand is one (holder key, leaf key) pair the doc comments demand an
+// entry for.
+type inertDemand struct{ parent, key string }
+
+// documentedInertKeys returns the yaml key, with the key of the block that
+// holds it, of every config field whose own doc comment, or whose type's doc
+// comment, says it is not implemented.
+func documentedInertKeys(t *testing.T) []inertDemand {
 	t.Helper()
 
 	files, err := filepath.Glob("*.go")
@@ -207,7 +209,23 @@ func documentedInertKeys(t *testing.T) []string {
 		}
 	}
 
-	demanded := map[string]bool{}
+	demanded := map[inertDemand]bool{}
+
+	// holderKeys returns the yaml keys under which a struct type appears —
+	// RetryConfig sits under "retry_config" wherever it is used — which is
+	// the parent a registry entry must name. The root Config has no holder.
+	holderKeys := func(typeName string) []string {
+		if typeName == "Config" {
+			return []string{""}
+		}
+		var keys []string
+		for _, holder := range fieldsOfType[typeName] {
+			if key := yamlKey(holder); key != "" {
+				keys = append(keys, key)
+			}
+		}
+		return keys
+	}
 
 	// A field documented as unimplemented, in a struct that is not itself
 	// unimplemented (there, the block-level entry already covers it).
@@ -218,7 +236,9 @@ func documentedInertKeys(t *testing.T) []string {
 		for _, field := range st.Fields.List {
 			if saysUnimplemented(fieldDocs[field]) {
 				if key := yamlKey(field); key != "" {
-					demanded[key] = true
+					for _, parent := range holderKeys(typeName) {
+						demanded[inertDemand{parent, key}] = true
+					}
 				}
 			}
 		}
@@ -235,14 +255,16 @@ func documentedInertKeys(t *testing.T) []string {
 				continue
 			}
 			if key := yamlKey(field); key != "" {
-				demanded[key] = true
+				for _, parent := range holderKeys(fieldOwner[field]) {
+					demanded[inertDemand{parent, key}] = true
+				}
 			}
 		}
 	}
 
-	out := make([]string, 0, len(demanded))
-	for key := range demanded {
-		out = append(out, key)
+	out := make([]inertDemand, 0, len(demanded))
+	for d := range demanded {
+		out = append(out, d)
 	}
 	return out
 }

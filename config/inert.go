@@ -77,6 +77,8 @@ var inertFields = []inertField{
 
 	{Parent: "retry_config", Key: "max_retry_latency",
 		Reason: "bound total retry time with retry_config.max_latency instead"},
+	{Parent: "retry_config", Key: "retry_on_5xx",
+		Reason: "retryability is decided by the error's own classification, not per-cause switches"},
 	{Parent: "retry_config", Key: "retry_on_timeout",
 		Reason: "retryability is decided by the error's own classification, not per-cause switches"},
 	{Parent: "retry_config", Key: "retry_on_connection",
@@ -84,7 +86,7 @@ var inertFields = []inertField{
 	{Parent: "retry_config", Key: "connect_timeout",
 		Reason: "the protocol's HTTP client bounds connection setup"},
 
-	{Parent: "active_health_checks", Key: "grace_period",
+	{Parent: "external_block_sources", Key: "grace_period",
 		Reason: "block-consensus tolerance covers the same window"},
 
 	{Parent: "router_config", Key: "websocket_message_buffer_size",
@@ -133,6 +135,34 @@ var unimplementedFields = []inertField{
 		Reason: "SAGE does not fetch the remote rule file, so none of its rules or their check_interval values have any effect. " +
 			"Probing is governed by active_health_checks.interval, by local[].check_interval per service, " +
 			"and by each QoS plugin's own checks. See docs/path-compat.md",
+	},
+	// Keys PATH spells one way and SAGE another. "Unknown key" is true of each
+	// and sends the operator to the wrong conclusion — that the behaviour is
+	// missing rather than named differently.
+	{
+		Parent: "active_health_checks",
+		Key:    "backend_dedup",
+		Reason: "the SAGE key is active_health_checks.disable_backend_url_dedup, with the opposite sense: dedup is on unless disabled",
+	},
+	{
+		Parent: "active_health_checks",
+		Key:    "coordination",
+		Reason: "probes are always coordinated: the elected leader probes and every replica applies the results over Redis (docs/design/specs/2026-08-31-probe-once-design.md); without Redis each replica probes alone",
+	},
+	{
+		Parent: "router_config",
+		Key:    "max_concurrent_websocket_connections",
+		Reason: "the SAGE key is websocket_config.max_concurrent_connections",
+	},
+	{
+		Parent: "local",
+		Key:    "sync_allowance",
+		Reason: "the SAGE key is services[].sync_allowance, on the service rather than on its health-check block",
+	},
+	{
+		Parent: "defaults",
+		Key:    "max_operator_share",
+		Reason: "the SAGE key is gateway_config.reputation_config.max_operator_share",
 	},
 }
 

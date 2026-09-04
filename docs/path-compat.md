@@ -20,8 +20,13 @@ same as pretending, so every key SAGE does not act on is reported at startup:
 - `Config.Ignored` — the key has no Go field at all. Caught by a second decode
   with `KnownFields` (`config/load.go`).
 - `Config.Inert` — the key parses into a field that nothing reads. Caught by the
-  registry in `config/inert.go`, which `TestInertRegistryCoversDocComments`
-  holds to the doc comments so the two cannot drift.
+  registry in `config/inert.go`. Two tests hold it in place:
+  `TestInertRegistryCoversDocComments` holds the registry to the doc comments
+  (on parent *and* key, since 2026-09-04 — a leaf-only match let
+  `retry_config.enabled` pass on the strength of `reputation_config.enabled`),
+  and `TestUnwiredConfigKeysAreRegistered` in `internal/docgen` fails on any
+  field the generator finds unread that the registry does not name. A key can
+  no longer be parsed, unread and unreported.
 - `Config.Warnings` — the key parses, *is* read, and probably does not do what
   whoever wrote it expected. One sentence saying what the gateway will actually
   do with the value, because refusing the file would break the compatibility
@@ -74,6 +79,12 @@ when the behaviour is identical.
 | Area | PATH | SAGE | Why |
 |---|---|---|---|
 | Strike system / cooldowns | Endpoints are benched by a strike system and by two rate detectors, all sharing one `CooldownUntil` | None. Reputation is a continuous score feeding tiered selection | PATH accumulated five mechanisms that could each remove an endpoint, with separate counters and one shared timestamp; a first offence inherited a stale escalation. `strike_system` has no field here on purpose and lands in `Ignored` |
+| `retry_config.enabled` | `false` turns retries off; absent means on | Same since 2026-09-04, read from the YAML's own presence of the key, since a value-typed bool cannot tell absent from false; the startup report says when it was honoured. It was parsed and never read, so `enabled: false` under `max_retries: 3` retried three times silently | A switch that is sometimes honoured is worse than one that never is |
+| `retry_config` merge across `gateway_config.retry_config`, `defaults`, `unified_services.defaults` | One block | Field by field since 2026-09-04, `defaults` first. A block was picked whole on the strength of its `max_retries`, so a production config carrying `retry_config: {hedge_delay: 100ms}` lost the hedge delay | Every field an operator wrote should reach the code that reads it |
+| `retry_config.retry_on_5xx` | Per-cause switch | Inert and reported, like `retry_on_timeout`: retryability is the heuristic's verdict on the response | Was documented as honoured; it never was |
+| `retry_config.max_latency` | Slow-response threshold feeding reputation | The total time budget across retry attempts; latency never penalises (`docs/scoring.md` §7.2). The doc comment said the former until 2026-09-04 | Same key, different semantics, now said |
+| `local[].checks[].expected_status_code`, `checks[].timeout` | Honoured per check | Honoured since 2026-09-04; were parsed and unread (any 2xx, the global probe timeout) | A check that names a status or a deadline means it |
+| `gateway_mode: delegated` | Signs for the app `App-Address` names | Loads with a startup warning saying SAGE signs with its configured keys and ignores the header | Client-visible, so not silent |
 | Score deltas | `signal_impacts` config | Honoured for the five surviving signal types; `recovery_success`, `slow_response`, `very_slow_response` stay `Inert` | Types deleted — `docs/scoring.md` §7.2 |
 | Latency scoring | `latency_profiles` (thresholds, bonuses, penalties) | Latency has reporting power only: a per-key EWMA in the admin listing; the block stays `Inert` | Decided, not open — `docs/scoring.md` §7.2 |
 | Chronic violators | Critical-rate detector with its own EWMA, threshold, escalation and cooldown | A rate term inside the score: EWMA failure weight → penalty → same tiers | One mechanism, one state, one power — `docs/scoring.md` §7.3 |

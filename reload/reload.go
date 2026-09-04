@@ -46,6 +46,9 @@ type Result struct {
 	Ignored []string `json:"ignored"`
 	// Inert lists keys in the file that parse into a field nothing reads.
 	Inert []string `json:"inert"`
+	// Unimplemented lists keys SAGE has no field for where the bare "unknown
+	// key" would mislead, each with what governs the behaviour instead.
+	Unimplemented []string `json:"unimplemented"`
 	// Warnings lists what the parse itself flagged — settings that load and are
 	// probably not what was meant (config.Config.Warnings) — followed by
 	// anything the apply steps had to say: a health-check rule that could not
@@ -57,10 +60,11 @@ type Result struct {
 // appends nothing still marshals to arrays rather than nulls.
 func NewResult() Result {
 	return Result{
-		Applied:      []string{},
-		NeedsRestart: []string{},
-		Ignored:      []string{},
-		Inert:        []string{},
-		Warnings:     []string{},
+		Applied:       []string{},
+		NeedsRestart:  []string{},
+		Ignored:       []string{},
+		Inert:         []string{},
+		Unimplemented: []string{},
+		Warnings:      []string{},
 	}
 }

@@ -76,6 +76,11 @@ type App struct {
 	// captured in a closure cannot be made reloadable this way — see the
 	// tuning package doc.
 	Config atomic.Pointer[config.Config]
+	// StartupWarnings is what Build found wrong with the config that was not
+	// wrong enough to refuse: a flag name SAGE does not have, a health-check
+	// rule that could not be built. main reports them through the startup
+	// reporter, which the configured log level cannot silence.
+	StartupWarnings []string
 	// ConfigPath is the -config flag value main started with. Build does not
 	// set it — it has no such flag, only a *config.Config — so main sets it
 	// after Build returns. A reload re-reads from this path; empty means the
@@ -230,7 +235,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// warn on each here, the way main warns on cfg.Ignored.
 	for name := range cfg.FeatureFlags {
 		if !featureflag.IsKnownFlag(name) {
-			logger.Warn("feature flag ignored: SAGE has no such flag, and setting it has no effect", "flag", name)
+			app.StartupWarnings = append(app.StartupWarnings,
+				fmt.Sprintf("feature_flags.%s: SAGE has no such flag, and setting it has no effect", name))
 		}
 	}
 	var flags featureflag.FlagStore
@@ -619,7 +625,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// missing reads to an operator as a check that is passing.
 	configuredChecks, checkWarnings := healthcheck.BuildConfiguredChecks(cfg.Gateway.HealthChecks)
 	for _, warning := range checkWarnings {
-		logger.Warn("health check config: " + warning)
+		app.StartupWarnings = append(app.StartupWarnings, "active_health_checks: "+warning)
 	}
 	healthExe.SetConfiguredChecks(configuredChecks)
 	healthExe.SetBackendURLDedup(!cfg.Gateway.HealthChecks.DisableBackendURLDedup)
@@ -866,7 +872,11 @@ func effectiveHealthCheckInterval(cfg *config.Config) time.Duration {
 // knob is. The values are the gateway-level defaults, which is what a knob
 // with no per-service config resolves against.
 func registerTuningBases(store *tuning.Store, cfg *config.Config) {
-	retry := cfg.Gateway.Defaults.Retry
+	// EffectiveDefaults, not Defaults.Retry: a production-layout config keeps
+	// its retry block at gateway_config.retry_config, and reading the other
+	// one registered max_retries=0 as the base the admin UI showed while
+	// relays used the real block.
+	retry := cfg.Gateway.EffectiveDefaults().Retry
 	store.SetBase(tuning.KnobRetryMaxRetries, strconv.Itoa(retry.MaxRetries))
 	store.SetBase(tuning.KnobRetryMaxLatency, retry.MaxLatency.String())
 	store.SetBase(tuning.KnobHedgeDelay, retry.HedgeDelay.String())

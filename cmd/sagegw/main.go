@@ -94,6 +94,14 @@ func main() {
 	if err != nil {
 		log.Fatalf(`{"level":"fatal","error":"%v","message":"failed to build application"}`, err)
 	}
+	// What wiring had to say about the config — a flag name SAGE does not
+	// have, a health-check rule it could not build — through the same
+	// unsilenceable reporter as the parse findings above. These went through
+	// the ordinary logger before, and at logger_config.level: error they
+	// vanished, which contradicted the report's whole point.
+	for _, w := range app.StartupWarnings {
+		report.Warn("config setting is probably not what was meant", "detail", w)
+	}
 	// Build only takes the already-parsed *config.Config, not the path it came
 	// from, so a reload (which needs to re-read the file) is threaded through
 	// here instead. Empty when config came from GATEWAY_CONFIG rather than
@@ -315,6 +323,9 @@ func reloadOnSignal(ctx context.Context, app *App, logger *slog.Logger) {
 	}
 	for _, f := range result.Inert {
 		logger.Warn("config key has no effect: SAGE parses this setting but nothing reads it", "detail", f)
+	}
+	for _, f := range result.Unimplemented {
+		logger.Warn("config key is not implemented, and here is what decides this instead", "detail", f)
 	}
 }
 

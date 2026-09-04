@@ -6,6 +6,7 @@ package healthcheck
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -740,12 +741,15 @@ func (e *Executor) checkEndpoint(
 // 200 with a body we cannot parse, or — worse — a well-formed body reporting a
 // chain it was never asked about. Grading on status only meant both scored a
 // full success and stayed in rotation.
-func checkSignal(checkName string, statusCode int, extractErr error, latency time.Duration) reputation.Signal {
+func checkSignal(checkName string, statusCode int, statusOK bool, extractErr error, latency time.Duration) reputation.Signal {
 	reason := "health_check: " + checkName
 
 	switch {
-	case statusCode < 200 || statusCode >= 300:
-		return reputation.NewMinorErrorSignal(reason, latency)
+	// The status is in the reason: the timeline is what an operator reads
+	// to attribute a supplier's failures, and "beacon_head_header" alone made
+	// a 403 indistinguishable from a 500 there.
+	case !statusOK:
+		return reputation.NewMinorErrorSignal(fmt.Sprintf("%s: http %d", reason, statusCode), latency)
 
 	// A wrong chain is not a bad moment: the endpoint is healthy and confidently
 	// serving someone else's chain under this service's name. Nothing it reports
@@ -788,7 +792,11 @@ func (e *Executor) sendCheck(
 	// relay timeout, and with a small pool that is a large fraction of the
 	// fleet's probe capacity spent learning something a few seconds would have
 	// told us.
-	probeCtx, cancel := context.WithTimeout(ctx, e.probeTimeout())
+	timeout := e.probeTimeout()
+	if check.Timeout > 0 {
+		timeout = check.Timeout
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	result := e.probe(probeCtx, serviceID, ep, siblings, check)
@@ -1142,9 +1150,11 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 	// property of the stake table and not of the machine (ruling F1,
 	// docs/scoring.md §3 principle 4 and §7.4).
 	if e.repService != nil {
-		signal := checkSignal(r.Check, r.StatusCode, extractErr, latency)
-		if failed := r.StatusCode < 200 || r.StatusCode >= 300 || extractErr != nil; failed {
-			if declared, ok := e.configured.Load().SignalFor(r.Check, "health_check: "+r.Check, latency); ok {
+		configured := e.configured.Load()
+		statusOK := configured.StatusHealthy(r.Check, r.StatusCode)
+		signal := checkSignal(r.Check, r.StatusCode, statusOK, extractErr, latency)
+		if failed := !statusOK || extractErr != nil; failed {
+			if declared, ok := configured.SignalFor(r.Check, signal.Reason, latency); ok {
 				signal = declared
 			}
 		}
