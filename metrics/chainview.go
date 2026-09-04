@@ -57,7 +57,8 @@ type ChainViewCollector struct {
 // NewChainViewCollector returns a collector for the given services. It does not
 // register itself; the caller decides which registry it belongs to.
 func NewChainViewCollector(source ChainViewSource, services []domain.ServiceID) *ChainViewCollector {
-	label := []string{"service_id"}
+	// Inlined per NewDesc, not hoisted: docgen reads labels off the literal
+	// and rendered "—" for all six of these while they carried service_id.
 	return &ChainViewCollector{
 		source:   source,
 		services: services,
@@ -65,32 +66,32 @@ func NewChainViewCollector(source ChainViewSource, services []domain.ServiceID) 
 		height: prometheus.NewDesc(
 			"sage_chain_view_height",
 			"Block height consensus settled on for this service — the number endpoint selection filters against. Absent for a service whose plugin tracks no height.",
-			label, nil,
+			[]string{"service_id"}, nil,
 		),
 		spread: prometheus.NewDesc(
 			"sage_chain_view_spread_blocks",
 			"Blocks between the highest and lowest endpoint inside the consensus window. Zero means agreement OR no observations at all; read it with sage_chain_view_endpoints, which separates the two.",
-			label, nil,
+			[]string{"service_id"}, nil,
 		),
 		endpoints: prometheus.NewDesc(
 			"sage_chain_view_endpoints",
 			"Distinct endpoints that reported a height inside the consensus window. One is not a consensus; zero means the service is selecting on a height nothing currently confirms.",
-			label, nil,
+			[]string{"service_id"}, nil,
 		),
 		spreadSeconds: prometheus.NewDesc(
 			"sage_chain_view_spread_seconds",
 			"The block spread expressed as time, using a block rate derived from how fast this chain's perceived height moves. This is the figure to compare ACROSS services: blocks are not comparable between chains, so 534 blocks on a quarter-second chain and 11 blocks on a twelve-second chain are the same 133 seconds. Absent when the chain has not moved enough to derive a rate — a stalled chain has no rate, and guessing one would report a confident wrong number.",
-			label, nil,
+			[]string{"service_id"}, nil,
 		),
 		disagreement: prometheus.NewDesc(
 			"sage_chain_view_disagreement_seconds",
 			"How far apart the endpoints are once the time between their observations is removed. THIS is the one to alert on for endpoint disagreement, not spread: observations inside the window are taken at different moments — a probe sweep visits each backend once per cycle — so on a moving chain a large part of the raw spread is the age of the readings rather than any disagreement. Absent when the chain has not moved enough to derive a rate to project at.",
-			label, nil,
+			[]string{"service_id"}, nil,
 		),
 		staleness: prometheus.NewDesc(
 			"sage_chain_view_staleness_seconds",
 			"Age of the newest block-height observation for this service. A probed service refreshes every health-check cycle; one whose probes are skipped refreshes only when client traffic happens to carry a height, so this is what shows a chain view going stale. Absent when there is no observation in the window — sage_chain_view_endpoints reads 0 there.",
-			label, nil,
+			[]string{"service_id"}, nil,
 		),
 	}
 }

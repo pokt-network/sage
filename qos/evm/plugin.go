@@ -64,7 +64,6 @@ var coalescableMethods = map[string]bool{
 // Plugin is the EVM QoS plugin. It implements:
 //   - qos.Plugin
 //   - qos.BlockHeightTracker
-//   - qos.BlockHeightParser
 //   - qos.ArchivalDetector
 //   - qos.HealthChecker
 //   - qos.DataExtractor
@@ -72,8 +71,6 @@ var coalescableMethods = map[string]bool{
 //   - qos.MethodNormalizer
 //   - qos.CoalescenceClassifier
 //   - qos.CachePolicy
-//   - qos.ResponseFormatValidator
-//   - qos.LifecycleHooks
 //   - qos.StateResetter
 //   - qos.SubscriptionClassifier
 type Plugin struct {
@@ -223,6 +220,10 @@ func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) 
 	})
 	p.consensus.AddObservation(endpoint, height)
 }
+
+// EndpointHeights reports the latest height each endpoint supplied
+// (qos.EndpointHeightLister).
+func (p *Plugin) EndpointHeights() []qos.EndpointHeight { return p.consensus.EndpointHeights() }
 
 // SetExternalFloor takes a trusted outside height as the floor the perceived
 // head may not fall below (qos.ExternalFloorSetter).

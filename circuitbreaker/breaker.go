@@ -116,13 +116,18 @@ type outcomeWindow struct {
 // Breaker is a domain-level circuit breaker with optional Redis backing.
 // When Redis is nil, it operates in local-only mode.
 type Breaker struct {
-	mu          sync.RWMutex
-	broken      map[string]map[string]BrokenState // serviceID -> domain -> state
-	redis       *redis.Client                     // nil = local-only mode
-	logger      *slog.Logger
-	keyPrefix   string
-	cacheTTL    time.Duration
-	lastRefresh map[string]time.Time
+	mu     sync.RWMutex
+	broken map[string]map[string]BrokenState // serviceID -> domain -> state
+	// brokenLocally is when this replica itself broke each domain, so a
+	// refresh can tell a break that is absent from Redis because another
+	// replica cleared it from one that is absent because this replica's
+	// write has not landed yet.
+	brokenLocally map[string]map[string]time.Time
+	redis         *redis.Client // nil = local-only mode
+	logger        *slog.Logger
+	keyPrefix     string
+	cacheTTL      time.Duration
+	lastRefresh   map[string]time.Time
 
 	// Failure-rate gate. statsMu is kept separate from mu so recording an
 	// outcome never contends with the IsBroken read path.
@@ -186,15 +191,6 @@ func WithFailureRateGate(window time.Duration, minFailures int, threshold float6
 func WithEscalationMemory(d time.Duration) Option {
 	return func(b *Breaker) {
 		b.escalationMemory = d
-	}
-}
-
-// WithRebreakMargin sets how much worse than failureRateThreshold a domain
-// must be to break again while its last episode is within escalationMemory.
-// Zero restores a single line with no hysteresis.
-func WithRebreakMargin(margin float64) Option {
-	return func(b *Breaker) {
-		b.rebreakMargin = margin
 	}
 }
 
@@ -391,6 +387,13 @@ func (b *Breaker) MarkBroken(serviceID, domain, reason string) bool {
 		b.broken[serviceID] = make(map[string]BrokenState)
 	}
 	b.broken[serviceID][domain] = state
+	if b.brokenLocally == nil {
+		b.brokenLocally = make(map[string]map[string]time.Time)
+	}
+	if b.brokenLocally[serviceID] == nil {
+		b.brokenLocally[serviceID] = make(map[string]time.Time)
+	}
+	b.brokenLocally[serviceID][domain] = now
 	b.mu.Unlock()
 
 	// Persist to Redis asynchronously (best-effort).
@@ -406,6 +409,7 @@ func (b *Breaker) Clear(serviceID string) int {
 	domains := b.broken[serviceID]
 	count := len(domains)
 	delete(b.broken, serviceID)
+	delete(b.brokenLocally, serviceID)
 	delete(b.lastRefresh, serviceID)
 	b.mu.Unlock()
 
@@ -540,6 +544,19 @@ func (b *Breaker) refreshFromRedis(serviceID string) {
 		return
 	}
 
+	b.mergeRedisEntries(serviceID, entries, time.Now())
+}
+
+// mergeRedisEntries reconciles the local view of one service with what Redis
+// holds: later expiries win, and a domain Redis no longer lists is dropped
+// unless this replica broke it within the last cacheTTL, in which case its
+// own write may still be in flight.
+//
+// Dropping is what makes POST /admin/circuit-breaker/clear reach the other
+// replicas: merging only ever added entries until 2026-09-04, so a clear on
+// one pod left every other pod broken until its local expiry — up to the
+// full escalated TTL later.
+func (b *Breaker) mergeRedisEntries(serviceID string, entries map[string]string, now time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -547,7 +564,16 @@ func (b *Breaker) refreshFromRedis(serviceID string) {
 		b.broken[serviceID] = make(map[string]BrokenState)
 	}
 
-	now := time.Now()
+	for domain := range b.broken[serviceID] {
+		if _, listed := entries[domain]; listed {
+			continue
+		}
+		if at, ok := b.brokenLocally[serviceID][domain]; ok && now.Sub(at) < b.cacheTTL {
+			continue
+		}
+		delete(b.broken[serviceID], domain)
+		delete(b.brokenLocally[serviceID], domain)
+	}
 
 	// Merge Redis state into local state.
 	for domain, raw := range entries {

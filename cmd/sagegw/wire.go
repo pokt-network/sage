@@ -547,7 +547,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWBatch, func() relay.Middleware {
 		return middleware.Batch(cfg.Concurrency.MaxConcurrentRelays, cfg.Concurrency.MaxBatchPayloads, flags, repSvc)
 	})
-	mwReg.Register(relay.MWSingleflight, func() relay.Middleware { return middleware.Singleflight(flags) })
+	mwReg.Register(relay.MWSingleflight, func() relay.Middleware { return middleware.SingleflightWithRecorder(flags, recorder) })
 	mwReg.Register(relay.MWObserve, func() relay.Middleware {
 		return middleware.Observe(flags, obsQueue, repSvc, sampler)
 	})

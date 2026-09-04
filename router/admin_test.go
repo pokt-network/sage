@@ -259,6 +259,32 @@ func TestAdminSetFlag(t *testing.T) {
 	}
 }
 
+func TestAdminDeleteFlagForService(t *testing.T) {
+	api, srv := newAdminServer(t)
+	ctx := context.Background()
+	_ = api.flags.SetForService(ctx, "retry", "eth", true)
+	store := api.flags.(*mockFlagStore)
+	if _, ok := store.flags["retry"].ServiceOverrides["eth"]; !ok {
+		t.Fatal("precondition: override set")
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/admin/flags/retry/eth", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if _, ok := store.flags["retry"].ServiceOverrides["eth"]; ok {
+		t.Fatal("override still in force after DELETE; the service must follow the global value again")
+	}
+}
+
 func TestAdminSetFlagForService(t *testing.T) {
 	_, srv := newAdminServer(t)
 

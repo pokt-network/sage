@@ -54,11 +54,6 @@ type RedisStore struct {
 // RedisStoreOption configures a RedisStore.
 type RedisStoreOption func(*RedisStore)
 
-// WithCacheTTL sets the local cache TTL.
-func WithCacheTTL(ttl time.Duration) RedisStoreOption {
-	return func(s *RedisStore) { s.cacheTTL = ttl }
-}
-
 // NewRedisStore creates a Redis-backed flag store.
 // If client is nil, all reads fall back to defaults.
 //

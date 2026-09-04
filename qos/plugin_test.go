@@ -2,7 +2,6 @@ package qos
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -25,32 +24,21 @@ func (f *fullPlugin) SelectEndpoints(ep domain.EndpointAddrList, _ []domain.Payl
 func (f *fullPlugin) UpdateBlockHeight(_ domain.EndpointAddr, _ uint64) {}
 func (f *fullPlugin) PerceivedBlockHeight() uint64                      { return 0 }
 func (f *fullPlugin) StartSync(_ context.Context)                       {}
-func (f *fullPlugin) ParseBlockHeight(_ []byte) (uint64, error)         { return 0, nil }
 func (f *fullPlugin) IsArchivalRequest(_ []domain.Payload) bool         { return false }
-func (f *fullPlugin) IsArchivalEndpoint(_ domain.EndpointAddr) bool     { return false }
 func (f *fullPlugin) HealthChecks() []HealthCheck                       { return nil }
 func (f *fullPlugin) ExtractData(_ domain.EndpointAddr, _, _ []byte) (*ExtractedData, error) {
 	return nil, nil
 }
 func (f *fullPlugin) IsCoalescable(_ string) bool                         { return false }
 func (f *fullPlugin) CacheTTL(_ string, _ []byte, _ []byte) time.Duration { return 0 }
-func (f *fullPlugin) ValidateResponseFormat(_ string, _ json.RawMessage) error {
-	return nil
-}
-func (f *fullPlugin) OnSessionChange(_ domain.ServiceID, _, _ domain.EndpointAddrList) {}
-func (f *fullPlugin) OnEndpointDiscovered(_ domain.ServiceID, _ domain.EndpointAddr)   {}
-func (f *fullPlugin) OnEndpointEvicted(_ domain.ServiceID, _ domain.EndpointAddr)      {}
 
 // Compile-time assertions.
 var (
-	_ Plugin                  = (*fullPlugin)(nil)
-	_ BlockHeightTracker      = (*fullPlugin)(nil)
-	_ BlockHeightParser       = (*fullPlugin)(nil)
-	_ ArchivalDetector        = (*fullPlugin)(nil)
-	_ HealthChecker           = (*fullPlugin)(nil)
-	_ DataExtractor           = (*fullPlugin)(nil)
-	_ CoalescenceClassifier   = (*fullPlugin)(nil)
-	_ CachePolicy             = (*fullPlugin)(nil)
-	_ ResponseFormatValidator = (*fullPlugin)(nil)
-	_ LifecycleHooks          = (*fullPlugin)(nil)
+	_ Plugin                = (*fullPlugin)(nil)
+	_ BlockHeightTracker    = (*fullPlugin)(nil)
+	_ ArchivalDetector      = (*fullPlugin)(nil)
+	_ HealthChecker         = (*fullPlugin)(nil)
+	_ DataExtractor         = (*fullPlugin)(nil)
+	_ CoalescenceClassifier = (*fullPlugin)(nil)
+	_ CachePolicy           = (*fullPlugin)(nil)
 )

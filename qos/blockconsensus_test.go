@@ -1,7 +1,10 @@
 package qos
 
 import (
+	"bytes"
+	"log/slog"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -259,5 +262,40 @@ func TestBlockConsensus_Reset(t *testing.T) {
 	}
 	if bc.graceStart.Before(time.Now().Add(-time.Second)) {
 		t.Fatalf("graceStart = %v, want restarted to roughly now", bc.graceStart)
+	}
+}
+
+func TestEndpointHeights_LatestPerEndpoint(t *testing.T) {
+	bc := NewBlockConsensus(nil, 5)
+	bc.AddObservation("a", 100)
+	bc.AddObservation("b", 101)
+	bc.AddObservation("a", 102)
+	got := bc.EndpointHeights()
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (one per endpoint): %+v", len(got), got)
+	}
+	byEP := map[domain.EndpointAddr]uint64{}
+	for _, h := range got {
+		byEP[h.Endpoint] = h.Height
+	}
+	if byEP["a"] != 102 || byEP["b"] != 101 {
+		t.Errorf("heights = %v, want a=102 (latest) b=101", byEP)
+	}
+}
+
+func TestAddObservation_WarnsOnAHeightFarBelowTheHead(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	bc := NewBlockConsensus(logger, 5)
+	for _, ep := range []domain.EndpointAddr{"a", "b", "c"} {
+		bc.AddObservation(ep, 1_000_000)
+	}
+	bc.AddObservation("d", 999_990) // lagging, not wrong
+	if strings.Contains(buf.String(), "far below") {
+		t.Fatalf("a lagging endpoint must not warn: %s", buf.String())
+	}
+	bc.AddObservation("e", 3) // the sui case: near zero
+	if !strings.Contains(buf.String(), "far below") || !strings.Contains(buf.String(), `endpoint=e`) {
+		t.Fatalf("a near-zero height entered the window without naming the endpoint: %s", buf.String())
 	}
 }

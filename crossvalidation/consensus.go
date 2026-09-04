@@ -1,4 +1,11 @@
-// Package crossvalidation provides background consensus checking across
+// Package crossvalidation is report-only: it compares response digests
+// across endpoints for the same (service, method) and logs the outliers. No
+// signal reaches reputation, the circuit breaker or the method blocks. A
+// digest disagreement says two answers differ, not which one is wrong, and
+// penalising on it needs a design that says how the wrong one is chosen
+// (docs/next-steps.md). The flag's row in ARCHITECTURE.md says the same.
+//
+// Background consensus checking across
 // endpoint responses. It detects outlier endpoints whose responses differ
 // from the majority, which can indicate fabricated, corrupted, or stale data.
 package crossvalidation

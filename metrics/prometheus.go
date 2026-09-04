@@ -145,7 +145,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "degraded_total",
-				Help:      "Total requests served in degraded mode, by service and tier.",
+				Help:      "Total requests served in degraded mode, by service and tier: reputation_pool_collapse when the pool-collapse guard served a below-floor endpoint, response when an answer went out with X-Degraded set.",
 			},
 			[]string{"service_id", "tier"},
 		),

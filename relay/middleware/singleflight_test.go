@@ -82,7 +82,8 @@ func TestSingleflight_TwoConcurrentRequests_OneRelay(t *testing.T) {
 		return nil
 	})
 
-	mw := Singleflight(&staticFlags{enabled: true})
+	rec := &countingSingleflightRecorder{}
+	mw := SingleflightWithRecorder(&staticFlags{enabled: true}, rec)
 	handler := mw(inner)
 
 	ctx1 := newRelayContext(svc, plugin, payload)
@@ -135,6 +136,9 @@ func TestSingleflight_TwoConcurrentRequests_OneRelay(t *testing.T) {
 	}
 	if coalesced != 1 {
 		t.Fatalf("expected exactly 1 coalesced context, got %d", coalesced)
+	}
+	if got := rec.n.Load(); got != 1 {
+		t.Fatalf("sage_singleflight_coalesced_total moved by %d, want 1: the follower is what the counter counts", got)
 	}
 
 	// Both should have the same response body.
@@ -261,3 +265,8 @@ func TestSingleflight_FlagDisabled_PassThrough(t *testing.T) {
 		t.Fatalf("expected 2 relays when flag disabled, got %d", relayCount.Load())
 	}
 }
+
+// countingSingleflightRecorder counts RecordSingleflightCoalesced calls.
+type countingSingleflightRecorder struct{ n atomic.Int32 }
+
+func (r *countingSingleflightRecorder) RecordSingleflightCoalesced(domain.ServiceID) { r.n.Add(1) }

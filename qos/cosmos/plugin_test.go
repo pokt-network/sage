@@ -515,10 +515,8 @@ func TestInterfaceSatisfaction(t *testing.T) {
 
 	var _ qos.Plugin = p
 	var _ qos.BlockHeightTracker = p
-	var _ qos.BlockHeightParser = p
 	var _ qos.HealthChecker = p
 	var _ qos.DataExtractor = p
-	var _ qos.LifecycleHooks = p
 }
 
 // --- chain ID assertion --- //

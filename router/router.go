@@ -35,6 +35,10 @@ type WebSocketOpener interface {
 // metrics.Recorder satisfies it; nil disables recording.
 type ClientMetrics interface {
 	RecordClientRequest(serviceID domain.ServiceID, status int)
+	// RecordDegraded counts an answer that went out with X-Degraded: some
+	// stage of selection settled for less than it wanted. tier is the
+	// sage_degraded_total label; the router records "response".
+	RecordDegraded(serviceID domain.ServiceID, tier string)
 }
 
 // Warmup reports whether the gateway can steer endpoint selection yet — i.e.
@@ -320,6 +324,12 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 		// has run and ctx.Degraded is settled.
 		if ctx.Degraded {
 			rw.SetHeader(relay.HeaderDegraded, "true")
+			// The counter behind the header. Only the pool-collapse hook fed
+			// sage_degraded_total until 2026-09-04; the three paths that set
+			// ctx.Degraded (selection, method blocks, batch) never reached it.
+			if r.clientMetrics != nil {
+				r.clientMetrics.RecordDegraded(ctx.ServiceID, "response")
+			}
 		}
 
 		body := ctx.Response.Body

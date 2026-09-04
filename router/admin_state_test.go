@@ -117,3 +117,53 @@ func TestAdmin_ClearChainState_UnknownService(t *testing.T) {
 		t.Fatalf("status %d, want 404: %s", rec.Code, rec.Body)
 	}
 }
+
+// fakeViewingPlugin implements the read half: a chain view and per-endpoint
+// heights.
+type fakeViewingPlugin struct{ fakeQoSPlugin }
+
+func (fakeViewingPlugin) ChainView() qos.ChainView {
+	return qos.ChainView{Perceived: 318664809, Highest: 318664809, Lowest: 3, Endpoints: 2}
+}
+
+func (fakeViewingPlugin) EndpointHeights() []qos.EndpointHeight {
+	return []qos.EndpointHeight{
+		{Endpoint: "good-https://n1.example", Height: 318664809},
+		{Endpoint: "bad-https://n2.example", Height: 3},
+	}
+}
+
+func TestAdmin_GetChainState_NamesTheEndpointBehindTheSpread(t *testing.T) {
+	reg := qos.NewRegistry()
+	if err := reg.Register("sui", fakeViewingPlugin{}); err != nil {
+		t.Fatal(err)
+	}
+	api := newChainStateAdminAPI(t, reg)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/chain-state/sui", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Perceived uint64 `json:"perceived"`
+		Heights   []struct {
+			Endpoint string `json:"endpoint"`
+			Height   uint64 `json:"height"`
+		} `json:"heights"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body)
+	}
+	if body.Perceived != 318664809 || len(body.Heights) != 2 || body.Heights[1].Height != 3 {
+		t.Fatalf("body = %s; the point of the route is naming the endpoint that reported 3", rec.Body)
+	}
+
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/chain-state/nope", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown service = %d, want 404", rec.Code)
+	}
+}

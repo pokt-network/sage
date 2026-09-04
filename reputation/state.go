@@ -1,8 +1,8 @@
 package reputation
 
 import (
-	"time"
 	"context"
+	"time"
 
 	"github.com/pokt-network/sage/domain"
 )

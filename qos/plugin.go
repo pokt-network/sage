@@ -2,7 +2,6 @@ package qos
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -45,15 +44,12 @@ type BlockHeightTracker interface {
 	StartSync(ctx context.Context)
 }
 
-// BlockHeightParser is implemented by plugins that can extract block height from responses.
-type BlockHeightParser interface {
-	ParseBlockHeight(response []byte) (uint64, error)
-}
-
-// ArchivalDetector is implemented by plugins that distinguish archival requests/endpoints.
+// ArchivalDetector is implemented by plugins that recognise a request for
+// historical state, so selection can prefer endpoints not known to lack it.
+// Whether an endpoint IS archival is the plugin's own tri-state mark, consulted
+// inside SelectEndpoints; nothing outside the plugin asks.
 type ArchivalDetector interface {
 	IsArchivalRequest(payloads []domain.Payload) bool
-	IsArchivalEndpoint(endpoint domain.EndpointAddr) bool
 }
 
 // HealthChecker is implemented by plugins that provide health check payloads.
@@ -160,16 +156,19 @@ type CachePolicy interface {
 	CacheTTL(method string, params []byte, response []byte) time.Duration
 }
 
-// ResponseFormatValidator is implemented by plugins that validate response structure.
-type ResponseFormatValidator interface {
-	ValidateResponseFormat(method string, result json.RawMessage) error
+// EndpointHeight is one endpoint's latest reported height.
+type EndpointHeight struct {
+	Endpoint   domain.EndpointAddr `json:"endpoint"`
+	Height     uint64              `json:"height"`
+	ObservedAt time.Time           `json:"observed_at"`
 }
 
-// LifecycleHooks is implemented by plugins that react to session and endpoint changes.
-type LifecycleHooks interface {
-	OnSessionChange(serviceID domain.ServiceID, added, removed domain.EndpointAddrList)
-	OnEndpointDiscovered(serviceID domain.ServiceID, endpoint domain.EndpointAddr)
-	OnEndpointEvicted(serviceID domain.ServiceID, endpoint domain.EndpointAddr)
+// EndpointHeightLister is implemented by plugins that can say what each
+// endpoint last reported, for the admin chain-state read. It exists because
+// on 2026-09-04 one sui endpoint reported a near-zero height for two cycles
+// and there was no way to ask which.
+type EndpointHeightLister interface {
+	EndpointHeights() []EndpointHeight
 }
 
 // StateResetter is implemented by plugins that hold learned chain state — block

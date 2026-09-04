@@ -2,7 +2,6 @@ package qos
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -485,9 +484,4 @@ func rawScalar(res gjson.Result) string {
 		return res.Raw
 	}
 	return ""
-}
-
-// HasSuffixFold reports whether s ends with suffix, ASCII case-insensitively.
-func HasSuffixFold(s, suffix string) bool {
-	return len(s) >= len(suffix) && strings.EqualFold(s[len(s)-len(suffix):], suffix)
 }

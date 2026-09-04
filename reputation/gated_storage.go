@@ -37,6 +37,13 @@ func (s *LeaderOnlyStorage) SetState(ctx context.Context, key string, st State) 
 	return s.inner.SetState(ctx, key, st)
 }
 
+// ForceSetState writes through whether or not this replica leads. It is for
+// an operator's decision (a reset), which is about the fleet's view and not
+// this replica's.
+func (s *LeaderOnlyStorage) ForceSetState(ctx context.Context, key string, st State) error {
+	return s.inner.SetState(ctx, key, st)
+}
+
 // GetStates reads through.
 func (s *LeaderOnlyStorage) GetStates(ctx context.Context, prefix string) (map[string]State, error) {
 	return s.inner.GetStates(ctx, prefix)

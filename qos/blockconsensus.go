@@ -97,6 +97,20 @@ func (bc *BlockConsensus) AddObservation(endpoint domain.EndpointAddr, height ui
 
 	now := time.Now()
 
+	// An observation at less than half the perceived head is not a lagging
+	// node, it is a wrong one — a fresh sync, a different chain, a parser
+	// reading the wrong field — and it stretches the chain-view spread to the
+	// whole chain height. Said here, at ingest, with the endpoint named:
+	// on 2026-09-04 one sui endpoint did exactly this for two cycles and left
+	// no line to attribute it by.
+	if perceived := bc.perceived.Load(); perceived > 0 && height < perceived/2 {
+		bc.logger.Warn("block consensus: endpoint reports a height far below the perceived head",
+			"endpoint", endpoint,
+			"height", height,
+			"perceived", perceived,
+		)
+	}
+
 	bc.mu.Lock()
 	// Prune stale observations.
 	bc.pruneOlderThan(now.Add(-bc.windowDuration))
@@ -126,6 +140,30 @@ func (bc *BlockConsensus) AddObservation(endpoint domain.EndpointAddr, height ui
 	bc.perceived.Store(perceived)
 	bc.recordRateSampleLocked(perceived, now)
 	bc.mu.Unlock()
+}
+
+// EndpointHeights returns the latest observation per endpoint inside the
+// window, newest first.
+func (bc *BlockConsensus) EndpointHeights() []EndpointHeight {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	latest := make(map[domain.EndpointAddr]blockObs, len(bc.observations))
+	for _, obs := range bc.observations {
+		if cur, ok := latest[obs.Endpoint]; !ok || obs.Timestamp.After(cur.Timestamp) {
+			latest[obs.Endpoint] = obs
+		}
+	}
+	out := make([]EndpointHeight, 0, len(latest))
+	for _, obs := range latest {
+		out = append(out, EndpointHeight{Endpoint: obs.Endpoint, Height: obs.Height, ObservedAt: obs.Timestamp})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ObservedAt.Equal(out[j].ObservedAt) {
+			return out[i].Endpoint < out[j].Endpoint
+		}
+		return out[i].ObservedAt.After(out[j].ObservedAt)
+	})
+	return out
 }
 
 // PerceivedBlock returns the current perceived block height (atomic, zero-contention).

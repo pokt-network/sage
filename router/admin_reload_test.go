@@ -55,8 +55,8 @@ func doReload(t *testing.T, mux *http.ServeMux) *httptest.ResponseRecorder {
 // account back verbatim, including the sections that did NOT take effect.
 func TestHandleReload_OK(t *testing.T) {
 	stub := &stubReloader{result: reload.Result{
-		Applied:      []string{"gateway_config.defaults", "feature_flags"},
-		NeedsRestart: []string{"gateway_config.services[eth].chain_id"},
+		Applied:       []string{"gateway_config.defaults", "feature_flags"},
+		NeedsRestart:  []string{"gateway_config.services[eth].chain_id"},
 		Ignored:       []string{},
 		Inert:         []string{},
 		Unimplemented: []string{},

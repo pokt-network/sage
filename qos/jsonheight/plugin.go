@@ -255,12 +255,51 @@ func (p *Plugin) LastHeightObservation(endpoints domain.EndpointAddrList) (time.
 	return p.consensus.LastHeightObservation(endpoints)
 }
 
+// --- qos.StateResetter --- //
+
+// ResetState discards the consensus and every per-endpoint height, so the
+// admin chain-state route works for these chains as it does for the others.
+func (p *Plugin) ResetState() {
+	p.consensus.Reset()
+	p.store.Clear()
+}
+
+// --- qos.MethodNormalizer --- //
+
+// NormalizeMethod names the one method this plugin catalogues — the height
+// method — and buckets everything else, so method-aware state keys per host
+// per method rather than collapsing to per host. A REST chain has no method
+// notion here and reports "".
+func (p *Plugin) NormalizeMethod(payload domain.Payload) string {
+	if p.chain.RequestMethodPath == "" {
+		return ""
+	}
+	method := gjson.GetBytes(payload.Bytes(), p.chain.RequestMethodPath).String()
+	switch method {
+	case "":
+		return ""
+	case p.chain.HeightMethod:
+		return method
+	default:
+		return qos.MethodOther
+	}
+}
+
+// --- qos.EndpointHeightLister --- //
+
+// EndpointHeights reports the latest height each endpoint supplied.
+func (p *Plugin) EndpointHeights() []qos.EndpointHeight { return p.consensus.EndpointHeights() }
+
 // Compile-time interface assertions.
 var (
-	_ qos.Plugin             = (*Plugin)(nil)
-	_ qos.HealthChecker      = (*Plugin)(nil)
-	_ qos.DataExtractor      = (*Plugin)(nil)
-	_ qos.BlockHeightTracker = (*Plugin)(nil)
-	_ qos.ChainViewer        = (*Plugin)(nil)
-	_ qos.HeightObserver     = (*Plugin)(nil)
+	_ qos.Plugin               = (*Plugin)(nil)
+	_ qos.HealthChecker        = (*Plugin)(nil)
+	_ qos.DataExtractor        = (*Plugin)(nil)
+	_ qos.BlockHeightTracker   = (*Plugin)(nil)
+	_ qos.ChainViewer          = (*Plugin)(nil)
+	_ qos.HeightObserver       = (*Plugin)(nil)
+	_ qos.StateResetter        = (*Plugin)(nil)
+	_ qos.MethodNormalizer     = (*Plugin)(nil)
+	_ qos.EndpointHeightLister = (*Plugin)(nil)
+	_ qos.ExternalFloorSetter  = (*Plugin)(nil)
 )

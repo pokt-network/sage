@@ -221,6 +221,21 @@ the selector (reputation/selector) when picked up.
 None blocking. The mechanical items from the scoring v2 and admin passes
 landed on 2026-08-29; what is left needs a decision.
 
+- **Cross-validation is report-only, by decision on 2026-09-04.** The
+  `cross_validation` flag defaults on and the validator records digests and
+  logs outliers; nothing feeds reputation or the blocks. Making it act needs
+  a design that says which of three disagreeing endpoints is wrong (majority
+  of digests is not it: two lagging nodes outvote one fresh one on a moving
+  chain), what signal the loser gets, and how a JSON-RPC error body that is
+  the chain's own answer is kept out of the digest. Until then the flag is a
+  logging switch and the docs say so.
+- **Follower reputation never re-reads Redis after boot**, by decision on
+  2026-09-04: probe results converge through the `sage:probes` stream, and
+  traffic-derived scores stay per replica for the pod's lifetime. Revisit
+  if canary graphs show replicas disagreeing on a supplier; the fix shape is
+  a periodic follower re-hydrate adopting keys with a newer `UpdatedAt` and
+  no local signal.
+
 - `featureflag.MemoryStore` cannot tell config-seeded global flags from
   admin-set ones, so a config reload overwrites admin global flips. This is
   what the reload spec mandates; a tuning-style base/override split for flags

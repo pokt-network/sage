@@ -396,8 +396,8 @@ service. Same key as PATH's gateway-level endpoint_policy.
 
 ## `websocket_config`
 
-Controls WS-specific behavior.
-Zero values are sensible defaults (see DefaultWebSocketConfig).
+Controls WS-specific behavior. Zero values resolve to the
+Default* constants below through the Effective* methods.
 
 | Key | Type | Description |
 |---|---|---|

@@ -250,6 +250,41 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **Built-but-unwired machinery, wired or removed.** Found by the 2026-09-04
+  audit's rule of grepping for constructors and following them to
+  `wire.go`. `sage_singleflight_coalesced_total` was registered and
+  documented and incremented by nothing, since the middleware took no
+  recorder; `sage_degraded_total` was fed only by the pool-collapse hook and
+  missed every path that sets `X-Degraded`. Both count now. Two admin
+  actions did not cross replicas: a circuit-breaker clear deleted the Redis
+  hash but other pods only ever merged additions, so they stayed broken until
+  their local expiry (up to the full escalated TTL); a reputation reset on a
+  follower was dropped by the leader-only storage gate with the follower's
+  ordinary writes, and the leader's next signal restored the old score. A
+  refresh now drops local breaks Redis no longer lists (unless this pod broke
+  them within `cache_ttl`), and a reset writes through on any replica. A
+  per-service flag override could be set and never unset (no TTL, and a
+  reload deletes globals only): `DELETE /admin/flags/{flag}/{service}`.
+  `docs/metrics.md` showed no labels for the six `sage_chain_view_*` metrics
+  because the generator reads the literal and the code had hoisted it.
+
+  From the same-day canary readback: `GET /admin/chain-state/{service}`
+  lists the latest height per endpoint, and consensus warns at ingest, naming
+  the endpoint, when a height is less than half the perceived head — one sui
+  endpoint reported a near-zero height for two cycles and there was no way to
+  ask which. `qos/jsonheight` gains `StateResetter` (the admin reset answered
+  `reset:false` for near, sui and eth-beacon) and `MethodNormalizer` (method
+  blocks collapsed to per-host on those chains).
+
+  Removed: `observe.RedisPublisher`, `ChannelPublisher` and `Collector`
+  (never constructed); the `BlockHeightParser`, `ResponseFormatValidator`
+  and `LifecycleHooks` interfaces and `ArchivalDetector.IsArchivalEndpoint`
+  (implemented by plugins, asserted by nothing, advertised in
+  `docs/qos-plugins.md`); four options with no caller. Cross-validation is
+  declared report-only rather than pretended to act: the flag's row and the
+  package doc say outliers are logged and nothing feeds reputation, and the
+  design that would change that is an item in `docs/next-steps.md`.
+
 - **Two health-check controls that controlled nothing now do, and four probe
   gaps are closed.** `active_health_checks.enabled: false` stopped nothing:
   the executor started regardless and the key gated only the readiness

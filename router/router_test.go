@@ -858,10 +858,17 @@ func TestHandleReady_SessionNotReady(t *testing.T) {
 	}
 }
 
-type recordingClientRec struct{ statuses []int }
+type recordingClientRec struct {
+	statuses []int
+	degraded []string
+}
 
 func (r *recordingClientRec) RecordClientRequest(_ domain.ServiceID, status int) {
 	r.statuses = append(r.statuses, status)
+}
+
+func (r *recordingClientRec) RecordDegraded(_ domain.ServiceID, tier string) {
+	r.degraded = append(r.degraded, tier)
 }
 
 // The client-facing HTTP status of each relay request is recorded — distinct

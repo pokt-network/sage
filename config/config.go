@@ -119,8 +119,8 @@ type MockProtocolConfig struct {
 	FailureRates []float64 `yaml:"failure_rates"`
 }
 
-// WebSocketConfig controls WS-specific behavior.
-// Zero values are sensible defaults (see DefaultWebSocketConfig).
+// WebSocketConfig controls WS-specific behavior. Zero values resolve to the
+// Default* constants below through the Effective* methods.
 type WebSocketConfig struct {
 	// FrameObservationSampleRate is the fraction of routine WS frames submitted
 	// to the observation pipeline. Frames that trip heuristic analysis are
@@ -418,15 +418,6 @@ type FeatureFlags map[string]bool
 // worse than none at all. Tune it down to observed concurrent load if you want
 // it to mean more than "something has gone very wrong".
 const DefaultMaxConcurrentWSConnections = 10000
-
-// DefaultWebSocketConfig returns WebSocketConfig with sensible defaults.
-func DefaultWebSocketConfig() WebSocketConfig {
-	return WebSocketConfig{
-		FrameObservationSampleRate: DefaultFrameObservationSampleRate,
-		CloseObservationSampleRate: DefaultCloseObservationSampleRate,
-		MaxConcurrentConnections:   DefaultMaxConcurrentWSConnections,
-	}
-}
 
 // EffectiveMaxConcurrentConnections resolves the configured cap: zero takes the
 // default, and a negative value disables the limit.

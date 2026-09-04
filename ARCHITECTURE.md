@@ -244,7 +244,7 @@ re-break as a repeat offender.
 | method_blocks | on | Per-host, per-method memory: a host that timed out on a method stops receiving it for a TTL |
 | singleflight | on | Coalesce identical concurrent requests |
 | cache | on | LRU response cache for finalized data |
-| cross_validation | on | Cross-endpoint response consensus |
+| cross_validation | on | Cross-endpoint response digest comparison. Report-only: an outlier is logged, and nothing feeds reputation or the blocks — deciding which of three disagreeing endpoints is wrong needs its own design (`docs/next-steps.md`) |
 | heuristic | on | Response quality analysis. Gates body analysis only: transport errors are graded on the way out regardless of the flag, because attribution is what the breaker, the method blocks and reputation key on |
 | observation_pipeline | on | Async deep parsing |
 | health_checks | on | Active endpoint health checks |

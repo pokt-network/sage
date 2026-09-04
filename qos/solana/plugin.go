@@ -119,6 +119,10 @@ func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) 
 	p.consensus.AddObservation(endpoint, height)
 }
 
+// EndpointHeights reports the latest height each endpoint supplied
+// (qos.EndpointHeightLister).
+func (p *Plugin) EndpointHeights() []qos.EndpointHeight { return p.consensus.EndpointHeights() }
+
 // SetExternalFloor takes a trusted outside height as the floor the perceived
 // head may not fall below (qos.ExternalFloorSetter).
 func (p *Plugin) SetExternalFloor(height uint64) { p.consensus.SetExternalFloor(height) }
@@ -258,12 +262,10 @@ func getHealthPayload() domain.Payload {
 var (
 	_ qos.Plugin                = (*Plugin)(nil)
 	_ qos.BlockHeightTracker    = (*Plugin)(nil)
-	_ qos.BlockHeightParser     = (*Plugin)(nil)
 	_ qos.HealthChecker         = (*Plugin)(nil)
 	_ qos.DataExtractor         = (*Plugin)(nil)
 	_ qos.ChainViewer           = (*Plugin)(nil)
 	_ qos.HeightObserver        = (*Plugin)(nil)
 	_ qos.CoalescenceClassifier = (*Plugin)(nil)
-	_ qos.LifecycleHooks        = (*Plugin)(nil)
 	_ qos.StateResetter         = (*Plugin)(nil)
 )

@@ -24,3 +24,27 @@ func TestLeaderOnlyStorage_DropsFollowerWrites(t *testing.T) {
 		t.Fatalf("leader's write missing: %+v %v", st, err)
 	}
 }
+
+// An operator's reset is about the fleet's view, not this replica's: on a
+// follower it must still reach storage, where the leader and every other
+// replica will read it, instead of being dropped with the follower's
+// ordinary traffic writes.
+func TestResetScore_WritesThroughOnAFollower(t *testing.T) {
+	inner := NewMemoryStorage()
+	gated := NewLeaderOnlyStorage(inner, func() bool { return false })
+	svc := NewService(gated, NewTimeline(100), DefaultServiceConfig())
+	svc.Start()
+
+	ctx := context.Background()
+	if err := svc.ResetScore(ctx, "eth", "ep1"); err != nil {
+		t.Fatal(err)
+	}
+	svc.Stop() // drains the write queue
+	states, err := inner.GetStates(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) == 0 {
+		t.Fatal("the reset never reached storage: a follower dropped it, so the leader's next signal restores the old score")
+	}
+}

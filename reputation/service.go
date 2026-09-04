@@ -2,6 +2,7 @@ package reputation
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -114,6 +115,10 @@ func scoreKey(serviceID domain.ServiceID, key string) string {
 type writeOp struct {
 	key   string
 	state State
+	// force writes through a leader-only storage gate. An operator's reset is
+	// a decision about the fleet's view, not this replica's, and a follower
+	// dropping it left the leader's next signal to restore the old score.
+	force bool
 }
 
 // scoreShards stripes the in-memory score map so concurrent relays recording
@@ -588,8 +593,11 @@ func (s *serviceImpl) ResetScore(_ context.Context, serviceID domain.ServiceID, 
 		sh.mu.Unlock()
 
 		select {
-		case s.writeCh <- writeOp{key: scoreKey(serviceID, repKey), state: fresh}:
+		case s.writeCh <- writeOp{key: scoreKey(serviceID, repKey), state: fresh, force: true}:
 		default:
+			// Said, not swallowed: the local cache is reset either way, but
+			// the other replicas learn of it through storage.
+			return fmt.Errorf("reset of %s applied locally, but the storage write was dropped (write queue full); other replicas keep the old score", endpoint)
 		}
 	}
 	return nil
@@ -663,5 +671,17 @@ func (s *serviceImpl) drainWrites() {
 // it says when storage last heard about the key.
 func (s *serviceImpl) write(op writeOp) {
 	op.state.UpdatedAt = time.Now().Unix()
+	if op.force {
+		if f, ok := s.storage.(forcedWriter); ok {
+			_ = f.ForceSetState(context.Background(), op.key, op.state)
+			return
+		}
+	}
 	_ = s.storage.SetState(context.Background(), op.key, op.state)
+}
+
+// forcedWriter is a storage that can be told to write regardless of its
+// gate. LeaderOnlyStorage is the one.
+type forcedWriter interface {
+	ForceSetState(ctx context.Context, key string, st State) error
 }

@@ -303,3 +303,31 @@ func TestVerifiedChainsAreWired(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeMethod_CataloguesOnlyTheHeightMethod(t *testing.T) {
+	p := NewPlugin(nil, NEAR, 100)
+	height := domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"block","params":{"finality":"final"}}`), domain.RPCTypeJSONRPC, "block")
+	other := domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"query","params":{}}`), domain.RPCTypeJSONRPC, "query")
+	if got := p.NormalizeMethod(height); got != NEAR.HeightMethod {
+		t.Errorf("height method = %q, want %q", got, NEAR.HeightMethod)
+	}
+	if got := p.NormalizeMethod(other); got != qos.MethodOther {
+		t.Errorf("other method = %q, want %q; method blocks collapsed to per-host without this", got, qos.MethodOther)
+	}
+	rest := NewPlugin(nil, EthBeacon, 100)
+	if got := rest.NormalizeMethod(domain.NewPayload(nil, domain.RPCTypeREST, "")); got != "" {
+		t.Errorf("REST chain method = %q, want none", got)
+	}
+}
+
+func TestResetState_DiscardsTheChainView(t *testing.T) {
+	p := NewPlugin(nil, NEAR, 100)
+	p.UpdateBlockHeight("ep1", 500)
+	if p.PerceivedBlockHeight() == 0 {
+		t.Fatal("precondition: a height was learned")
+	}
+	p.ResetState()
+	if p.PerceivedBlockHeight() != 0 {
+		t.Fatal("ResetState left the perceived head; the admin chain-state reset reported reset:false for these chains before")
+	}
+}

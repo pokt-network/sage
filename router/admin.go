@@ -95,12 +95,14 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/flags", a.handleListFlags)
 	mux.HandleFunc("PUT /admin/flags/{flag}", a.handleSetFlag)
 	mux.HandleFunc("PUT /admin/flags/{flag}/{serviceID}", a.handleSetFlagForService)
+	mux.HandleFunc("DELETE /admin/flags/{flag}/{serviceID}", a.handleDeleteFlagForService)
 
 	// Reputation
 	mux.HandleFunc("GET /admin/reputation/{serviceID}", a.handleGetReputation)
 	mux.HandleFunc("POST /admin/reputation/reset/{serviceID}/{endpoint...}", a.handleResetReputation)
 
 	// Chain state
+	mux.HandleFunc("GET /admin/chain-state/{serviceID}", a.handleGetChainState)
 	mux.HandleFunc("POST /admin/chain-state/clear/{serviceID}", a.handleClearChainState)
 
 	// Timeline
@@ -227,6 +229,28 @@ func (a *AdminAPI) handleSetFlagForService(w http.ResponseWriter, req *http.Requ
 		"flag":       flag,
 		"service_id": string(serviceID),
 		"enabled":    body.Enabled,
+	})
+}
+
+// handleDeleteFlagForService removes a per-service override, so the service
+// follows the global value again. Until 2026-09-04 an override could be set
+// and never unset: the keys carried no TTL and a reload deletes only globals.
+func (a *AdminAPI) handleDeleteFlagForService(w http.ResponseWriter, req *http.Request) {
+	flag := req.PathValue("flag")
+	serviceID := domain.ServiceID(req.PathValue("serviceID"))
+	if flag == "" || serviceID == "" {
+		writeJSONError(w, http.StatusBadRequest, "flag and serviceID are required")
+		return
+	}
+	if err := a.flags.Delete(req.Context(), flag, serviceID); err != nil {
+		a.logger.Error("admin: delete flag for service", "flag", flag, "service", serviceID, "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to delete flag override")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"flag":       flag,
+		"service_id": string(serviceID),
+		"deleted":    true,
 	})
 }
 

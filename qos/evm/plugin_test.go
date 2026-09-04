@@ -575,16 +575,13 @@ func TestExtractData_UnknownMethod(t *testing.T) {
 // --- Interface compliance (compile-time) ---
 
 var (
-	_ qos.Plugin                  = (*Plugin)(nil)
-	_ qos.BlockHeightTracker      = (*Plugin)(nil)
-	_ qos.BlockHeightParser       = (*Plugin)(nil)
-	_ qos.ArchivalDetector        = (*Plugin)(nil)
-	_ qos.HealthChecker           = (*Plugin)(nil)
-	_ qos.DataExtractor           = (*Plugin)(nil)
-	_ qos.CoalescenceClassifier   = (*Plugin)(nil)
-	_ qos.CachePolicy             = (*Plugin)(nil)
-	_ qos.ResponseFormatValidator = (*Plugin)(nil)
-	_ qos.LifecycleHooks          = (*Plugin)(nil)
+	_ qos.Plugin                = (*Plugin)(nil)
+	_ qos.BlockHeightTracker    = (*Plugin)(nil)
+	_ qos.ArchivalDetector      = (*Plugin)(nil)
+	_ qos.HealthChecker         = (*Plugin)(nil)
+	_ qos.DataExtractor         = (*Plugin)(nil)
+	_ qos.CoalescenceClassifier = (*Plugin)(nil)
+	_ qos.CachePolicy           = (*Plugin)(nil)
 )
 
 // --- chain ID assertion ---

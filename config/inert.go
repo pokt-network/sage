@@ -301,13 +301,3 @@ func InertReason(parent, key string) (string, bool) {
 	return matchInert(parent, key)
 }
 
-// InertRegistryKeys returns every registered key, for tests and for anything
-// that needs to know the whole set rather than what one config triggered.
-func InertRegistryKeys() []string {
-	out := make([]string, 0, len(inertFields))
-	for _, f := range inertFields {
-		out = append(out, strings.TrimPrefix(f.Parent+"."+f.Key, "."))
-	}
-	sort.Strings(out)
-	return out
-}

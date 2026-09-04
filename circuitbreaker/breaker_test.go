@@ -1,6 +1,7 @@
 package circuitbreaker
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -403,5 +404,35 @@ func TestBreaker_ClearResetsRateGate(t *testing.T) {
 	b.mu.RUnlock()
 	if state.HitCount != 1 {
 		t.Errorf("HitCount = %d after Clear, want 1 (history dropped)", state.HitCount)
+	}
+}
+
+// A clear on one replica must reach the others through Redis: a domain this
+// replica holds broken that Redis no longer lists was cleared elsewhere, and
+// is dropped — unless this replica broke it within cacheTTL, when its own
+// write may still be in flight.
+func TestMergeRedisEntries_DropsWhatAnotherReplicaCleared(t *testing.T) {
+	b := New(WithCacheTTL(10 * time.Second))
+	now := time.Now()
+	b.broken["eth"] = map[string]BrokenState{
+		"stale.example":  {Expiry: now.Add(time.Hour), Reason: "cleared elsewhere"},
+		"fresh.example":  {Expiry: now.Add(time.Hour), Reason: "broke here just now"},
+		"listed.example": {Expiry: now.Add(time.Minute), Reason: "still in redis"},
+	}
+	b.brokenLocally = map[string]map[string]time.Time{"eth": {
+		"stale.example": now.Add(-time.Minute),
+		"fresh.example": now.Add(-time.Second),
+	}}
+	later, _ := json.Marshal(BrokenState{Expiry: now.Add(2 * time.Hour), Reason: "redis"})
+	b.mergeRedisEntries("eth", map[string]string{"listed.example": string(later)}, now)
+
+	if _, ok := b.broken["eth"]["stale.example"]; ok {
+		t.Error("a domain absent from Redis and broken here a minute ago is a clear from another replica; it must be dropped")
+	}
+	if _, ok := b.broken["eth"]["fresh.example"]; !ok {
+		t.Error("a domain broken here a second ago may not have reached Redis yet; it must be kept")
+	}
+	if got := b.broken["eth"]["listed.example"].Expiry; !got.Equal(now.Add(2 * time.Hour)) {
+		t.Errorf("listed domain expiry = %v, want the later Redis expiry", got)
 	}
 }

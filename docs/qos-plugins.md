@@ -32,15 +32,14 @@ Callers type-assert and skip the feature when it is absent.
 | Interface | What it buys |
 |---|---|
 | `BlockHeightTracker` | per-endpoint height, perceived chain head |
-| `BlockHeightParser` | extract a height from a response body |
 | `ArchivalDetector` | route historical-state requests to archival nodes |
 | `HealthChecker` | supply the plugin's own health check payloads |
 | `DataExtractor` | pull height / chain ID / sync state out of responses |
 | `CoalescenceClassifier` | mark methods safe to deduplicate in flight |
 | `CachePolicy` | per-method response cache TTLs |
-| `ResponseFormatValidator` | reject structurally wrong responses |
-| `LifecycleHooks` | react to session and endpoint changes |
 | `MethodNormalizer` | name a payload's method from a bounded catalogue, for method-aware state and metric labels |
+| `ExternalFloorSetter` | take a trusted outside height (`services[].external_block_sources`) as a floor under the perceived head |
+| `EndpointHeightLister` | list the latest height each endpoint reported, for `GET /admin/chain-state/{service}` |
 | `StateResetter` | discard learned chain state (block consensus, per-endpoint heights, archival marks) via the admin chain-state reset route, without a restart |
 | `SubscriptionClassifier` | read WebSocket frames and say which open, close or feed a subscription, so `qos.SubscriptionRegistry` can track what is live on a bridge (the knowledge a rebind and a stall watchdog need); the id lives in different places per chain (EVM: hex result / `params.subscription`; Solana: integer result / `<x>Notification`; CometBFT: the request id itself) |
 

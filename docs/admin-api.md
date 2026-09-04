@@ -96,8 +96,10 @@ failureThreshold) here.
 | `GET` | `/admin/flags` | Returns the effective state of every known feature flag. |
 | `PUT` | `/admin/flags/{flag}` | Toggles a feature flag globally. |
 | `PUT` | `/admin/flags/{flag}/{serviceID}` | Toggles a feature flag for one service only. |
+| `DELETE` | `/admin/flags/{flag}/{serviceID}` | Removes a per-service override, so the service follows the global value again. |
 | `GET` | `/admin/reputation/{serviceID}` | Returns every reputation state for a service. |
 | `POST` | `/admin/reputation/reset/{serviceID}/{endpoint...}` | Returns one endpoint to the initial score. |
+| `GET` | `/admin/chain-state/{serviceID}` | Reads what a service's plugin believes about its chain: the perceived head, and the latest height each endpoint reported. |
 | `POST` | `/admin/chain-state/clear/{serviceID}` | Discards the QoS state a service's plugin has learned: block consensus (perceived height, external floor) and its per-endpoint QoS store (block heights, chain-id observations, archival marks — see qos.StateResetter). |
 | `GET` | `/admin/timeline/{serviceID}` | Returns the recent reputation events for every endpoint of a service, newest last. |
 | `GET` | `/admin/timeline/{serviceID}/{endpoint...}` | Returns the reputation events for a single endpoint. |
@@ -153,6 +155,12 @@ Body: `{"enabled": true}`. This is the narrower switch and takes precedence
 over the global setting for that service. Use it to roll a behaviour out to
 one chain before turning it on everywhere.
 
+### `DELETE /admin/flags/{flag}/{serviceID}`
+
+Removes a per-service override, so the service
+follows the global value again. Until 2026-09-04 an override could be set
+and never unset: the keys carried no TTL and a reload deletes only globals.
+
 ### `GET /admin/reputation/{serviceID}`
 
 Returns every reputation state for a service.
@@ -180,6 +188,14 @@ they happened to name.
 
 Reach for this when an endpoint was penalised for something since fixed and
 you do not want to wait for probation traffic to rehabilitate it.
+
+### `GET /admin/chain-state/{serviceID}`
+
+Reads what a service's plugin believes about its chain:
+the perceived head, and the latest height each endpoint reported. It is the
+read half of the chain-state route — the reset existed without it, so an
+operator watching the chain-view spread jump to the whole chain height had
+no way to ask which endpoint did it.
 
 ### `POST /admin/chain-state/clear/{serviceID}`
 
