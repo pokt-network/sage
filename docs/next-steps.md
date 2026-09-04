@@ -36,6 +36,17 @@ image rolls, ops needs to know, and after it rolls these are the checks:
   moving.** A non-zero value is the counter working, not a regression.
 - **The startup report** carries new line kinds: per-service RPC types no
   probe covers, and `enabled: false` decisions. Read it once.
+- **Judging the status shift without a JSON-RPC error series.** SAGE exports
+  no counter for a 200 that carries a JSON-RPC error body, so the pre-roll
+  200 count includes gateway-made `-32603` failures and the post-roll one
+  does not. Compare pre-roll 200 share against post-roll `200 + 500 + 504`;
+  408/400/502/404 and attempts-per-client-request should be unchanged.
+- **Export `sage_client_jsonrpc_errors_total{service_id}`** — a 200 whose
+  body carries a top-level `error`, counted at the router. Ops asked for it
+  on 2026-09-04 and it is what the 408 investigation lacks: the split
+  between a supplier's own error delivered as 200 and a gateway failure.
+  One gjson top-level lookup per JSON-RPC response; measure it on the mock
+  backend before shipping rather than assuming it is free.
 
 
 
