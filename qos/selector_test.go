@@ -285,13 +285,42 @@ func TestSelectWithKnownHeights_UnknownOnlySetIsNotAPass(t *testing.T) {
 	if !got.Degraded || got.Tier != 3 {
 		t.Fatalf("want a degraded tier-3 fallback, got %+v", got)
 	}
+	// The known hosts lead, least stale first; the stranger is behind them,
+	// not alone. Reputation decides whether it is worth trying.
+	if len(got.Endpoints) != 2 || got.Endpoints[0] != "b" || got.Endpoints[1] != "dead" {
+		t.Fatalf("want [b dead]: the least-stale known host, then the unknown, got %v", got.Endpoints)
+	}
+}
+
+// The shentu shape of 2026-09-04: every host with a known height is behind
+// and times out; the one host that answers clients never reported a height.
+// The first version of the rule dropped it at tier 3 and shentu's 200 share
+// fell from 39% to 6%. The unknown host must survive to the reputation
+// selector, which is what knows it answers.
+func TestSelectWithKnownHeights_TierThreeKeepsTheUnknownHosts(t *testing.T) {
+	heights := map[domain.EndpointAddr]uint64{"stale1": 50, "stale2": 60}
+	getHeight := func(ep domain.EndpointAddr) (uint64, bool) {
+		h, ok := heights[ep]
+		return h, ok
+	}
+	eps := domain.EndpointAddrList{"stale1", "answers", "stale2"}
+	const perceived = 200
+	strict := []FilterFunc{BlockHeightFilter(getHeight, MinAllowedHeight(perceived, 5))}
+	got := SelectWithKnownHeights(eps, getHeight, strict, nil, nil, LeastStaleFallback(getHeight, perceived))
+	if got.Tier != 3 {
+		t.Fatalf("want tier 3, got %+v", got)
+	}
+	found := false
 	for _, ep := range got.Endpoints {
-		if ep == "dead" {
-			t.Fatalf("the host that never answered survived as a candidate: %v", got.Endpoints)
+		if ep == "answers" {
+			found = true
 		}
 	}
-	if len(got.Endpoints) == 0 || got.Endpoints[0] != "b" {
-		t.Fatalf("want the least-stale known host first, got %v", got.Endpoints)
+	if !found {
+		t.Fatalf("the unknown-height host that answers was dropped: %v", got.Endpoints)
+	}
+	if got.Endpoints[0] != "stale2" {
+		t.Fatalf("known hosts still lead, least stale first: %v", got.Endpoints)
 	}
 }
 

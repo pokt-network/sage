@@ -82,6 +82,14 @@ func Select(
 // to one dead bsc host in one second at pod boot, and ~800 pool collapses an
 // hour on bsc after. An unknown-only set says "we know nothing here", and
 // the answer to that is everyone, ranked, not the strangers alone.
+//
+// "Everyone" includes the strangers. The tier-3 ranker keeps only the
+// least-stale KNOWN hosts, which on the first version of this rule dropped
+// the unknowns entirely — and on shentu the one host that answered clients
+// was an unknown-height host, so its 200 share fell from 39% to 6% in the
+// first fifteen minutes. The unknown hosts are appended after the ranked
+// known ones; which of them to trust is reputation's call, and a dead host
+// scores zero there.
 func SelectWithKnownHeights(
 	endpoints domain.EndpointAddrList,
 	getHeight func(domain.EndpointAddr) (uint64, bool),
@@ -123,12 +131,31 @@ func SelectWithKnownHeights(
 			return SelectResult{Endpoints: result, Degraded: true, Tier: 2}
 		}
 	}
+	// Tier 3: ranked known hosts first, then the unknown ones.
+	keepUnknown := func(set domain.EndpointAddrList) domain.EndpointAddrList {
+		ranked := rankFallback(set, fallbackRanker)
+		seen := make(map[domain.EndpointAddr]struct{}, len(ranked))
+		for _, ep := range ranked {
+			seen[ep] = struct{}{}
+		}
+		out := ranked
+		for _, ep := range set {
+			if _, known := getHeight(ep); known {
+				continue
+			}
+			if _, dup := seen[ep]; dup {
+				continue
+			}
+			out = append(out, ep)
+		}
+		return out
+	}
 	if nonBlockHeightFilters != nil {
 		if result := applyFilters(endpoints, nonBlockHeightFilters); len(result) > 0 {
-			return SelectResult{Endpoints: rankFallback(result, fallbackRanker), Degraded: true, Tier: 3}
+			return SelectResult{Endpoints: keepUnknown(result), Degraded: true, Tier: 3}
 		}
 	}
-	return SelectResult{Endpoints: rankFallback(endpoints, fallbackRanker), Degraded: true, Tier: 3}
+	return SelectResult{Endpoints: keepUnknown(endpoints), Degraded: true, Tier: 3}
 }
 
 // rankFallback applies the optional fallback ranker, guarding against a ranker

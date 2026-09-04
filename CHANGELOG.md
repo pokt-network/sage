@@ -264,7 +264,11 @@ the source of truth for the design and the reasoning behind it.
   least-bad of them. `qos.SelectWithKnownHeights` treats a tier-1 or tier-2
   set made only of unknown-height endpoints, while known ones exist, as not
   a pass; selection falls through to the ranked full list. All four
-  height-tracking plugins use it. `sage_chain_view_external_floor` and the
+  height-tracking plugins use it. The tier-3 fallback keeps the
+  unknown-height hosts behind the ranked known ones rather than dropping
+  them: the first cut dropped them, and on shentu the one host that answered
+  clients had no height, so its 200 share fell from 39% to 6% for the fifteen
+  minutes that version ran. `sage_chain_view_external_floor` and the
   chain-state route's `external_floor` field export the floor, so a spread
   excursion can be told apart from the floor engaging; the boot warm-up
   summary goes through the startup reporter, since the canary's log level
