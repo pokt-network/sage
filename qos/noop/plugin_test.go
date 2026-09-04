@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/qos/noop"
 )
 
@@ -176,68 +177,41 @@ func TestSelectEndpoints_EmptyList(t *testing.T) {
 	}
 }
 
-func TestSelectEndpoints_WithSyncAllowance_NoConsensus(t *testing.T) {
-	// Even with sync allowance set, no consensus yet → all pass through.
-	p := noop.NewPlugin(nil, 10)
-	ep1 := domain.EndpointAddr("s1-https://a.example.com")
-	ep2 := domain.EndpointAddr("s2-https://b.example.com")
+// sync_allowance is accepted and ignored. It used to gate a block-height
+// filter fed by an UpdateBlockHeight nothing ever called, so it read as live
+// and decided nothing; the filter is gone and this pins that the knob cannot
+// quietly come back to life.
+func TestSelectEndpoints_SyncAllowanceChangesNothing(t *testing.T) {
+	endpoints := domain.EndpointAddrList{"supA-https://a.example.com", "supB-https://b.example.com"}
 
-	result, err := p.SelectEndpoints(domain.EndpointAddrList{ep1, ep2}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(result) != 2 {
-		t.Errorf("expected 2 endpoints before consensus, got %d", len(result))
-	}
-}
-
-func TestSelectEndpoints_WithSyncAllowance_FiltersLaggingEndpoints(t *testing.T) {
-	p := noop.NewPlugin(nil, 5)
-
-	ep1 := domain.EndpointAddr("s1-https://a.example.com")
-	ep2 := domain.EndpointAddr("s2-https://b.example.com")
-	ep3 := domain.EndpointAddr("s3-https://c.example.com") // no data → allowed through
-
-	// Build consensus: perceived ≈ 1000.
-	p.UpdateBlockHeight(ep1, 1000)
-	p.UpdateBlockHeight(ep2, 900) // 900 < 995 (1000-5) → should be filtered
-
-	result, err := p.SelectEndpoints(domain.EndpointAddrList{ep1, ep2, ep3}, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !result.Contains(ep1) {
-		t.Error("ep1 (height 1000) should be included")
-	}
-	if result.Contains(ep2) {
-		t.Error("ep2 (height 900) should be filtered out")
-	}
-	if !result.Contains(ep3) {
-		t.Error("ep3 (unknown) should be allowed through")
+	for _, allowance := range []uint64{0, 1, 100, 1_000_000} {
+		p := noop.NewPlugin(nil, allowance)
+		got, err := p.SelectEndpoints(endpoints, nil)
+		if err != nil {
+			t.Fatalf("sync_allowance %d: %v", allowance, err)
+		}
+		if len(got) != len(endpoints) {
+			t.Errorf("sync_allowance %d returned %d of %d endpoints; the passthrough filters nothing",
+				allowance, len(got), len(endpoints))
+		}
 	}
 }
 
-// --- BlockHeightTracker --- //
+// The passthrough implements the core interface and none of the optional ones.
+// Claiming a capability it cannot honour for an unknown chain is how
+// sync_allowance came to look live: the executor and the observation handler
+// both gate height tracking on DataExtractor, which this never implemented,
+// so the tracker it did implement was unreachable.
+func TestPlugin_ImplementsNoOptionalCapabilities(t *testing.T) {
+	var p any = noop.NewPlugin(nil, 100)
 
-func TestPerceivedBlockHeight_ZeroWithNoObservations(t *testing.T) {
-	p := noop.NewPlugin(nil, 10)
-	if h := p.PerceivedBlockHeight(); h != 0 {
-		t.Errorf("expected 0 before any observations, got %d", h)
+	if _, ok := p.(qos.HealthChecker); ok {
+		t.Error("declares HealthChecker: the passthrough cannot know what payload an unknown chain answers")
 	}
-}
-
-func TestPerceivedBlockHeight_UpdatesWithObservations(t *testing.T) {
-	p := noop.NewPlugin(nil, 10)
-	p.UpdateBlockHeight("s1-https://a.example.com", 500)
-	p.UpdateBlockHeight("s2-https://b.example.com", 510)
-
-	if h := p.PerceivedBlockHeight(); h == 0 {
-		t.Error("expected non-zero perceived height after updates")
+	if _, ok := p.(qos.DataExtractor); ok {
+		t.Error("declares DataExtractor: it cannot know where a height sits in a response it does not understand")
 	}
-}
-
-func TestStartSync_DoesNotPanic(t *testing.T) {
-	p := noop.NewPlugin(nil, 0)
-	p.StartSync(context.Background())
+	if _, ok := p.(qos.BlockHeightTracker); ok {
+		t.Error("declares BlockHeightTracker with no producer — that is exactly the dead machinery removed on 2026-09-04")
+	}
 }

@@ -250,6 +250,40 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **Small chains get real QoS, from a declaration rather than a plugin each.**
+  Four services on the canary — near, sui, eth-beacon and radix — ran on the
+  passthrough, which tracks no block height, so their `sync_allowance` governed
+  nothing and their selection was reputation alone. Nobody chose that; there
+  was no cheap way to give a small chain QoS, so every small chain went
+  without.
+
+  `qos/jsonheight` builds a plugin from the two facts that actually differ
+  between such chains: which request returns the height, and where in the
+  response it sits. Everything else — the height filter, consensus, the chain
+  view, the probe schedule — is the shared machinery every plugin already uses.
+  Each chain is a short Go declaration, not config: a probe payload and a
+  response path are chain semantics, and those belong somewhere they can be
+  read, tested and reviewed rather than in YAML where a wrong path grades
+  suppliers on a request they never agreed to serve.
+
+  Heights come from client traffic as well as probes where a chain can say how
+  a client names the method, so a busy service's chain view stays fresh between
+  cycles. The rule is the response and not the request — a body carrying the
+  declared path answered the question, whoever asked — which is also the only
+  rule that works for a REST chain, whose probe carries no body to recognise it
+  by.
+
+- **The passthrough no longer pretends to filter.** It carried a full
+  block-height filter fed by an `UpdateBlockHeight` that nothing on the relay
+  or probe path ever called, because both call sites are gated on a
+  `DataExtractor` it does not implement. So `sync_allowance` on a passthrough
+  service read as live and decided nothing, for as long as the plugin has
+  existed — the fourth knob found this week that looks live and governs
+  nothing, after archival inference, `max_workers` and the health-check
+  interval. The filter is gone, and the plugin now implements the core
+  interface and none of the optional ones, which is what being the passthrough
+  means. A chain whose heights matter gets a plugin that can read them.
+
 - **A TRON QoS plugin, because TRON answers two request framings and needed
   both.** TRON exposes an Ethereum-compatible JSON-RPC surface alongside its
   own REST API, and real traffic uses both — measured across the PATH fleet on

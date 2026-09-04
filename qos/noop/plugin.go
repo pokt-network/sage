@@ -21,33 +21,35 @@ import (
 	"github.com/pokt-network/sage/qos"
 )
 
-// endpointState holds the minimal per-endpoint state tracked by NoOp.
-type endpointState struct {
-	blockHeight uint64
-}
-
-// Plugin is the passthrough NoOp QoS plugin.
+// Plugin is the passthrough QoS plugin: it relays and scores, and understands
+// nothing about the payload.
+//
+// It tracks no block height, and that is a statement about what it can know
+// rather than a gap. A height comes from a response, and reading one requires
+// knowing which method returns it and where in the body it sits — which is
+// exactly the chain knowledge this plugin is defined by not having. It carried
+// a full block-height filter until 2026-09-04, fed by an UpdateBlockHeight
+// nothing on the relay or probe path ever called, because both call sites are
+// gated on a DataExtractor this plugin does not implement. So sync_allowance
+// on a passthrough service read as live and decided nothing, for as long as
+// the plugin has existed.
+//
+// A chain whose heights matter needs a plugin that can read them. TRON got one
+// the same day, for exactly this reason.
 type Plugin struct {
-	logger        *slog.Logger
-	syncAllowance uint64
-
-	// store and consensus are only used when syncAllowance > 0.
-	store     *qos.EndpointStore[endpointState]
-	consensus *qos.BlockConsensus
+	logger *slog.Logger
 }
 
-// NewPlugin creates a NoOp Plugin. When syncAllowance is zero, block height
-// tracking is disabled and all endpoints are always returned unchanged.
-func NewPlugin(logger *slog.Logger, syncAllowance uint64) *Plugin {
+// NewPlugin creates a passthrough Plugin.
+//
+// syncAllowance is accepted and ignored: it is meaningless without per-endpoint
+// heights, the caller passes it uniformly for every plugin, and refusing it
+// here would push a type switch into the wiring to say nothing useful.
+func NewPlugin(logger *slog.Logger, _ uint64) *Plugin {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Plugin{
-		logger:        logger,
-		syncAllowance: syncAllowance,
-		store:         qos.NewEndpointStore[endpointState](logger),
-		consensus:     qos.NewBlockConsensus(logger, syncAllowance),
-	}
+	return &Plugin{logger: logger}
 }
 
 // --- qos.Plugin --- //
@@ -105,72 +107,19 @@ func extractMethodBestEffort(body []byte) string {
 
 // SelectEndpoints returns all provided endpoints unchanged.
 // If syncAllowance > 0, endpoints too far behind perceived block height are
-// filtered out using tiered degradation (same as other QoS plugins).
+// SelectEndpoints returns the candidates unchanged.
+//
+// There is nothing to filter on. Block height is the only thing the other
+// plugins narrow a pool by, and this one has no way to learn it; reputation
+// and the operator controls (bans, drains, blacklists) do their filtering
+// before selection is reached, at the one place endpoints are handed out.
 func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.Payload) (domain.EndpointAddrList, error) {
-	if p.syncAllowance == 0 {
-		return endpoints, nil
-	}
-
-	perceived := p.consensus.PerceivedBlock()
-	if perceived == 0 {
-		// Cold start — no consensus yet, pass all through.
-		return endpoints, nil
-	}
-
-	getHeight := func(addr domain.EndpointAddr) (uint64, bool) {
-		data, ok := p.store.Get(addr)
-		if !ok {
-			return 0, false
-		}
-		return data.blockHeight, true
-	}
-
-	var minHeight uint64
-	if perceived > p.syncAllowance {
-		minHeight = perceived - p.syncAllowance
-	}
-	blockFilter := qos.BlockHeightFilter(getHeight, minHeight)
-
-	var relaxedMin uint64
-	if perceived > p.syncAllowance*2 {
-		relaxedMin = perceived - p.syncAllowance*2
-	}
-	relaxedFilter := qos.BlockHeightFilter(getHeight, relaxedMin)
-
-	result := qos.Select(
-		endpoints,
-		[]qos.FilterFunc{blockFilter},
-		[]qos.FilterFunc{relaxedFilter},
-		nil,
-		// No least-stale fallback ranker: noop serves generic chains where a
-		// single service may front heterogeneous backends, so block heights
-		// aren't comparable across endpoints for staleness ranking.
-		nil,
-	)
-	return result.Endpoints, nil
+	return endpoints, nil
 }
 
-// --- qos.BlockHeightTracker --- //
-
-// UpdateBlockHeight records a block height observation from an endpoint.
-// Only meaningful when syncAllowance > 0.
-func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) {
-	p.store.Update(endpoint, func(s *endpointState) {
-		s.blockHeight = height
-	})
-	p.consensus.AddObservation(endpoint, height)
-}
-
-// PerceivedBlockHeight returns the current consensus block height.
-func (p *Plugin) PerceivedBlockHeight() uint64 {
-	return p.consensus.PerceivedBlock()
-}
-
-// StartSync is a no-op; external health checks drive updates.
-func (p *Plugin) StartSync(_ context.Context) {}
-
-// Compile-time interface assertions.
-var (
-	_ qos.Plugin             = (*Plugin)(nil)
-	_ qos.BlockHeightTracker = (*Plugin)(nil)
-)
+// Compile-time interface assertions. Deliberately short: this plugin
+// implements the core interface and none of the optional ones, which is what
+// makes it the passthrough. A new assertion here should make somebody ask
+// whether the capability can actually be honoured for a chain nothing is known
+// about.
+var _ qos.Plugin = (*Plugin)(nil)

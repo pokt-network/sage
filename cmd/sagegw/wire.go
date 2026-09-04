@@ -33,6 +33,7 @@ import (
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/qos/cosmos"
 	"github.com/pokt-network/sage/qos/evm"
+	"github.com/pokt-network/sage/qos/jsonheight"
 	"github.com/pokt-network/sage/qos/noop"
 	"github.com/pokt-network/sage/qos/solana"
 	"github.com/pokt-network/sage/qos/tron"
@@ -341,7 +342,14 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			// config unchanged; the plugin adds the REST framing EVM refuses.
 			plugin = tron.NewPlugin(logger, evmConfigFor(svc))
 		default:
-			plugin = noop.NewPlugin(logger, svc.SyncAllowance)
+			// A chain declared in qos/jsonheight needs only a probe and a
+			// path; anything else falls to the passthrough, which tracks
+			// nothing and says so at startup (config.QoSCoverageFor).
+			if chain, ok := jsonheight.ByServiceType(domain.ServiceType(svc.Type)); ok {
+				plugin = jsonheight.NewPlugin(logger, chain, svc.SyncAllowance)
+			} else {
+				plugin = noop.NewPlugin(logger, svc.SyncAllowance)
+			}
 		}
 		_ = qosReg.Register(domain.ServiceID(svc.ID), plugin)
 	}

@@ -99,7 +99,7 @@ func TestQoSCoverage_OneLinePerCase(t *testing.T) {
 // nobody knew; the report saying so afterwards would be worse than useless.
 func TestQoSCoverage_RecognisesEveryTypeWithAPlugin(t *testing.T) {
 	var services []ServiceConfig
-	for _, id := range []string{"evm", "cosmos", "solana", "tron"} {
+	for _, id := range []string{"evm", "cosmos", "solana", "tron", "near", "sui", "eth-beacon", "radix"} {
 		services = append(services, ServiceConfig{ID: id + "-svc", Type: id})
 	}
 
