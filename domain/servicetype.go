@@ -8,7 +8,7 @@ package domain
 // list gets the passthrough, and the operator is told, which is the whole
 // point of naming the set in one place.
 func KnownServiceTypes() []ServiceType {
-	return []ServiceType{ServiceTypeEVM, ServiceTypeCosmos, ServiceTypeSolana}
+	return []ServiceType{ServiceTypeEVM, ServiceTypeCosmos, ServiceTypeSolana, ServiceTypeTron}
 }
 
 // IsKnownServiceType reports whether a configured type selects a

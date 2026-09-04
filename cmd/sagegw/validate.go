@@ -102,6 +102,9 @@ func validateServiceQoS(svc config.ServiceConfig) error {
 		err = evmConfigFor(svc).Validate()
 	case domain.ServiceTypeCosmos:
 		err = cosmosConfigFor(svc).Validate()
+	case domain.ServiceTypeTron:
+		// Same config and the same hex chain-id rule as EVM.
+		err = evmConfigFor(svc).Validate()
 	}
 	if err != nil {
 		return fmt.Errorf("service %q: %w", svc.ID, err)

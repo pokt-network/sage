@@ -250,6 +250,32 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **A TRON QoS plugin, because TRON answers two request framings and needed
+  both.** TRON exposes an Ethereum-compatible JSON-RPC surface alongside its
+  own REST API, and real traffic uses both — measured across the PATH fleet on
+  2026-09-04, 72% of TRON relays were JSON-RPC and 28% REST. Neither existing
+  plugin serves that. The EVM plugin refuses a non-JSON-RPC request outright
+  with a non-retryable validation error, so `type: evm` would have turned 28%
+  of the traffic into errors in exchange for probing the other 72%. The
+  passthrough takes everything and understands none of it: no health checks, no
+  block heights, no chain view, and a `sync_allowance` that governs nothing
+  because nothing ever produces a height for its filter. TRON ran on the
+  passthrough on both fleets, which is how the largest service by relay count
+  came to have no QoS at all without anyone deciding it should.
+
+  `qos/tron` is the EVM plugin with one method replaced: JSON-RPC and WebSocket
+  go to EVM's parser, everything else to the passthrough's. Health checks,
+  height extraction, consensus, archival and the chain view are EVM's
+  unmodified, because TRON's JSON-RPC surface really is Ethereum's — ops
+  verified both EVM health checks against live TRON suppliers, `eth_blockNumber`
+  returning a moving height and `eth_chainId` returning `0x2b6653dc`.
+
+  The composition is only sound because an endpoint's identity does not change
+  with RPC type — `domain.EndpointAddr` is supplier plus public URL — so a
+  height learned from a JSON-RPC probe is stored against the same address a
+  REST request selects, and height filtering covers both framings from one set
+  of observations.
+
 - **SAGE says which services it has no QoS for, and why.** `services[].type`
   selects the QoS plugin, and anything the switch does not recognise falls
   through to the passthrough — which relays and scores but runs no health

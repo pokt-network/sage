@@ -93,3 +93,19 @@ func TestQoSCoverage_OneLinePerCase(t *testing.T) {
 		t.Errorf("the line does not say how many: %s", lines[0])
 	}
 }
+
+// A service type with a plugin must not be reported as uncovered. tron got its
+// own plugin on 2026-09-04 precisely because it was on the passthrough and
+// nobody knew; the report saying so afterwards would be worse than useless.
+func TestQoSCoverage_RecognisesEveryTypeWithAPlugin(t *testing.T) {
+	var services []ServiceConfig
+	for _, id := range []string{"evm", "cosmos", "solana", "tron"} {
+		services = append(services, ServiceConfig{ID: id + "-svc", Type: id})
+	}
+
+	cov := QoSCoverageFor(services)
+	if len(cov.Passthrough) != 0 || len(cov.Unrecognised) != 0 {
+		t.Errorf("reported a service that has a plugin: passthrough=%v unrecognised=%v",
+			cov.Passthrough, cov.Unrecognised)
+	}
+}

@@ -35,6 +35,7 @@ import (
 	"github.com/pokt-network/sage/qos/evm"
 	"github.com/pokt-network/sage/qos/noop"
 	"github.com/pokt-network/sage/qos/solana"
+	"github.com/pokt-network/sage/qos/tron"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/relay/middleware"
 	"github.com/pokt-network/sage/reputation"
@@ -335,6 +336,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			plugin = cosmos.NewPlugin(logger, cosmosConfigFor(svc))
 		case domain.ServiceTypeSolana:
 			plugin = solana.NewPlugin(logger, svc.SyncAllowance)
+		case domain.ServiceTypeTron:
+			// TRON's JSON-RPC surface is Ethereum's, so it takes the EVM
+			// config unchanged; the plugin adds the REST framing EVM refuses.
+			plugin = tron.NewPlugin(logger, evmConfigFor(svc))
 		default:
 			plugin = noop.NewPlugin(logger, svc.SyncAllowance)
 		}

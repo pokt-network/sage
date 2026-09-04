@@ -220,9 +220,15 @@ type ServiceConfig struct {
 	// ID is the service identifier clients name in the Target-Service-Id
 	// header, and the key everything per-service is looked up by.
 	ID string `yaml:"id"`
-	// Type selects the QoS plugin: "evm", "cosmos", "solana", or anything else
-	// for the passthrough plugin, which relays and scores but understands
-	// nothing about the payload.
+	// Type selects the QoS plugin: "evm", "cosmos", "solana", "tron", or
+	// anything else for the passthrough plugin, which relays and scores but
+	// understands nothing about the payload.
+	//
+	// A service on the passthrough gets no health checks, no block-height
+	// tracking and no chain view, and its selection is reputation alone — so
+	// an unrecognised value here is a serious typo. Startup reports which
+	// services are on the passthrough and which named a type nothing
+	// implements; see config.QoSCoverageFor.
 	Type string `yaml:"type"`
 	// RPCTypes lists the protocols this service is expected to serve
 	// ("json_rpc", "rest", "comet_bft", "websocket", "grpc"). Read by the

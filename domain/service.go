@@ -13,5 +13,6 @@ const (
 	ServiceTypeEVM     ServiceType = "evm"
 	ServiceTypeCosmos  ServiceType = "cosmos"
 	ServiceTypeSolana  ServiceType = "solana"
+	ServiceTypeTron    ServiceType = "tron"
 	ServiceTypeGeneric ServiceType = "generic"
 )

@@ -8,6 +8,7 @@ import (
 	"github.com/pokt-network/sage/qos/cosmos"
 	"github.com/pokt-network/sage/qos/evm"
 	"github.com/pokt-network/sage/qos/solana"
+	"github.com/pokt-network/sage/qos/tron"
 )
 
 // Every plugin that tracks block height must mark the check carrying it
@@ -31,6 +32,7 @@ func TestPlugins_MarkTheirBlockHeightCheckEssential(t *testing.T) {
 		"evm":    evm.NewPlugin(logger, evm.Config{}),
 		"cosmos": cosmos.NewPlugin(logger, cosmos.Config{}),
 		"solana": solana.NewPlugin(logger, 0),
+		"tron":   tron.NewPlugin(logger, tron.Config{}),
 	}
 
 	for name, plugin := range plugins {
