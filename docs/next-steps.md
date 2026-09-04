@@ -6,8 +6,9 @@ ordered by priority within each section. Update this file when an item lands
 or a decision changes it; delete items rather than marking them done, so the
 file only ever lists open work.
 
-Last updated: 2026-09-04 evening (audit commits baf236a..71b3d8f plus fixes
-3377e68 and c838f4c live on the canary at 1%, verified by ops. PATH
+Last updated: 2026-09-04 night (audit commits baf236a..71b3d8f plus fixes
+3377e68, c838f4c and the floor change c30ce90 live on the canary at 1%,
+all verified by ops. PATH
 `origin/main` at `274e9791`, 2026-08-25).
 
 ## After the audit roll (2026-09-04, image c838f4c at 1%)
@@ -18,18 +19,26 @@ added back; `/health` is liveness; the boot burst is gone; pool collapses
 are down 85% on arb-one and to zero elsewhere; shentu's 200 share went from
 6% under the first fix to 100%. What remains is decisions and watches.
 
-- **External floor semantics (Otto's call).** `sage_chain_view_external_floor`
-  shows the floor engaging on robinhood (+74 blocks) and arb-one (+31) from
-  a source ahead of the entire pool. That is propagation, not a pool that is
-  behind, and it pushes selection onto the stale-ranking fallback more than
-  the config intends. Proposal: the floor engages only when the pool is
-  collectively behind the trusted node by more than the allowance —
-  `perceived = max(consensus, floor - sync_allowance)`. One line in
-  `applyExternalFloor` plus a test; not done without a decision because it
-  changes what `external_block_sources` means.
+- **Break the warm line's `skipped` into its causes.** It counts three
+  things — an unparseable key, an entry past the 1h idle TTL, a key already
+  in cache — and on 2026-09-04 it went 11 → 42 across four rolls, which ops
+  had to ask about. Three fields on `HydrateResult` and the line says which.
+- **A time-aware height filter.** The strict filter compares each endpoint's
+  last observed height against perceived minus `sync_allowance`, and on a
+  fast chain most of a pool's spread is the age of the readings (a 120 s
+  probe cycle on bsc is ~160 blocks). Projecting each stored height forward
+  by the chain's block rate before comparing — the chain view already does
+  this for the disagreement metric — would make "behind" mean behind, and
+  retire the allowance bumps below. A design item.
 - **bsc `sync_allowance` 100 → 500-600 (Otto's config).** Against a steady
   spread of ~250 the strict filter rejects the tail every cycle by
   construction. robinhood at 3000 sits at its edge (spread 1,200-3,240).
+  The check once it lands: fewer tier-3 fallbacks on bsc,
+  `sage_degraded_total{tier="response"}` staying at zero.
+- **Fleet 408s halved at the c30ce90 roll (536 → 228 per 15m), base 86 →
+  15.** Stale-ranked tier-3 picks timing out is a mechanism the floor
+  change removes, but there is no same-image pre window, so it is a
+  correlation. Recorded.
 - **base 408s, watch.** Zero before 15:25Z on 2026-09-04, then 11-19 per
   5m, then 86 per 15m by 17:00, while base 200s hold at ~1,700 per 5m. Not
   tied to any roll (began 18 minutes after 71b3d8f, unchanged across two
