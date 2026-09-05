@@ -45,12 +45,14 @@ across both pods after ~6h.
   15.** Stale-ranked tier-3 picks timing out is a mechanism the floor
   change removes, but there is no same-image pre window, so it is a
   correlation. Recorded.
-- ~~shentu's chronic 408s.~~ Closed 2026-09-05 by `9a853c5`: 408 share
-  85.92% -> 8.74% in the first 30 minutes. The cause was never the audit
-  roll — shentu has no external block source, so the floor change could not
-  reach it — but a supplier 408 graded the client's, which on CometBFT was
-  every 408. The reading below is kept because the reasoning it records was
-  what stopped a rollback of `c30ce90`.
+- **shentu's chronic 408s: halved by `9a853c5`, not closed.** 84.51% ->
+  42.59% at n=1,848 over 5h. The cause was never the audit roll — shentu has
+  no external block source, so the floor change could not reach it — but a
+  supplier 408 graded the client's, which on CometBFT was every 408. What
+  remains is requests where every attempt returned 408, which is the case
+  for the penalty half below rather than a second cause. The reading that
+  follows is kept because the reasoning it records was what stopped a
+  rollback of `c30ce90`.
 
 - **shentu's 408s are the pool's, not the roll's.** 68.09% -> 81.43% over
   the 24h to 2026-09-05, which reads as a regression against `c30ce90` and
@@ -68,10 +70,25 @@ across both pods after ~6h.
   5m, then 86 per 15m by 17:00, while base 200s hold at ~1,700 per 5m. Not
   tied to any roll (began 18 minutes after 71b3d8f, unchanged across two
   more). base's tier 1 is dominated by rm02.kalorius, whose latency EWMA
-  rose 66 → 175 ms over the afternoon; a supplier slowing toward the 8s
-  relay timeout shows as 408 without moving its score. Ops leaves it unless
-  it keeps climbing; the per-key latency in `GET /admin/reputation/base`
-  is the read.
+  rose 66 → 175 ms over the afternoon, and the EWMA is report-only
+  (`reputation/service.go:223`), so a supplier slowing toward the relay
+  timeout loses no score. That is real, but it is not this symptom: SAGE
+  renders its own blown deadline as a **504**
+  (`router.statusForError`), never a 408, so a slow supplier shows up in
+  504 and latency, not here. Every client 408 is a supplier's own.
+
+  It has kept climbing, monotonically and across three images: 1.07% on
+  2026-09-04, 1.49% at the 09-05 12:30Z read on `c30ce90`, 1.46% in the 5h
+  before the `9a853c5` roll and 1.82% in the 5h after (n=73,586). A trend
+  that predates every one of those rolls is not caused by them, and the
+  retry half in particular cannot raise a 408 share: a client 408 now
+  requires every attempt to 408 where one used to suffice. The confound in
+  the post-roll comparison is that the 5h windows are adjacent rather than
+  offset-matched, so they differ in time of day and carry 10.5% more fleet
+  volume; the 30m read that preceded it did control for that. Re-run the 5h
+  comparison against the same clock hours on the previous day before
+  reading anything into the step. The per-key latency in
+  `GET /admin/reputation/base` is still the read for the supplier itself.
 - **Probe share is 20.71% of relay attempts, and two thirds of the rise is
   the denominator.** Up from 14.76% over the 24h to 2026-09-05: probes rose
   9.8% (61,271 -> 67,254/h) while relay attempts fell 21.8% (415,161 ->
@@ -191,11 +208,11 @@ across both pods after ~6h.
   combined change (retry + minor penalty, `26f22c5`) was reverted on
   2026-09-02 after the canary quadrupled its client-facing 408 rate. The
   retry half alone landed on 2026-09-05 (`9a853c5`, `ShouldPenalize:
-  false`) and passed its gate in the first 30 minutes: fleet client 408
-  1.04% against a 1.09% baseline, and shentu's 408 share collapsed 85.92% ->
-  8.74% (200 share 14.08% -> 91.26%) at n=186. So the retry half is not what
-  raised 408s in September, and the penalty half is the whole of the
-  remaining suspicion.
+  false`). At 5h post-roll fleet 408 was unmoved (1.13% -> 1.13%) and
+  shentu's halved (84.51% -> 42.59%, n=1,848), so the retry half is not what
+  raised 408s in September and the penalty half is the whole of the
+  remaining suspicion. The 30-minute read that preceded this said 8.74% at
+  n=186 and was quoted here as decisive; it was one favourable window.
 
   Two things the first read could not settle, both for the clean 6h window:
 
@@ -215,9 +232,15 @@ across both pods after ~6h.
     1% 408 rate can contribute. It was the wrong instrument, not a failed
     condition.
 
-  moonriver and persistence stayed unresolved at n=38 and n=179; persistence
-  read 74.14% and 33.00% on the same image four hours apart, which is the
-  size of the noise there.
+  moonriver and persistence are still unresolved at 5h (70.18% -> 72.73% at
+  n=397, 67.02% -> 60.78% at n=1,742); persistence read 74.14% and 33.00% on
+  the same image four hours apart, which is the size of the noise there.
+
+  Two numbers from that first read must not be reused. `1.09%` was quoted as
+  a fleet-408 gate and came from a window that happened to read low; the
+  matched value is 1.13%. And no single-window figure at n in the hundreds
+  is a level for these services, which the same report said of moonriver and
+  persistence before saying the opposite of shentu.
 
 - **Canary counters need more than one window before they are a baseline.**
   Two targets set during the 408 incident were built on single windows and both

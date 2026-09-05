@@ -281,15 +281,27 @@ the source of truth for the design and the reasoning behind it.
   concentrates traffic onto a shrinking tier-1 set. The canary read is the
   chronic-408 services' 200 share against fleet
   `sage_client_requests_total{status="408"}`, which this half cannot raise.
-  Confirmed on the canary the same day, 30 minutes post-roll against a
-  matched window at offset 3h: shentu's 408 share 85.92% -> 8.74% and its
-  200 share 14.08% -> 91.26% at n=186, with fleet client 408 at 1.04%
-  against a 1.09% baseline. moonriver and persistence stayed unresolved at
-  n=38 and n=179, where the same service on the same image read 74.14% and
-  33.00% four hours apart. Attempts per client request moved 1.874 ->
-  1.820, which says nothing either way: `MWMetrics` sits inside `MWBatch`
-  as well as inside retry and hedge, so that ratio tracks batch-size mix and
-  swings by more than a 1% 408 rate can contribute.
+  Measured on the canary at 5h post-roll, which is the reading to quote:
+  shentu's 408 share 84.51% -> 42.59% at n=1,848 — halved, not fixed. The
+  first read at 30 minutes said 85.92% -> 8.74% at n=186 and was written up
+  as decisive; it was a favourable window at a sample size the same report
+  had just called too small to conclude anything from. Fleet 408 was
+  unmoved, 1.13% -> 1.13%, and the 1.09% quoted as the gate came from a
+  window that read low. persistence 67.02% -> 60.78%, moonriver 70.18% ->
+  72.73% at n=397, both still inconclusive. Latency p99 improved 5.54s ->
+  2.26s and 504 did not rise (0.26% -> 0.24%), so the extra attempts are not
+  being paid for out of the deadline.
+
+  Attempts per client request fell in both windows (1.867 -> 1.809), where a
+  rise of roughly the 408 rate was predicted. The prediction was the error:
+  `MWMetrics` sits inside `MWBatch` as well as inside retry and hedge, so
+  that ratio tracks JSON-RPC batch-size mix and swings by several percent on
+  traffic mix alone, against the ~+0.01 a 1% 408 rate can contribute. It
+  cannot measure this change in either direction.
+
+  What halving leaves is the argument for the penalty half: the remaining
+  42.59% is requests where every attempt returned 408, which is what a pool
+  that is uniformly timing out looks like when nothing scores it down.
 
 - **The external floor engages only when the pool is behind by more than
   the allowance.** `sage_chain_view_external_floor`, exported the same day,
