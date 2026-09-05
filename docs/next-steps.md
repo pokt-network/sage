@@ -16,8 +16,14 @@ all verified by ops. PATH
 The six audit commits plus two same-day fixes are live and verified by ops:
 gateway failures are 5xx and the 200 share is unchanged once they are
 added back; `/health` is liveness; the boot burst is gone; pool collapses
-are down 85% on arb-one and to zero elsewhere; shentu's 200 share went from
-6% under the first fix to 100%. What remains is decisions and watches.
+are down 85% on arb-one and to zero elsewhere. What remains is decisions and
+watches.
+
+The 18h reading on `c30ce90` (2026-09-05, 1,015,042 requests / 6h) is the
+baseline the items below are measured against: 200 at 98.21%, 408 at 1.08%,
+500 0.34%, 504 0.24%; p50 41ms, p95 418ms, p99 5.54s; zero recovered panics,
+zero health-check cycle overruns, six circuit breaks; heap flat at 450-560MB
+across both pods after ~6h.
 
 - **Break the warm line's `skipped` into its causes.** It counts three
   things — an unparseable key, an entry past the 1h idle TTL, a key already
@@ -39,6 +45,18 @@ are down 85% on arb-one and to zero elsewhere; shentu's 200 share went from
   15.** Stale-ranked tier-3 picks timing out is a mechanism the floor
   change removes, but there is no same-image pre window, so it is a
   correlation. Recorded.
+- **shentu's 408s are the pool's, not the roll's.** 68.09% -> 81.43% over
+  the 24h to 2026-09-05, which reads as a regression against `c30ce90` and
+  is not one: shentu has no external block source, so the floor change
+  cannot reach it, and the change lowers perceived where it does engage,
+  which only relaxes the height filter. The mechanism is the one the retry
+  half above addresses — a supplier 408 on CometBFT was graded the client's,
+  so the caller got the timeout with rotation untried — and the 100% figure
+  recorded here for `c838f4c` was a fifteen-minute window on 1,100 requests
+  per 6h, not a level. moonriver and persistence are the same class and
+  drifted the other way over the same 24h (88.27% -> 71.37%, 84.06% ->
+  64.81%), which is the size of the noise at that volume.
+
 - **base 408s, watch.** Zero before 15:25Z on 2026-09-04, then 11-19 per
   5m, then 86 per 15m by 17:00, while base 200s hold at ~1,700 per 5m. Not
   tied to any roll (began 18 minutes after 71b3d8f, unchanged across two
@@ -47,6 +65,14 @@ are down 85% on arb-one and to zero elsewhere; shentu's 200 share went from
   relay timeout shows as 408 without moving its score. Ops leaves it unless
   it keeps climbing; the per-key latency in `GET /admin/reputation/base`
   is the read.
+- **Probe share is 20.71% of relay attempts, and two thirds of the rise is
+  the denominator.** Up from 14.76% over the 24h to 2026-09-05: probes rose
+  9.8% (61,271 -> 67,254/h) while relay attempts fell 21.8% (415,161 ->
+  324,819/h). Cycle p50 is flat at 1s and overruns are zero, so the 120s
+  interval is holding and the probe side is supplier-set churn. The lever
+  for the absolute number already exists and is off: `traffic_informed_probing`,
+  and the one-service experiment for it is below.
+
 - **base got faster at the 71b3d8f roll, unexplained.** p50 202 → 81 ms,
   p95 flat, same suppliers carrying the traffic. Nothing in the audit set
   touches base's pick or send path. Recorded, not claimed.
@@ -154,19 +180,25 @@ are down 85% on arb-one and to zero elsewhere; shentu's 200 share went from
   rather than being "any traffic", because a probe is the only observation
   source that bypasses sampling. `health_checks.min_traffic_signals` overrides
   the derivation.
-- **Re-land the 408 supplier attribution, one half at a time.** The combined
-  change (retry + minor penalty, `26f22c5`) was reverted on 2026-09-02 after
-  the canary quadrupled its client-facing 408 rate; the revert put it back
-  (0.719% client 408, 200 at 99.140% per 100k, attempts per client request
-  1.519), which confirms the attribution change as the cause. The measurement
-  and the ruled-out mechanisms are in the CHANGELOG. What was never separated is which
-  half did it. The retry half alone cannot raise client 408s — retry exhaustion
-  delivers the upstream's own response (`router.go`), so a retried 408 ends as
-  200 or the same 408 — which points at the penalty half and its effect on
-  selection. Worth testing as two canary experiments rather than one: 408
-  retryable with `ShouldPenalize: false`, then the penalty alone. Until then a
-  supplier that times out keeps being handed to callers, which is the known
-  cost of the safe state.
+- **The 408 penalty half, once the retry half has a canary reading.** The
+  combined change (retry + minor penalty, `26f22c5`) was reverted on
+  2026-09-02 after the canary quadrupled its client-facing 408 rate; the
+  revert put it back (0.719% client 408, 200 at 99.140% per 100k, attempts
+  per client request 1.519), which confirms the attribution change as the
+  cause but never separated which half did it. The retry half is now in
+  (`ShouldPenalize: false`), on the argument that it cannot raise client
+  408s: retry exhaustion delivers the upstream's own response (`router.go`),
+  so a retried 408 ends as 200 or as the same 408. The checks on it, all on
+  `sage_client_requests_total` and not on `sage_relay_total`, whose status
+  shares move with retry volume by construction: the chronic-408 services'
+  200 share should rise (shentu 18.57%, moonriver 28.63%, persistence
+  35.19% at the 2026-09-05 reading), fleet 408 should not rise from 1.08%,
+  and attempts per client request should rise by roughly the fleet 408 rate
+  and no more. If the retry half is clean, the penalty half is the remaining
+  experiment and the one that has to be watched hard, since scoring every
+  timing-out supplier down is what concentrates traffic onto a shrinking
+  tier-1 set.
+
 - **Canary counters need more than one window before they are a baseline.**
   Two targets set during the 408 incident were built on single windows and both
   were wrong. Probe volume was quoted at ~18/s from the d1f237f rollout and is

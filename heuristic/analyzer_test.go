@@ -486,7 +486,7 @@ func TestAnalyze_4xxWithoutEnvelopeOnJSONRPC_IsSupplierFault(t *testing.T) {
 // depends on the body, exactly as any other 4xx does. Re-landing the special
 // case needs a canary experiment that separates the retry half from the
 // penalty half, not a rerun of the same reasoning.
-func TestAnalyze_408HasNoSupplierSpecialCase(t *testing.T) {
+func TestAnalyze_408IsRetriedAndNotPenalized(t *testing.T) {
 	cases := []struct {
 		name            string
 		body            []byte
@@ -497,21 +497,26 @@ func TestAnalyze_408HasNoSupplierSpecialCase(t *testing.T) {
 		wantReason      string
 	}{
 		{
-			name:            "json-rpc envelope is the client's answer to keep",
+			name:            "json-rpc envelope: rotate, score nothing",
 			body:            []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`),
 			rpcType:         domain.RPCTypeJSONRPC,
-			wantAttribution: AttrClient,
-			wantReason:      "http_4xx",
+			wantRetry:       true,
+			wantAttribution: AttrSupplier,
+			wantReason:      "http_408",
 		},
 		{
-			name:            "rest body is the client's answer to keep",
+			// The shentu shape: on REST and CometBFT frontDoorRefusal claims
+			// only 401 and 403, so before this every 408 was the client's and
+			// the caller got the supplier's timeout with rotation untried.
+			name:            "rest: rotate, score nothing",
 			body:            []byte(`{"height":"1"}`),
 			rpcType:         domain.RPCTypeREST,
-			wantAttribution: AttrClient,
-			wantReason:      "http_4xx",
+			wantRetry:       true,
+			wantAttribution: AttrSupplier,
+			wantReason:      "http_408",
 		},
 		{
-			// Unchanged by the revert: a JSON-RPC request answered with no
+			// Unchanged: a JSON-RPC request answered with no
 			// JSON at all is the supplier's HTTP layer talking, whatever the
 			// status on it.
 			name:            "json-rpc with no envelope is still the supplier's",

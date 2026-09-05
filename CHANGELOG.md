@@ -250,6 +250,22 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **A supplier's HTTP 408 is retried elsewhere, and still scores nothing.**
+  SAGE emits no 408 of its own — a gateway-side relay timeout is a 504
+  (`router.statusForError`) — so every 408 a client sees is a supplier's,
+  forwarded verbatim. The generic 4xx branch read it as the client's mistake:
+  no rotation, no score, the caller keeps the timeout. On REST and CometBFT
+  that was every 408, because `frontDoorRefusal` claims only 401 and 403
+  there, and on the 2026-09-05 canary shentu answered 81.43% of its requests
+  that way, moonriver 71.37% and persistence 64.81%, with other suppliers
+  available throughout. This lands the retry half of the change reverted on
+  2026-09-02 (`26f22c5`, reverted in `01a96ca`) and leaves the penalty half
+  out: retry exhaustion delivers the upstream's own response, so a retried
+  408 ends as a 200 or as the same 408, while the penalty is what
+  concentrates traffic onto a shrinking tier-1 set. The canary read is the
+  chronic-408 services' 200 share against fleet
+  `sage_client_requests_total{status="408"}`, which this half cannot raise.
+
 - **The external floor engages only when the pool is behind by more than
   the allowance.** `sage_chain_view_external_floor`, exported the same day,
   showed robinhood's source 74 blocks ahead of every supplier and arb-one's
