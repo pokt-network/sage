@@ -281,27 +281,44 @@ the source of truth for the design and the reasoning behind it.
   concentrates traffic onto a shrinking tier-1 set. The canary read is the
   chronic-408 services' 200 share against fleet
   `sage_client_requests_total{status="408"}`, which this half cannot raise.
-  Measured on the canary at 5h post-roll, which is the reading to quote:
-  shentu's 408 share 84.51% -> 42.59% at n=1,848 — halved, not fixed. The
-  first read at 30 minutes said 85.92% -> 8.74% at n=186 and was written up
-  as decisive; it was a favourable window at a sample size the same report
-  had just called too small to conclude anything from. Fleet 408 was
-  unmoved, 1.13% -> 1.13%, and the 1.09% quoted as the gate came from a
-  window that read low. persistence 67.02% -> 60.78%, moonriver 70.18% ->
-  72.73% at n=397, both still inconclusive. Latency p99 improved 5.54s ->
-  2.26s and 504 did not rise (0.26% -> 0.24%), so the extra attempts are not
-  being paid for out of the deadline.
+  What the canary can and cannot say about it, after three readings that
+  disagreed. It cannot say anything per-service: a 5h 408 share at the same
+  clock hours across the four days of canary history gives shentu a band of
+  8.86% to 43.78% and base 0.44% to 1.97%, and two 5h windows taken twenty
+  minutes apart on the same image read shentu at 42.59% and 53.02%. Every
+  per-service conclusion drawn here in the first day — "collapsed to 8.74%",
+  then "halved", and ops' "base got worse" — was inside that noise. What it
+  can say is fleet-level and clean: 408 unmoved and inside band, 504 down
+  across three windows (0.27% -> 0.26% -> 0.23%, and base's own 0.64% ->
+  0.17% -> 0.07%), p99 5.54s -> 2.26s, heap down, no panics. 504 is the one
+  cost this change could have had — `MWTimeout` sits outside `MWRetry`, so
+  retrying spends one deadline over more attempts — and it is not being
+  paid.
 
-  Attempts per client request fell in both windows (1.867 -> 1.809), where a
-  rise of roughly the 408 rate was predicted. The prediction was the error:
-  `MWMetrics` sits inside `MWBatch` as well as inside retry and hedge, so
-  that ratio tracks JSON-RPC batch-size mix and swings by several percent on
-  traffic mix alone, against the ~+0.01 a 1% 408 rate can contribute. It
-  cannot measure this change in either direction.
+  The reason no per-service reading worked is that a status share is the
+  wrong instrument for "is retrying this failure worth anything": on a
+  low-volume service it moves tens of points on window placement, and on a
+  busy one the effect is diluted below the day-to-day band.
+  `sage_retry_resolution_total` answers it directly instead — see below.
 
-  What halving leaves is the argument for the penalty half: the remaining
-  42.59% is requests where every attempt returned 408, which is what a pool
-  that is uniformly timing out looks like when nothing scores it down.
+  Attempts per client request, quoted as a pass condition, was also the wrong
+  instrument and is retired: `MWMetrics` sits inside `MWBatch` as well as
+  inside retry and hedge, so that ratio tracks JSON-RPC batch-size mix and
+  swings by several percent on traffic composition alone, against the ~+0.01
+  a 1% 408 rate can contribute.
+
+- **`sage_retry_resolution_total` says whether a retry was worth anything.**
+  `{service_id, reason, outcome}`, counted once per retried request, where
+  `reason` is the heuristic's own verdict for the attempt that failed
+  (`http_408`, `http_5xx`, `transport_timeout`) and `outcome` is `recovered`
+  when a later attempt succeeded or `exhausted` when none did. So
+  "did retrying 408s help" is one selector and a count of requests rescued,
+  not a share needing a matched window and a four-day band —
+  `sage_retry_total` said a retry happened and never whether it worked, and
+  its `reason` is the coarse error kind, which lumps a 408 in with every
+  other transport failure. The no-retry path, which is nearly every request,
+  records nothing, so `recovered` over the sum is a rate over retried
+  requests rather than over all of them.
 
 - **The external floor engages only when the pool is behind by more than
   the allowance.** `sage_chain_view_external_floor`, exported the same day,

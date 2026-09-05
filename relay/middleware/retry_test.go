@@ -459,10 +459,79 @@ func (h *staleThenOKHandler) HandleRelay(ctx *relay.Context) error {
 	return nil
 }
 
-type recordingRetryRec struct{ reasons []string }
+type recordingRetryRec struct {
+	reasons     []string
+	resolutions []string // "reason/outcome"
+}
 
 func (r *recordingRetryRec) RecordRetry(_ domain.ServiceID, reason string) {
 	r.reasons = append(r.reasons, reason)
+}
+
+func (r *recordingRetryRec) RecordRetryResolution(_ domain.ServiceID, reason, outcome string) {
+	r.resolutions = append(r.resolutions, reason+"/"+outcome)
+}
+
+// A retried request records exactly one resolution, naming the verdict that
+// caused the retry and whether a later attempt succeeded. This is the counter
+// that answers "is retrying this failure worth anything" without needing a
+// matched window or a baseline band — the thing three contradictory readings
+// of shentu's 408 share cost an afternoon on 2026-09-05.
+func TestRetry_RecordsOneResolutionPerRetriedRequest(t *testing.T) {
+	rec := &recordingRetryRec{}
+	th := &trackingMockHandler{responses: []error{retryableErr("fail1"), retryableErr("fail2"), nil}}
+	mw := RetryWithRecorder(newFlags("retry"), retryCfg(3, 0), rec)
+	if err := mw(th).HandleRelay(baseContext()); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.resolutions) != 1 || rec.resolutions[0] != "transport error/recovered" {
+		t.Fatalf("want one transport-error/recovered, got %v", rec.resolutions)
+	}
+}
+
+// Retries that never succeed are the other half: without them "recovered" is
+// a count with no denominator and cannot be read as a rate.
+func TestRetry_RecordsExhaustedWhenNoAttemptSucceeds(t *testing.T) {
+	rec := &recordingRetryRec{}
+	th := &trackingMockHandler{responses: []error{retryableErr("f1"), retryableErr("f2"), retryableErr("f3")}}
+	mw := RetryWithRecorder(newFlags("retry"), retryCfg(2, 0), rec)
+	if err := mw(th).HandleRelay(baseContext()); err == nil {
+		t.Fatal("want the last error")
+	}
+	if len(rec.resolutions) != 1 || rec.resolutions[0] != "transport error/exhausted" {
+		t.Fatalf("want one transport-error/exhausted, got %v", rec.resolutions)
+	}
+}
+
+// The no-retry path is nearly every request. It must not touch the counter,
+// or "recovered" over total would be diluted by requests that never retried.
+func TestRetry_FirstAttemptSuccessRecordsNoResolution(t *testing.T) {
+	rec := &recordingRetryRec{}
+	th := &trackingMockHandler{responses: []error{nil}}
+	mw := RetryWithRecorder(newFlags("retry"), retryCfg(3, 0), rec)
+	if err := mw(th).HandleRelay(baseContext()); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.resolutions) != 0 {
+		t.Fatalf("a request that never retried recorded %v", rec.resolutions)
+	}
+}
+
+// The label is the heuristic's own verdict when the attempt produced one, so
+// "did retrying a 408 help" is one selector. Without this it is the error
+// KIND, which lumps a 408 in with every other transport failure.
+func TestRetry_ResolutionLabelIsTheHeuristicVerdict(t *testing.T) {
+	rec := &recordingRetryRec{}
+	th := &trackingMockHandler{responses: []error{retryableErr("supplier 408"), nil}}
+	mw := RetryWithRecorder(newFlags("retry"), retryCfg(2, 0), rec)
+	ctx := baseContext()
+	ctx.HeuristicResult = &heuristic.AnalysisResult{Reason: "http_408"}
+	if err := mw(th).HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.resolutions) != 1 || rec.resolutions[0] != "http_408/recovered" {
+		t.Fatalf("want http_408/recovered, got %v", rec.resolutions)
+	}
 }
 
 // Every retry attempt increments sage_retry_total with a reason. The metric

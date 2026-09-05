@@ -45,50 +45,32 @@ across both pods after ~6h.
   15.** Stale-ranked tier-3 picks timing out is a mechanism the floor
   change removes, but there is no same-image pre window, so it is a
   correlation. Recorded.
-- **shentu's chronic 408s: halved by `9a853c5`, not closed.** 84.51% ->
-  42.59% at n=1,848 over 5h. The cause was never the audit roll — shentu has
-  no external block source, so the floor change could not reach it — but a
-  supplier 408 graded the client's, which on CometBFT was every 408. What
-  remains is requests where every attempt returned 408, which is the case
-  for the penalty half below rather than a second cause. The reading that
-  follows is kept because the reasoning it records was what stopped a
-  rollback of `c30ce90`.
+- **shentu, moonriver and persistence: chronic 408s, effect unmeasured.**
+  The mechanism is a code fact and does not need the canary: a supplier 408
+  on CometBFT or REST was graded the client's, so the caller got the timeout
+  with rotation untried. Whether `9a853c5` moved these services is not
+  answerable from their 408 share. Over the four days of canary history a 5h
+  share at the same clock hours gives shentu a band of 8.86% to 43.78%, and
+  two 5h windows twenty minutes apart on the same image read 42.59% and
+  53.02%. Three conclusions were drawn from it in one afternoon — 8.74%
+  "fixed", 42.59% "halved", 53.21% "worse" — and none of them were readable.
+  Do not reopen this on a share. `sage_retry_resolution_total{reason="http_408"}`
+  is the read once an image carries it: `recovered` is a count of requests
+  that would have been 408s, and needs no band.
 
-- **shentu's 408s are the pool's, not the roll's.** 68.09% -> 81.43% over
-  the 24h to 2026-09-05, which reads as a regression against `c30ce90` and
-  is not one: shentu has no external block source, so the floor change
-  cannot reach it, and the change lowers perceived where it does engage,
-  which only relaxes the height filter. The mechanism is the one the retry
-  half above addresses — a supplier 408 on CometBFT was graded the client's,
-  so the caller got the timeout with rotation untried — and the 100% figure
-  recorded here for `c838f4c` was a fifteen-minute window on 1,100 requests
-  per 6h, not a level. moonriver and persistence are the same class and
-  drifted the other way over the same 24h (88.27% -> 71.37%, 84.06% ->
-  64.81%), which is the size of the noise at that volume.
+- ~~base 408s, watch.~~ Closed 2026-09-05. The claimed step (1.46% -> 1.82%
+  at n=73,586) is inside a same-clock-hours band of 0.44% to 1.97% across the
+  four days of canary history, so there is nothing to explain. Two things
+  worth keeping from it. A single offset-matched window would have confirmed
+  the step rather than killed it — against offset 24h alone base reads 0.82%
+  -> 1.87% — so a matched window is not enough here either; the band is what
+  settled it. And the latency EWMA being report-only
+  (`reputation/service.go:223`) is real but was never this symptom: SAGE
+  renders its own blown deadline as a **504** (`router.statusForError`),
+  never a 408, and base's 504 fell hardest of any service over the same
+  window (0.64% -> 0.17% -> 0.07%). Every client-facing 408 is a supplier's
+  own response.
 
-- **base 408s, watch.** Zero before 15:25Z on 2026-09-04, then 11-19 per
-  5m, then 86 per 15m by 17:00, while base 200s hold at ~1,700 per 5m. Not
-  tied to any roll (began 18 minutes after 71b3d8f, unchanged across two
-  more). base's tier 1 is dominated by rm02.kalorius, whose latency EWMA
-  rose 66 → 175 ms over the afternoon, and the EWMA is report-only
-  (`reputation/service.go:223`), so a supplier slowing toward the relay
-  timeout loses no score. That is real, but it is not this symptom: SAGE
-  renders its own blown deadline as a **504**
-  (`router.statusForError`), never a 408, so a slow supplier shows up in
-  504 and latency, not here. Every client 408 is a supplier's own.
-
-  It has kept climbing, monotonically and across three images: 1.07% on
-  2026-09-04, 1.49% at the 09-05 12:30Z read on `c30ce90`, 1.46% in the 5h
-  before the `9a853c5` roll and 1.82% in the 5h after (n=73,586). A trend
-  that predates every one of those rolls is not caused by them, and the
-  retry half in particular cannot raise a 408 share: a client 408 now
-  requires every attempt to 408 where one used to suffice. The confound in
-  the post-roll comparison is that the 5h windows are adjacent rather than
-  offset-matched, so they differ in time of day and carry 10.5% more fleet
-  volume; the 30m read that preceded it did control for that. Re-run the 5h
-  comparison against the same clock hours on the previous day before
-  reading anything into the step. The per-key latency in
-  `GET /admin/reputation/base` is still the read for the supplier itself.
 - **Probe share is 20.71% of relay attempts, and two thirds of the rise is
   the denominator.** Up from 14.76% over the 24h to 2026-09-05: probes rose
   9.8% (61,271 -> 67,254/h) while relay attempts fell 21.8% (415,161 ->
@@ -204,43 +186,36 @@ across both pods after ~6h.
   rather than being "any traffic", because a probe is the only observation
   source that bypasses sampling. `health_checks.min_traffic_signals` overrides
   the derivation.
-- **The 408 penalty half, and the counter that would justify it.** The
-  combined change (retry + minor penalty, `26f22c5`) was reverted on
+- **The 408 penalty half — blocked on a readout, not on the hypothesis.**
+  The combined change (retry + minor penalty, `26f22c5`) was reverted on
   2026-09-02 after the canary quadrupled its client-facing 408 rate. The
-  retry half alone landed on 2026-09-05 (`9a853c5`, `ShouldPenalize:
-  false`). At 5h post-roll fleet 408 was unmoved (1.13% -> 1.13%) and
-  shentu's halved (84.51% -> 42.59%, n=1,848), so the retry half is not what
-  raised 408s in September and the penalty half is the whole of the
-  remaining suspicion. The 30-minute read that preceded this said 8.74% at
-  n=186 and was quoted here as decisive; it was one favourable window.
+  retry half alone landed on 2026-09-05 (`9a853c5`, `ShouldPenalize: false`)
+  and did no harm at fleet level: 408 unmoved and inside band, 504 down
+  across three windows, p99 5.54s -> 2.26s. So the retry half is not what
+  raised 408s in September, and the penalty half is the whole of the
+  remaining suspicion.
 
-  Two things the first read could not settle, both for the clean 6h window:
+  It should not be run yet. Its cost is concentration — scoring every
+  timing-out supplier down squeezes traffic onto a tier-1 set that then sheds
+  under the load it inherits — and the benefit is currently unreadable, which
+  is a bad trade in that direction. Two things have to be true first:
 
-  - **Read 504 alongside 408.** `MWTimeout` sits outside `MWRetry`
-    (`relay/chain_order.go`) on purpose — the deadline covers every attempt
-    inside the fan-out — so retrying a slow 408 spends the same budget over
-    more attempts, and the failure that buys is `relay timeout exceeded`,
-    which `router.statusForError` renders 504. `budgetForRetry` and the
-    per-attempt `remaining/attemptsLeft` split bound it, but the bound is
-    not zero and 504 was 0.24% at the c30ce90 baseline. Neither the pass
-    conditions nor the first read included it.
-  - **Attempts per client request cannot resolve this change.** The gate
-    asked for a rise of roughly the fleet 408 rate; the measured move was
-    1.874 -> 1.820. The ratio is dominated by batch sub-relays, since
-    `MWMetrics` sits inside `MWBatch` as well as inside retry and hedge, so
-    it tracks JSON-RPC batch-size mix and swings by more than the ~+0.01 a
-    1% 408 rate can contribute. It was the wrong instrument, not a failed
-    condition.
+  - **An image carrying `sage_retry_resolution_total`.** `recovered` against
+    `exhausted` for `reason="http_408"` is the direct read: how many requests
+    a retry rescued, and how many pools are uniformly timing out. A pool that
+    is mostly `exhausted` is the case for the penalty half, because rotation
+    alone has nowhere to go; one that is mostly `recovered` is the case
+    against it, because rotation is already working. Neither is visible in a
+    status share.
+  - **A fleet-level pass condition, decided before the roll.** Per-service
+    408 shares cannot resolve an effect of this size on this canary (see the
+    chronic-408 item above). Candidates that can: fleet `recovered` rate,
+    fleet 504, and `sage_degraded_total` for the concentration cost.
 
-  moonriver and persistence are still unresolved at 5h (70.18% -> 72.73% at
-  n=397, 67.02% -> 60.78% at n=1,742); persistence read 74.14% and 33.00% on
-  the same image four hours apart, which is the size of the noise there.
-
-  Two numbers from that first read must not be reused. `1.09%` was quoted as
-  a fleet-408 gate and came from a window that happened to read low; the
-  matched value is 1.13%. And no single-window figure at n in the hundreds
-  is a level for these services, which the same report said of moonriver and
-  persistence before saying the opposite of shentu.
+  Also read 504 in every window. `MWTimeout` sits outside `MWRetry`
+  (`relay/chain_order.go`) on purpose — the deadline covers every attempt
+  inside the fan-out — so anything that adds attempts can be paid for in
+  timeouts, and 504 is where that shows up.
 
 - **Canary counters need more than one window before they are a baseline.**
   Two targets set during the 408 incident were built on single windows and both

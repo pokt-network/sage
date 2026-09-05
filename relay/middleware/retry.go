@@ -16,6 +16,7 @@ import (
 // metrics.Recorder satisfies it. Nil disables recording.
 type RetryRecorder interface {
 	RecordRetry(serviceID domain.ServiceID, reason string)
+	RecordRetryResolution(serviceID domain.ServiceID, reason, outcome string)
 }
 
 // Retry returns a middleware that retries failed relay attempts up to
@@ -30,7 +31,7 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 // on each retry when rec is non-nil.
 func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec RetryRecorder) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
-		return relay.HandlerFunc(func(ctx *relay.Context) error {
+		return relay.HandlerFunc(func(ctx *relay.Context) (retErr error) {
 			if !flags.IsEnabled(ctx.Ctx, featureflag.FlagRetry, ctx.ServiceID) {
 				return next.HandleRelay(ctx)
 			}
@@ -55,6 +56,28 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 
 			var lastErr error
 			maxAttempts := cfg.MaxRetries + 1
+
+			// Whether retrying THIS failure is worth anything is not readable
+			// from a status share: on a low-volume service the share moves by
+			// tens of points on window placement alone, and on a busy one the
+			// effect is diluted below the day-to-day band. Both were measured
+			// the hard way on the 2026-09-05 canary. A count of recoveries is
+			// neither a share nor a rate, so it needs no matched window.
+			//
+			// Recorded once per retried request, against the verdict that
+			// caused the last retry. The no-retry path — nearly every request
+			// — sets nothing and records nothing.
+			retriedFor := ""
+			defer func() {
+				if retriedFor == "" || rec == nil {
+					return
+				}
+				outcome := "exhausted"
+				if retErr == nil {
+					outcome = "recovered"
+				}
+				rec.RecordRetryResolution(ctx.ServiceID, retriedFor, outcome)
+			}()
 
 			// runAttempt runs one attempt under a per-attempt deadline (see
 			// perAttemptContext), restoring ctx.Ctx afterwards so retry
@@ -91,6 +114,10 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 						return lastErr
 					}
 
+					// The failed attempt's verdict is still on ctx here; the
+					// exclusion bookkeeping below clears it before the next
+					// attempt runs.
+					retriedFor = retryCause(ctx, lastErr)
 					if rec != nil {
 						rec.RecordRetry(ctx.ServiceID, retryReason(lastErr))
 					}
@@ -237,6 +264,19 @@ func perAttemptContext(parent context.Context, attemptsLeft int) (context.Contex
 		return context.WithCancel(parent)
 	}
 	return context.WithTimeout(parent, remaining/time.Duration(attemptsLeft))
+}
+
+// retryCause is the label sage_retry_resolution_total carries: the heuristic's
+// own verdict reason when the attempt produced one ("http_408", "http_5xx",
+// "transport_timeout"), which is what someone asking "is retrying a 408 worth
+// anything" needs to select on. It falls back to retryReason's coarse error
+// kind when there is no verdict — a rollover, or a failure the heuristic never
+// saw. Both label sets are small and fixed.
+func retryCause(ctx *relay.Context, err error) string {
+	if ctx.HeuristicResult != nil && ctx.HeuristicResult.Reason != "" {
+		return ctx.HeuristicResult.Reason
+	}
+	return retryReason(err)
 }
 
 // retryReason is the coarse label sage_retry_total carries. It stays low

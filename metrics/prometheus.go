@@ -44,6 +44,7 @@ type Recorder struct {
 	clientRequestsTotal   *prometheus.CounterVec
 	relayLatency          *prometheus.HistogramVec
 	retryTotal            *prometheus.CounterVec
+	retryResolutionTotal  *prometheus.CounterVec
 	hedgeTotal            *prometheus.CounterVec
 	cacheHits             *prometheus.CounterVec
 	cacheMisses           *prometheus.CounterVec
@@ -108,6 +109,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Help:      "Total relay retries, partitioned by service and reason.",
 			},
 			[]string{"service_id", "reason"},
+		),
+		retryResolutionTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "retry_resolution_total",
+				Help:      "How relay retries ended, by the verdict that caused them: recovered (a later attempt succeeded) or exhausted.",
+			},
+			[]string{"service_id", "reason", "outcome"},
 		),
 		hedgeTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -266,6 +275,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.clientRequestsTotal,
 		r.relayLatency,
 		r.retryTotal,
+		r.retryResolutionTotal,
 		r.hedgeTotal,
 		r.cacheHits,
 		r.cacheMisses,
@@ -352,6 +362,19 @@ func (r *Recorder) RecordClientRequest(serviceID domain.ServiceID, status int) {
 // RecordRetry increments the retry counter for a service with a given reason.
 func (r *Recorder) RecordRetry(serviceID domain.ServiceID, reason string) {
 	r.retryTotal.WithLabelValues(r.services.serviceValue(serviceID), reason).Inc()
+}
+
+// RecordRetryResolution records how a retried request ended: "recovered" when
+// a later attempt succeeded, "exhausted" when none did. Counted once per
+// retried request, against the reason that caused the last retry.
+//
+// This is the counter that says whether retrying a given failure is worth
+// anything. A status share cannot: on a low-volume service it moves by tens of
+// points on window placement alone, and on a busy one the effect is diluted
+// below the day-to-day band. A count of recoveries is neither a share nor a
+// rate, so it needs no matched window and no baseline band to read.
+func (r *Recorder) RecordRetryResolution(serviceID domain.ServiceID, reason, outcome string) {
+	r.retryResolutionTotal.WithLabelValues(r.services.serviceValue(serviceID), reason, outcome).Inc()
 }
 
 // RecordHedge records the outcome of a hedge race (primary_won, hedge_won,
