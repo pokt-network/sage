@@ -250,6 +250,22 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **A cancelled attempt is never evidence about the endpoint.**
+  `heuristic.AnalyzeTransportError` excused a `context.Canceled` only when it
+  arrived as the request context's error; one arriving as the attempt's own,
+  with the request context still live, fell to the catch-all branch and cost
+  an innocent supplier a minor penalty. An endpoint cannot cancel our context,
+  so neither shape is its fault, and the guard now covers both. Ported from
+  PATH's diagnosis rather than from a SAGE symptom: PATH's hedge repointed the
+  primary's protocol context at a detached parent and cancelled it on exit,
+  and the batch fallthrough then reused the dead context, circuit-breaking one
+  operator across 12-18 pods for six hours (PR #529). No path in SAGE produces
+  that today — hedge arms run on their own clone and their own detached
+  context, cancelled only after the arm returns, and there is no fallthrough —
+  so this is a guard for the path nobody has drawn yet. `DeadlineExceeded` is
+  deliberately outside it: a host that accepted the connection and did not
+  answer is a real signal, and a test holds that line.
+
 - **A supplier's HTTP 408 is retried elsewhere, and still scores nothing.**
   SAGE emits no 408 of its own — a gateway-side relay timeout is a 504
   (`router.statusForError`) — so every 408 a client sees is a supplier's,

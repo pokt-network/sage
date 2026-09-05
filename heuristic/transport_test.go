@@ -172,6 +172,33 @@ func TestAnalyzeTransportError_CancelWinsOverTimeout(t *testing.T) {
 	}
 }
 
+// The belt: a cancel that arrives as the ATTEMPT's error while the request
+// context is still live. An endpoint cannot cancel our context, so this is
+// never evidence about it — without the guard it falls to the catch-all and
+// costs an innocent supplier a minor penalty. PATH reached this shape through
+// a hedge fallthrough that reused a cancelled context (PR #529) and
+// circuit-broke one operator across 12-18 pods for six hours.
+func TestAnalyzeTransportError_CancelledAttemptWithLiveRequestContext(t *testing.T) {
+	err := domain.NewRelayError(domain.ErrTransport, "relay failed", context.Canceled, true)
+	r := AnalyzeTransportError(err, nil)
+	if r.Attribution != AttrClient || r.ShouldPenalize || r.ShouldRetry || r.ShouldCircuitBreak || r.MethodBlocking {
+		t.Fatalf("cancelled attempt, live request context: %+v", r)
+	}
+	if r.Reason != "client_cancelled" {
+		t.Fatalf("reason = %q", r.Reason)
+	}
+}
+
+// The guard must not swallow a deadline: a host that accepted the connection
+// and then did not answer is a real signal about that host, and stays one.
+func TestAnalyzeTransportError_DeadlineIsNotExcusedByTheCancelGuard(t *testing.T) {
+	err := domain.NewRelayError(domain.ErrTransport, "relay failed", context.DeadlineExceeded, true)
+	r := AnalyzeTransportError(err, nil)
+	if r.Attribution != AttrSupplier || !r.ShouldPenalize || r.Reason != "transport_timeout" {
+		t.Fatalf("deadline as the attempt error: %+v", r)
+	}
+}
+
 func TestAnalyzeTransportError_OtherStaysMinorUnknown(t *testing.T) {
 	other := domain.NewRelayError(domain.ErrProtocol, "failed to sign relay request", errors.New("boom"), false)
 	r := AnalyzeTransportError(other, nil)

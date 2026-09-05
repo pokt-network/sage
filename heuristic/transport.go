@@ -22,9 +22,10 @@ import (
 //
 // Verdicts, in the order they are checked:
 //
-//   - client cancelled: requestCtxErr is context.Canceled. Nobody is waiting
-//     for the answer, so nobody is at fault. No retry, no penalty, and
-//     Observe records no signal for AttrClient with an error.
+//   - cancelled: requestCtxErr is context.Canceled, or the attempt itself
+//     failed with one. Nobody is waiting for the answer, so nobody is at
+//     fault. No retry, no penalty, and Observe records no signal for
+//     AttrClient with an error.
 //   - connect-level: the dial itself failed (refused, DNS, TLS handshake).
 //     The host is not serving anything: critical, ShouldCircuitBreak.
 //   - timeout after connect: the host accepted the connection and did not
@@ -33,12 +34,32 @@ import (
 //   - other: session fetch, signing, relay-miner validation, unknown. Today's
 //     grading — minor, AttrUnknown, retryable per the error itself.
 func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
-	if errors.Is(requestCtxErr, context.Canceled) {
+	// An endpoint cannot cancel our context; only we can. So a
+	// context.Canceled is never evidence about the endpoint, whether it
+	// arrives as the request context's error or as the attempt's own — the
+	// second is the belt, and it is here rather than at a call site because
+	// this is the one place a transport failure becomes a verdict.
+	//
+	// PATH hit the reachable version of this in September 2026 (PR #529): its
+	// hedge repointed the primary's protocol context at a detached parent,
+	// cancelled it on exit, and the batch fallthrough then reused the dead
+	// context, so a relay that never left the process was charged to whichever
+	// endpoint happened to be primary — one operator circuit-broken across
+	// 12-18 pods for six hours. SAGE's hedge arms each run on their own clone
+	// and their own detached context, cancelled only after the arm returns, and
+	// there is no fallthrough, so no path here produces this today. The guard
+	// is for the path nobody has drawn yet: without it such an error lands in
+	// the catch-all below and costs an innocent supplier a minor penalty.
+	//
+	// context.DeadlineExceeded is deliberately not covered. A host that
+	// accepted the connection and did not answer in time is a real signal, and
+	// it is graded below.
+	if errors.Is(requestCtxErr, context.Canceled) || errors.Is(err, context.Canceled) {
 		return AnalysisResult{
 			Attribution: AttrClient,
 			Confidence:  0.95,
 			Reason:      "client_cancelled",
-			Details:     "client hung up before the endpoint answered",
+			Details:     "the relay was cancelled before the endpoint answered",
 		}
 	}
 
