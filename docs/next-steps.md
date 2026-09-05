@@ -45,6 +45,13 @@ across both pods after ~6h.
   15.** Stale-ranked tier-3 picks timing out is a mechanism the floor
   change removes, but there is no same-image pre window, so it is a
   correlation. Recorded.
+- ~~shentu's chronic 408s.~~ Closed 2026-09-05 by `9a853c5`: 408 share
+  85.92% -> 8.74% in the first 30 minutes. The cause was never the audit
+  roll — shentu has no external block source, so the floor change could not
+  reach it — but a supplier 408 graded the client's, which on CometBFT was
+  every 408. The reading below is kept because the reasoning it records was
+  what stopped a rollback of `c30ce90`.
+
 - **shentu's 408s are the pool's, not the roll's.** 68.09% -> 81.43% over
   the 24h to 2026-09-05, which reads as a regression against `c30ce90` and
   is not one: shentu has no external block source, so the floor change
@@ -180,24 +187,37 @@ across both pods after ~6h.
   rather than being "any traffic", because a probe is the only observation
   source that bypasses sampling. `health_checks.min_traffic_signals` overrides
   the derivation.
-- **The 408 penalty half, once the retry half has a canary reading.** The
+- **The 408 penalty half, and the counter that would justify it.** The
   combined change (retry + minor penalty, `26f22c5`) was reverted on
-  2026-09-02 after the canary quadrupled its client-facing 408 rate; the
-  revert put it back (0.719% client 408, 200 at 99.140% per 100k, attempts
-  per client request 1.519), which confirms the attribution change as the
-  cause but never separated which half did it. The retry half is now in
-  (`ShouldPenalize: false`), on the argument that it cannot raise client
-  408s: retry exhaustion delivers the upstream's own response (`router.go`),
-  so a retried 408 ends as 200 or as the same 408. The checks on it, all on
-  `sage_client_requests_total` and not on `sage_relay_total`, whose status
-  shares move with retry volume by construction: the chronic-408 services'
-  200 share should rise (shentu 18.57%, moonriver 28.63%, persistence
-  35.19% at the 2026-09-05 reading), fleet 408 should not rise from 1.08%,
-  and attempts per client request should rise by roughly the fleet 408 rate
-  and no more. If the retry half is clean, the penalty half is the remaining
-  experiment and the one that has to be watched hard, since scoring every
-  timing-out supplier down is what concentrates traffic onto a shrinking
-  tier-1 set.
+  2026-09-02 after the canary quadrupled its client-facing 408 rate. The
+  retry half alone landed on 2026-09-05 (`9a853c5`, `ShouldPenalize:
+  false`) and passed its gate in the first 30 minutes: fleet client 408
+  1.04% against a 1.09% baseline, and shentu's 408 share collapsed 85.92% ->
+  8.74% (200 share 14.08% -> 91.26%) at n=186. So the retry half is not what
+  raised 408s in September, and the penalty half is the whole of the
+  remaining suspicion.
+
+  Two things the first read could not settle, both for the clean 6h window:
+
+  - **Read 504 alongside 408.** `MWTimeout` sits outside `MWRetry`
+    (`relay/chain_order.go`) on purpose — the deadline covers every attempt
+    inside the fan-out — so retrying a slow 408 spends the same budget over
+    more attempts, and the failure that buys is `relay timeout exceeded`,
+    which `router.statusForError` renders 504. `budgetForRetry` and the
+    per-attempt `remaining/attemptsLeft` split bound it, but the bound is
+    not zero and 504 was 0.24% at the c30ce90 baseline. Neither the pass
+    conditions nor the first read included it.
+  - **Attempts per client request cannot resolve this change.** The gate
+    asked for a rise of roughly the fleet 408 rate; the measured move was
+    1.874 -> 1.820. The ratio is dominated by batch sub-relays, since
+    `MWMetrics` sits inside `MWBatch` as well as inside retry and hedge, so
+    it tracks JSON-RPC batch-size mix and swings by more than the ~+0.01 a
+    1% 408 rate can contribute. It was the wrong instrument, not a failed
+    condition.
+
+  moonriver and persistence stayed unresolved at n=38 and n=179; persistence
+  read 74.14% and 33.00% on the same image four hours apart, which is the
+  size of the noise there.
 
 - **Canary counters need more than one window before they are a baseline.**
   Two targets set during the 408 incident were built on single windows and both

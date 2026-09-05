@@ -265,6 +265,15 @@ the source of truth for the design and the reasoning behind it.
   concentrates traffic onto a shrinking tier-1 set. The canary read is the
   chronic-408 services' 200 share against fleet
   `sage_client_requests_total{status="408"}`, which this half cannot raise.
+  Confirmed on the canary the same day, 30 minutes post-roll against a
+  matched window at offset 3h: shentu's 408 share 85.92% -> 8.74% and its
+  200 share 14.08% -> 91.26% at n=186, with fleet client 408 at 1.04%
+  against a 1.09% baseline. moonriver and persistence stayed unresolved at
+  n=38 and n=179, where the same service on the same image read 74.14% and
+  33.00% four hours apart. Attempts per client request moved 1.874 ->
+  1.820, which says nothing either way: `MWMetrics` sits inside `MWBatch`
+  as well as inside retry and hedge, so that ratio tracks batch-size mix and
+  swings by more than a 1% 408 rate can contribute.
 
 - **The external floor engages only when the pool is behind by more than
   the allowance.** `sage_chain_view_external_floor`, exported the same day,
