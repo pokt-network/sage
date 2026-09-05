@@ -250,6 +250,29 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **A supplier 408 gets one verdict, whatever the body — the first cut
+  shipped the penalty half by accident.** The 408 case was placed below the
+  front-door branch to keep the diff narrow. On JSON-RPC `frontDoorRefusal`
+  claims every 4xx, so a 408 whose body was not JSON fell into
+  `http_4xx_page` instead: penalised, method-blocked, and labelled as a front
+  door. On the 2026-09-05 canary that was 448 of 455 client-facing 408s. Two
+  consequences, both material. The change was described to operators as the
+  retry half alone with `ShouldPenalize: false`, and for almost every 408 it
+  was not. And `reason="http_408"` matched 7 events out of 455, so neither
+  the effect nor the experiment could be selected on it. The case now sits
+  above the front-door branch; a non-JSON 4xx that is not a 408 is unchanged,
+  and a test holds that.
+
+- **A retry that never ran is no longer counted as a retry that failed.**
+  `sage_retry_resolution_total` armed at the point the retry was *decided*,
+  before the exclusion bookkeeping had found an endpoint to retry to. When it
+  found none it broke out of the loop, and the request was recorded
+  `exhausted` having made one attempt. A phantom event is worse than a
+  missing one in a counter whose whole purpose is being readable without a
+  baseline band, and it biases the exact direction the penalty-half decision
+  rule keys on. The cause is now promoted only when an attempt actually
+  starts.
+
 - **A cancelled attempt is never evidence about the endpoint.**
   `heuristic.AnalyzeTransportError` excused a `context.Canceled` only when it
   arrived as the request context's error; one arriving as the attempt's own,

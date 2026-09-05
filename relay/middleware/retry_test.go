@@ -534,6 +534,29 @@ func TestRetry_ResolutionLabelIsTheHeuristicVerdict(t *testing.T) {
 	}
 }
 
+// Deciding to retry is not retrying. With one endpoint in the pool the
+// exclusion bookkeeping has nothing left to try and breaks out of the loop
+// without a second attempt — which the first cut of this counter recorded as
+// "exhausted", a retry that never ran counted as a retry that failed. The
+// counter's whole purpose is that it can be trusted without a baseline band,
+// so a phantom event in it is worse than a missing one.
+func TestRetry_NoEndpointLeftRecordsNoResolution(t *testing.T) {
+	rec := &recordingRetryRec{}
+	th := &trackingMockHandler{responses: []error{retryableErr("f1"), nil}}
+	mw := RetryWithRecorder(newFlags("retry"), retryCfg(3, 0), rec)
+	ctx := baseContext()
+	ctx.Endpoints = testEndpoints(1)
+	if err := mw(th).HandleRelay(ctx); err == nil {
+		t.Fatal("want the first error: there is nowhere to retry to")
+	}
+	if len(rec.resolutions) != 0 {
+		t.Fatalf("a retry that never ran recorded %v", rec.resolutions)
+	}
+	if th.callIdx != 1 {
+		t.Fatalf("want exactly one attempt, got %d", th.callIdx)
+	}
+}
+
 // Every retry attempt increments sage_retry_total with a reason. The metric
 // was defined and documented but never emitted — no series in Prometheus.
 func TestRetry_RecordsMetricPerRetry(t *testing.T) {

@@ -200,8 +200,21 @@ across both pods after ~6h.
   under the load it inherits — and the benefit is currently unreadable, which
   is a bad trade in that direction. Two things have to be true first:
 
-  - **An image carrying `sage_retry_resolution_total`.** `recovered` against
-    `exhausted` for `reason="http_408"` is the direct read: how many requests
+  - **An image carrying `sage_retry_resolution_total` that is trustworthy.**
+    The first one was not. On `74c822b` it read 100% `exhausted` over 2,755
+    events, and two defects fed that: a retry that found no endpoint left to
+    try was armed at the decision point and recorded `exhausted` without ever
+    running, and 448 of 455 supplier 408s were graded `http_4xx_page` rather
+    than `http_408`, so the reason could not be selected on either. Both
+    fixed 2026-09-06. Note also that `exhausted` is not the same as a
+    client-facing failure: retry exhaustion delivers the upstream's own
+    response, and a JSON-RPC error is HTTP 200, so a high `exhausted` count
+    against a low non-200 rate is expected rather than contradictory.
+    `blockchain_error` alone was 987 of those 2,755, and a deterministic
+    chain error returns the same answer from every supplier by construction.
+
+    Once it is trustworthy, `recovered` against `exhausted` for
+    `reason="http_408"` is the direct read: how many requests
     a retry rescued, and how many pools are uniformly timing out. A pool that
     is mostly `exhausted` is the case for the penalty half, because rotation
     alone has nowhere to go; one that is mostly `recovered` is the case

@@ -67,6 +67,14 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// Recorded once per retried request, against the verdict that
 			// caused the last retry. The no-retry path — nearly every request
 			// — sets nothing and records nothing.
+			// pendingCause is promoted into retriedFor only when a retry
+			// attempt actually runs. Deciding to retry is not retrying: the
+			// exclusion bookkeeping below can find no endpoint left to try and
+			// break out of the loop, and arming at the decision point recorded
+			// that as "exhausted" — a retry that never happened, counted as a
+			// retry that failed, in the one counter whose job is to be trusted
+			// without a baseline band.
+			pendingCause := ""
 			retriedFor := ""
 			defer func() {
 				if retriedFor == "" || rec == nil {
@@ -83,6 +91,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// perAttemptContext), restoring ctx.Ctx afterwards so retry
 			// bookkeeping and the caller see the original request context.
 			runAttempt := func(attemptsLeft int) error {
+				retriedFor, pendingCause = pendingCause, ""
 				attemptCtx, cancel := perAttemptContext(ctx.Ctx, attemptsLeft)
 				defer cancel()
 				saved := ctx.Ctx
@@ -117,7 +126,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					// The failed attempt's verdict is still on ctx here; the
 					// exclusion bookkeeping below clears it before the next
 					// attempt runs.
-					retriedFor = retryCause(ctx, lastErr)
+					pendingCause = retryCause(ctx, lastErr)
 					if rec != nil {
 						rec.RecordRetry(ctx.ServiceID, retryReason(lastErr))
 					}

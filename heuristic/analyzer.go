@@ -90,6 +90,43 @@ func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (Anal
 			Details:            "rate limited",
 		}, true
 
+	// 408 is the one 4xx that is not a statement about the request: the
+	// supplier's own server gave up waiting. SAGE never emits one — a
+	// gateway-side relay timeout is a 504 (`router.statusForError`) — so
+	// every 408 a client sees came from a supplier and was handed straight
+	// through, unretried, because the branch below reads it as the client's
+	// mistake. On REST and CometBFT that is every 408, since
+	// frontDoorRefusal only claims 401 and 403 there; on the 2026-09-05
+	// canary shentu answered 81.43% of its requests that way, and moonriver
+	// and persistence 71% and 65%, with rotation available the whole time.
+	//
+	// Retry only. The combined change of 2026-09-02 (`26f22c5`) also scored
+	// the supplier down and quadrupled the client-facing 408 rate, so it was
+	// reverted whole (`01a96ca`); the penalty is the half that concentrates
+	// traffic onto a shrinking tier-1 set. Retry exhaustion delivers the
+	// upstream's own response (`router.go`), so a retried 408 ends as a 200
+	// or as the same 408 the caller would have got anyway — this half cannot
+	// raise the rate it is meant to lower. No method blocking either: a
+	// timeout says nothing about which methods the host serves.
+	//
+	// This case must sit ABOVE the front-door branch below, and the first cut
+	// of it did not. On JSON-RPC frontDoorRefusal claims every 4xx, so a 408
+	// whose body was not JSON — 448 of 455 of them on the 2026-09-05 canary —
+	// was graded http_4xx_page: penalised AND method-blocked. That shipped the
+	// penalty half for most 408s under a change described as the retry half
+	// alone, and left reason="http_408" matching 7 events out of 455, so the
+	// effect could not be selected on either.
+	case statusCode == http.StatusRequestTimeout:
+		return AnalysisResult{
+			ShouldRetry:        true,
+			ShouldCircuitBreak: false, // slow or overloaded, not broken
+			ShouldPenalize:     false, // the penalty half stays reverted
+			Attribution:        AttrSupplier,
+			Confidence:         0.90,
+			Reason:             "http_408",
+			Details:            "supplier request timeout",
+		}, true
+
 	// A JSON-RPC server reports a client's mistake inside a JSON-RPC
 	// envelope, whatever status it puts on it. A 4xx carrying anything else —
 	// an HTML 404 page, an empty body — is the supplier's HTTP layer answering
@@ -116,35 +153,6 @@ func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (Anal
 			Confidence:         0.85,
 			Reason:             "http_4xx_page",
 			Details:            fmt.Sprintf("HTTP %d with a non-JSON body on a %s request", statusCode, rpcType),
-		}, true
-
-	// 408 is the one 4xx that is not a statement about the request: the
-	// supplier's own server gave up waiting. SAGE never emits one — a
-	// gateway-side relay timeout is a 504 (`router.statusForError`) — so
-	// every 408 a client sees came from a supplier and was handed straight
-	// through, unretried, because the branch below reads it as the client's
-	// mistake. On REST and CometBFT that is every 408, since
-	// frontDoorRefusal only claims 401 and 403 there; on the 2026-09-05
-	// canary shentu answered 81.43% of its requests that way, and moonriver
-	// and persistence 71% and 65%, with rotation available the whole time.
-	//
-	// Retry only. The combined change of 2026-09-02 (`26f22c5`) also scored
-	// the supplier down and quadrupled the client-facing 408 rate, so it was
-	// reverted whole (`01a96ca`); the penalty is the half that concentrates
-	// traffic onto a shrinking tier-1 set. Retry exhaustion delivers the
-	// upstream's own response (`router.go`), so a retried 408 ends as a 200
-	// or as the same 408 the caller would have got anyway — this half cannot
-	// raise the rate it is meant to lower. No method blocking either: a
-	// timeout says nothing about which methods the host serves.
-	case statusCode == http.StatusRequestTimeout:
-		return AnalysisResult{
-			ShouldRetry:        true,
-			ShouldCircuitBreak: false, // slow or overloaded, not broken
-			ShouldPenalize:     false, // the penalty half stays reverted
-			Attribution:        AttrSupplier,
-			Confidence:         0.90,
-			Reason:             "http_408",
-			Details:            "supplier request timeout",
 		}, true
 
 	case statusCode >= 400 && statusCode < 500:

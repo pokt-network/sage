@@ -491,6 +491,7 @@ func TestAnalyze_408IsRetriedAndNotPenalized(t *testing.T) {
 		name            string
 		body            []byte
 		rpcType         domain.RPCType
+		status          int // defaults to 408
 		wantRetry       bool
 		wantPenalize    bool
 		wantAttribution ErrorAttribution
@@ -516,12 +517,26 @@ func TestAnalyze_408IsRetriedAndNotPenalized(t *testing.T) {
 			wantReason:      "http_408",
 		},
 		{
-			// Unchanged: a JSON-RPC request answered with no
-			// JSON at all is the supplier's HTTP layer talking, whatever the
-			// status on it.
-			name:            "json-rpc with no envelope is still the supplier's",
+			// The body decides nothing here, and that is the point. On
+			// JSON-RPC frontDoorRefusal claims every 4xx, so while this case
+			// sat below it a 408 with a non-JSON body was graded
+			// http_4xx_page — penalised and method-blocked — which was 448 of
+			// 455 of the canary's 408s. One verdict for 408, whatever the
+			// body: a timeout is not a statement about the request.
+			name:            "json-rpc with no envelope: still just a timeout",
 			body:            []byte(``),
 			rpcType:         domain.RPCTypeJSONRPC,
+			wantRetry:       true,
+			wantAttribution: AttrSupplier,
+			wantReason:      "http_408",
+		},
+		{
+			// A non-JSON 4xx that is NOT a 408 keeps the front-door verdict,
+			// so moving the 408 case above it took nothing else with it.
+			name:            "403 with no envelope is still the front door",
+			body:            []byte(``),
+			rpcType:         domain.RPCTypeJSONRPC,
+			status:          403,
 			wantRetry:       true,
 			wantPenalize:    true,
 			wantAttribution: AttrSupplier,
@@ -531,7 +546,11 @@ func TestAnalyze_408IsRetriedAndNotPenalized(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := Analyze(tc.body, 408, tc.rpcType)
+			status := tc.status
+			if status == 0 {
+				status = 408
+			}
+			result := Analyze(tc.body, status, tc.rpcType)
 
 			if result.ShouldRetry != tc.wantRetry {
 				t.Errorf("ShouldRetry = %v, want %v", result.ShouldRetry, tc.wantRetry)
