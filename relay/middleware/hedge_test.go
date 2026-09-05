@@ -505,3 +505,61 @@ func TestHedge_CancelIsNotRetryable(t *testing.T) {
 		t.Fatalf("a client cancel must not be retryable, got retryable %v", err)
 	}
 }
+
+// selectingHandler stands in for the inner chain: SelectEndpoint fills
+// ctx.Endpoints and ctx.Endpoint on whatever context reaches it, then the
+// relay fails retryably.
+type selectingHandler struct{ calls int }
+
+func (h *selectingHandler) HandleRelay(ctx *relay.Context) error {
+	h.calls++
+	if len(ctx.Endpoints) == 0 {
+		ctx.Endpoints = testEndpoints(3)
+	}
+	if ctx.Endpoint == "" {
+		ctx.Endpoint = ctx.Endpoints[0]
+	}
+	if ctx.SelectedEndpoint != nil {
+		ep := ctx.Endpoint
+		ctx.SelectedEndpoint.Store(&ep)
+	}
+	return retryableErr("fail")
+}
+
+// Retry must still retry when hedging is on, and for six months it did not.
+//
+// SelectEndpoint runs INSIDE the race, so it fills Endpoints on an arm's
+// clone; Clone is a value copy, so the parent context Retry holds keeps the
+// empty list it started with. Retry derives its retry pool from that, excludes
+// the endpoint it just tried, gets an empty candidate list and breaks out of
+// its loop having made exactly one attempt. Every hedged service therefore had
+// retry silently disabled, which no counter showed until
+// sage_retry_resolution_total went to zero series on 2026-09-06 — it records
+// only retries that actually run.
+//
+// The assertion is on ATTEMPT COUNT and must match the unhedged case: a merge
+// that copied the wrong field, or none, leaves this at one.
+func TestHedge_MergesTheCandidatePoolSoRetryCanRetry(t *testing.T) {
+	run := func(hedgeOn bool) int {
+		h := &selectingHandler{}
+		names := []string{"retry"}
+		inner := relay.Handler(h)
+		if hedgeOn {
+			names = append(names, "hedge")
+			inner = Hedge(newFlags(names...), hedgeCfg(5*time.Millisecond))(h)
+		}
+		ctx := &relay.Context{}
+		ctx.Ctx = t.Context()
+		ctx.ServiceID = "eth"
+		ctx.Endpoints = domain.EndpointAddrList{}
+		_ = RetryWithRecorder(newFlags(names...), retryCfg(3, 0), nil)(inner).HandleRelay(ctx)
+		return h.calls
+	}
+	off, on := run(false), run(true)
+	if off != 3 {
+		t.Fatalf("unhedged: want 3 attempts (1 + 2 retries), got %d", off)
+	}
+	if on != off {
+		t.Fatalf("hedging disabled retry: %d attempts hedged vs %d unhedged", on, off)
+	}
+}

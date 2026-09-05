@@ -213,6 +213,16 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 // the winning response.
 func mergeContext(dst, src *relay.Context) {
 	dst.Endpoint = src.Endpoint
+	// The candidate pool, which only the arm ever saw. SelectEndpoint runs
+	// INSIDE the race, so it fills Endpoints on the arm's clone; Clone is a
+	// value copy, so the parent's stays empty. Retry sits outside and derives
+	// its retry pool from the parent's Endpoints — an empty pool excludes to
+	// an empty candidate list and Retry breaks out of its loop without ever
+	// making a second attempt. Retry was therefore inert on every hedged
+	// service, silently, since the two middlewares were first ordered this
+	// way. Found on 2026-09-06 because sage_retry_resolution_total went to
+	// zero series: the counter records only retries that actually run.
+	dst.Endpoints = src.Endpoints
 	dst.Response = src.Response
 	dst.Err = src.Err
 	dst.Degraded = src.Degraded

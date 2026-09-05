@@ -250,6 +250,31 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **Retry did nothing at all on a hedged service, and had not since the two
+  were first ordered this way.** `SelectEndpoint` runs INSIDE the hedge race,
+  so it fills `ctx.Endpoints` on an arm's clone; `Clone` is a value copy, and
+  `mergeContext` copied the winning arm's endpoint, response and verdict back
+  to the parent but not its candidate pool. Retry sits outside, derives its
+  pool from the parent's `Endpoints`, finds it empty, excludes to an empty
+  candidate list and breaks out of the loop having made exactly one attempt.
+  No metric showed it: `sage_retry_total` counts the *decision* to retry,
+  which was still being taken 3,705 times per 15m on the canary.
+
+  It surfaced because `sage_retry_resolution_total` went from 2,755 events to
+  **zero series** across the `74c822b` -> `fd67dc9` roll. That looked like the
+  new counter breaking, and was the opposite: the first cut armed at the
+  decision point, so those 2,755 "exhausted" events were phantoms — retries
+  that never ran, which is also why the retry-to-resolution ratio was 1.03
+  when a genuinely exhausted retry should show two or three. Arming only when
+  an attempt starts made the counter honest, and an honest count of retries
+  on a hedged fleet is zero. A counter reporting nothing was the true reading.
+
+  `mergeContext` now carries `Endpoints`. The existing comment on the
+  both-failed path already said Retry needs the merged endpoint to exclude
+  what it just tried; the pool that exclusion runs against was the half that
+  was missing. The regression test asserts the hedged attempt count equals the
+  unhedged one, because any assertion weaker than that passes on the bug.
+
 - **A supplier 408 gets one verdict, whatever the body — the first cut
   shipped the penalty half by accident.** The 408 case was placed below the
   front-door branch to keep the diff narrow. On JSON-RPC `frontDoorRefusal`
