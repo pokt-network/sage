@@ -250,6 +250,26 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **The 408 penalty half is decided against, by the rule set before the
+  read.** Mostly `exhausted` would have been the case for it — rotation with
+  nowhere to go, which only scoring can move traffic off. `4d4d5d0` returned
+  `reason="http_408"` at 1,017 `recovered` against 559 `exhausted`, 64.5%
+  recovered at n=1,576. Rotation is working, so the penalty buys nothing
+  retry has not already bought and costs concentration. That closes the
+  question the 2026-09-02 revert opened: the combined change quadrupled
+  client 408s, the retry half alone does not, and it is now measured doing
+  the work the penalty was hypothesised for.
+
+  Across the three images at 15m: client 408 0.79% -> 3.99% -> **0.68%**,
+  client 200 98.63% -> 95.55% -> **98.71%**, `sage_method_blocks` 150 -> 35
+  -> **26**. The 0.79% of the first was bought with a method-block gauge of
+  150 — the accidental penalty half — so the final state is better on both
+  axes at once rather than a trade. `http_4xx_page` 448 -> 0 and `http_408`
+  7 -> 1,576 confirm the analyzer move. The cost is 504 at 0.09% -> 0.27%
+  and p99 2.26s -> 5.27s, with p50 and p95 both improved: more attempts
+  share one deadline, which is what `MWTimeout` sitting outside `MWRetry`
+  means, and 0.27% is near the 0.24% this fleet ran at on `9a853c5`.
+
 - **Retry did nothing at all on a hedged service, and had not since the two
   were first ordered this way.** `SelectEndpoint` runs INSIDE the hedge race,
   so it fills `ctx.Endpoints` on an arm's clone; `Clone` is a value copy, and

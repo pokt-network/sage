@@ -186,49 +186,58 @@ across both pods after ~6h.
   rather than being "any traffic", because a probe is the only observation
   source that bypasses sampling. `health_checks.min_traffic_signals` overrides
   the derivation.
-- **The 408 penalty half — blocked on a readout, not on the hypothesis.**
-  The combined change (retry + minor penalty, `26f22c5`) was reverted on
-  2026-09-02 after the canary quadrupled its client-facing 408 rate. The
-  retry half alone landed on 2026-09-05 (`9a853c5`, `ShouldPenalize: false`)
-  and did no harm at fleet level: 408 unmoved and inside band, 504 down
-  across three windows, p99 5.54s -> 2.26s. So the retry half is not what
-  raised 408s in September, and the penalty half is the whole of the
-  remaining suspicion.
+- **The 408 penalty half: decided against on 2026-09-06. Do not ship it.**
+  The rule was set before the read: a pool that comes back mostly `exhausted`
+  is the case for the penalty half, because rotation has nowhere to go and
+  only scoring will move traffic off it; mostly `recovered` is the case
+  against, because rotation is already working and the penalty would only
+  concentrate load. On `4d4d5d0`, `reason="http_408"` came back **1,017
+  recovered against 559 exhausted**, 64.5% recovered at n=1,576. Rotation is
+  working. The penalty buys nothing that retry has not already bought, and it
+  costs concentration.
 
-  It should not be run yet. Its cost is concentration — scoring every
-  timing-out supplier down squeezes traffic onto a tier-1 set that then sheds
-  under the load it inherits — and the benefit is currently unreadable, which
-  is a bad trade in that direction. Two things have to be true first:
+  This retires the question opened by the 2026-09-02 revert. The combined
+  change (`26f22c5`) quadrupled client 408s; the retry half alone does not,
+  and is now measured doing the work the penalty half was hypothesised for.
 
-  - **An image carrying `sage_retry_resolution_total` that is trustworthy.**
-    The first one was not. On `74c822b` it read 100% `exhausted` over 2,755
-    events, and two defects fed that: a retry that found no endpoint left to
-    try was armed at the decision point and recorded `exhausted` without ever
-    running, and 448 of 455 supplier 408s were graded `http_4xx_page` rather
-    than `http_408`, so the reason could not be selected on either. Both
-    fixed 2026-09-06. Note also that `exhausted` is not the same as a
-    client-facing failure: retry exhaustion delivers the upstream's own
-    response, and a JSON-RPC error is HTTP 200, so a high `exhausted` count
-    against a low non-200 rate is expected rather than contradictory.
-    `blockchain_error` alone was 987 of those 2,755, and a deterministic
-    chain error returns the same answer from every supplier by construction.
+  What the three images say, 15m windows, `sage_client_requests_total`:
 
-    Once it is trustworthy, `recovered` against `exhausted` for
-    `reason="http_408"` is the direct read: how many requests
-    a retry rescued, and how many pools are uniformly timing out. A pool that
-    is mostly `exhausted` is the case for the penalty half, because rotation
-    alone has nowhere to go; one that is mostly `recovered` is the case
-    against it, because rotation is already working. Neither is visible in a
-    status share.
-  - **A fleet-level pass condition, decided before the roll.** Per-service
-    408 shares cannot resolve an effect of this size on this canary (see the
-    chronic-408 item above). Candidates that can: fleet `recovered` rate,
-    fleet 504, and `sage_degraded_total` for the concentration cost.
+  | | `74c822b` | `fd67dc9` | `4d4d5d0` |
+  |---|---|---|---|
+  | client 408 | 0.79% | 3.99% | **0.68%** |
+  | client 200 | 98.63% | 95.55% | **98.71%** |
+  | 504 | 0.09% | 0.09% | 0.27% |
+  | `sage_method_blocks` | 150 | 35 | **26** |
 
-  Also read 504 in every window. `MWTimeout` sits outside `MWRetry`
-  (`relay/chain_order.go`) on purpose — the deadline covers every attempt
-  inside the fan-out — so anything that adds attempts can be paid for in
-  timeouts, and 504 is where that shows up.
+  `74c822b`'s 0.79% was bought with a method-block gauge of 150 — the
+  accidental penalty half. `4d4d5d0` beats it on both axes at once, more
+  requests served and fewer suppliers blocked, which is a stronger result
+  than "an acceptable trade". `http_4xx_page` went 448 to zero and
+  `http_408` 7 to 1,576, which is the analyzer move confirmed.
+
+  The cost is 504, 0.09% -> 0.27%, and p99 2.26s -> 5.27s (p50 and p95 both
+  improved). That is the mechanically real one: `MWTimeout` sits outside
+  `MWRetry`, so more attempts share one deadline. 0.27% is near `9a853c5`'s
+  0.24%, so it is not an unprecedented level for this fleet, but it is the
+  number to watch and the first thing to look at if p99 matters to a caller.
+
+  Two things left open, neither blocking:
+
+  - **op is the one service that comes back majority-exhausted**, 44/153,
+    where every other service is majority-recovered (base 371/53, poly
+    202/144, arb-one 139/129). A per-service penalty could still be argued
+    there on its own merits. One 15m window taken 16 minutes after a roll is
+    not enough to act on; the fleet split at n=1,576 is.
+  - **Neither `sage_relay_total` ratio confirms that attempts are being
+    sent.** Attempts per client request did not move (1.802 against 1.809),
+    and the retry-to-resolution ratio moved only 1.016 -> 1.101. The first is
+    expected: ~2,761 retried requests over 46,718 client requests is +0.06
+    attempts, well inside the batch-mix swing. The second is lower than the
+    "two to three" claimed for a genuinely exhausted retry, which was an
+    overclaim — a retry stops at the first non-retryable answer, and the
+    budget guard stops it below a fifth of the deadline, so exhausting the
+    full `MaxRetries` is the exception. The `recovered` count is what carries
+    the conclusion, and it is a direct count, which is why it was built.
 
 - **Canary counters need more than one window before they are a baseline.**
   Two targets set during the 408 incident were built on single windows and both
