@@ -250,6 +250,28 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **shannon-sdk `9bf0b02` → `b1ba68f`, go-dleq `488f42a` → `86b20e4`: three
+  signer races on the shared-ring hot path.** PATH lost a pod to a SIGSEGV in
+  `HashTrieMap.Load`, reached from `getOrCreateSignerContext` on the hedge
+  path, and SAGE has the same shape. `evictStaleRingsOnRollover` called
+  `ClearSignerContextCache`, which assigned a fresh `sync.Map` over one that
+  concurrent signers were reading; and `ringCache` shares one `*ring.Ring`
+  per (app, session end) by design, so the SDK's per-ring SignerContext cache
+  hits — which is exactly the sharing the other two races needed. Upstream
+  fixed all three: the clear is `sync.Map.Clear()`; a mutex serialises
+  SignerContext creation, so concurrent misses on one ring no longer
+  normalise shared curve points in place; and go-dleq's `Encode`, `Equals`,
+  `IsZero` and `Verify` are read-only. That last one was the live defect —
+  it fired on every signature rather than at rollover, and produced a
+  well-formed but invalid signature, so it cost a relay rather than a crash.
+  `protocol/shannon/signer_race_test.go` drives eight signers on one shared
+  ring through `signRelayRequest` while rollovers evict it: under `-race` the
+  old pins report 86 races, the new ones none. PATH also moved its whole
+  Signer behind an `atomic.Pointer` as belt to the SDK's braces; not ported,
+  the SDK owns that cache and the test fails if it regresses. From PATH
+  `feat/ws-heavy-conn-rebalance` (`111a409d`, `2848dd8d`, `8299525c`,
+  2026-09-10).
+
 - **The 408 penalty half is decided against, by the rule set before the
   read.** Mostly `exhausted` would have been the case for it — rotation with
   nowhere to go, which only scoring can move traffic off. `4d4d5d0` returned

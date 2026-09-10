@@ -6,10 +6,11 @@ ordered by priority within each section. Update this file when an item lands
 or a decision changes it; delete items rather than marking them done, so the
 file only ever lists open work.
 
-Last updated: 2026-09-04 night (audit commits baf236a..71b3d8f plus fixes
-3377e68, c838f4c and the floor change c30ce90 live on the canary at 1%,
-all verified by ops. PATH
-`origin/main` at `274e9791`, 2026-08-25).
+Last updated: 2026-09-10 (PATH pass 7: signer races ported as the shannon-sdk
+`b1ba68f` pin bump, WS heavy-connection rebalance deferred below. Canary is on
+`4d4d5d0` at 1%, closed out with ops 2026-09-06; `5a68f73` is docs only.
+PATH `origin/main` at `4606957a`, 2026-08-25; new work is on
+`feat/ws-heavy-conn-rebalance`).
 
 ## After the audit roll (2026-09-04, image c838f4c at 1%)
 
@@ -375,6 +376,26 @@ list were fixed the same day):
   overwritten without a warning. Accepted on 2026-08-31 on the grounds that
   every replica runs the same file; the tuning-style base/override split in
   the first item above is the fix if that stops being true.
+
+## PATH `feat/ws-heavy-conn-rebalance` (assessed 2026-09-10)
+
+Four commits of 2026-09-10 on top of the handshake-cost branch covered on
+2026-09-05. The three signer commits are ported as the shannon-sdk `b1ba68f`
+pin bump (CHANGELOG, `protocol/shannon/signer_race_test.go`). The fourth,
+`40eb2f1d`, is a feature and is **deferred**. PATH's per-operator cap counts
+WS *connections* but settlement is per *frame*, and per-connection frame
+rate is heavy-tailed (their read: p50 0.3 frames/s, p99 800; a two-operator
+service split 54/46 on connections and 98/2 on frames over 6h). Their loop
+counts heavy connections per operator and, when the spread is two or more,
+rebinds one connection per service per interval off the leader, giving up
+after three ineffective passes. SAGE has the move primitive (rebind plus
+subscription replay) but not what the loop decides on: there is no
+per-connection frame-rate sampler, and `sage_websocket_frames_total` and
+`sage_websocket_connections` carry `service_id` only, so the skew is not
+even readable here yet. Order if a service is suspected: add a bounded
+`domain` label to those two WS metrics (operators, not endpoints), read
+frames by operator against connections by operator, and port the loop only
+if the split is lopsided. Not before.
 
 ## WebSocket liveness (closed 2026-08-31)
 

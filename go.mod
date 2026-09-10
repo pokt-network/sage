@@ -1,4 +1,4 @@
-module github.com/pokt-network/sage
+	module github.com/pokt-network/sage
 
 go 1.26.6
 
@@ -7,7 +7,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/pokt-network/poktroll v0.1.35
 	github.com/pokt-network/ring-go v0.2.0
-	github.com/pokt-network/shannon-sdk v0.0.0-20260827112632-9bf0b02a50b0
+	github.com/pokt-network/shannon-sdk v0.0.0-20260910080906-b1ba68f94c6e
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
 	github.com/redis/go-redis/v9 v9.22.0
@@ -126,7 +126,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/petermattis/goid v0.0.0-20251121121749-a11dd1a45f9a // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pokt-network/go-dleq v0.0.0-20250925202155-488f42ad642a // indirect
+	github.com/pokt-network/go-dleq v0.0.0-20260910080229-86b20e4865eb // indirect
 	github.com/pokt-network/smt v0.14.1 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
