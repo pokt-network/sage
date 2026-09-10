@@ -1,4 +1,4 @@
-	module github.com/pokt-network/sage
+module github.com/pokt-network/sage
 
 go 1.26.6
 
@@ -9,13 +9,13 @@ require (
 	github.com/pokt-network/ring-go v0.2.0
 	github.com/pokt-network/shannon-sdk v0.0.0-20260910080906-b1ba68f94c6e
 	github.com/prometheus/client_golang v1.24.1
-	github.com/prometheus/client_model v0.6.2
+	github.com/prometheus/client_model v0.6.3
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/stretchr/testify v1.12.1
 	github.com/tidwall/gjson v1.19.0
 	github.com/tsenart/vegeta/v12 v12.13.0
 	golang.org/x/net v0.58.0
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
