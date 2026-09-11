@@ -563,3 +563,88 @@ func TestHedge_MergesTheCandidatePoolSoRetryCanRetry(t *testing.T) {
 		t.Fatalf("hedging disabled retry: %d attempts hedged vs %d unhedged", on, off)
 	}
 }
+
+// TestHedge_ArmsAreBoundedByTheAttemptDeadline: a detached arm must not run
+// unbounded. An arm outlives the caller's wait on purpose — a losing arm
+// flushes its signed relay, and a hung one self-scores — but "outlives" has to
+// mean a grace past the attempt deadline, not the protocol's 30s HTTP client
+// timeout. With the arms unbounded, a supplier that accepts and hangs on a
+// busy service stacks 2×(max_retries+1) arms per request for 30s each: the
+// 2026-09-10 canary OOM was ~1,600 such arms, one minute of base traffic.
+func TestHedge_ArmsAreBoundedByTheAttemptDeadline(t *testing.T) {
+	var started, finished atomic.Int32
+	hang := relay.HandlerFunc(func(ctx *relay.Context) error {
+		started.Add(1)
+		defer finished.Add(1)
+		// The protocol's HTTP client honours the arm's context; nothing else
+		// ends a hung relay before the 30s client timeout.
+		<-ctx.Ctx.Done()
+		return retryableErr("hung")
+	})
+
+	flags := newFlags("retry", "hedge")
+	chain := Retry(flags, retryCfg(1, 0))(Hedge(flags, hedgeCfg(2*time.Millisecond))(hang))
+
+	ctx := baseContext()
+	c, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	ctx.Ctx = c
+
+	if err := chain.HandleRelay(ctx); err == nil {
+		t.Fatal("expected the hung chain to fail")
+	}
+
+	// Two attempts of two arms each; every one ends on its own within a
+	// grace of the request deadline, not at the mercy of a client timeout
+	// the test never reaches.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for started.Load() < 4 || finished.Load() < started.Load() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d hedge arms still running 500ms after a 40ms request deadline: they are unbounded",
+				started.Load()-finished.Load(), started.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestHedge_ArmKeepsAFlushWindowPastTheDeadline: bounded is not the same as
+// cut off. The caller stops waiting at its deadline; the arms get a grace
+// past it (the same again) so the losing arm's signed relay still flushes and
+// a slow arm still scores itself.
+func TestHedge_ArmKeepsAFlushWindowPastTheDeadline(t *testing.T) {
+	var mu sync.Mutex
+	var armDeadlines []time.Time
+	hang := relay.HandlerFunc(func(ctx *relay.Context) error {
+		dl, ok := ctx.Ctx.Deadline()
+		mu.Lock()
+		if ok {
+			armDeadlines = append(armDeadlines, dl)
+		}
+		mu.Unlock()
+		<-ctx.Ctx.Done()
+		return retryableErr("hung")
+	})
+
+	mw := Hedge(newFlags("hedge"), hedgeCfg(2*time.Millisecond))
+	ctx := baseContext()
+	c, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	ctx.Ctx = c
+	requestDeadline, _ := c.Deadline()
+
+	if err := mw(hang).HandleRelay(ctx); err == nil {
+		t.Fatal("expected the hung race to fail")
+	}
+	time.Sleep(10 * time.Millisecond) // let the hedge arm record its deadline
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(armDeadlines) != 2 {
+		t.Fatalf("expected two arms with a deadline, got %d", len(armDeadlines))
+	}
+	for _, dl := range armDeadlines {
+		if !dl.After(requestDeadline) {
+			t.Fatalf("arm deadline %v is not past the request deadline %v: no flush window", dl, requestDeadline)
+		}
+	}
+}

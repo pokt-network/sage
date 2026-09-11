@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync/atomic"
+	"time"
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
@@ -71,7 +72,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// the arm's SelectEndpoint writes that field concurrently, and
 			// nothing orders the write against the read below.
 			primaryCtx.SelectedEndpoint = new(atomic.Pointer[domain.EndpointAddr])
-			primaryDetached, primaryCancel := context.WithCancel(context.WithoutCancel(ctx.Ctx))
+			primaryDetached, primaryCancel := armContext(ctx.Ctx)
 			primaryCtx.Ctx = primaryDetached
 			go func() {
 				defer safego.Recover(primaryCtx.Logger, "hedge.primary.goroutine")
@@ -144,7 +145,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			hedgeCtx.Err = nil
 
 			// Detached context — same rationale as the primary arm above.
-			hedgeDetached, hedgeCancel := context.WithCancel(context.WithoutCancel(ctx.Ctx))
+			hedgeDetached, hedgeCancel := armContext(ctx.Ctx)
 			hedgeCtx.Ctx = hedgeDetached
 			go func() {
 				defer safego.Recover(hedgeCtx.Logger, "hedge.hedge.goroutine")
@@ -207,6 +208,39 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			return primaryRes.err
 		})
 	}
+}
+
+// armContext is the context a hedge arm runs on: detached from the caller's
+// cancellation, so a losing arm still flushes its signed relay when the race
+// resolves (see the primary arm above), but NOT detached from time. Its
+// deadline is the attempt's own plus the same again — the caller waited W, the
+// arm may run to 2W to flush or to self-score — after which the protocol's
+// HTTP client cancels the relay.
+//
+// Without a deadline the only bound on an arm was that client's timeout,
+// which is the GLOBAL relay_timeout (30s when unset) and not the service's.
+// A supplier that accepts and hangs on a busy service then stacked
+// 2×(max_retries+1) arms per request for 30s each, ~3 goroutines and a signed
+// relay apiece, at a normal request rate: the 2026-09-10 canary pod went from
+// 552 to 5,257 goroutines inside one minute and was OOM-killed at 1Gi.
+//
+// Under retry's per-attempt split (relay_timeout / attempts) 2W lands on the
+// service's own relay_timeout, which is the bound the config documents for
+// one attempt. A parent with no deadline gets none, as before.
+//
+// ponytail: 2× the caller's remaining wait; use the service relay_timeout
+// directly if hedge ever learns it.
+func armContext(parent context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(parent)
+	dl, ok := parent.Deadline()
+	if !ok {
+		return context.WithCancel(detached)
+	}
+	grace := time.Until(dl)
+	if grace < 0 {
+		grace = 0
+	}
+	return context.WithDeadline(detached, dl.Add(grace))
 }
 
 // mergeContext copies the result fields from src into dst so callers see

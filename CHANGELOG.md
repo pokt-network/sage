@@ -250,6 +250,21 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **Hedge arms are bounded by the attempt deadline plus the same again, not
+  by the global HTTP client timeout.** An arm runs detached from the caller's
+  cancellation on purpose — a losing arm flushes its signed relay — but it was
+  also detached from time: its only bound was `http.Client.Timeout`, which is
+  the global `defaults.timeout.relay_timeout` (30s when unset), not the
+  service's. A supplier that accepted and hung on a busy service stacked
+  `2×(max_retries+1)` arms per request for 30s each, ~3 goroutines and a
+  signed relay apiece, at a normal request rate. The 2026-09-10 canary pod went
+  from 552 to 5,257 goroutines inside one minute and was OOM-killed at 1Gi;
+  eleven smaller spikes in the five days before it came within ~130MB of the
+  limit. An arm now runs to twice the caller's remaining wait, which under
+  retry's per-attempt split lands on the service's own `relay_timeout` — the
+  bound the config documents for one attempt.
+  (`TestHedge_ArmsAreBoundedByTheAttemptDeadline`,
+  `TestHedge_ArmKeepsAFlushWindowPastTheDeadline`.)
 - **shannon-sdk `9bf0b02` → `b1ba68f`, go-dleq `488f42a` → `86b20e4`: three
   signer races on the shared-ring hot path.** PATH lost a pod to a SIGSEGV in
   `HashTrieMap.Load`, reached from `getOrCreateSignerContext` on the hedge
