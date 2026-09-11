@@ -10,37 +10,48 @@ import (
 	"github.com/pokt-network/sage/domain"
 )
 
-// cometBFTMethods is the set of JSON-RPC method names that map to the CometBFT RPC protocol.
+// cometBFTMethods is the CometBFT RPC catalogue: every method the node
+// answers, as a JSON-RPC method name and, with a leading slash, as an HTTP
+// path (GET /status is {"method":"status"}). Exact names rather than
+// prefixes, because NormalizeMethod uses this as the bounded set behind a
+// metric label. Reference: https://docs.cometbft.com/v1.0/rpc/
 var cometBFTMethods = map[string]bool{
-	"status":               true,
-	"health":               true,
+	// node and network
+	"status":          true,
+	"health":          true,
+	"net_info":        true,
+	"genesis":         true,
+	"genesis_chunked": true,
+	// blocks and headers
 	"block":                true,
+	"block_by_hash":        true,
 	"block_results":        true,
+	"block_search":         true,
 	"blockchain":           true,
 	"commit":               true,
+	"header":               true,
+	"header_by_hash":       true,
 	"validators":           true,
-	"genesis":              true,
+	"consensus_params":     true,
 	"consensus_state":      true,
 	"dump_consensus_state": true,
-	"net_info":             true,
-	"abci_info":            true,
-	"abci_query":           true,
-}
-
-// cometBFTPathPrefixes lists URL path prefixes that indicate a CometBFT RPC request.
-var cometBFTPathPrefixes = []string{
-	"/status",
-	"/health",
-	"/block",
-	"/blockchain",
-	"/commit",
-	"/validators",
-	"/genesis",
-	"/consensus_state",
-	"/dump_consensus_state",
-	"/net_info",
-	"/abci_info",
-	"/abci_query",
+	// transactions
+	"tx":                  true,
+	"tx_search":           true,
+	"unconfirmed_txs":     true,
+	"num_unconfirmed_txs": true,
+	"broadcast_tx_sync":   true,
+	"broadcast_tx_async":  true,
+	"broadcast_tx_commit": true,
+	"broadcast_evidence":  true,
+	"check_tx":            true,
+	// abci
+	"abci_info":  true,
+	"abci_query": true,
+	// websocket subscriptions, which also arrive as plain JSON-RPC
+	"subscribe":       true,
+	"unsubscribe":     true,
+	"unsubscribe_all": true,
 }
 
 // cosmosPaths are well-known Cosmos REST API path prefixes (gRPC-gateway).
@@ -51,14 +62,15 @@ var cosmosPaths = []string{
 	"/noble/",
 }
 
-// isCometBFTPath returns true if the URL path maps to a CometBFT RPC endpoint.
+// isCometBFTPath reports whether the URL path is a CometBFT RPC endpoint:
+// its first segment is a catalogued method. One catalogue serves the JSON-RPC
+// and the HTTP face, so the two cannot drift apart.
 func isCometBFTPath(path string) bool {
-	for _, prefix := range cometBFTPathPrefixes {
-		if path == prefix || strings.HasPrefix(path, prefix+"/") || strings.HasPrefix(path, prefix+"?") {
-			return true
-		}
+	seg := strings.TrimPrefix(path, "/")
+	if i := strings.IndexAny(seg, "/?"); i >= 0 {
+		seg = seg[:i]
 	}
-	return false
+	return seg != "" && cometBFTMethods[strings.ToLower(seg)]
 }
 
 // isCosmosRESTPath returns true if the URL path maps to a Cosmos REST (gRPC-gateway) endpoint.
@@ -76,64 +88,89 @@ func isCometBFTMethod(method string) bool {
 	return cometBFTMethods[strings.ToLower(method)]
 }
 
-// parseRequest inspects the request path/method and the pre-read body, and
-// determines the RPC type and method. It returns a single Payload.
+// classifyRPCType is the plugin's answer to which type a request is relayed
+// as; see qos.RPCTypeClassifier. The Cosmos plugin fronts up to four
+// surfaces, and CometBFT is itself two faces of one node, so the answer
+// depends on what the service declares in rpc_types:
 //
-// Detection order:
-//  1. If the path matches a known Cosmos REST path → RPCTypeREST
-//  2. If the path matches a known CometBFT path (GET or POST) → RPCTypeCometBFT
-//  3. If POST with a JSON-RPC body:
-//     a. If the method is a CometBFT method → RPCTypeCometBFT
-//     b. Otherwise → RPCTypeJSONRPC
-//  4. Fall back to the caller-supplied rpcType hint.
-func parseRequest(req *http.Request, body []byte, hintRPCType domain.RPCType) (domain.Payload, error) {
-	path := req.URL.Path
+//  1. gRPC, by media type — a method path like /cosmos.bank.v1beta1.Query/Params
+//     starts with "/cosmos." and would otherwise read as REST.
+//  2. A Cosmos REST path (/cosmos/, /ibc/, ...) is rest.
+//  3. A CometBFT path (GET /status, POST /block) is the node's HTTP face:
+//     comet_bft when declared, else rest — on Pocket a supplier stakes rest
+//     for exactly that face, with no comet_bft stake.
+//  4. A JSON body with a method is the JSON-RPC face: a CometBFT method is
+//     comet_bft when declared, else json_rpc — the same supplier stakes
+//     json_rpc for this face; any other method is json_rpc (the EVM surface
+//     of an EVM-enabled chain, or the client's mistake).
+//  5. Anything else keeps what generic detection said, or is rest.
+//
+// When comet_bft is declared it is preferred for both faces, because it is
+// the surface the request names. A service whose suppliers do not stake it
+// should not declare it; with json_rpc and rest declared instead, both faces
+// reach the pools that can serve them. An undeclared result is returned as
+// is, so that ParseRequest refuses it with the declared list.
+func classifyRPCType(req *http.Request, body []byte, detected domain.RPCType, supported []domain.RPCType) domain.RPCType {
+	declares := func(t domain.RPCType) bool { return isRPCTypeSupported(t, supported) }
+	faceType := func(alt domain.RPCType) domain.RPCType {
+		if declares(domain.RPCTypeCometBFT) || !declares(alt) {
+			return domain.RPCTypeCometBFT
+		}
+		return alt
+	}
 
-	// gRPC is identified by media type upstream, not by path: a method path
-	// like /cosmos.bank.v1beta1.Query/Params starts with "/cosmos." and would
-	// otherwise fall through to the REST branch below.
-	//
-	// The backend is a native gRPC server, so it is told "application/grpc"
-	// regardless of the framing the client used — for a unary call the request
-	// body is byte-identical between gRPC and gRPC-Web (they differ only in
-	// trailers, which requests do not carry).
-	if hintRPCType == domain.RPCTypeGRPC {
+	if detected == domain.RPCTypeGRPC || strings.HasPrefix(req.Header.Get("Content-Type"), "application/grpc") {
+		return domain.RPCTypeGRPC
+	}
+	path := req.URL.Path
+	if isCosmosRESTPath(path) {
+		return domain.RPCTypeREST
+	}
+	if isCometBFTPath(path) {
+		return faceType(domain.RPCTypeREST)
+	}
+	if req.Method == http.MethodPost && len(body) > 0 && gjson.ValidBytes(body) {
+		if method := gjson.GetBytes(body, "method").String(); method != "" {
+			if isCometBFTMethod(method) {
+				return faceType(domain.RPCTypeJSONRPC)
+			}
+			return domain.RPCTypeJSONRPC
+		}
+	}
+	if detected != domain.RPCTypeUnknown && detected != "" {
+		return detected
+	}
+	return domain.RPCTypeREST
+}
+
+// parseRequest builds the single Payload for a request. rpcType is the type
+// Parse settled on — the plugin's own classification unless the client's
+// RPC-Type header overrode it — and the payload carries it unchanged, so
+// what was validated and pooled is what is sent. RPCTypeUnknown (a caller
+// with no Parse in front of it) classifies here instead.
+//
+// The method is read from a JSON body when there is one, whatever the type:
+// it is what NormalizeMethod and the reputation key see, and a CometBFT
+// request relayed as json_rpc on a service that declares no comet_bft is
+// still "status" to both.
+func parseRequest(req *http.Request, body []byte, rpcType domain.RPCType, supported []domain.RPCType) (domain.Payload, error) {
+	if rpcType == domain.RPCTypeUnknown || rpcType == "" {
+		rpcType = classifyRPCType(req, body, domain.RPCTypeUnknown, supported)
+	}
+	path := req.URL.Path
+	if rpcType == domain.RPCTypeGRPC {
+		// The backend is a native gRPC server, so it is told "application/grpc"
+		// regardless of the framing the client used — for a unary call the
+		// request body is byte-identical between gRPC and gRPC-Web (they
+		// differ only in trailers, which requests do not carry).
 		return withRequestHTTP(domain.NewPayload(body, domain.RPCTypeGRPC, grpcMethodFromPath(path)), req).
 			WithContentType("application/grpc"), nil
 	}
-
-	// Cosmos REST paths take priority.
-	if isCosmosRESTPath(path) {
-		return withRequestHTTP(domain.NewPayload(body, domain.RPCTypeREST, ""), req), nil
+	method := ""
+	if req.Method == http.MethodPost && len(body) > 0 && gjson.ValidBytes(body) {
+		method = gjson.GetBytes(body, "method").String()
 	}
-
-	// CometBFT path detection (covers GET and POST to known paths).
-	if isCometBFTPath(path) {
-		return withRequestHTTP(domain.NewPayload(body, domain.RPCTypeCometBFT, ""), req), nil
-	}
-
-	// For POST requests, try to parse as JSON-RPC.
-	if req.Method == http.MethodPost {
-		if len(body) > 0 && gjson.ValidBytes(body) {
-			method := gjson.GetBytes(body, "method").String()
-			if method != "" {
-				if isCometBFTMethod(method) {
-					return withRequestHTTP(domain.NewPayload(body, domain.RPCTypeCometBFT, method), req), nil
-				}
-				return withRequestHTTP(domain.NewPayload(body, domain.RPCTypeJSONRPC, method), req), nil
-			}
-		}
-
-		// Non-JSON-RPC POST (e.g., REST POST body).
-		rpcType := hintRPCType
-		if rpcType == domain.RPCTypeUnknown || rpcType == "" {
-			rpcType = domain.RPCTypeREST
-		}
-		return withRequestHTTP(domain.NewPayload(body, rpcType, ""), req), nil
-	}
-
-	// GET request not matching any known path — treat as REST.
-	return withRequestHTTP(domain.NewPayload(body, domain.RPCTypeREST, ""), req), nil
+	return withRequestHTTP(domain.NewPayload(body, rpcType, method), req), nil
 }
 
 // grpcMethodFromPath turns a gRPC path into the method name SAGE records for

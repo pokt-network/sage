@@ -107,6 +107,7 @@ var (
 	_ qos.ChainViewer        = (*Plugin)(nil)
 	_ qos.HeightObserver     = (*Plugin)(nil)
 	_ qos.StateResetter      = (*Plugin)(nil)
+	_ qos.RPCTypeClassifier  = (*Plugin)(nil)
 )
 
 // NewPlugin creates a Cosmos QoS plugin for a single service.
@@ -137,7 +138,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 // ParseRequest inspects the request and returns a single-element Payload slice.
 // The RPC type is auto-detected from the request path and body.
 func (p *Plugin) ParseRequest(_ context.Context, req *http.Request, body []byte, rpcType domain.RPCType) ([]domain.Payload, error) {
-	payload, err := parseRequest(req, body, rpcType)
+	payload, err := parseRequest(req, body, rpcType, p.supportedRPCTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +153,13 @@ func (p *Plugin) ParseRequest(_ context.Context, req *http.Request, body []byte,
 	}
 
 	return []domain.Payload{payload}, nil
+}
+
+// ClassifyRPCType implements qos.RPCTypeClassifier: the type a request is
+// relayed as, decided by which CometBFT face it addresses and which types the
+// service declares. See classifyRPCType.
+func (p *Plugin) ClassifyRPCType(req *http.Request, body []byte, detected domain.RPCType) domain.RPCType {
+	return classifyRPCType(req, body, detected, p.supportedRPCTypes)
 }
 
 // SelectEndpoints filters the supplied endpoint list by:

@@ -106,3 +106,33 @@ Rewriting a client's path (PATH answers tron JSON-RPC at both `/` and
 `/jsonrpc`; SAGE forwards the client's path verbatim and both work, so no
 rewrite is needed). `blocked_suppliers` and `endpoint_policy` are separate,
 already-queued items.
+
+## Amendment 2026-09-12: the plugin settles CometBFT's two faces
+
+`sage_rpc_type_mismatch_total{reason="plugin"}` (added 2026-09-11) showed the
+generic detector and the cosmos plugin disagreeing on every JSON-RPC body that
+carried a CometBFT method: `parse` typed it `json_rpc`, the plugin typed the
+payload `comet_bft`, so the request was validated and pooled as one surface
+and sent to the other's URL. It worked only because every cosmos supplier on
+the canary stakes both.
+
+PATH's rule — a CometBFT method is always `comet_bft` — is not right either.
+CometBFT is one node with two faces, JSON-RPC POST and HTTP GET, and on
+Pocket a supplier commonly stakes `json_rpc` for the first and `rest` for the
+second with no `comet_bft` stake. Typing those requests `comet_bft` would
+draw from a pool that does not exist.
+
+The middle ground: a plugin that knows its surfaces implements
+`qos.RPCTypeClassifier`, and `parse` takes its answer as the detected type.
+The cosmos plugin picks, per face, `comet_bft` when the service declares it
+and otherwise the face's alternative (`json_rpc` for a JSON-RPC body, `rest`
+for a CometBFT path). The client's `RPC-Type` header still wins over both.
+The plugin's `ParseRequest` is handed the settled type and types its payload
+with it, so one type flows through validate, pool, reputation, heuristic and
+the wire, and `reason="plugin"` should read zero.
+
+The operator's lever is `rpc_types`: a service whose suppliers stake
+`comet_bft` declares it and gets the named surface; one whose suppliers stake
+the faces separately declares `json_rpc` and `rest` without it. Declaring
+`comet_bft` on a service whose suppliers do not stake it narrows the pool to
+whoever does, which `rpc_type_fallbacks` widens only when that pool is empty.

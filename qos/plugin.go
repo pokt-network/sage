@@ -52,6 +52,27 @@ type ArchivalDetector interface {
 	IsArchivalRequest(payloads []domain.Payload) bool
 }
 
+// RPCTypeClassifier is implemented by a plugin whose chain fronts several
+// protocols on one service and can say which one a request addresses better
+// than the generic detector in relay/middleware/parse.go can. Parse consults
+// it after generic detection and before the client's RPC-Type header, which
+// wins over both.
+//
+// It exists because a surface is not always its own RPC type. CometBFT is
+// one node answering JSON-RPC POSTs and HTTP GETs on one port, and on Pocket
+// a supplier commonly stakes json_rpc for the first face and rest for the
+// second, with no comet_bft stake at all. Which type a CometBFT request
+// should be relayed as therefore depends on what the service declares, and
+// that knowledge belongs to the chain's plugin, not to config or to the
+// generic detector.
+type RPCTypeClassifier interface {
+	// ClassifyRPCType returns the type the request should be validated,
+	// pooled, scored and sent as, given what generic detection said. It is
+	// the one type the request carries end to end: the plugin's ParseRequest
+	// is handed the result and must type its payloads the same way.
+	ClassifyRPCType(req *http.Request, body []byte, detected domain.RPCType) domain.RPCType
+}
+
 // HealthChecker is implemented by plugins that provide health check payloads.
 //
 // The checks are a property of the plugin rather than of any one endpoint —

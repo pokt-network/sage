@@ -116,6 +116,13 @@ func ParseWithOptions(registry *qos.Registry, opts ParseOptions) relay.Middlewar
 			// detector is ever graded against, and the comparison is what
 			// sage_rpc_type_mismatch_total{reason="header"} counts.
 			ctx.RPCTypeDetected = detectRPCType(ctx.HTTPRequest, body, serviceDeclaresREST(rpcTypes, ctx.ServiceID))
+			// A plugin that knows its chain's surfaces refines the generic
+			// answer: the cosmos plugin decides which declared type a
+			// CometBFT request travels as. Its answer is what ParseRequest
+			// types the payload with, so the type is one from here on.
+			if classifier, ok := plugin.(qos.RPCTypeClassifier); ok {
+				ctx.RPCTypeDetected = classifier.ClassifyRPCType(ctx.HTTPRequest, body, ctx.RPCTypeDetected)
+			}
 
 			// The client's own declaration wins over detection: a REST call
 			// whose body happens to look like JSON-RPC is still REST if the

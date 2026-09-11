@@ -256,3 +256,71 @@ func TestValidate_UnsupportedType_SaysWhatIsAllowed(t *testing.T) {
 		t.Errorf("allowed_rpc_types = %v", data["allowed_rpc_types"])
 	}
 }
+
+// classifyingPlugin is a plugin that knows its surfaces: it retypes any
+// request to a fixed answer, the way the cosmos plugin retypes a CometBFT
+// JSON-RPC body to whichever declared type serves that face.
+type classifyingPlugin struct {
+	mockPlugin
+	answer domain.RPCType
+	seen   domain.RPCType
+}
+
+func (c *classifyingPlugin) ClassifyRPCType(_ *http.Request, _ []byte, detected domain.RPCType) domain.RPCType {
+	c.seen = detected
+	return c.answer
+}
+
+func TestParse_PluginClassifierRefinesDetection(t *testing.T) {
+	registry := qos.NewRegistry()
+	plugin := &classifyingPlugin{answer: domain.RPCTypeCometBFT}
+	registry.Register("atomone", plugin)
+	mw := middleware.Parse(registry)
+
+	// Generic detection says json_rpc (a JSON-RPC envelope); the plugin
+	// says comet_bft. The plugin's answer is the type, and the payload
+	// carries the same type because ParseRequest is handed it.
+	req := newPOSTRequest("/", `{"jsonrpc":"2.0","method":"status","id":1}`)
+	req.Header.Set("Target-Service-Id", "atomone")
+	ctx := newCtx(req)
+	if err := mw(relay.HandlerFunc(func(*relay.Context) error { return nil })).HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if plugin.seen != domain.RPCTypeJSONRPC {
+		t.Errorf("plugin was handed detected = %q, want json_rpc", plugin.seen)
+	}
+	if ctx.RPCType != domain.RPCTypeCometBFT || ctx.RPCTypeDetected != domain.RPCTypeCometBFT {
+		t.Errorf("RPCType = %q, RPCTypeDetected = %q, want comet_bft from the plugin", ctx.RPCType, ctx.RPCTypeDetected)
+	}
+	if ctx.RPCTypeSource != relay.RPCTypeSourceDetected {
+		t.Errorf("RPCTypeSource = %q, want detected (the plugin is part of detection)", ctx.RPCTypeSource)
+	}
+	if len(ctx.Payloads) != 1 || ctx.Payloads[0].RPCType() != domain.RPCTypeCometBFT {
+		t.Errorf("payloads = %+v, want one comet_bft payload", ctx.Payloads)
+	}
+}
+
+func TestParse_RPCTypeHeader_WinsOverPluginClassifier(t *testing.T) {
+	registry := qos.NewRegistry()
+	plugin := &classifyingPlugin{answer: domain.RPCTypeCometBFT}
+	registry.Register("atomone", plugin)
+	mw := middleware.Parse(registry)
+
+	req := newPOSTRequest("/", `{"jsonrpc":"2.0","method":"status","id":1}`)
+	req.Header.Set("Target-Service-Id", "atomone")
+	req.Header.Set("RPC-Type", "json_rpc")
+	ctx := newCtx(req)
+	if err := mw(relay.HandlerFunc(func(*relay.Context) error { return nil })).HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.RPCType != domain.RPCTypeJSONRPC || ctx.RPCTypeSource != relay.RPCTypeSourceHeader {
+		t.Errorf("RPCType = %q (%s), want json_rpc from the header", ctx.RPCType, ctx.RPCTypeSource)
+	}
+	// What the plugin would have said is kept, so the header can be graded against it.
+	if ctx.RPCTypeDetected != domain.RPCTypeCometBFT {
+		t.Errorf("RPCTypeDetected = %q, want the plugin's comet_bft", ctx.RPCTypeDetected)
+	}
+	if ctx.Payloads[0].RPCType() != domain.RPCTypeJSONRPC {
+		t.Errorf("payload type = %q, want the header's json_rpc", ctx.Payloads[0].RPCType())
+	}
+}

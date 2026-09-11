@@ -335,7 +335,15 @@ func TestIsCometBFTMethod(t *testing.T) {
 		{"net_info", true},
 		{"abci_info", true},
 		{"abci_query", true},
+		{"tx_search", true},
+		{"block_search", true},
+		{"header_by_hash", true},
+		{"broadcast_tx_sync", true},
+		{"broadcast_tx_commit", true},
+		{"consensus_params", true},
+		{"unconfirmed_txs", true},
 		{"eth_blockNumber", false},
+		{"broadcast_", false}, // a prefix is not a method
 		{"", false},
 		{"STATUS", true}, // case-insensitive
 	}
@@ -636,7 +644,7 @@ func TestParseRequest_GRPC(t *testing.T) {
 	}
 	req.Header.Set("Content-Type", "application/grpc-web+proto")
 
-	payload, err := parseRequest(req, body, domain.RPCTypeGRPC)
+	payload, err := parseRequest(req, body, domain.RPCTypeGRPC, nil)
 	if err != nil {
 		t.Fatalf("parseRequest: %v", err)
 	}
@@ -666,7 +674,7 @@ func TestParseRequest_GRPCPathIsNotMistakenForREST(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	payload, err := parseRequest(req, nil, domain.RPCTypeREST)
+	payload, err := parseRequest(req, nil, domain.RPCTypeREST, nil)
 	if err != nil {
 		t.Fatalf("parseRequest: %v", err)
 	}
@@ -739,5 +747,118 @@ func TestResetState(t *testing.T) {
 	}
 	if len(selected) != len(addrs) {
 		t.Fatalf("SelectEndpoints after ResetState = %v, want every endpoint to pass (%v)", selected, addrs)
+	}
+}
+
+// Which type a CometBFT request is relayed as depends on which of its two
+// faces the request addresses and what the service declares. On Pocket a
+// supplier stakes json_rpc for the JSON-RPC face and rest for the HTTP face
+// with no comet_bft stake, so a service declared that way must route both
+// faces to those pools; a service that declares comet_bft gets the surface
+// the request names.
+func TestClassifyRPCType_CometBFTFacesFollowDeclaredTypes(t *testing.T) {
+	statusJSONRPC := `{"jsonrpc":"2.0","method":"status","params":[],"id":1}`
+	evmJSONRPC := `{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`
+	all := []domain.RPCType{domain.RPCTypeREST, domain.RPCTypeCometBFT, domain.RPCTypeJSONRPC}
+	pocketStyle := []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeREST}
+	cometOnly := []domain.RPCType{domain.RPCTypeCometBFT}
+
+	cases := []struct {
+		name     string
+		declared []domain.RPCType
+		method   string
+		path     string
+		body     string
+		want     domain.RPCType
+	}{
+		{"comet declared: JSON-RPC face is comet_bft", all, http.MethodPost, "/", statusJSONRPC, domain.RPCTypeCometBFT},
+		{"comet declared: HTTP face is comet_bft", all, http.MethodGet, "/status", "", domain.RPCTypeCometBFT},
+		{"comet declared: HTTP face with query", all, http.MethodGet, "/block?height=100", "", domain.RPCTypeCometBFT},
+		{"comet declared: POST to a CometBFT path is the HTTP face", all, http.MethodPost, "/broadcast_tx_sync", `{"tx":"AA=="}`, domain.RPCTypeCometBFT},
+		{"pocket style: JSON-RPC face is json_rpc", pocketStyle, http.MethodPost, "/", statusJSONRPC, domain.RPCTypeJSONRPC},
+		{"pocket style: HTTP face is rest", pocketStyle, http.MethodGet, "/status", "", domain.RPCTypeREST},
+		{"pocket style: tx_search over JSON-RPC is json_rpc", pocketStyle, http.MethodPost, "/", `{"jsonrpc":"2.0","method":"tx_search","params":{"query":"tx.height=1"},"id":1}`, domain.RPCTypeJSONRPC},
+		{"comet only: JSON-RPC face stays comet_bft", cometOnly, http.MethodPost, "/", statusJSONRPC, domain.RPCTypeCometBFT},
+		{"comet only: HTTP face stays comet_bft", cometOnly, http.MethodGet, "/status", "", domain.RPCTypeCometBFT},
+		{"EVM method is json_rpc whatever is declared", all, http.MethodPost, "/", evmJSONRPC, domain.RPCTypeJSONRPC},
+		{"EVM method on pocket style is json_rpc", pocketStyle, http.MethodPost, "/", evmJSONRPC, domain.RPCTypeJSONRPC},
+		{"cosmos REST path is rest", all, http.MethodGet, "/cosmos/bank/v1beta1/params", "", domain.RPCTypeREST},
+		{"ibc REST path is rest", pocketStyle, http.MethodGet, "/ibc/apps/transfer/v1/params", "", domain.RPCTypeREST},
+		{"unknown GET path is rest", all, http.MethodGet, "/poktroll/session/params", "", domain.RPCTypeREST},
+		{"non-JSON POST keeps detection", all, http.MethodPost, "/poktroll/thing", "not json", domain.RPCTypeREST},
+		{"undeclared result is returned as is for ParseRequest to refuse", []domain.RPCType{domain.RPCTypeREST}, http.MethodPost, "/", statusJSONRPC, domain.RPCTypeCometBFT},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := makeRequest(tc.method, tc.path, tc.body)
+			detected := domain.RPCTypeUnknown
+			if tc.name == "non-JSON POST keeps detection" {
+				detected = domain.RPCTypeREST
+			}
+			if got := classifyRPCType(req, []byte(tc.body), detected, tc.declared); got != tc.want {
+				t.Errorf("classifyRPCType = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyRPCType_GRPCByMediaType(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "http://gw/cosmos.bank.v1beta1.Query/Params", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/grpc-web+proto")
+	if got := classifyRPCType(req, nil, domain.RPCTypeUnknown, nil); got != domain.RPCTypeGRPC {
+		t.Errorf("classifyRPCType = %q, want grpc", got)
+	}
+}
+
+// The plugin's classification and its payload agree by construction: the
+// type Parse hands ParseRequest is the type the payload carries, and the
+// method is still read from the body so reputation and NormalizeMethod see
+// "status" whichever pool the request went to.
+func TestParseRequest_PayloadCarriesTheSettledType(t *testing.T) {
+	p := newPlugin(10, domain.RPCTypeJSONRPC, domain.RPCTypeREST) // pocket style
+	body := `{"jsonrpc":"2.0","method":"status","params":[],"id":1}`
+	req := makeRequest(http.MethodPost, "/", body)
+
+	settled := p.ClassifyRPCType(req, []byte(body), domain.RPCTypeJSONRPC)
+	if settled != domain.RPCTypeJSONRPC {
+		t.Fatalf("ClassifyRPCType = %q, want json_rpc on a service that declares no comet_bft", settled)
+	}
+	payloads, err := p.ParseRequest(context.Background(), req, []byte(body), settled)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	if got := payloads[0].RPCType(); got != settled {
+		t.Errorf("payload type = %q, want the settled %q", got, settled)
+	}
+	if payloads[0].Method() != "status" {
+		t.Errorf("Method = %q, want status", payloads[0].Method())
+	}
+	if p.NormalizeMethod(payloads[0]) != "status" {
+		t.Errorf("NormalizeMethod = %q, want status", p.NormalizeMethod(payloads[0]))
+	}
+
+	// The client's header wins over the plugin: a REST declaration on a
+	// JSON-RPC body is relayed as REST, with the method still recorded.
+	payloads, err = p.ParseRequest(context.Background(), req, []byte(body), domain.RPCTypeREST)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	if got := payloads[0].RPCType(); got != domain.RPCTypeREST {
+		t.Errorf("payload type = %q, want rest from the header", got)
+	}
+}
+
+// A CometBFT request on a service that declares neither comet_bft nor the
+// face's alternative is refused with the declared list, not silently retyped.
+func TestParseRequest_CometBFTOnRESTOnlyService_Rejected(t *testing.T) {
+	p := newPlugin(10, domain.RPCTypeREST)
+	body := `{"jsonrpc":"2.0","method":"status","params":[],"id":1}`
+	req := makeRequest(http.MethodPost, "/", body)
+	settled := p.ClassifyRPCType(req, []byte(body), domain.RPCTypeJSONRPC)
+	if _, err := p.ParseRequest(context.Background(), req, []byte(body), settled); err == nil {
+		t.Fatal("expected a rejection: JSON-RPC face of CometBFT with neither comet_bft nor json_rpc declared")
 	}
 }
