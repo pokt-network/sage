@@ -50,6 +50,14 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "retry_total"},
 			[]string{"service_id", "reason"},
 		),
+		rpcTypeTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "rpc_type_total"},
+			[]string{"service_id", "rpc_type", "source"},
+		),
+		rpcTypeMismatchTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "rpc_type_mismatch_total"},
+			[]string{"service_id", "rpc_type", "actual", "reason"},
+		),
 		hedgeTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "hedge_total"},
 			[]string{"service_id", "result"},
@@ -99,6 +107,8 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 		r.relayTotal,
 		r.relayLatency,
 		r.retryTotal,
+		r.rpcTypeTotal,
+		r.rpcTypeMismatchTotal,
 		r.hedgeTotal,
 		r.cacheHits,
 		r.cacheMisses,
@@ -622,5 +632,40 @@ func TestRecorder_HealthCheckLastCycleExistsBeforeAnyCycle(t *testing.T) {
 		if v != 0 {
 			t.Errorf("%s = %v before any cycle ran, want 0", labels, v)
 		}
+	}
+}
+
+func TestRecordRPCType_LabelsSourceAndMismatchReason(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordRPCType("eth", domain.RPCTypeJSONRPC, "detected")
+	r.RecordRPCType("eth", domain.RPCTypeJSONRPC, "detected")
+	r.RecordRPCType("eth", domain.RPCTypeREST, "header")
+	r.RecordRPCTypeMismatch("eth", domain.RPCTypeJSONRPC, domain.RPCTypeCometBFT, "plugin")
+
+	c, err := r.rpcTypeTotal.GetMetricWithLabelValues("eth", "json_rpc", "detected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 2 {
+		t.Errorf("rpc_type_total{json_rpc,detected} = %v, want 2", got)
+	}
+	c, err = r.rpcTypeTotal.GetMetricWithLabelValues("eth", "rest", "header")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 1 {
+		t.Errorf("rpc_type_total{rest,header} = %v, want 1", got)
+	}
+	m, err := r.rpcTypeMismatchTotal.GetMetricWithLabelValues("eth", "json_rpc", "comet_bft", "plugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, m); got != 1 {
+		t.Errorf("rpc_type_mismatch_total{json_rpc,comet_bft,plugin} = %v, want 1", got)
+	}
+	// An unconfigured service collapses to the unknown label, as everywhere.
+	r.RecordRPCType("nope", domain.RPCTypeREST, "detected")
+	if _, err := r.rpcTypeTotal.GetMetricWithLabelValues(unknownLabel, "rest", "detected"); err != nil {
+		t.Errorf("unknown service not collapsed: %v", err)
 	}
 }

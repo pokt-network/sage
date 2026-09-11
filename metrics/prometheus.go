@@ -42,6 +42,8 @@ type Recorder struct {
 
 	relayTotal            *prometheus.CounterVec
 	clientRequestsTotal   *prometheus.CounterVec
+	rpcTypeTotal          *prometheus.CounterVec
+	rpcTypeMismatchTotal  *prometheus.CounterVec
 	relayLatency          *prometheus.HistogramVec
 	retryTotal            *prometheus.CounterVec
 	retryResolutionTotal  *prometheus.CounterVec
@@ -92,6 +94,22 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Help:      "Client-facing relay requests by service and the HTTP status returned to the client. Unlike relay_total (per relay attempt), this is one count per client request and matches what an edge or client sees — a JSON-RPC error is an HTTP 200 here.",
 			},
 			[]string{"service_id", "status"},
+		),
+		rpcTypeTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "rpc_type_total",
+				Help:      "Client requests by the RPC type SAGE settled on and how: source=\"header\" when the client declared it with RPC-Type, \"detected\" when Parse inferred it from the verb, path and body. One count per request that reached classification; a request refused before that (no Target-Service-Id, oversized body, unparseable RPC-Type value) is absent. The source=\"detected\" share is the traffic whose routing rests on detection alone.",
+			},
+			[]string{"service_id", "rpc_type", "source"},
+		),
+		rpcTypeMismatchTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "rpc_type_mismatch_total",
+				Help:      "Client requests whose RPC type classification was contradicted by a better informed party, by reason. header: the client sent RPC-Type=actual and detection would have said rpc_type — the one place detection is graded against ground truth. plugin: the service's QoS plugin parsed the payload as actual, not the rpc_type Parse settled on, so the request was validated and pooled as one surface and sent as another (a JSON-RPC body carrying a CometBFT method on a cosmos service, for one). unsupported: the service does not declare rpc_type, so Validate refused the request with 400 (actual=\"none\"). Non-zero is a detection rule, a plugin table or a service's rpc_types to fix; the log line \"rpc type not declared by service\" names the path for the last case.",
+			},
+			[]string{"service_id", "rpc_type", "actual", "reason"},
 		),
 		relayLatency: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -273,6 +291,8 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.healthCheckOverruns,
 		r.relayTotal,
 		r.clientRequestsTotal,
+		r.rpcTypeTotal,
+		r.rpcTypeMismatchTotal,
 		r.relayLatency,
 		r.retryTotal,
 		r.retryResolutionTotal,
@@ -357,6 +377,21 @@ func (r *Recorder) recordRelayAttempt(
 // 4xx/5xx. Distinct from RecordRelay, which counts each relay ATTEMPT.
 func (r *Recorder) RecordClientRequest(serviceID domain.ServiceID, status int) {
 	r.clientRequestsTotal.WithLabelValues(r.services.serviceValue(serviceID), strconv.Itoa(status)).Inc()
+}
+
+// RecordRPCType counts one client request by the RPC type it was classified
+// as and whether the client declared it or SAGE detected it. Satisfies
+// router.ClientMetrics.
+func (r *Recorder) RecordRPCType(serviceID domain.ServiceID, rpcType domain.RPCType, source string) {
+	r.rpcTypeTotal.WithLabelValues(r.services.serviceValue(serviceID), string(rpcType), source).Inc()
+}
+
+// RecordRPCTypeMismatch counts a client request whose classification was
+// contradicted: rpcType is what detection produced, actual what the
+// contradicting party said, reason which party (header, plugin,
+// unsupported). Satisfies router.ClientMetrics.
+func (r *Recorder) RecordRPCTypeMismatch(serviceID domain.ServiceID, rpcType, actual domain.RPCType, reason string) {
+	r.rpcTypeMismatchTotal.WithLabelValues(r.services.serviceValue(serviceID), string(rpcType), string(actual), reason).Inc()
 }
 
 // RecordRetry increments the retry counter for a service with a given reason.

@@ -38,6 +38,14 @@ var ErrRetryVerdict = errors.New("heuristic verdict: retry")
 // it to record no signal.
 var ErrEndpointsStale = errors.New("endpoints stale: session rolled over")
 
+// ErrRPCTypeUnsupported is the cause Validate attaches when a request's RPC
+// type is one the service does not declare. The router counts it in
+// sage_rpc_type_mismatch_total{reason="unsupported"}: a request that was
+// classified as something the service cannot serve is either a client
+// mistake or a detection rule to fix, and the counter is how the second
+// is noticed.
+var ErrRPCTypeUnsupported = errors.New("rpc type not declared by service")
+
 // ClientMessage is what may be shown to the caller of a relay.
 //
 // Error() renders the whole cause chain, which is right for a log line and

@@ -39,6 +39,13 @@ type ClientMetrics interface {
 	// stage of selection settled for less than it wanted. tier is the
 	// sage_degraded_total label; the router records "response".
 	RecordDegraded(serviceID domain.ServiceID, tier string)
+	// RecordRPCType counts one client request by the RPC type Parse settled
+	// on and how (header|detected); sage_rpc_type_total.
+	RecordRPCType(serviceID domain.ServiceID, rpcType domain.RPCType, source string)
+	// RecordRPCTypeMismatch counts a client request whose classification was
+	// contradicted — rpcType is what detection produced, actual what a better
+	// informed party said, reason which party; sage_rpc_type_mismatch_total.
+	RecordRPCTypeMismatch(serviceID domain.ServiceID, rpcType, actual domain.RPCType, reason string)
 }
 
 // Warmup reports whether the gateway can steer endpoint selection yet — i.e.
@@ -289,7 +296,10 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 	// Record the client-facing status once, whichever path answers — this is
 	// what an edge dashboard sees, unlike sage_relay_total's per-attempt view.
 	if r.clientMetrics != nil {
-		defer func() { r.clientMetrics.RecordClientRequest(ctx.ServiceID, rw.Status()) }()
+		defer func() {
+			r.clientMetrics.RecordClientRequest(ctx.ServiceID, rw.Status())
+			r.recordRPCType(ctx)
+		}()
 	}
 
 	if err := r.chain.HandleRelay(ctx); err != nil {
@@ -434,6 +444,40 @@ func (r *Router) writeRelayError(rw relay.ResponseWriter, ctx *relay.Context, er
 
 	renderJSONError(rw, status, message)
 }
+
+// recordRPCType records how one request's RPC type was settled and whether
+// anything better informed disagreed. It reads only what the chain left on
+// ctx, so it runs after the chain whichever way the request ended.
+//
+// Three parties can contradict detection, and each is a different fix:
+//   - the client, via RPC-Type: detection is graded against the header, the
+//     only ground truth it ever meets (reason "header");
+//   - the service's QoS plugin, which parses the payload and may type it
+//     differently from Parse — the request was then validated and pooled as
+//     one surface and sent as another (reason "plugin");
+//   - the service's rpc_types, which do not include what detection produced,
+//     so Validate refused the request (reason "unsupported").
+func (r *Router) recordRPCType(ctx *relay.Context) {
+	if ctx.RPCTypeSource == "" {
+		return // refused before classification; nothing was decided
+	}
+	r.clientMetrics.RecordRPCType(ctx.ServiceID, ctx.RPCType, string(ctx.RPCTypeSource))
+	if errors.Is(ctx.Err, domain.ErrRPCTypeUnsupported) {
+		r.clientMetrics.RecordRPCTypeMismatch(ctx.ServiceID, ctx.RPCType, rpcTypeNone, "unsupported")
+	}
+	if ctx.RPCTypeSource == relay.RPCTypeSourceHeader && ctx.RPCTypeDetected != ctx.RPCType {
+		r.clientMetrics.RecordRPCTypeMismatch(ctx.ServiceID, ctx.RPCTypeDetected, ctx.RPCType, "header")
+	}
+	if len(ctx.Payloads) > 0 {
+		if pt := ctx.Payloads[0].RPCType(); pt != "" && pt != domain.RPCTypeUnknown && pt != ctx.RPCType {
+			r.clientMetrics.RecordRPCTypeMismatch(ctx.ServiceID, ctx.RPCType, pt, "plugin")
+		}
+	}
+}
+
+// rpcTypeNone is the `actual` label when a request was refused rather than
+// retyped: the service serves no surface the request could be counted under.
+const rpcTypeNone domain.RPCType = "none"
 
 // statusForError maps a gateway-made failure to the HTTP status a client
 // sees. The body carries the JSON-RPC code either way; the status is what a

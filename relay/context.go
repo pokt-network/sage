@@ -42,7 +42,16 @@ type Context struct {
 	// Set by Parse middleware
 	ServiceID domain.ServiceID
 	RPCType   domain.RPCType
-	Plugin    qos.Plugin // nil if no plugin registered for the service
+	// RPCTypeSource is how RPCType was settled: by the client's RPC-Type
+	// header or by detection. Empty when Parse never got that far (no
+	// Target-Service-Id, oversized body, unparseable header value).
+	RPCTypeSource RPCTypeSource
+	// RPCTypeDetected is what detection said for this request whether or not
+	// a header overrode it. Equal to RPCType when RPCTypeSource is detected;
+	// when a header was sent the two can differ, which is the one place the
+	// detector is graded against a client that knows.
+	RPCTypeDetected domain.RPCType
+	Plugin          qos.Plugin // nil if no plugin registered for the service
 
 	// Set by QoS parsing
 	Payloads []domain.Payload
@@ -117,6 +126,17 @@ type Context struct {
 }
 
 // NewContext creates a new relay context from an HTTP request.
+// RPCTypeSource says where a request's RPCType came from. It is a metric
+// label (sage_rpc_type_total), so the values are a closed set.
+type RPCTypeSource string
+
+const (
+	// RPCTypeSourceHeader is a type the client declared with RPC-Type.
+	RPCTypeSourceHeader RPCTypeSource = "header"
+	// RPCTypeSourceDetected is a type Parse inferred from the request.
+	RPCTypeSourceDetected RPCTypeSource = "detected"
+)
+
 func NewContext(ctx context.Context, req *http.Request, logger *slog.Logger, writer ResponseWriter) *Context {
 	return &Context{
 		Ctx:         ctx,

@@ -136,6 +136,46 @@ func TestParse_RPCTypeHeader_OverridesDetection(t *testing.T) {
 	if got != domain.RPCTypeREST {
 		t.Fatalf("RPCType = %q, want rest from the header", got)
 	}
+	// The source is recorded, and detection still ran: its answer is what
+	// the header is graded against in sage_rpc_type_mismatch_total.
+	if ctx.RPCTypeSource != relay.RPCTypeSourceHeader {
+		t.Errorf("RPCTypeSource = %q, want header", ctx.RPCTypeSource)
+	}
+	if ctx.RPCTypeDetected != domain.RPCTypeJSONRPC {
+		t.Errorf("RPCTypeDetected = %q, want json_rpc (the body looks like JSON-RPC)", ctx.RPCTypeDetected)
+	}
+}
+
+func TestParse_NoHeader_RecordsDetectedSource(t *testing.T) {
+	mw := middleware.Parse(qos.NewRegistry())
+	req := newPOSTRequest("/v1", `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`)
+	req.Header.Set("Target-Service-Id", "eth")
+	ctx := newCtx(req)
+	if err := mw(relay.HandlerFunc(func(*relay.Context) error { return nil })).HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.RPCTypeSource != relay.RPCTypeSourceDetected {
+		t.Errorf("RPCTypeSource = %q, want detected", ctx.RPCTypeSource)
+	}
+	if ctx.RPCTypeDetected != ctx.RPCType || ctx.RPCType != domain.RPCTypeJSONRPC {
+		t.Errorf("RPCType = %q, RPCTypeDetected = %q, want both json_rpc", ctx.RPCType, ctx.RPCTypeDetected)
+	}
+}
+
+// A header SAGE cannot parse is refused before classification, so nothing
+// about the request's type is recorded as decided.
+func TestParse_RPCTypeHeader_Unknown_LeavesSourceEmpty(t *testing.T) {
+	mw := middleware.Parse(qos.NewRegistry())
+	req := newPOSTRequest("/v1", `{}`)
+	req.Header.Set("Target-Service-Id", "eth")
+	req.Header.Set("RPC-Type", "carrier-pigeon")
+	ctx := newCtx(req)
+	if err := mw(noNext(t)).HandleRelay(ctx); err == nil {
+		t.Fatal("expected an error")
+	}
+	if ctx.RPCTypeSource != "" {
+		t.Errorf("RPCTypeSource = %q, want empty", ctx.RPCTypeSource)
+	}
 }
 
 func TestParse_RPCTypeHeader_Unknown_Is400WithAllowedList(t *testing.T) {
