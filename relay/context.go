@@ -46,6 +46,11 @@ type Context struct {
 
 	// Set by QoS parsing
 	Payloads []domain.Payload
+	// BatchSize is the payload count of the batch this relay is one item
+	// of: written by batch on each sub-relay clone, zero outside a batch.
+	// Hedge reads it against retry_config.hedge_max_batch_size. A scalar,
+	// so the shallow Clone cannot share it between arms.
+	BatchSize int
 
 	// Endpoint is the pick for this attempt: written by select_endpoint only.
 	Endpoint domain.EndpointAddr

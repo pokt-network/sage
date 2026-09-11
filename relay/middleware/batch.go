@@ -139,6 +139,7 @@ func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, re
 
 					sub := ctx.Clone()
 					sub.Payloads = []domain.Payload{payload}
+					sub.BatchSize = n
 					sub.Response = nil
 					sub.Err = nil
 					// A verdict belongs to the attempt that produced it, and

@@ -563,3 +563,56 @@ func TestHedge_MergesTheCandidatePoolSoRetryCanRetry(t *testing.T) {
 		t.Fatalf("hedging disabled retry: %d attempts hedged vs %d unhedged", on, off)
 	}
 }
+
+// TestHedge_SuppressedForLargeBatchItems: an item of a batch over
+// hedge_max_batch_size runs once, unhedged, and is counted. Every item is its
+// own race, so a size-blind hedge doubles a large batch's relays in flight.
+func TestHedge_SuppressedForLargeBatchItems(t *testing.T) {
+	cases := []struct {
+		name      string
+		limit     int
+		batchSize int
+		wantArms  int
+		wantRec   string
+	}{
+		{"over the default cap", 0, 11, 1, "suppressed_large_batch"},
+		{"at the default cap", 0, 10, 2, "hedge_won"},
+		{"single request", 0, 0, 2, "hedge_won"},
+		{"over an explicit cap", 3, 4, 1, "suppressed_large_batch"},
+		{"negative disables the cap", -1, 5000, 2, "hedge_won"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var arms atomic.Int32
+			// The primary outlives the race when a hedge wins; wait for it so
+			// no arm reads the subtest's closure after the subtest returns.
+			primaryDone := make(chan struct{})
+			slow := relay.HandlerFunc(func(ctx *relay.Context) error {
+				if arms.Add(1) == 1 {
+					defer close(primaryDone)
+					// The primary runs past the delay so a hedge, if any, fires
+					// and wins.
+					time.Sleep(30 * time.Millisecond)
+				}
+				ctx.Response = &domain.Response{HTTPStatusCode: 200}
+				return nil
+			})
+			rec := &recordingHedgeRec{}
+			cfgFn := func(domain.ServiceID) config.RetryConfig {
+				return config.RetryConfig{HedgeDelay: 5 * time.Millisecond, HedgeMaxBatchSize: tc.limit}
+			}
+			ctx := baseContext()
+			ctx.BatchSize = tc.batchSize
+			if err := HedgeWithRecorder(newFlags("hedge"), cfgFn, rec)(slow).HandleRelay(ctx); err != nil {
+				t.Fatal(err)
+			}
+			<-primaryDone
+			if got := int(arms.Load()); got != tc.wantArms {
+				t.Fatalf("arms = %d, want %d", got, tc.wantArms)
+			}
+			if len(rec.results) != 1 || rec.results[0] != tc.wantRec {
+				t.Fatalf("recorded %v, want one %s", rec.results, tc.wantRec)
+			}
+		})
+	}
+}

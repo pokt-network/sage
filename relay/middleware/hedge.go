@@ -52,6 +52,16 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			if cfg.HedgeDelay == 0 {
 				return next.HandleRelay(ctx)
 			}
+			// An item of a large batch runs unhedged. Every item is its own
+			// hedge race, so a 500-item batch that runs past hedge_delay —
+			// which large batches do by construction — costs up to 1,000
+			// relays in flight, each a goroutine holding a signed relay.
+			// Twelve such bursts on the canary in five days, one of them the
+			// 2026-09-10 OOM. PATH caps the same way (hedge_max_batch_size).
+			if !cfg.HedgesBatchOf(ctx.BatchSize) {
+				recordHedge(ctx, "suppressed_large_batch")
+				return next.HandleRelay(ctx)
+			}
 
 			primaryCh := make(chan hedgeResult, 1)
 			hedgeCh := make(chan hedgeResult, 1)

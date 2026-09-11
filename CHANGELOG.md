@@ -250,6 +250,21 @@ the source of truth for the design and the reasoning behind it.
 
 ### September 2026, from the mainnet canary
 
+- **Items of a large batch are no longer hedged
+  (`retry_config.hedge_max_batch_size`, default 10).** A batch fans out into
+  one relay per item and every item was its own hedge race, so a 500-item
+  batch that ran past `hedge_delay` — which large batches do by construction —
+  put up to 1,000 relays in flight, each a goroutine holding a signed relay.
+  The canary saw twelve such bursts in five days at a flat client rate, from
+  552 to 5,257 goroutines inside one minute on 2026-09-10, and that pod was
+  OOM-killed at 1Gi; PATH's own batch counters show a 500+-item batch burst on
+  the same service at the same minute for half of them. PATH caps the same
+  way with the same key and default, so a shared config stays valid; SAGE
+  reads a negative value as "hedge everything" where PATH reads `0`, and
+  `docs/path-compat.md` says so. Suppressed items count under
+  `sage_hedge_total{result="suppressed_large_batch"}`.
+  (`TestHedge_SuppressedForLargeBatchItems`, `TestBatch_SubRelaysCarryBatchSize`,
+  `TestRetryConfig_HedgesBatchOf`.)
 - **shannon-sdk `9bf0b02` → `b1ba68f`, go-dleq `488f42a` → `86b20e4`: three
   signer races on the shared-ring hot path.** PATH lost a pod to a SIGSEGV in
   `HashTrieMap.Load`, reached from `getOrCreateSignerContext` on the hedge

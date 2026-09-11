@@ -142,3 +142,25 @@ func TestHealthChecksEnabledFalse_IsHonouredByPresence(t *testing.T) {
 		t.Fatal("enabled: true must not disable")
 	}
 }
+
+func TestRetryConfig_HedgesBatchOf(t *testing.T) {
+	cases := []struct {
+		limit, n int
+		want     bool
+	}{
+		{0, 1, true}, {0, 10, true}, {0, 11, false}, // zero = default 10
+		{3, 3, true}, {3, 4, false},
+		{-1, 5500, true}, // negative hedges everything
+	}
+	for _, tc := range cases {
+		if got := (RetryConfig{HedgeMaxBatchSize: tc.limit}).HedgesBatchOf(tc.n); got != tc.want {
+			t.Errorf("limit %d, batch %d: got %v want %v", tc.limit, tc.n, got, tc.want)
+		}
+	}
+	// Merged field by field like the rest of retry_config: a service that
+	// does not speak to it takes the defaults' cap.
+	merged := mergeRetry(RetryConfig{HedgeDelay: time.Millisecond}, RetryConfig{HedgeMaxBatchSize: 50})
+	if merged.HedgeMaxBatchSize != 50 {
+		t.Fatalf("merged HedgeMaxBatchSize = %d, want 50 from defaults", merged.HedgeMaxBatchSize)
+	}
+}

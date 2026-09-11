@@ -206,6 +206,9 @@ func mergeRetry(a, b RetryConfig) RetryConfig {
 	if out.HedgeDelay == 0 {
 		out.HedgeDelay = b.HedgeDelay
 	}
+	if out.HedgeMaxBatchSize == 0 {
+		out.HedgeMaxBatchSize = b.HedgeMaxBatchSize
+	}
 	if out.MaxLatency == 0 {
 		out.MaxLatency = b.MaxLatency
 	}
@@ -362,6 +365,24 @@ type TimeoutConfig struct {
 	RelayTimeout time.Duration `yaml:"relay_timeout"`
 }
 
+// DefaultHedgeMaxBatchSize is the largest batch still hedged when
+// hedge_max_batch_size is unset. PATH's default, and PATH's reasoning:
+// production batch sizes are bimodal, singles and 51-500 items, so any
+// single-digit cap catches the whole large bucket; 10 keeps the cheap small
+// batches hedged.
+const DefaultHedgeMaxBatchSize = 10
+
+// HedgesBatchOf reports whether the items of an n-payload batch are hedged
+// under this config: zero takes DefaultHedgeMaxBatchSize, negative hedges
+// every size. A single request (n <= 1) is always hedged.
+func (c RetryConfig) HedgesBatchOf(n int) bool {
+	limit := c.HedgeMaxBatchSize
+	if limit == 0 {
+		limit = DefaultHedgeMaxBatchSize
+	}
+	return limit < 0 || n <= limit
+}
+
 // RetryConfig controls retry behavior. Zero values = disabled.
 type RetryConfig struct {
 	// Enabled turns retries off when written as `enabled: false`; retries are
@@ -404,6 +425,15 @@ type RetryConfig struct {
 	// duplicate relay only on those. Set it too low and every request is sent
 	// twice.
 	HedgeDelay time.Duration `yaml:"hedge_delay"`
+	// HedgeMaxBatchSize is the largest JSON-RPC batch whose items are still
+	// hedged. A batch fans out into one relay per item, each hedged on its
+	// own, so hedging an N-item batch costs up to 2N relays; large batches
+	// are also slower than the flat hedge_delay by construction, so a
+	// size-blind hedge fires on most of them and pays double for latency the
+	// caller never expected to be low. Zero takes the default (10, PATH's);
+	// a negative value hedges every batch. Items of a batch over the cap run
+	// unhedged and count under sage_hedge_total{result="suppressed_large_batch"}.
+	HedgeMaxBatchSize int `yaml:"hedge_max_batch_size"`
 	// MaxLatency is the total time budget across every retry attempt of one
 	// request: once it is spent, the retry middleware stops rotating and
 	// delivers what it has. It does not penalise latency in reputation —
