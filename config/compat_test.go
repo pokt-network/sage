@@ -250,7 +250,7 @@ func TestConfigCompatibility_Gateway(t *testing.T) {
 		want := RetryConfig{
 			Enabled: true, MaxRetries: 3, MaxRetryLatency: 900 * time.Millisecond,
 			RetryOn5xx: true, RetryOnTimeout: true, RetryOnConnection: true,
-			ConnectTimeout: 250 * time.Millisecond, HedgeDelay: 300 * time.Millisecond,
+			ConnectTimeout: 250 * time.Millisecond, HedgeDelay: 300 * time.Millisecond, HedgeMaxBatchSize: 20,
 			MaxLatency: 2 * time.Second,
 		}
 		if g.Retry != want {

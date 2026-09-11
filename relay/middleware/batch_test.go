@@ -729,3 +729,37 @@ func TestBatch_SinglePayload_NoSinkWithFlagOn(t *testing.T) {
 	assert.Nil(t, ctx.ScoreSink, "and none left on the parent either")
 	assert.Empty(t, rep.all(), "batch records nothing for a request it only passed through")
 }
+
+// Every sub-relay carries the batch's payload count, which is what hedge
+// reads against hedge_max_batch_size.
+func TestBatch_SubRelaysCarryBatchSize(t *testing.T) {
+	var mu sync.Mutex
+	var sizes []int
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		mu.Lock()
+		sizes = append(sizes, ctx.BatchSize)
+		mu.Unlock()
+		ctx.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)}
+		return nil
+	})
+	payloads := []domain.Payload{
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber"),
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":2,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber"),
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":3,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber"),
+	}
+	ctx := makeMultiPayloadCtx(payloads)
+	if err := Batch(4, 0, nil, nil)(inner).HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(sizes) != 3 {
+		t.Fatalf("expected 3 sub-relays, got %d", len(sizes))
+	}
+	for _, n := range sizes {
+		if n != 3 {
+			t.Fatalf("sub-relay BatchSize = %d, want 3", n)
+		}
+	}
+	if ctx.BatchSize != 0 {
+		t.Fatalf("parent BatchSize = %d, want 0: the field belongs to the item, not the batch request", ctx.BatchSize)
+	}
+}

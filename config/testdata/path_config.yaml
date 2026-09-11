@@ -134,6 +134,7 @@ gateway_config:
     retry_on_connection: true
     connect_timeout: 250ms
     hedge_delay: 300ms
+    hedge_max_batch_size: 20
     max_latency: 2s
 
   blocked_domains:

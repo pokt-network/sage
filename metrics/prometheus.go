@@ -122,7 +122,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "hedge_total",
-				Help:      "Hedge race outcomes (primary_won, hedge_won, both_failed).",
+				Help:      "Hedge race outcomes (primary_won, hedge_won, both_failed), plus suppressed_large_batch: an item of a batch over retry_config.hedge_max_batch_size that ran unhedged.",
 			},
 			[]string{"service_id", "result"},
 		),
