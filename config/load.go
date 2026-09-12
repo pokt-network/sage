@@ -43,6 +43,7 @@ func parse(data []byte) (*Config, error) {
 	cfg.Warnings = append(cfg.Warnings, applyRetryDisabled(&cfg, tree)...)
 	cfg.Warnings = append(cfg.Warnings, applyHealthChecksDisabled(&cfg, tree)...)
 	cfg.Warnings = append(cfg.Warnings, gatewayModeWarnings(cfg.Gateway.GatewayMode)...)
+	cfg.Warnings = append(cfg.Warnings, cometBFTFaceWarnings(cfg.Gateway.AllServices())...)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
@@ -259,6 +260,46 @@ func validateRPCTypeFallbacks(services []ServiceConfig) error {
 		}
 	}
 	return nil
+}
+
+// cometBFTFaceWarnings says, per cosmos service, where SAGE departs from
+// PATH on a comet_bft fallback. In PATH `comet_bft: json_rpc` is a pool-level
+// last resort, consulted only when no supplier staked comet_bft; on a
+// service that declares comet_bft it therefore almost never fires. SAGE's
+// cosmos plugin also reads it as the operator saying the json_rpc stakers
+// serve CometBFT, and relays CometBFT JSON-RPC bodies as json_rpc, to that
+// pool (qos/cosmos.Config.RPCTypeFallbacks). Same file, different pool; the
+// contract in docs/path-compat.md is that such a difference is said at
+// startup. The mapping is right for a chain whose json_rpc surface is
+// CometBFT's own (pocket, cosmoshub, akash) and wrong for one whose json_rpc
+// surface is EVM (an EVM-enabled chain answers a CometBFT method there with
+// "method not found"), and only the operator knows which this is.
+func cometBFTFaceWarnings(services []ServiceConfig) []string {
+	var out []string
+	for _, svc := range services {
+		if svc.Type != "cosmos" {
+			continue
+		}
+		to, ok := svc.RPCTypeFallbacks["comet_bft"]
+		if !ok || (to != "json_rpc" && to != "rest") {
+			continue
+		}
+		declared := make(map[string]bool, len(svc.RPCTypes))
+		for _, rt := range svc.RPCTypes {
+			declared[rt] = true
+		}
+		if !declared["comet_bft"] || !declared[to] {
+			continue
+		}
+		face := "JSON-RPC bodies carrying a CometBFT method"
+		if to == "rest" {
+			face = "CometBFT HTTP paths (GET /status and the like)"
+		}
+		out = append(out, fmt.Sprintf(
+			"service %q declares comet_bft and maps it onto %s in rpc_type_fallbacks: SAGE relays %s as %s, to the %s-staked pool (PATH would use the comet_bft stakers). Right when this service's %s surface is CometBFT's own; remove the mapping if it is EVM",
+			svc.ID, to, face, to, to, to))
+	}
+	return out
 }
 
 // validateReputation refuses a scoring block that cannot mean anything.

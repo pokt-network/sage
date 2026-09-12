@@ -159,9 +159,17 @@ func cosmosConfigFor(svc config.ServiceConfig) cosmos.Config {
 	for i, rt := range svc.RPCTypes {
 		rpcTypes[i] = domain.RPCType(rt)
 	}
+	var fallbacks map[domain.RPCType]domain.RPCType
+	if len(svc.RPCTypeFallbacks) > 0 {
+		fallbacks = make(map[domain.RPCType]domain.RPCType, len(svc.RPCTypeFallbacks))
+		for from, to := range svc.RPCTypeFallbacks {
+			fallbacks[domain.RPCType(from)] = domain.RPCType(to)
+		}
+	}
 	return cosmos.Config{
 		SyncAllowance:     svc.SyncAllowance,
 		SupportedRPCTypes: rpcTypes,
 		ExpectedChainID:   svc.ChainID,
+		RPCTypeFallbacks:  fallbacks,
 	}
 }
