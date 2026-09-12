@@ -49,7 +49,6 @@ type Plugin struct {
 	logger            *slog.Logger
 	syncAllowance     uint64
 	supportedRPCTypes []domain.RPCType
-	rpcTypeFallbacks  map[domain.RPCType]domain.RPCType
 	expectedChainID   string
 
 	store     *qos.EndpointStore[cosmosEndpoint]
@@ -74,14 +73,6 @@ type Config struct {
 	// /status reports it under node_info.network (e.g. "cosmoshub-4"). Empty
 	// disables the assertion.
 	ExpectedChainID string
-	// RPCTypeFallbacks is the service's rpc_type_fallbacks, read here for one
-	// entry: what comet_bft maps to. An operator who writes
-	// `comet_bft: json_rpc` is saying the json_rpc-staked suppliers serve
-	// CometBFT, and the classifier takes them at their word — a CometBFT
-	// JSON-RPC body on such a service is relayed as json_rpc, to that
-	// (usually far larger) pool, even when comet_bft is declared too. Nil
-	// means comet_bft, when declared, keeps both faces.
-	RPCTypeFallbacks map[domain.RPCType]domain.RPCType
 }
 
 // Validate reports whether the config is usable, and is called at wire time.
@@ -136,7 +127,6 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		logger:            logger,
 		syncAllowance:     cfg.SyncAllowance,
 		supportedRPCTypes: supportedRPCTypes,
-		rpcTypeFallbacks:  cfg.RPCTypeFallbacks,
 		expectedChainID:   cfg.ExpectedChainID,
 		store:             qos.NewEndpointStore[cosmosEndpoint](logger),
 		consensus:         qos.NewBlockConsensus(logger, cfg.SyncAllowance),
@@ -148,7 +138,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 // ParseRequest inspects the request and returns a single-element Payload slice.
 // The RPC type is auto-detected from the request path and body.
 func (p *Plugin) ParseRequest(_ context.Context, req *http.Request, body []byte, rpcType domain.RPCType) ([]domain.Payload, error) {
-	payload, err := parseRequest(req, body, rpcType, p.supportedRPCTypes, p.rpcTypeFallbacks)
+	payload, err := parseRequest(req, body, rpcType, p.supportedRPCTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +159,7 @@ func (p *Plugin) ParseRequest(_ context.Context, req *http.Request, body []byte,
 // relayed as, decided by which CometBFT face it addresses and which types the
 // service declares. See classifyRPCType.
 func (p *Plugin) ClassifyRPCType(req *http.Request, body []byte, detected domain.RPCType) domain.RPCType {
-	return classifyRPCType(req, body, detected, p.supportedRPCTypes, p.rpcTypeFallbacks)
+	return classifyRPCType(req, body, detected, p.supportedRPCTypes)
 }
 
 // SelectEndpoints filters the supplied endpoint list by:

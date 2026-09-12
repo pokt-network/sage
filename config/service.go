@@ -341,11 +341,6 @@ type ServiceConfig struct {
 	// Same key as PATH's, so a PATH config carries over. One hop only: a
 	// fallback's own fallback is not consulted. Both sides must name a known
 	// RPC type and differ; that is validated at load.
-	//
-	// The cosmos plugin reads the comet_bft entry as well: `comet_bft:
-	// json_rpc` on a service that declares both makes it relay a CometBFT
-	// JSON-RPC body as json_rpc, to the json_rpc-staked pool, rather than to
-	// the comet_bft stakers alone. See qos/cosmos.Config.RPCTypeFallbacks.
 	RPCTypeFallbacks map[string]string `yaml:"rpc_type_fallbacks"`
 }
 

@@ -91,43 +91,32 @@ func isCometBFTMethod(method string) bool {
 // classifyRPCType is the plugin's answer to which type a request is relayed
 // as; see qos.RPCTypeClassifier. The Cosmos plugin fronts up to four
 // surfaces, and CometBFT is itself two faces of one node, so the answer
-// depends on what the service declares in rpc_types and, when it declares
-// comet_bft, on what rpc_type_fallbacks says serves it:
+// depends on what the service declares in rpc_types:
 //
 //  1. gRPC, by media type — a method path like /cosmos.bank.v1beta1.Query/Params
 //     starts with "/cosmos." and would otherwise read as REST.
 //  2. A Cosmos REST path (/cosmos/, /ibc/, ...) is rest.
-//  3. A CometBFT path (GET /status, POST /block) is the node's HTTP face;
-//     its alternative type is rest — on Pocket a supplier stakes rest for
-//     exactly that face, with no comet_bft stake.
-//  4. A JSON body with a CometBFT method is the JSON-RPC face; its
-//     alternative is json_rpc — the same supplier stakes json_rpc for this
-//     face. Any other method is json_rpc (the EVM surface of an EVM-enabled
-//     chain, or the client's mistake).
+//  3. A CometBFT path (GET /status, POST /block) is the node's HTTP face:
+//     comet_bft when declared, else rest — on Pocket a supplier stakes rest
+//     for exactly that face, with no comet_bft stake.
+//  4. A JSON body with a method is the JSON-RPC face: a CometBFT method is
+//     comet_bft when declared, else json_rpc — the same supplier stakes
+//     json_rpc for this face; any other method is json_rpc (the EVM surface
+//     of an EVM-enabled chain, or the client's mistake).
 //  5. Anything else keeps what generic detection said, or is rest.
 //
-// A face resolves to comet_bft when the service declares it, unless the
-// service also maps comet_bft onto that face's alternative in
-// rpc_type_fallbacks: `comet_bft: json_rpc` is the operator saying the
-// json_rpc-staked suppliers serve CometBFT, so the JSON-RPC face goes to
-// that pool — on Pocket mainnet ~2000 suppliers against ~270 comet_bft
-// stakers. Without comet_bft declared the alternative is used when
-// declared. An undeclared result is returned as is, so ParseRequest refuses
-// it with the declared list rather than something here guessing.
-func classifyRPCType(req *http.Request, body []byte, detected domain.RPCType, supported []domain.RPCType, fallbacks map[domain.RPCType]domain.RPCType) domain.RPCType {
+// When comet_bft is declared it is preferred for both faces, because it is
+// the surface the request names. A service whose suppliers do not stake it
+// should not declare it; with json_rpc and rest declared instead, both faces
+// reach the pools that can serve them. An undeclared result is returned as
+// is, so that ParseRequest refuses it with the declared list.
+func classifyRPCType(req *http.Request, body []byte, detected domain.RPCType, supported []domain.RPCType) domain.RPCType {
 	declares := func(t domain.RPCType) bool { return isRPCTypeSupported(t, supported) }
 	faceType := func(alt domain.RPCType) domain.RPCType {
-		switch {
-		case !declares(domain.RPCTypeCometBFT):
-			if declares(alt) {
-				return alt
-			}
-			return domain.RPCTypeCometBFT
-		case fallbacks[domain.RPCTypeCometBFT] == alt && declares(alt):
-			return alt
-		default:
+		if declares(domain.RPCTypeCometBFT) || !declares(alt) {
 			return domain.RPCTypeCometBFT
 		}
+		return alt
 	}
 
 	if detected == domain.RPCTypeGRPC || strings.HasPrefix(req.Header.Get("Content-Type"), "application/grpc") {
@@ -164,9 +153,9 @@ func classifyRPCType(req *http.Request, body []byte, detected domain.RPCType, su
 // it is what NormalizeMethod and the reputation key see, and a CometBFT
 // request relayed as json_rpc on a service that declares no comet_bft is
 // still "status" to both.
-func parseRequest(req *http.Request, body []byte, rpcType domain.RPCType, supported []domain.RPCType, fallbacks map[domain.RPCType]domain.RPCType) (domain.Payload, error) {
+func parseRequest(req *http.Request, body []byte, rpcType domain.RPCType, supported []domain.RPCType) (domain.Payload, error) {
 	if rpcType == domain.RPCTypeUnknown || rpcType == "" {
-		rpcType = classifyRPCType(req, body, domain.RPCTypeUnknown, supported, fallbacks)
+		rpcType = classifyRPCType(req, body, domain.RPCTypeUnknown, supported)
 	}
 	path := req.URL.Path
 	if rpcType == domain.RPCTypeGRPC {

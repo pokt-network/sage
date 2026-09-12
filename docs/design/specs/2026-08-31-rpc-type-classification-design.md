@@ -126,22 +126,13 @@ The middle ground: a plugin that knows its surfaces implements
 `qos.RPCTypeClassifier`, and `parse` takes its answer as the detected type.
 The cosmos plugin picks, per face, `comet_bft` when the service declares it
 and otherwise the face's alternative (`json_rpc` for a JSON-RPC body, `rest`
-for a CometBFT path). One more input: `rpc_type_fallbacks`. The mainnet
-canary's 21 cosmos services all declare `comet_bft, json_rpc, rest`, while
-on pocket 2000 suppliers stake json_rpc and 271 comet_bft (ops count,
-2026-09-12), so "comet_bft when declared" alone would have moved the
-JSON-RPC face from the 2000 pool to the 271 pool. An operator who maps
-`comet_bft: json_rpc` has said the json_rpc stakers serve CometBFT; the
-classifier takes that as the face's type, and the 2000 pool is kept. The
-client's `RPC-Type` header still wins over all of it.
+for a CometBFT path). The client's `RPC-Type` header still wins over both.
 The plugin's `ParseRequest` is handed the settled type and types its payload
 with it, so one type flows through validate, pool, reputation, heuristic and
 the wire, and `reason="plugin"` should read zero.
 
-The operator's levers are `rpc_types` and `rpc_type_fallbacks`: a service
-whose suppliers stake `comet_bft` declares it and gets the named surface; one
-whose suppliers stake the faces separately either declares `json_rpc` and
-`rest` without it, or keeps `comet_bft` and maps it onto the face that the
-bigger pool stakes. Declaring `comet_bft` with neither narrows both faces to
-whoever stakes it, which the protocol's own pool-level fallback widens only
-when that pool is empty.
+The operator's lever is `rpc_types`: a service whose suppliers stake
+`comet_bft` declares it and gets the named surface; one whose suppliers stake
+the faces separately declares `json_rpc` and `rest` without it. Declaring
+`comet_bft` on a service whose suppliers do not stake it narrows the pool to
+whoever does, which `rpc_type_fallbacks` widens only when that pool is empty.
