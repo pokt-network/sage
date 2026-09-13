@@ -243,6 +243,27 @@ func TestAnalyze_Tier2_ErrorCodeClassification(t *testing.T) {
 			wantReason:      "supplier_internal_error",
 		},
 		{
+			name:            "connection refused in -32603 data — supplier fault, wording in data not message",
+			errorJSON:       `{"code":-32603,"message":"Internal error","data":"Post \"http://10.0.0.5:26657\": connection refused"}`,
+			wantRetry:       true,
+			wantAttribution: AttrSupplier,
+			wantReason:      "supplier_internal_error",
+		},
+		{
+			name:            "CometBFT tx not found at -32603 — the node's answer, passed through",
+			errorJSON:       `{"code":-32603,"message":"Internal error","data":"tx (3A1F) not found"}`,
+			wantRetry:       false,
+			wantAttribution: AttrBlockchain,
+			wantReason:      "internal_error",
+		},
+		{
+			name:            "bare -32603 with no data — passed through",
+			errorJSON:       `{"code":-32603,"message":"Internal error"}`,
+			wantRetry:       false,
+			wantAttribution: AttrBlockchain,
+			wantReason:      "internal_error",
+		},
+		{
 			name:            "parse error — supplier fault",
 			errorJSON:       `{"code":-32700,"message":"Parse error"}`,
 			wantRetry:       true,
@@ -568,5 +589,56 @@ func TestAnalyze_408IsRetriedAndNotPenalized(t *testing.T) {
 				t.Error("ShouldCircuitBreak = true, want false: no 4xx breaks a circuit")
 			}
 		})
+	}
+}
+
+// A -32603 that names nothing on the supplier's side is the node's own answer
+// to the request. CometBFT wraps every handler error this way with the reason
+// in `data`, so on a CometBFT service the code is the normal shape of "could
+// not serve this request". Until 2026-09-13 it retried with a major penalty,
+// scoring the operator that answered a client's miss correctly. PATH passes it
+// through; so does this.
+func TestAnalyze_Tier2_InternalError_PassesThroughWithoutPenalty(t *testing.T) {
+	for _, rpcType := range []domain.RPCType{domain.RPCTypeCometBFT, domain.RPCTypeJSONRPC} {
+		t.Run(string(rpcType), func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"height 999999999 must be less than or equal to the current blockchain height 12345"}}`)
+			result := Analyze(body, 200, rpcType)
+			if result.ShouldRetry {
+				t.Error("ShouldRetry = true, want false: the node answered; another supplier gets the same request and gives the same answer")
+			}
+			if result.ShouldPenalize {
+				t.Error("ShouldPenalize = true, want false: a client's miss is not the supplier's fault")
+			}
+			if result.ShouldCircuitBreak {
+				t.Error("ShouldCircuitBreak = true, want false")
+			}
+			if result.PenaltySeverity != SeverityNone {
+				t.Errorf("PenaltySeverity = %q, want none", result.PenaltySeverity)
+			}
+			if result.Attribution != AttrBlockchain {
+				t.Errorf("Attribution = %v, want %v", result.Attribution, AttrBlockchain)
+			}
+			if result.Reason != "internal_error" {
+				t.Errorf("Reason = %q, want internal_error", result.Reason)
+			}
+		})
+	}
+}
+
+// The wording that marks a -32603 as supplier infrastructure may sit in
+// `data` rather than `message`: a proxy that wraps its upstream failure in a
+// CometBFT-shaped envelope keeps `message` at "Internal error". Both fields
+// are matched.
+func TestAnalyze_Tier2_InternalError_SupplierWordingInData(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":{"reason":"upstream: bad gateway"}}}`)
+	result := Analyze(body, 200, domain.RPCTypeCometBFT)
+	if !result.ShouldRetry || !result.ShouldPenalize {
+		t.Errorf("ShouldRetry = %v, ShouldPenalize = %v, want both true for a wrapped bad gateway", result.ShouldRetry, result.ShouldPenalize)
+	}
+	if result.Reason != "supplier_internal_error" {
+		t.Errorf("Reason = %q, want supplier_internal_error", result.Reason)
+	}
+	if result.Attribution != AttrSupplier {
+		t.Errorf("Attribution = %v, want %v", result.Attribution, AttrSupplier)
 	}
 }

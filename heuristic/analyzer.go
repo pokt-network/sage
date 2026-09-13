@@ -289,7 +289,7 @@ func analyzeTier2(body []byte, rpcType domain.RPCType) (AnalysisResult, bool) {
 
 	// Error-only response (or result:null + error, which is a valid error-only pattern).
 	if analysis.hasError {
-		result := classifyJSONRPCError(analysis.errorCode, analysis.errorMessage)
+		result := classifyJSONRPCError(analysis.errorCode, analysis.errorText())
 		return result, true
 	}
 

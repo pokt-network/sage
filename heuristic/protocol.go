@@ -25,8 +25,26 @@ type jsonRPCAnalysis struct {
 	hasError     bool
 	errorCode    int64
 	errorMessage string
-	hasID        bool
-	idValue      string
+	// errorData is the error's `data` member, raw. CometBFT puts the reason
+	// there and leaves `message` at the constant "Internal error", so a
+	// classifier that reads `message` alone learns nothing from a CometBFT
+	// node.
+	errorData string
+	hasID     bool
+	idValue   string
+}
+
+// errorText is the text a classifier should match wordings against: the
+// message, followed by the data member when there is one. Either field may be
+// where a node or a proxy in front of it wrote the reason.
+func (a jsonRPCAnalysis) errorText() string {
+	if a.errorData == "" {
+		return a.errorMessage
+	}
+	if a.errorMessage == "" {
+		return a.errorData
+	}
+	return a.errorMessage + ": " + a.errorData
 }
 
 // parseJSONRPC parses a JSON-RPC response using gjson, operating directly on
@@ -65,6 +83,7 @@ func parseJSONRPC(body []byte) (jsonRPCAnalysis, bool) {
 		// Scan only the error subtree, not the whole body again.
 		analysis.errorCode = errorField.Get("code").Int()
 		analysis.errorMessage = errorField.Get("message").String()
+		analysis.errorData = errorField.Get("data").String()
 	}
 
 	idField := parsed.Get("id")
@@ -352,14 +371,25 @@ func classifyInternalError(lowerMsg string) AnalysisResult {
 		}
 	}
 
-	// Default for -32603: could be either side.
+	// Anything else is the node's own answer to the request, and it is
+	// delivered as such: no retry, no penalty. CometBFT wraps every handler
+	// error as -32603 with `message` fixed at "Internal error" and the reason
+	// in `data` — "tx (…) not found", "transaction indexing is disabled", a
+	// height above the chain head — so on a CometBFT service this code is the
+	// ordinary shape of "your request could not be served", not a broken
+	// node. Until 2026-09-13 this branch retried with a major penalty, which
+	// on the canary scored shentu's only comet_bft operator to 0 for
+	// answering client misses correctly and paid for every retry that then
+	// received the same body. PATH passes a -32603 through unless the message
+	// names supplier infrastructure (the patterns above); this matches it.
 	return AnalysisResult{
-		ShouldRetry:     true,
-		ShouldPenalize:  true,
-		PenaltySeverity: SeverityMajor,
-		Attribution:     AttrUnknown,
-		Confidence:      0.55,
-		Reason:          "internal_error",
-		Details:         "internal error: " + lowerMsg,
+		ShouldRetry:        false,
+		ShouldCircuitBreak: false,
+		ShouldPenalize:     false,
+		PenaltySeverity:    SeverityNone,
+		Attribution:        AttrBlockchain,
+		Confidence:         0.60,
+		Reason:             "internal_error",
+		Details:            "node reported an internal error for this request: " + lowerMsg,
 	}
 }
