@@ -35,6 +35,11 @@ var knownMethods = map[string]bool{
 	"trace_replayTransaction": true, "trace_replayBlockTransactions": true,
 }
 
+// KnownMethod reports whether name is in the EVM catalogue. The cosmos plugin
+// asks for the EVM face of a chain like kava or sei, so the same catalogue
+// names a method wherever it is served.
+func KnownMethod(name string) bool { return knownMethods[name] }
+
 // NormalizeMethod implements qos.MethodNormalizer.
 func (p *Plugin) NormalizeMethod(payload domain.Payload) string {
 	m := payload.Method()

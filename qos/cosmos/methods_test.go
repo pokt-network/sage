@@ -38,6 +38,11 @@ func TestNormalizeMethod(t *testing.T) {
 	}{
 		{"cometbft method", jsonrpc("block_results"), "block_results"},
 		{"unknown cometbft method", jsonrpc("nope"), qos.MethodOther},
+		// The EVM face of kava or sei: catalogued EVM methods are named so
+		// per-host method blocks can learn which json_rpc stakers serve EVM.
+		{"evm method on the json_rpc face", domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "eth_blockNumber"), "eth_blockNumber"},
+		{"evm debug method", domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "debug_traceTransaction"), "debug_traceTransaction"},
+		{"uncatalogued evm-looking method", domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "eth_madeUp"), qos.MethodOther},
 		{"catalogued rest template", rest("/cosmos/tx/v1beta1/txs/block/77"), "/cosmos/tx/v1beta1/txs/block/:var"},
 		{"unlisted rest path", rest("/osmosis/gamm/v1beta1/pools/1"), qos.MethodOther},
 		{"no method, no path", domain.NewPayload(nil, domain.RPCTypeREST, ""), ""},
