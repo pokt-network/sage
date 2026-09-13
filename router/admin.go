@@ -36,6 +36,8 @@ type AdminAPI struct {
 	blocklist   Blocklist
 	logger      *slog.Logger
 	logLevel    *slog.LevelVar
+
+	externalSources ExternalSourceAdmin
 }
 
 // WSRebinder replaces the supplier under every live WebSocket connection of
@@ -144,6 +146,12 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Log level, live
 	mux.HandleFunc("GET /admin/log-level", a.handleGetLogLevel)
 	mux.HandleFunc("PUT /admin/log-level", a.handleSetLogLevel)
+
+	// External block sources, live
+	mux.HandleFunc("GET /admin/external-sources", a.handleListExternalSources)
+	mux.HandleFunc("GET /admin/external-sources/{serviceID}", a.handleGetExternalSources)
+	mux.HandleFunc("PUT /admin/external-sources/{serviceID}", a.handleSetExternalSources)
+	mux.HandleFunc("DELETE /admin/external-sources/{serviceID}", a.handleDeleteExternalSources)
 
 	// WebSocket
 	mux.HandleFunc("POST /admin/websocket/rebind/{serviceID}", a.handleWebSocketRebind)

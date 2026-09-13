@@ -23,7 +23,6 @@ import (
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/healthcheck"
 
-	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/methodblock"
 	"github.com/pokt-network/sage/metrics"
 	"github.com/pokt-network/sage/observe"
@@ -766,25 +765,23 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// this did until 2026-09-04 — it was outvoted by the pool it was meant to
 	// correct and counted as an endpoint in the chain view. A plugin whose
 	// consensus cannot take a floor gets no fetcher and a startup line.
+	// One manager owns every fetcher so PUT /admin/external-sources/{service}
+	// can replace a service's sources on the running process (the config file
+	// may be a sealed secret; see healthcheck.ExternalSourceManager).
+	externalSources := healthcheck.NewExternalSourceManager(logger, recorder, func(id domain.ServiceID) (qos.ExternalFloorSetter, bool) {
+		setter, ok := qosReg.Get(id).(qos.ExternalFloorSetter)
+		return setter, ok
+	})
 	for _, svc := range cfg.Gateway.AllServices() {
 		if len(svc.ExternalBlockSources) == 0 {
 			continue
 		}
-		plugin := qosReg.Get(domain.ServiceID(svc.ID))
-		setter, ok := plugin.(qos.ExternalFloorSetter)
-		if !ok {
+		if err := externalSources.Configure(domain.ServiceID(svc.ID), svc.ExternalBlockSources); err != nil {
 			app.StartupWarnings = append(app.StartupWarnings, fmt.Sprintf(
 				"services[%s].external_block_sources: the service's QoS plugin tracks no block height, so the sources are not polled", svc.ID))
-			continue
 		}
-		fetcher := healthcheck.NewExternalBlockFetcher(domain.ServiceID(svc.ID), svc.ExternalBlockSources, logger)
-		heights := fetcher.Start(ctx)
-		safego.Go(logger, "external.blockheight.floor", func() {
-			for h := range heights {
-				setter.SetExternalFloor(h.Height)
-			}
-		})
 	}
+	externalSources.Start(ctx)
 
 	// 15. WebSocket relayer — single public entry point for WS upgrades.
 	// Requires the concrete Shannon protocol (per-frame signing); in mock mode
@@ -816,6 +813,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// for the relay chain — the same value the middleware chain's
 	// SelectEndpoint and CircuitBreak use.
 	app.Admin = router.NewAdminAPI(flags, repSvc, timeline, cb, blocks, drainStore, proto, cfg.Admin.EffectiveMaxDrain(), qosReg, tuningStore, app, sampler, logger)
+	app.Admin.SetExternalSources(externalSources)
 	// The WS relayer also answers the admin rebind route. Type-asserted
 	// rather than typed: wsRelayer is the router's opener interface, nil
 	// under the mock backend, and the rebinder is the same object.

@@ -123,6 +123,10 @@ failureThreshold) here.
 | `POST` | `/admin/reload` | Re-reads the config file the gateway started with (`-config`), validates it exactly as startup does, and applies the sections that have a runtime seam: the retry/hedge/timeout knobs, `feature_flags`, `active_health_checks`, `blocked_domains` and the `method_blocks` knobs. |
 | `GET` | `/admin/log-level` | Returns the level the process is logging at right now. |
 | `PUT` | `/admin/log-level` | Changes the process's log level without a restart. |
+| `GET` | `/admin/external-sources` | Lists every service's external block sources with their poll status. |
+| `GET` | `/admin/external-sources/{serviceID}` | Returns one service's external block sources and poll status. |
+| `PUT` | `/admin/external-sources/{serviceID}` | Replaces a service's external block sources on the running process and restarts its polling. |
+| `DELETE` | `/admin/external-sources/{serviceID}` | Stops polling a service's external block sources on the running process. |
 | `POST` | `/admin/websocket/rebind/{serviceID}` | Replaces the supplier under every live WebSocket connection of a service, without closing any client. |
 | `GET` | `/admin/request-sample` | Returns every service the request-shape sampler has observed, each with its most recently completed traffic summary. |
 | `GET` | `/admin/request-sample/{serviceID}` | Returns one service's request-shape summary plus its top fingerprints for a single window. |
@@ -435,6 +439,44 @@ comes back at logger_config.level, or at SAGE_LOG_LEVEL if that is set. It
 exists for the ten-minute look at a live problem: raise it, capture, put it
 back. The `debug_log` feature flag, which logs request and response bodies
 per service, only produces output while this level is debug.
+
+### `GET /admin/external-sources`
+
+Lists every service's external block sources with
+their poll status.
+
+Each entry carries `origin` (config or admin), the sources as submitted
+(durations as strings), and `status`: whether a fetcher is running, whether
+its last poll failed and with what error, the last height seen and when.
+
+### `GET /admin/external-sources/{serviceID}`
+
+Returns one service's external block sources and
+poll status.
+
+### `PUT /admin/external-sources/{serviceID}`
+
+Replaces a service's external block sources on the
+running process and restarts its polling.
+
+Body: `{"sources": [{"url": "https://…", "type": "json_rpc|rest|comet_bft",
+"method": "…", "path": "…", "interval": "15s", "timeout": "5s"}]}`; `url` is
+required, the rest optional with the config file's defaults. The change is
+per process and does not survive a restart: the process comes back on the
+file's `external_block_sources`, as with PUT /admin/log-level. It exists
+because the file may be a sealed secret and a retired source polls every
+fifteen seconds until someone can edit it. 400 for an invalid source, 409
+when the service's plugin tracks no block height (nothing to lift).
+
+### `DELETE /admin/external-sources/{serviceID}`
+
+Stops polling a service's external block
+sources on the running process.
+
+The service's external floor is no longer lifted; its pool consensus stands
+alone, as for a service with no sources configured. Not persisted: the
+file's sources return on restart. The body says whether there was anything
+to remove.
 
 ### `POST /admin/websocket/rebind/{serviceID}`
 
