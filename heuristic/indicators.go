@@ -37,6 +37,10 @@ var indicators = []indicator{
 	{pattern: "block has been pruned", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "block_pruned"},
 	{pattern: "is pruned", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "pruned"},
 	{pattern: "height is not available", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "height_not_available"},
+	// CometBFT's pruned-height wording puts the number between the words:
+	// "height 27782 is not available, lowest height is 25052001". The tail is
+	// the stable part.
+	{pattern: "lowest height is", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "height_not_available"},
 	{pattern: "haven't been fully indexed", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "not_indexed"},
 	{pattern: "not been fully indexed", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "not_indexed"},
 	// Capability limitation (e.g., Tron lite fullnodes that don't expose an API).

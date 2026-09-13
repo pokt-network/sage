@@ -371,6 +371,19 @@ func classifyInternalError(lowerMsg string) AnalysisResult {
 		}
 	}
 
+	// A wording the indicator table knows — a pruned height, a missing
+	// block, state not available — keeps that table's verdict: on a CometBFT
+	// node "height N is not available, lowest height is M" is a pruned node
+	// answering an archival query, which another operator may serve, so it
+	// retries without penalty. Tier 3 would have matched these on a
+	// non-JSON-RPC body; a -32603 envelope returns from Tier 2 first and
+	// never reached it, so a pruned node's answer was penalised as a fault
+	// (until 2026-09-13) or passed through without a second try.
+	if ind := matchIndicator([]byte(lowerMsg)); ind != nil {
+		ind.Details = "internal error, " + ind.Details
+		return *ind
+	}
+
 	// Anything else is the node's own answer to the request, and it is
 	// delivered as such: no retry, no penalty. CometBFT wraps every handler
 	// error as -32603 with `message` fixed at "Internal error" and the reason
