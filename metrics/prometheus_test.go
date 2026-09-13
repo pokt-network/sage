@@ -3,6 +3,7 @@ package metrics
 import (
 	"errors"
 	"fmt"
+	dto "github.com/prometheus/client_model/go"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -109,6 +110,10 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 		externalSourceFails: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "external_block_source_failures_total"},
 			[]string{"service_id"},
+		),
+		clientLatency: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{Namespace: "sage_test", Name: "client_latency_seconds", Buckets: relayLatencyBuckets},
+			[]string{"service_id", "status"},
 		),
 	}
 	reg.MustRegister(
@@ -716,4 +721,28 @@ func TestRecordExternalSourceFailure_CountsPerService(t *testing.T) {
 	if got := value(t, c); got != 2 {
 		t.Errorf("external_block_source_failures_total{eth} = %v, want 2", got)
 	}
+}
+
+func TestRecordClientLatency_ObservesByStatus(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordClientLatency("eth", 200, 150*time.Millisecond)
+	r.RecordClientLatency("eth", 499, 9*time.Second)
+	for _, status := range []string{"200", "499"} {
+		h, err := r.clientLatency.GetMetricWithLabelValues("eth", status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := histogramCount(t, h); got != 1 {
+			t.Errorf("client_latency_seconds{eth,%s} count = %d, want 1", status, got)
+		}
+	}
+}
+
+func histogramCount(t *testing.T, h prometheus.Observer) uint64 {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := h.(prometheus.Metric).Write(m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetHistogram().GetSampleCount()
 }

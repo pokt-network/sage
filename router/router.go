@@ -46,6 +46,9 @@ type ClientMetrics interface {
 	// contradicted — rpcType is what detection produced, actual what a better
 	// informed party said, reason which party; sage_rpc_type_mismatch_total.
 	RecordRPCTypeMismatch(serviceID domain.ServiceID, rpcType, actual domain.RPCType, reason string)
+	// RecordClientLatency observes one client request's wall time, by the
+	// status the client saw; sage_client_latency_seconds.
+	RecordClientLatency(serviceID domain.ServiceID, status int, latency time.Duration)
 }
 
 // Warmup reports whether the gateway can steer endpoint selection yet — i.e.
@@ -295,9 +298,13 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 
 	// Record the client-facing status once, whichever path answers — this is
 	// what an edge dashboard sees, unlike sage_relay_total's per-attempt view.
+	// The latency beside it is the caller's wait, retries and hedges
+	// included; relay_latency_seconds never says that.
 	if r.clientMetrics != nil {
+		start := time.Now()
 		defer func() {
 			r.clientMetrics.RecordClientRequest(ctx.ServiceID, rw.Status())
+			r.clientMetrics.RecordClientLatency(ctx.ServiceID, rw.Status(), time.Since(start))
 			r.recordRPCType(ctx)
 		}()
 	}

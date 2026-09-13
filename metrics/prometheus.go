@@ -60,6 +60,7 @@ type Recorder struct {
 	reputationAttempts    *prometheus.CounterVec
 	heuristicVerdicts     *prometheus.CounterVec
 	externalSourceFails   *prometheus.CounterVec
+	clientLatency         *prometheus.HistogramVec
 	healthCheckResults    *prometheus.CounterVec
 	healthCheckSkipped    *prometheus.CounterVec
 	healthCheckCycle      prometheus.Histogram
@@ -258,6 +259,15 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id"},
 		),
+		clientLatency: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "client_latency_seconds",
+				Help:      "Client-facing latency in seconds: from the request reaching the router to the response written (or the client leaving), one observation per client request, by service and the status the client saw. This is what the caller waits, retries and hedges included; relay_latency_seconds is per upstream attempt. Same buckets, to 60s.",
+				Buckets:   relayLatencyBuckets,
+			},
+			[]string{"service_id", "status"},
+		),
 	}
 
 	r.healthCheckResults = prometheus.NewCounterVec(
@@ -330,6 +340,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.reputationAttempts,
 		r.heuristicVerdicts,
 		r.externalSourceFails,
+		r.clientLatency,
 	)
 
 	r.initHealthCheckSkipped(knownServices)
@@ -600,6 +611,12 @@ func (r *Recorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCT
 		reason,
 		attribution,
 	).Inc()
+}
+
+// RecordClientLatency satisfies router.ClientMetrics: one client request's
+// wall time, by the status the client saw.
+func (r *Recorder) RecordClientLatency(serviceID domain.ServiceID, status int, latency time.Duration) {
+	r.clientLatency.WithLabelValues(r.services.serviceValue(serviceID), strconv.Itoa(status)).Observe(latency.Seconds())
 }
 
 // RecordExternalSourceFailure satisfies healthcheck.ExternalSourceFailureRecorder:

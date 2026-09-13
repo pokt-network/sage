@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
@@ -863,6 +864,16 @@ type recordingClientRec struct {
 	degraded   []string
 	rpcTypes   []rpcTypeRecord
 	mismatches []rpcTypeMismatch
+	latencies  []clientLatencyRecord
+}
+
+type clientLatencyRecord struct {
+	status  int
+	latency time.Duration
+}
+
+func (r *recordingClientRec) RecordClientLatency(_ domain.ServiceID, status int, latency time.Duration) {
+	r.latencies = append(r.latencies, clientLatencyRecord{status, latency})
 }
 
 func (r *recordingClientRec) RecordClientRequest(_ domain.ServiceID, status int) {
