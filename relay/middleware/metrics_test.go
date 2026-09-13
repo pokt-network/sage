@@ -166,6 +166,25 @@ func TestMetrics_RecordsHeuristicVerdictPerAttempt(t *testing.T) {
 		t.Fatalf("verdicts = %+v, want %+v", rec.verdicts, want)
 	}
 
+	// A success is exported with no attribution: internally it carries
+	// AttrClient as "no action needed", which must not read as a client error.
+	rec = &fakeRecorder{}
+	ok := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{HTTPStatusCode: http.StatusOK}
+		res := heuristic.AnalysisResult{Reason: heuristic.ReasonSuccess, Attribution: heuristic.AttrClient}
+		ctx.HeuristicResult = &res
+		return nil
+	})
+	ctx = baseContext()
+	ctx.ServiceID = "shentu"
+	ctx.RPCType = domain.RPCTypeCometBFT
+	if err := Metrics(rec)(ok).HandleRelay(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.verdicts) != 1 || rec.verdicts[0].attribution != "none" || rec.verdicts[0].reason != heuristic.ReasonSuccess {
+		t.Fatalf("verdicts = %+v, want one success with attribution none", rec.verdicts)
+	}
+
 	rec = &fakeRecorder{}
 	quiet := relay.HandlerFunc(func(ctx *relay.Context) error {
 		ctx.Response = &domain.Response{HTTPStatusCode: http.StatusOK}

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -59,10 +60,23 @@ func Metrics(recorder MetricsRecorder) relay.Middleware {
 			// about every answer — passed through, penalised, retried — was
 			// otherwise invisible.
 			if v := ctx.HeuristicResult; v != nil {
-				recorder.RecordVerdict(ctx.ServiceID, ctx.RPCType, v.Reason, v.Attribution.String())
+				recorder.RecordVerdict(ctx.ServiceID, ctx.RPCType, v.Reason, verdictAttribution(v))
 			}
 
 			return err
 		})
 	}
 }
+
+// verdictAttribution is the attribution label for a verdict. A success carries
+// heuristic.AttrClient internally, meaning "no action needed", which exported
+// as "client" reads as a client error beside the real ones; it is exported as
+// "none" so the label answers only "whose fault" and success has no answer.
+func verdictAttribution(v *heuristic.AnalysisResult) string {
+	if v.Reason == heuristic.ReasonSuccess {
+		return verdictAttributionNone
+	}
+	return v.Attribution.String()
+}
+
+const verdictAttributionNone = "none"

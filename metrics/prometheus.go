@@ -245,7 +245,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "heuristic_verdicts_total",
-				Help:      "Heuristic verdicts on upstream answers to client relay attempts, by service, RPC type, the reason the verdict settled on (success, internal_error, http_408, transport_timeout, ...) and the side it attributed the outcome to (supplier, blockchain, client, unknown). One verdict per attempt, so a retried request counts once per attempt. This is the complete account of what the gateway concluded about every answer; reputation_attempts_total counts only what scoring kept and retry_total only what retried.",
+				Help:      "Heuristic verdicts on upstream answers to client relay attempts, by service, RPC type, the reason the verdict settled on (success, internal_error, http_408, transport_timeout, ...) and the side it attributed the outcome to (supplier, blockchain, client, unknown; none on success). One verdict per attempt, so a retried request counts once per attempt. This is the complete account of what the gateway concluded about every answer; reputation_attempts_total counts only what scoring kept and retry_total only what retried.",
 			},
 			[]string{"service_id", "rpc_type", "reason", "attribution"},
 		),
