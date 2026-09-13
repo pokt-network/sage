@@ -53,6 +53,8 @@ type Plugin struct {
 
 	store     *qos.EndpointStore[cosmosEndpoint]
 	consensus *qos.BlockConsensus
+	// pruned remembers, per host, the lowest height the node holds; see pruned.go.
+	pruned *prunedMemory
 }
 
 // Config carries the per-service settings a Cosmos plugin needs.
@@ -130,6 +132,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		expectedChainID:   cfg.ExpectedChainID,
 		store:             qos.NewEndpointStore[cosmosEndpoint](logger),
 		consensus:         qos.NewBlockConsensus(logger, cfg.SyncAllowance),
+		pruned:            newPrunedMemory(),
 	}
 }
 
@@ -214,6 +217,31 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		baseFilters = append(baseFilters, rpcTypeFilter)
 		relaxedFilters = append(relaxedFilters, rpcTypeFilter)
 		nonBlockFilters = append(nonBlockFilters, rpcTypeFilter)
+	}
+
+	// Height-aware routing (pruned.go): a request that names a specific
+	// height skips hosts known to have pruned below it. Applied in every
+	// tier, like the EVM plugin's archival filter: a pruned host is no better
+	// a choice when the pool is degraded. If it empties every tier the
+	// selector falls back to the full list and the query is sent once, so
+	// the client gets the node's answer and nothing is retried.
+	if len(payloads) > 0 {
+		if height, ok := requestedHeight(payloads[0]); ok {
+			heightFilter := func(addr domain.EndpointAddr) error {
+				lowest, known := p.pruned.lowest(addr.Domain())
+				if !known || lowest <= height {
+					return nil
+				}
+				return &domain.RelayError{
+					Kind:      domain.ErrCapability,
+					Message:   fmt.Sprintf("cosmos: host pruned below height %d (lowest %d)", height, lowest),
+					Retryable: true,
+				}
+			}
+			baseFilters = append(baseFilters, heightFilter)
+			relaxedFilters = append(relaxedFilters, heightFilter)
+			nonBlockFilters = append(nonBlockFilters, heightFilter)
+		}
 	}
 
 	ranker := qos.LeastStaleFallback(getHeight, perceived)
@@ -331,6 +359,14 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, _, response []byte) (
 	// the wrong chain reports heights that are real for that chain, so feeding
 	// them to consensus would let it skew the very number the height filters
 	// compare against.
+	// A pruned node's answer names the lowest height it holds; remember it
+	// per host so SelectEndpoints stops sending old heights there. The
+	// request is a client's, so the probe is free.
+	if lowest, ok := prunedLowestHeight(response); ok {
+		p.pruned.set(endpoint.Domain(), lowest)
+		p.logger.Debug("cosmos: host reports pruned history", "endpoint", endpoint, "lowest_height", lowest)
+	}
+
 	chainID, hasChainID := parseChainID(response)
 	if hasChainID {
 		p.store.Update(endpoint, func(ep *cosmosEndpoint) {
@@ -417,4 +453,5 @@ func (p *Plugin) OnEndpointEvicted(_ domain.ServiceID, endpoint domain.EndpointA
 func (p *Plugin) ResetState() {
 	p.consensus.Reset()
 	p.store.Clear()
+	p.pruned.reset()
 }

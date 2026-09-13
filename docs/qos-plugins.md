@@ -99,4 +99,6 @@ If you detect a property of an endpoint rather than being told it — archival
 support being the standard case — give the determination a TTL. An endpoint that
 answers a historical query today may prune tomorrow, and treating one probe as
 permanent truth routes archival traffic to a node that has since dropped the
-data. See `archivalTTL` in `qos/evm`.
+data. See `archivalTTL` in `qos/evm`, and `prunedTTL` in `qos/cosmos`, where
+the same idea keys on the host: a CometBFT node's "lowest height is M" is
+remembered per host and requests naming an older height skip it.
