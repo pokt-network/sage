@@ -191,14 +191,8 @@ func TestSelectEndpoints_ArchivalFiltering(t *testing.T) {
 	// Two endpoints; "nonarchival" has told us it does not retain the state.
 	p.UpdateBlockHeight("archival", 100)
 	p.UpdateBlockHeight("nonarchival", 100)
-	p.store.Update("archival", func(ep *evmEndpoint) {
-		ep.IsArchival = true
-		ep.ArchivalExpiry = time.Now().Add(archivalTTL)
-	})
-	p.store.Update("nonarchival", func(ep *evmEndpoint) {
-		ep.IsArchival = false
-		ep.ArchivalExpiry = time.Now().Add(archivalTTL)
-	})
+	p.archival.set(hostKey("archival"), true)
+	p.archival.set(hostKey("nonarchival"), false)
 
 	addrs := domain.EndpointAddrList{"archival", "nonarchival"}
 	// Archival request: eth_getBalance at a specific historical block.
@@ -737,10 +731,7 @@ func TestSelectEndpoints_ArchivalUnobservedNotExcluded(t *testing.T) {
 
 	p.UpdateBlockHeight("never-asked", 100)
 	p.UpdateBlockHeight("known-pruned", 100)
-	p.store.Update("known-pruned", func(ep *evmEndpoint) {
-		ep.IsArchival = false
-		ep.ArchivalExpiry = time.Now().Add(archivalTTL)
-	})
+	p.archival.set(hostKey("known-pruned"), false)
 
 	addrs := domain.EndpointAddrList{"never-asked", "known-pruned"}
 	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
@@ -767,18 +758,16 @@ func TestSelectEndpoints_ArchivalUnobservedNotExcluded(t *testing.T) {
 func TestSelectEndpoints_ArchivalObservationExpires(t *testing.T) {
 	p := newTestPlugin(5)
 
-	p.UpdateBlockHeight("stale-negative", 100)
-	p.UpdateBlockHeight("fresh-negative", 100)
-	p.store.Update("stale-negative", func(ep *evmEndpoint) {
-		ep.IsArchival = false
-		ep.ArchivalExpiry = time.Now().Add(-time.Minute)
-	})
-	p.store.Update("fresh-negative", func(ep *evmEndpoint) {
-		ep.IsArchival = false
-		ep.ArchivalExpiry = time.Now().Add(archivalTTL)
-	})
+	// Real address shapes: "stale-negative" and "fresh-negative" would both
+	// parse to the host "negative" and share one mark.
+	stale := domain.EndpointAddr("s1-https://stale.example")
+	fresh := domain.EndpointAddr("s2-https://fresh.example")
+	p.UpdateBlockHeight(stale, 100)
+	p.UpdateBlockHeight(fresh, 100)
+	p.archival.setUntil(hostKey(stale), false, time.Now().Add(-time.Minute))
+	p.archival.setUntil(hostKey(fresh), false, time.Now().Add(archivalTTL))
 
-	addrs := domain.EndpointAddrList{"stale-negative", "fresh-negative"}
+	addrs := domain.EndpointAddrList{stale, fresh}
 	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
 	payloads := []domain.Payload{
 		domain.NewPayload([]byte(body), domain.RPCTypeJSONRPC, "eth_getBalance"),
@@ -788,10 +777,10 @@ func TestSelectEndpoints_ArchivalObservationExpires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(selected) != 1 || selected[0] != "stale-negative" {
+	if len(selected) != 1 || selected[0] != stale {
 		t.Fatalf("expected the expired observation to read as unknown, got %v", selected)
 	}
-	if p.IsArchivalEndpoint("stale-negative") {
+	if p.IsArchivalEndpoint(stale) {
 		t.Fatal("expired observation must not read as archival either")
 	}
 }
@@ -939,5 +928,37 @@ func TestHealthChecks_ChainIDIsSlowCadence(t *testing.T) {
 				t.Errorf("eth_blockNumber interval = %v, want 0 (service cadence)", c.Interval)
 			}
 		}
+	}
+}
+
+// Two supplier addresses on one host share the mark: what one address
+// taught, the other already knows, on the RPC and admin paths alike.
+func TestArchivalMemory_SharedAcrossAddressesOfOneHost(t *testing.T) {
+	p := newTestPlugin(5)
+	a := domain.EndpointAddr("pokt1a-https://pkp-og.example.net")
+	b := domain.EndpointAddr("pokt1b-https://pkp-og.example.net")
+	other := domain.EndpointAddr("pokt1c-https://r001.example.xyz")
+	for _, ep := range []domain.EndpointAddr{a, b, other} {
+		p.UpdateBlockHeight(ep, 100)
+	}
+	req := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`)
+	missing := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"missing trie node abc"}}`)
+	if _, observed := p.observeArchival(a, "eth_getBalance", req, missing); !observed {
+		t.Fatal("a missing-state answer to a historical query is an observation")
+	}
+	if p.IsArchivalEndpoint(b) {
+		t.Fatal("b shares a's host and must read as not archival")
+	}
+	payloads := []domain.Payload{domain.NewPayload(req, domain.RPCTypeJSONRPC, "eth_getBalance")}
+	selected, err := p.SelectEndpoints(domain.EndpointAddrList{a, b, other}, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 1 || selected[0] != other {
+		t.Fatalf("selected = %v, want only the other host: both addresses on the pruned host are excluded", selected)
+	}
+	p.ResetState()
+	if selected, _ = p.SelectEndpoints(domain.EndpointAddrList{a, b, other}, payloads); len(selected) != 3 {
+		t.Fatalf("after ResetState the memory must be empty, got %v", selected)
 	}
 }
