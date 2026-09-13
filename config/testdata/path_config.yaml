@@ -145,6 +145,7 @@ gateway_config:
   method_blocks:
     ttl: 5m
     escalation_threshold: 3
+    client_ttl: 30m
 
   active_health_checks:
     enabled: true

@@ -327,3 +327,30 @@ func TestMark_CapCountsOnlyLiveMarks(t *testing.T) {
 		t.Error("a host that filled the cap with now-expired marks can no longer be marked at all")
 	}
 }
+
+// A client-attributed mark (the host does not serve the method) lives on its
+// own, longer TTL; a supplier-attributed mark (the host failed the method
+// once) keeps the short one. Same store, same host, two lifetimes.
+func TestStore_ClientMarksOutliveSupplierMarks(t *testing.T) {
+	s := New(WithTTL(20*time.Millisecond), WithClientTTL(time.Hour))
+	s.Mark("eth", "h1", "eth_blockNumber", false) // -32601: client-attributed
+	s.Mark("eth", "h1", "eth_call", true)         // timeout: supplier-attributed
+	time.Sleep(50 * time.Millisecond)
+	if !s.Blocked("eth", "h1", "eth_blockNumber") {
+		t.Fatal("client-attributed mark expired with the short TTL; want the client TTL")
+	}
+	if s.Blocked("eth", "h1", "eth_call") {
+		t.Fatal("supplier-attributed mark should have expired with the short TTL")
+	}
+}
+
+// Zero or negative client TTL means the ordinary TTL, so a deployment that
+// sets nothing new behaves as it did with one lifetime.
+func TestStore_ClientTTLZeroFallsBackToTTL(t *testing.T) {
+	s := New(WithTTL(20*time.Millisecond), WithClientTTL(0))
+	s.Mark("eth", "h1", "eth_blockNumber", false)
+	time.Sleep(50 * time.Millisecond)
+	if s.Blocked("eth", "h1", "eth_blockNumber") {
+		t.Fatal("with no client TTL the mark must expire with the ordinary TTL")
+	}
+}

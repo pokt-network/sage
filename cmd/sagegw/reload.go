@@ -139,6 +139,7 @@ func (a *App) Reload(ctx context.Context) (reload.Result, error) {
 			res.Warnings = append(res.Warnings, unavailable(keyMethodBlocks, "no method-block store is wired"))
 		} else {
 			a.MethodBlocks.SetTTL(next.Gateway.MethodBlocks.EffectiveTTL())
+			a.MethodBlocks.SetClientTTL(next.Gateway.MethodBlocks.EffectiveClientTTL())
 			a.MethodBlocks.SetEscalation(next.Gateway.MethodBlocks.EffectiveEscalation())
 			res.Applied = append(res.Applied, keyMethodBlocks)
 		}

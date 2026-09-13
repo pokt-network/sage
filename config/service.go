@@ -125,6 +125,13 @@ type MethodBlocksConfig struct {
 	// host inside one TTL before the host is blocked for every method. Zero
 	// means 3; negative never escalates.
 	EscalationThreshold int `yaml:"escalation_threshold"`
+	// ClientTTL is how long a client-attributed mark lasts: a host that
+	// answered -32601 (method not found) to a catalogued method. Zero means
+	// 30m; negative means the same lifetime as TTL. Longer than TTL on
+	// purpose — a host that does not serve a method does not grow it in five
+	// minutes, and at the short TTL the pool paid one failed relay per host
+	// and method every five minutes to re-learn it.
+	ClientTTL time.Duration `yaml:"client_ttl"`
 }
 
 // EffectiveTTL resolves TTL: zero to the default, negative to off.
@@ -136,6 +143,18 @@ func (m MethodBlocksConfig) EffectiveTTL() time.Duration {
 		return 5 * time.Minute
 	}
 	return m.TTL
+}
+
+// EffectiveClientTTL resolves ClientTTL: zero to the default, negative to
+// zero, which the store reads as "same as TTL".
+func (m MethodBlocksConfig) EffectiveClientTTL() time.Duration {
+	switch {
+	case m.ClientTTL < 0:
+		return 0
+	case m.ClientTTL == 0:
+		return 30 * time.Minute
+	}
+	return m.ClientTTL
 }
 
 // EffectiveEscalation resolves EscalationThreshold: zero to the default,

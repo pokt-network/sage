@@ -395,6 +395,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// Local memory only — see the methodblock package doc.
 	blocks := methodblock.New(
 		methodblock.WithTTL(cfg.Gateway.MethodBlocks.EffectiveTTL()),
+		methodblock.WithClientTTL(cfg.Gateway.MethodBlocks.EffectiveClientTTL()),
 		methodblock.WithEscalation(cfg.Gateway.MethodBlocks.EffectiveEscalation()),
 		methodblock.WithLogger(logger),
 	)
