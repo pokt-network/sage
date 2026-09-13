@@ -359,25 +359,29 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		// The plugin configs are built by the same helpers validateConfig used
 		// to check them, so what was validated is what gets constructed.
 		var plugin qos.Plugin
+		// Every line a plugin logs names its service: "endpoint selection
+		// degraded" ran 30–300 lines per five minutes on the canary with no
+		// way to tell which service was degraded.
+		pluginLogger := logger.With("service_id", svc.ID)
 		switch domain.ServiceType(svc.Type) {
 		case domain.ServiceTypeEVM:
-			plugin = evm.NewPlugin(logger, evmConfigFor(svc))
+			plugin = evm.NewPlugin(pluginLogger, evmConfigFor(svc))
 		case domain.ServiceTypeCosmos:
-			plugin = cosmos.NewPlugin(logger, cosmosConfigFor(svc))
+			plugin = cosmos.NewPlugin(pluginLogger, cosmosConfigFor(svc))
 		case domain.ServiceTypeSolana:
-			plugin = solana.NewPlugin(logger, svc.SyncAllowance)
+			plugin = solana.NewPlugin(pluginLogger, svc.SyncAllowance)
 		case domain.ServiceTypeTron:
 			// TRON's JSON-RPC surface is Ethereum's, so it takes the EVM
 			// config unchanged; the plugin adds the REST framing EVM refuses.
-			plugin = tron.NewPlugin(logger, evmConfigFor(svc))
+			plugin = tron.NewPlugin(pluginLogger, evmConfigFor(svc))
 		default:
 			// A chain declared in qos/jsonheight needs only a probe and a
 			// path; anything else falls to the passthrough, which tracks
 			// nothing and says so at startup (config.QoSCoverageFor).
 			if chain, ok := jsonheight.ByServiceType(domain.ServiceType(svc.Type)); ok {
-				plugin = jsonheight.NewPlugin(logger, chain, svc.SyncAllowance)
+				plugin = jsonheight.NewPlugin(pluginLogger, chain, svc.SyncAllowance)
 			} else {
-				plugin = noop.NewPlugin(logger, svc.SyncAllowance)
+				plugin = noop.NewPlugin(pluginLogger, svc.SyncAllowance)
 			}
 		}
 		_ = qosReg.Register(domain.ServiceID(svc.ID), plugin)
