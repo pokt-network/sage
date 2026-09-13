@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"net/url"
+
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
@@ -94,7 +96,7 @@ func MethodBlocks(
 
 			if len(ctx.Endpoints) > 0 {
 				filtered := filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool {
-					return !store.Blocked(serviceID, ep.Domain(), method)
+					return !store.Blocked(serviceID, blockHost(endpointProvider, ep, ctx.RPCType), method)
 				})
 				bypass := len(filtered) == 0 ||
 					(len(filtered) < len(ctx.Endpoints) && !anyVouched(repSvc, ctx, filtered))
@@ -118,7 +120,7 @@ func MethodBlocks(
 				// would remove the node from everything.
 				escalates := ctx.HeuristicResult.Attribution == heuristic.AttrSupplier
 				event := MethodBlockEventMark
-				host := ctx.Endpoint.Domain()
+				host := blockHost(endpointProvider, ctx.Endpoint, ctx.RPCType)
 				if store.Mark(serviceID, host, method, escalates) {
 					event = MethodBlockEventEscalate
 				}
@@ -194,4 +196,19 @@ func methodFamily(registry *qos.Registry, ctx *relay.Context, method string) []s
 		return nil
 	}
 	return lister.MethodFamily(method)
+}
+
+// blockHost is the host a mark is kept against: the host the face is
+// actually dialed from when the provider can say (protocol.URLResolver), else
+// the address's own. An operator staking one host per type would otherwise
+// have a REST refusal marked against its JSON-RPC host.
+func blockHost(provider protocol.EndpointProvider, ep domain.EndpointAddr, rpcType domain.RPCType) string {
+	if r, ok := provider.(protocol.URLResolver); ok {
+		if rawURL, ok := r.EndpointURLFor(ep, rpcType); ok {
+			if u, err := url.Parse(rawURL); err == nil && u.Hostname() != "" {
+				return u.Hostname()
+			}
+		}
+	}
+	return ep.Domain()
 }

@@ -92,7 +92,7 @@ func TestService_AsyncWriteToStorage(t *testing.T) {
 	// Stop flushes pending writes.
 	svc.Stop()
 
-	key := scoreKey(svcID, svc.key(ep, domain.RPCTypeJSONRPC))
+	key := scoreKey(svcID, svc.keyOf(ep, domain.RPCTypeJSONRPC))
 	st, err := store.GetState(ctx, key)
 	if err != nil {
 		t.Fatalf("expected state in storage after Stop, got error: %v", err)
@@ -388,7 +388,7 @@ func TestService_RateTermLowersEffectiveScore(t *testing.T) {
 	assert.InDelta(t, 60, score, 5, "1% chronic failure: additive 100, penalty about -40")
 	views, err := svc.GetStates(ctx, "svc")
 	require.NoError(t, err)
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.InDelta(t, 100, v.Additive, 0.01)
 	assert.InDelta(t, wantPenalty, v.Penalty, 1)
 	assert.InDelta(t, wantRate, v.Rate, 0.0005)
@@ -440,7 +440,7 @@ func TestService_ProbeSignalsCountButDoNotFeedLatency(t *testing.T) {
 	probe.Probe = true
 	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, probe))
 	views, _ := svc.GetStates(ctx, "svc")
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.Equal(t, uint64(1), v.Attempts)
 	assert.Equal(t, uint64(0), v.TrafficAttempts)
 	assert.True(t, v.ProbeOnly)
@@ -448,7 +448,7 @@ func TestService_ProbeSignalsCountButDoNotFeedLatency(t *testing.T) {
 
 	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 100*time.Millisecond)))
 	views, _ = svc.GetStates(ctx, "svc")
-	v = views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v = views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.False(t, v.ProbeOnly)
 	assert.InDelta(t, 100, v.LatencyMS, 0.01, "first traffic sample seeds the EWMA")
 }
@@ -486,7 +486,7 @@ func TestService_VouchedUsesEffectiveScore(t *testing.T) {
 	}
 	views, err := svc.GetStates(ctx, "svc")
 	require.NoError(t, err)
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.InDelta(t, 70, v.Additive, 0.01)
 	assert.InDelta(t, -70, v.Penalty, 0.01, "the rate penalty is at its cap")
 	assert.False(t, svc.Vouched(ctx, "svc", ep, domain.RPCTypeJSONRPC),
@@ -519,7 +519,7 @@ func TestService_ResetClearsRate(t *testing.T) {
 	}
 	require.NoError(t, svc.ResetScore(ctx, "svc", ep))
 	views, _ := svc.GetStates(ctx, "svc")
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.Equal(t, 0.0, v.Rate)
 	assert.Equal(t, 100.0, v.Score)
 	assert.Equal(t, uint64(0), v.Attempts)
@@ -572,8 +572,8 @@ func TestRecordSignal_PruningKeepsPenalisedRate(t *testing.T) {
 		require.NoError(t, svc.RecordSignal(ctx, "eth", latent, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0)))
 	}
 
-	chronicKey := svc.key(chronic, domain.RPCTypeJSONRPC)
-	latentKey := svc.key(latent, domain.RPCTypeJSONRPC)
+	chronicKey := svc.keyOf(chronic, domain.RPCTypeJSONRPC)
+	latentKey := svc.keyOf(latent, domain.RPCTypeJSONRPC)
 	before, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
 	require.Equal(t, 100.0, before[chronicKey].Additive, "setup: chronic additive is back at the ceiling")
@@ -615,7 +615,7 @@ func TestRecordSignalOnce_PerURLSiblingsAreOneAttempt(t *testing.T) {
 	views, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
 	require.Len(t, views, 1, "three registrations in front of one backend are one key")
-	v := views[svc.key(siblings[0], domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(siblings[0], domain.RPCTypeJSONRPC)]
 	assert.Equal(t, uint64(1), v.Attempts, "one probe, one attempt")
 	assert.Equal(t, 75.0, v.Additive, "one critical moved the additive term once, not three times")
 }
@@ -639,7 +639,7 @@ func TestRecordSignalOnce_PerEndpointScoresEveryRegistration(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, views, 3, "per-endpoint: one key per registration")
 	for _, ep := range siblings {
-		v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+		v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 		assert.Equal(t, uint64(1), v.Attempts, "%s", ep)
 		assert.Equal(t, 75.0, v.Additive, "%s", ep)
 	}
@@ -661,7 +661,7 @@ func TestRecordSignalOnce_MixedBackendsScoreEachKeyOnce(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, views, 2, "two backends, two keys")
 	for _, ep := range eps {
-		assert.Equal(t, uint64(1), views[svc.key(ep, domain.RPCTypeJSONRPC)].Attempts, "%s", ep)
+		assert.Equal(t, uint64(1), views[svc.keyOf(ep, domain.RPCTypeJSONRPC)].Attempts, "%s", ep)
 	}
 }
 
@@ -680,7 +680,7 @@ func TestRecordSignalOnce_EmptyAndSingle(t *testing.T) {
 	views, err = svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
 	require.Len(t, views, 1)
-	assert.Equal(t, uint64(1), views[svc.key(ep, domain.RPCTypeJSONRPC)].Attempts)
+	assert.Equal(t, uint64(1), views[svc.keyOf(ep, domain.RPCTypeJSONRPC)].Attempts)
 }
 
 // An endpoint the additive term has already floored is in an outage, not
@@ -717,7 +717,7 @@ func TestRecordSignal_FlooredScoreDoesNotAccrueRate(t *testing.T) {
 
 	views, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.Equal(t, 0.0, v.Penalty, "an outage left no chronic penalty behind")
 	assert.Equal(t, uint64(5_780), v.Attempts, "every signal is still an attempt, and still on the timeline")
 }
@@ -741,7 +741,7 @@ func TestRecordSignal_ChronicViolatorIsUnaffectedByTheFlooredGate(t *testing.T) 
 
 	views, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	require.Equal(t, 100.0, v.Additive, "a 1-in-500 failure rate never floors the additive term")
 	assert.InDelta(t, -23.5, v.Penalty, 3, "docs/scoring.md §7.3: spacebelt at 0.216% is about -23")
 	assert.InDelta(t, 76.5, v.Score, 3, "tier 2, as §7.3 says")

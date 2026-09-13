@@ -328,6 +328,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		shannonProto.StartBlockPoller(ctx)
 		app.Protocol = shannonProto
 		proto = shannonProto
+		// Per-URL reputation keys name the host a face is dialed from, so
+		// an operator staking one host per type is scored per face (see
+		// protocol.URLResolver). Installed before the server listens.
+		repSvc.SetURLResolver(shannonProto.EndpointURLFor)
 
 		// The domain ban's swap point is the blocklist manager, not the
 		// protocol: it owns the union of the config list and the admin-set

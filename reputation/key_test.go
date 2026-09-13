@@ -24,7 +24,7 @@ func TestKeyFnFor_Granularities(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.granularity, func(t *testing.T) {
-			if got := keyFnFor(tt.granularity)(ep, domain.RPCTypeJSONRPC); got != tt.want {
+			if got := keyFnFor(tt.granularity, nil)(ep, domain.RPCTypeJSONRPC); got != tt.want {
 				t.Errorf("key = %q, want %q", got, tt.want)
 			}
 		})
@@ -38,7 +38,7 @@ func TestKeyPerURL_SharedBackendSharesAScore(t *testing.T) {
 	b := domain.EndpointAddr("pokt1bbb-https://rpc.example.net")
 	other := domain.EndpointAddr("pokt1aaa-https://rpc-2.example.net")
 
-	key := func(ep domain.EndpointAddr) string { return keyFnFor(KeyPerURL)(ep, domain.RPCTypeJSONRPC) }
+	key := func(ep domain.EndpointAddr) string { return keyFnFor(KeyPerURL, nil)(ep, domain.RPCTypeJSONRPC) }
 	if key(a) != key(b) {
 		t.Errorf("suppliers on the same URL should share a key: %q vs %q", key(a), key(b))
 	}
@@ -53,7 +53,7 @@ func TestKeyPerURL_SharedBackendSharesAScore(t *testing.T) {
 func TestKeyFn_MalformedAddressDegradesToItself(t *testing.T) {
 	bad := domain.EndpointAddr("noseparatorhere")
 	for _, g := range []string{KeyPerURL, KeyPerDomain, KeyPerSupplier} {
-		if got := keyFnFor(g)(bad, domain.RPCTypeJSONRPC); got != string(bad)+"|json_rpc" {
+		if got := keyFnFor(g, nil)(bad, domain.RPCTypeJSONRPC); got != string(bad)+"|json_rpc" {
 			t.Errorf("%s: key = %q, want the address itself", g, got)
 		}
 	}
@@ -128,7 +128,7 @@ func TestService_PerEndpointGranularityKeepsPenaltiesSeparate(t *testing.T) {
 func TestKeyFn_RPCTypeAlwaysSeparatesScores(t *testing.T) {
 	ep := domain.EndpointAddr("pokt1abc-https://rpc.example.net")
 	for _, g := range []string{KeyPerURL, KeyPerEndpoint, KeyPerDomain, KeyPerSupplier} {
-		key := keyFnFor(g)
+		key := keyFnFor(g, nil)
 		if key(ep, domain.RPCTypeWebSocket) == key(ep, domain.RPCTypeREST) {
 			t.Errorf("%s: websocket and rest must not share a key", g)
 		}
@@ -184,7 +184,7 @@ func TestService_ResetScoreClearsEveryRPCType(t *testing.T) {
 }
 
 func TestMemoize_ReturnsSameKeysAsUnderlyingFn(t *testing.T) {
-	raw := keyFnFor(KeyPerURL)
+	raw := keyFnFor(KeyPerURL, nil)
 	memo := memoize(raw)
 
 	addrs := []domain.EndpointAddr{
@@ -229,7 +229,7 @@ func TestMemoize_FormatsEachKeyOnce(t *testing.T) {
 // The memo must not distinguish keys only by endpoint: the RPC type is part of
 // the identity a score is stored under.
 func TestMemoize_KeyIncludesRPCType(t *testing.T) {
-	memo := memoize(keyFnFor(KeyPerURL))
+	memo := memoize(keyFnFor(KeyPerURL, nil))
 
 	const addr = domain.EndpointAddr("pokt1a-https://eth.example.com")
 	if a, b := memo(addr, domain.RPCTypeJSONRPC), memo(addr, domain.RPCTypeWebSocket); a == b {
@@ -238,7 +238,7 @@ func TestMemoize_KeyIncludesRPCType(t *testing.T) {
 }
 
 func TestMemoize_DropsCacheOnceItOutgrowsTheCap(t *testing.T) {
-	raw := keyFnFor(KeyPerEndpoint)
+	raw := keyFnFor(KeyPerEndpoint, nil)
 	calls := 0
 	memo := memoize(func(ep domain.EndpointAddr, rpcType domain.RPCType) string {
 		calls++
@@ -264,7 +264,7 @@ func TestMemoize_DropsCacheOnceItOutgrowsTheCap(t *testing.T) {
 }
 
 func TestMemoize_ConcurrentUse(t *testing.T) {
-	memo := memoize(keyFnFor(KeyPerURL))
+	memo := memoize(keyFnFor(KeyPerURL, nil))
 	addrs := []domain.EndpointAddr{"a-http://x", "b-http://y", "c-http://z", "d-http://w"}
 
 	var wg sync.WaitGroup
@@ -287,7 +287,7 @@ func TestMemoize_ConcurrentUse(t *testing.T) {
 // BenchmarkKeyFn measures what selection pays per candidate endpoint per relay.
 func BenchmarkKeyFn(b *testing.B) {
 	const addr = domain.EndpointAddr("pokt1supplier-https://eth.example.com/v1")
-	raw := keyFnFor(KeyPerURL)
+	raw := keyFnFor(KeyPerURL, nil)
 	memo := memoize(raw)
 
 	b.Run("raw", func(b *testing.B) {
@@ -304,4 +304,32 @@ func BenchmarkKeyFn(b *testing.B) {
 			_ = memo(addr, domain.RPCTypeJSONRPC)
 		}
 	})
+}
+
+// With a resolver, a per-URL key names the host the face is dialed from: an
+// operator staking one host per type gets one key per face, and two
+// supplier addresses on that operator still share each face's key.
+func TestKeyPerURL_ResolverNamesTheDialedHost(t *testing.T) {
+	a := domain.EndpointAddr("pokt1a-https://eu-s-01-osmosis-json.kleomedes.network")
+	b := domain.EndpointAddr("pokt1b-https://eu-s-01-osmosis-json.kleomedes.network")
+	resolve := func(ep domain.EndpointAddr, rt domain.RPCType) (string, bool) {
+		if rt == domain.RPCTypeREST {
+			return "https://eu-s-01-osmosis-rest.kleomedes.network", true
+		}
+		return "", false // json_rpc: not resolved, the address's URL stands
+	}
+	key := keyFnFor(KeyPerURL, resolve)
+	if got := key(a, domain.RPCTypeREST); got != "https://eu-s-01-osmosis-rest.kleomedes.network|rest" {
+		t.Fatalf("rest key = %q, want the rest host", got)
+	}
+	if key(a, domain.RPCTypeREST) != key(b, domain.RPCTypeREST) {
+		t.Fatal("two addresses on one operator must share the face's key")
+	}
+	if got := key(a, domain.RPCTypeJSONRPC); got != "https://eu-s-01-osmosis-json.kleomedes.network|json_rpc" {
+		t.Fatalf("unresolved face falls back to the address's URL, got %q", got)
+	}
+	// Other granularities ignore the resolver.
+	if got := keyFnFor(KeyPerSupplier, resolve)(a, domain.RPCTypeREST); got != "pokt1a|rest" {
+		t.Fatalf("per-supplier key = %q, want the supplier", got)
+	}
 }

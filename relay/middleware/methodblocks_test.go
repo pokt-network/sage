@@ -625,3 +625,60 @@ func TestMethodBlocks_MethodNotFoundMarksTheFamily(t *testing.T) {
 		t.Fatal("a timeout marks the one method, never the family")
 	}
 }
+
+// resolvingProvider is an endpoint provider that also says which host a face
+// is dialed from: the REST face of eps[0] lives on another host than the
+// address names.
+type resolvingProvider struct{ eps domain.EndpointAddrList }
+
+func (r resolvingProvider) AvailableEndpoints(context.Context, domain.ServiceID, domain.RPCType) (domain.EndpointAddrList, error) {
+	return r.eps, nil
+}
+
+func (r resolvingProvider) EndpointURLFor(ep domain.EndpointAddr, rt domain.RPCType) (string, bool) {
+	if ep == r.eps[0] && rt == domain.RPCTypeREST {
+		return "https://rest.other.example:8443/v1", true
+	}
+	return "", false
+}
+
+// A mark is kept against the host the face is dialed from, and the pre-relay
+// filter looks it up the same way, so a REST refusal on a split-host
+// operator blocks the REST host and leaves the address's JSON-RPC host alone.
+func TestMethodBlocks_HostFollowsTheDialedURL(t *testing.T) {
+	store := methodblock.New()
+	eps := testEndpoints(2)
+	provider := resolvingProvider{eps: eps}
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = eps[0]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true, Attribution: heuristic.AttrSupplier}
+		return retryableErr("timeout")
+	})
+	ctx := methodCtx("/cosmos/bank/v1beta1/supply", eps)
+	ctx.RPCType = domain.RPCTypeREST
+	_ = MethodBlocks(store, registryWith(t), provider, newFlags("method_blocks"), nil, nil)(inner).HandleRelay(ctx)
+
+	if !store.Blocked("eth", "rest.other.example", "/cosmos/bank/v1beta1/supply") {
+		t.Fatal("the mark must be kept against the dialed REST host")
+	}
+	if store.Blocked("eth", eps[0].Domain(), "/cosmos/bank/v1beta1/supply") {
+		t.Fatal("the address's own host must not carry a REST mark")
+	}
+
+	// The filter resolves the same way: eps[0] is now excluded for that
+	// method on the REST face, and stays in for json_rpc.
+	ctx = methodCtx("/cosmos/bank/v1beta1/supply", eps)
+	ctx.RPCType = domain.RPCTypeREST
+	var seen domain.EndpointAddrList
+	probe := relay.HandlerFunc(func(ctx *relay.Context) error { seen = ctx.Endpoints; return nil })
+	_ = MethodBlocks(store, registryWith(t), provider, newFlags("method_blocks"), nil, nil)(probe).HandleRelay(ctx)
+	if len(seen) != 1 || seen[0] != eps[1] {
+		t.Fatalf("REST candidates = %v, want only %v", seen, eps[1])
+	}
+	ctx = methodCtx("/cosmos/bank/v1beta1/supply", eps)
+	ctx.RPCType = domain.RPCTypeJSONRPC
+	_ = MethodBlocks(store, registryWith(t), provider, newFlags("method_blocks"), nil, nil)(probe).HandleRelay(ctx)
+	if len(seen) != 2 {
+		t.Fatalf("json_rpc candidates = %v, want both", seen)
+	}
+}

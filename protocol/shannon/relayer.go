@@ -567,3 +567,19 @@ func (p *Protocol) UnblacklistSupplier(serviceID domain.ServiceID, addr string) 
 func (p *Protocol) IsBlacklisted(serviceID domain.ServiceID, addr string) bool {
 	return p.bl.IsBlacklisted(serviceID, addr)
 }
+
+// EndpointURLFor implements protocol.URLResolver: the URL a relay of rpcType
+// to endpoint dials, from the supplier's stake in a current session. No
+// fallback: an endpoint that does not stake the type answers false, and the
+// caller falls back to the address's own host.
+func (p *Protocol) EndpointURLFor(endpoint domain.EndpointAddr, rpcType domain.RPCType) (string, bool) {
+	ep, ok := p.sessions.lookupEndpoint(endpoint)
+	if !ok {
+		return "", false
+	}
+	url, err := ep.GetURL(rpcType)
+	if err != nil || url == "" {
+		return "", false
+	}
+	return url, true
+}

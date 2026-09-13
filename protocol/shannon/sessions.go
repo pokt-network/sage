@@ -33,7 +33,14 @@ type sessionManager struct {
 	// endpointCache is keyed on sessionID, which is a NEW value at every
 	// rollover — so unlike sessionCache it accumulates, and must be evicted.
 	// See evictStaleEndpointsOnRollover.
-	endpointCache      sync.Map // sessionID (string) → cachedEndpoints
+	endpointCache sync.Map // sessionID (string) → cachedEndpoints
+	// byAddr indexes every cached endpoint by address for URLResolver
+	// lookups; written when a session's endpoints are extracted, cleared
+	// with them on rollover. An address is supplier plus public URL, so two
+	// services can share one only when the supplier stakes one URL for both,
+	// in which case the per-type URLs are the same host and the last write
+	// wins harmlessly.
+	byAddr             sync.Map // domain.EndpointAddr → *endpoint
 	configuredServices map[domain.ServiceID]struct{}
 	logger             *slog.Logger
 
@@ -223,6 +230,13 @@ func (sm *sessionManager) evictStaleEndpointsOnRollover(sessionEnd uint64) {
 		}
 		if entry.sessionEnd < prevHighest {
 			sm.endpointCache.Delete(k)
+			for addr, ep := range entry.endpoints {
+				// Only drop the index entry this session wrote; a newer
+				// session may have re-indexed the same address.
+				if cur, ok := sm.byAddr.Load(addr); ok && cur == ep {
+					sm.byAddr.Delete(addr)
+				}
+			}
 			dropped++
 		}
 		return true
@@ -399,6 +413,9 @@ func (sm *sessionManager) getOrCreateEndpoints(session *sessiontypes.Session) ma
 	actual, loaded := sm.endpointCache.LoadOrStore(session.SessionId,
 		cachedEndpoints{endpoints: endpoints, sessionEnd: sessionEnd})
 	if !loaded {
+		for addr, ep := range endpoints {
+			sm.byAddr.Store(addr, ep)
+		}
 		sm.logger.Debug("endpoints extracted from session",
 			"session_id", session.SessionId,
 			"session_end", sessionEnd,
@@ -424,4 +441,14 @@ func (sm *sessionManager) IsReady(ctx context.Context) bool {
 		return false
 	}
 	return height > 0
+}
+
+// lookupEndpoint returns the cached endpoint for an address from any current
+// session; see byAddr.
+func (sm *sessionManager) lookupEndpoint(addr domain.EndpointAddr) (*endpoint, bool) {
+	v, ok := sm.byAddr.Load(addr)
+	if !ok {
+		return nil, false
+	}
+	return v.(*endpoint), true
 }

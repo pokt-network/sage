@@ -52,7 +52,11 @@ type KeyFn func(domain.EndpointAddr, domain.RPCType) string
 // name yields the default (per-URL) — a misspelling in config must not silently
 // change how scores are grouped, so callers should validate the name separately
 // (see ValidKeyGranularity) rather than relying on this fallback.
-func keyFnFor(granularity string) KeyFn {
+// URLResolverFn answers the URL a relay of rpcType to an endpoint dials;
+// protocol.URLResolver's method fits. Nil means the address's own URL.
+type URLResolverFn func(domain.EndpointAddr, domain.RPCType) (string, bool)
+
+func keyFnFor(granularity string, resolve URLResolverFn) KeyFn {
 	var base func(domain.EndpointAddr) string
 	switch granularity {
 	case KeyPerEndpoint:
@@ -71,6 +75,16 @@ func keyFnFor(granularity string) KeyFn {
 		}
 	}
 	return func(ep domain.EndpointAddr, rpcType domain.RPCType) string {
+		// Per-URL keys name the host the face is actually served from: an
+		// operator that stakes one host per type would otherwise have its
+		// REST face scored under its JSON-RPC host, both faces sharing one
+		// score, and the admin listing naming a host that never saw the
+		// request (osmosis, 2026-09-13).
+		if resolve != nil && (granularity == "" || granularity == KeyPerURL) {
+			if url, ok := resolve(ep, rpcType); ok && url != "" {
+				return url + "|" + string(rpcType)
+			}
+		}
 		return base(ep) + "|" + string(rpcType)
 	}
 }

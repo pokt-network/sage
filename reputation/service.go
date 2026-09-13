@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -89,6 +90,10 @@ type ServiceConfig struct {
 	// StateSweepInterval is how often the write-behind goroutine runs the
 	// sweep. Zero means defaultStateSweepInterval.
 	StateSweepInterval time.Duration
+	// URLResolver, when set, keys per-URL scores on the host a face is
+	// actually dialed from rather than the address's public URL. Wire sets
+	// it from the protocol after construction (SetURLResolver).
+	URLResolver URLResolverFn
 }
 
 // defaultStateSweepInterval paces the storage sweep. The sweep is one HSCAN
@@ -155,7 +160,7 @@ type serviceImpl struct {
 	timeline *Timeline
 	selector *TieredSelector
 	// key maps an endpoint address to the identity its score lives under.
-	key KeyFn
+	key atomic.Pointer[KeyFn]
 	// impacts and rate are the two halves of the score: the additive delta per
 	// signal, and the chronic-failure penalty. Both normalized at construction.
 	impacts SignalImpacts
@@ -205,7 +210,7 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 		s.shards[i].cache = make(map[domain.ServiceID]map[string]State)
 	}
 	s.lambda = s.rate.Lambda()
-	s.key = memoize(keyFnFor(cfg.KeyGranularity))
+	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, cfg.URLResolver)))
 	selCfg := cfg.Selector
 	if selCfg == (SelectorConfig{}) {
 		selCfg = DefaultSelectorConfig()
@@ -240,7 +245,7 @@ func (s *serviceImpl) shard(key string) *scoreShard {
 // returned as the configured initial score so new endpoints are not filtered
 // out on the first request. Zero allocations — runs per endpoint per relay.
 func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (float64, bool) {
-	key := s.key(ep, rpcType)
+	key := s.keyOf(ep, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
 	st, ok := sh.cache[serviceID][key]
@@ -318,7 +323,7 @@ func (s *serviceImpl) pruneUninformative(svcStates map[string]State) {
 func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType, signal Signal) error {
 	impact := s.impacts.Impact(signal.Type)
 
-	repKey := s.key(endpoint, rpcType)
+	repKey := s.keyOf(endpoint, rpcType)
 	sh := s.shard(repKey)
 	sh.mu.Lock()
 	svcStates := sh.cache[serviceID]
@@ -419,10 +424,10 @@ func (s *serviceImpl) RecordSignalOnce(ctx context.Context, serviceID domain.Ser
 	// a single key: compare the keys directly rather than building a set for
 	// what is nearly always one entry. Keys are memoized, so this is a map
 	// lookup and a string compare per sibling.
-	first := s.key(endpoints[0], rpcType)
+	first := s.keyOf(endpoints[0], rpcType)
 	oneKey := true
 	for _, ep := range endpoints[1:] {
-		if s.key(ep, rpcType) != first {
+		if s.keyOf(ep, rpcType) != first {
 			oneKey = false
 			break
 		}
@@ -434,7 +439,7 @@ func (s *serviceImpl) RecordSignalOnce(ctx context.Context, serviceID domain.Ser
 	seen := make(map[string]struct{}, len(endpoints))
 	var firstErr error
 	for _, ep := range endpoints {
-		k := s.key(ep, rpcType)
+		k := s.keyOf(ep, rpcType)
 		if _, dup := seen[k]; dup {
 			continue
 		}
@@ -449,7 +454,7 @@ func (s *serviceImpl) RecordSignalOnce(ctx context.Context, serviceID domain.Ser
 // GetScore returns the cached score for the endpoint. If the endpoint has not
 // been seen, the initial score is returned.
 func (s *serviceImpl) GetScore(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) (float64, error) {
-	key := s.key(endpoint, rpcType)
+	key := s.keyOf(endpoint, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
 	st, ok := sh.cache[serviceID][key]
@@ -580,7 +585,7 @@ func (s *serviceImpl) SelectSpread(ctx context.Context, serviceID domain.Service
 // the shared backend is the thing being scored.
 func (s *serviceImpl) ResetScore(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) error {
 	for _, rpcType := range domain.AllRPCTypes() {
-		repKey := s.key(endpoint, rpcType)
+		repKey := s.keyOf(endpoint, rpcType)
 		sh := s.shard(repKey)
 		sh.mu.Lock()
 		svcStates := sh.cache[serviceID]
@@ -611,7 +616,7 @@ func (s *serviceImpl) ResetScore(_ context.Context, serviceID domain.ServiceID, 
 // still carries the initial score, and a method block diverting traffic must
 // not treat that as a vouch.
 func (s *serviceImpl) Vouched(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool {
-	key := s.key(endpoint, rpcType)
+	key := s.keyOf(endpoint, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
 	st, ok := sh.cache[serviceID][key]
@@ -684,4 +689,21 @@ func (s *serviceImpl) write(op writeOp) {
 // gate. LeaderOnlyStorage is the one.
 type forcedWriter interface {
 	ForceSetState(ctx context.Context, key string, st State) error
+}
+
+func (s *serviceImpl) setKeyFn(fn KeyFn) { s.key.Store(&fn) }
+
+// keyOf is the reputation key for an endpoint's face, memoized.
+func (s *serviceImpl) keyOf(ep domain.EndpointAddr, rpcType domain.RPCType) string {
+	return (*s.key.Load())(ep, rpcType)
+}
+
+// SetURLResolver installs the resolver per-URL keys use and drops the key
+// memo, so keys computed before it (none in normal wiring: Build installs
+// it before the server listens) are recomputed. Existing scores stored under
+// the old spelling of a split-host operator's key are not migrated; they
+// age out, and the host that actually served the face starts at the
+// initial score.
+func (s *serviceImpl) SetURLResolver(fn URLResolverFn) {
+	s.setKeyFn(memoize(keyFnFor(s.cfg.KeyGranularity, fn)))
 }
