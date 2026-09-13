@@ -184,3 +184,36 @@ per-host memory.
   user's standing rule: judge from that data, expecting some findings to be
   SAGE-only, some shared.
 - Merge of `feat/rpc-type-source-metrics` to `main`.
+
+## Addendum, same evening: runtime control without the file
+
+The debug window and the external-source findings both ran into the same
+wall: the config file is a sealed secret, and the first live seams (log
+level in `d18ef60`, external sources in `92fa15b`) were per pod and undone
+by the next roll. The user's instruction was to make every such change
+possible without a deploy, and to make it stick.
+
+Package `override` is a flat string map in Redis (memory without it), under
+`sage:overrides:`, with a poller that hands a key space to an apply function
+whenever it changes. Four seams now live on it:
+
+- `log_level` — `PUT`/`DELETE /admin/log-level`; cmd/sagegw watches the key
+  and moves the process's `slog.LevelVar`; a restarted process starts at it.
+- `external_sources/<service>` — `PUT`/`DELETE /admin/external-sources/{service}`;
+  the manager keeps the file's sources underneath, an empty list means
+  "stop polling", DELETE clears the override and returns to the file.
+- `tuning/<knob>[/<service>]` — the tuning store writes through and reloads;
+  readers that keep their own state (method-block TTLs and escalation, the
+  observation sample rate, each plugin's sync allowance) re-pull through a
+  change hook. Five knobs were added for it.
+- `config` — `PUT /admin/config` takes the whole YAML, validates it as at
+  startup, applies it through the reload seams (retry, hedge, timeout, flags,
+  health checks, blocked domains, method blocks; service blocks are reported
+  as needing a restart), persists it, and every replica applies it;
+  `DELETE /admin/config` returns to the file; `POST /admin/reload` answers 409
+  while an upload is in force so the file cannot silently undo it.
+
+Every admin response says `persisted: true|false`, so an operator on a Redis-
+less gateway knows the change is this pod only. A file reload still
+re-applies the file's method-block knobs over a tuning override until the
+next tuning change; noted, not fixed.

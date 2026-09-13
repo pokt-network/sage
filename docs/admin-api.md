@@ -121,12 +121,15 @@ failureThreshold) here.
 | `DELETE` | `/admin/tuning/{knob}/{serviceID}` | Removes one service's override, leaving the global one (or the config value) in effect for it. |
 | `GET` | `/admin/config` | Returns the gateway's effective runtime configuration: resolved feature flags, registered services and their QoS plugins. |
 | `POST` | `/admin/reload` | Re-reads the config file the gateway started with (`-config`), validates it exactly as startup does, and applies the sections that have a runtime seam: the retry/hedge/timeout knobs, `feature_flags`, `active_health_checks`, `blocked_domains` and the `method_blocks` knobs. |
+| `PUT` | `/admin/config` | Applies a config document sent in the request body, as POST /admin/reload applies the file, and stores it as the config override. |
+| `DELETE` | `/admin/config` | Forgets the uploaded config and re-applies the file, on every replica through the override store. |
 | `GET` | `/admin/log-level` | Returns the level the process is logging at right now. |
-| `PUT` | `/admin/log-level` | Changes the process's log level without a restart. |
+| `PUT` | `/admin/log-level` | Changes the log level without a restart. |
+| `DELETE` | `/admin/log-level` | Removes the admin override and returns the process to the config's level (or SAGE_LOG_LEVEL's). |
 | `GET` | `/admin/external-sources` | Lists every service's external block sources with their poll status. |
 | `GET` | `/admin/external-sources/{serviceID}` | Returns one service's external block sources and poll status. |
-| `PUT` | `/admin/external-sources/{serviceID}` | Replaces a service's external block sources on the running process and restarts its polling. |
-| `DELETE` | `/admin/external-sources/{serviceID}` | Stops polling a service's external block sources on the running process. |
+| `PUT` | `/admin/external-sources/{serviceID}` | Replaces a service's external block sources and restarts its polling. |
+| `DELETE` | `/admin/external-sources/{serviceID}` | Clears a service's admin override: polling returns to the file's `external_block_sources`, or stops if the file has none. |
 | `POST` | `/admin/websocket/rebind/{serviceID}` | Replaces the supplier under every live WebSocket connection of a service, without closing any client. |
 | `GET` | `/admin/request-sample` | Returns every service the request-shape sampler has observed, each with its most recently completed traffic summary. |
 | `GET` | `/admin/request-sample/{serviceID}` | Returns one service's request-shape summary plus its top fingerprints for a single window. |
@@ -421,33 +424,69 @@ it never made.
 
 `SIGHUP` does the same thing.
 
+### `PUT /admin/config`
+
+Applies a config document sent in the request body, as
+POST /admin/reload applies the file, and stores it as the config override.
+
+Body: the YAML the config file would hold, whole. It is validated exactly
+as at startup; a document that would not boot is refused with 400 and
+changes nothing. What applies is what a reload applies: the retry, hedge
+and timeout knobs, feature flags, health checks, blocked domains and the
+method-block knobs; a changed service block is reported under
+`needs_restart`. The document is persisted in the override store, so every
+replica applies it within the watch interval and a restarted process
+applies it at boot; the file is untouched and DELETE /admin/config returns
+to it. While an override is stored, POST /admin/reload answers 409.
+
+### `DELETE /admin/config`
+
+Forgets the uploaded config and re-applies the
+file, on every replica through the override store.
+
+409 when the gateway was booted from GATEWAY_CONFIG and has no file to
+return to.
+
 ### `GET /admin/log-level`
 
 Returns the level the process is logging at right now.
 
-This is the live value, which may differ from logger_config.level: the
-SAGE_LOG_LEVEL environment variable overrides the file at startup, and PUT
-/admin/log-level moves it at runtime.
+`level` is the live value; `base` is what the config or SAGE_LOG_LEVEL
+asked for; `override` is the persisted admin setting, if any, and
+`persisted` whether such settings reach other replicas and survive a
+restart (Redis) or live on this replica only.
 
 ### `PUT /admin/log-level`
 
-Changes the process's log level without a restart.
+Changes the log level without a restart.
 
-Body: `{"level": "debug"}`, one of debug, info, warn, error. The change
-applies to this instance only and does not survive a restart: the process
-comes back at logger_config.level, or at SAGE_LOG_LEVEL if that is set. It
-exists for the ten-minute look at a live problem: raise it, capture, put it
-back. The `debug_log` feature flag, which logs request and response bodies
-per service, only produces output while this level is debug.
+Body: `{"level": "debug"}`, one of debug, info, warn, error. Applied to this
+process at once and written to the override store, from which every
+replica picks it up within the watch interval and a restarted process
+starts at it; with no Redis the store is this process only. DELETE
+/admin/log-level returns to the config's level. The `debug_log` feature
+flag, which logs request and response bodies per service, only produces
+output while this level is debug.
+
+### `DELETE /admin/log-level`
+
+Removes the admin override and returns the process to
+the config's level (or SAGE_LOG_LEVEL's).
+
+Every replica follows through the override store; the body says whether
+there was an override to remove.
 
 ### `GET /admin/external-sources`
 
 Lists every service's external block sources with
 their poll status.
 
-Each entry carries `origin` (config or admin), the sources as submitted
-(durations as strings), and `status`: whether a fetcher is running, whether
+Each entry carries `origin` (config, admin, admin-disabled or none), the
+sources polled now and the file's (`configured`, what DELETE returns to),
+durations as strings, and `status`: whether a fetcher is running, whether
 its last poll failed and with what error, the last height seen and when.
+`persisted` says whether admin changes reach other replicas and survive a
+restart (Redis) or live on this replica only.
 
 ### `GET /admin/external-sources/{serviceID}`
 
@@ -456,27 +495,29 @@ poll status.
 
 ### `PUT /admin/external-sources/{serviceID}`
 
-Replaces a service's external block sources on the
-running process and restarts its polling.
+Replaces a service's external block sources and
+restarts its polling.
 
 Body: `{"sources": [{"url": "https://…", "type": "json_rpc|rest|comet_bft",
 "method": "…", "path": "…", "interval": "15s", "timeout": "5s"}]}`; `url` is
-required, the rest optional with the config file's defaults. The change is
-per process and does not survive a restart: the process comes back on the
-file's `external_block_sources`, as with PUT /admin/log-level. It exists
+required, the rest optional with the config file's defaults. An empty
+`sources` stops polling the service. The change is written to the override
+store first: every replica applies it within the watch interval and a
+restarted process starts with it; with no Redis it is this replica only.
+The file's sources stay known underneath; DELETE returns to them. It exists
 because the file may be a sealed secret and a retired source polls every
 fifteen seconds until someone can edit it. 400 for an invalid source, 409
 when the service's plugin tracks no block height (nothing to lift).
 
 ### `DELETE /admin/external-sources/{serviceID}`
 
-Stops polling a service's external block
-sources on the running process.
+Clears a service's admin override: polling
+returns to the file's `external_block_sources`, or stops if the file has
+none.
 
-The service's external floor is no longer lifted; its pool consensus stands
-alone, as for a service with no sources configured. Not persisted: the
-file's sources return on restart. The body says whether there was anything
-to remove.
+Every replica follows through the override store. To stop polling a service
+that the file configures, PUT an empty `sources` list instead. The body
+says whether there was an override to clear.
 
 ### `POST /admin/websocket/rebind/{serviceID}`
 
