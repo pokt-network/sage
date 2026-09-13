@@ -371,16 +371,23 @@ func classifyInternalError(lowerMsg string) AnalysisResult {
 		}
 	}
 
-	// A wording the indicator table knows — a pruned height, a missing
-	// block, state not available — keeps that table's verdict: on a CometBFT
-	// node "height N is not available, lowest height is M" is a pruned node
-	// answering an archival query, which another operator may serve, so it
-	// retries without penalty. Tier 3 would have matched these on a
-	// non-JSON-RPC body; a -32603 envelope returns from Tier 2 first and
-	// never reached it, so a pruned node's answer was penalised as a fault
-	// (until 2026-09-13) or passed through without a second try.
+	// A wording the indicator table knows keeps that table's reason and
+	// attribution. Supplier wordings (a timeout) keep their retry and
+	// penalty. Blockchain wordings — a pruned height, a missing block, state
+	// not available — are the node's answer and are passed through with no
+	// retry and no penalty, under their own reason so they stay countable:
+	// on a CometBFT node "height N is not available, lowest height is M" is
+	// a pruned node answering an archival query. It was retried for a day
+	// (5bae566): on the canary every retry on akash, shentu and persistence
+	// exhausted, zero recovered, because the other operators prune too, and
+	// the three services paid 31–42% more relays for it. Serving those
+	// queries needs to know which endpoint holds which heights, which is
+	// selection's job, not a retry's.
 	if ind := matchIndicator([]byte(lowerMsg)); ind != nil {
 		ind.Details = "internal error, " + ind.Details
+		if ind.Attribution == AttrBlockchain {
+			ind.ShouldRetry = false
+		}
 		return *ind
 	}
 

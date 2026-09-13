@@ -257,9 +257,9 @@ func TestAnalyze_Tier2_ErrorCodeClassification(t *testing.T) {
 			wantReason:      "internal_error",
 		},
 		{
-			name:            "CometBFT pruned height at -32603 — blockchain, retried without penalty",
+			name:            "CometBFT pruned height at -32603 — blockchain, passed through under its own reason",
 			errorJSON:       `{"code":-32603,"message":"Internal error","data":"height 27782 is not available, lowest height is 25052001"}`,
-			wantRetry:       true,
+			wantRetry:       false,
 			wantAttribution: AttrBlockchain,
 			wantReason:      "height_not_available",
 		},
@@ -650,14 +650,15 @@ func TestAnalyze_Tier2_InternalError_SupplierWordingInData(t *testing.T) {
 	}
 }
 
-// A pruned CometBFT node's answer keeps the indicator table's verdict: retry
-// elsewhere, no penalty. The persistence canary capture of 2026-09-13 was
-// six of these in nine relays, all from one pruned host.
-func TestAnalyze_Tier2_InternalError_PrunedHeightRetriesWithoutPenalty(t *testing.T) {
+// A pruned CometBFT node's answer keeps the indicator table's reason and
+// attribution but is not retried: on the canary every such retry exhausted
+// (the other operators prune too) and cost 31–42% more paid relays on the
+// three services. No penalty either; the node answered correctly.
+func TestAnalyze_Tier2_InternalError_PrunedHeightPassesThroughWithoutPenalty(t *testing.T) {
 	body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"height 84213 is not available, lowest height is 25052001"}}`)
 	result := Analyze(body, 200, domain.RPCTypeCometBFT)
-	if !result.ShouldRetry {
-		t.Error("ShouldRetry = false, want true: another operator may hold the height")
+	if result.ShouldRetry {
+		t.Error("ShouldRetry = true, want false: the retry exhausted on every canary service")
 	}
 	if result.ShouldPenalize || result.PenaltySeverity != SeverityNone {
 		t.Errorf("ShouldPenalize = %v severity %q, want no penalty for a pruned node", result.ShouldPenalize, result.PenaltySeverity)
