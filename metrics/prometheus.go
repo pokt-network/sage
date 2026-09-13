@@ -58,6 +58,7 @@ type Recorder struct {
 	relayMinerErrors      *prometheus.CounterVec
 	methodBlockEvents     *prometheus.CounterVec
 	reputationAttempts    *prometheus.CounterVec
+	heuristicVerdicts     *prometheus.CounterVec
 	healthCheckResults    *prometheus.CounterVec
 	healthCheckSkipped    *prometheus.CounterVec
 	healthCheckCycle      prometheus.Histogram
@@ -237,6 +238,17 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "rpc_type", "signal", "probe"},
 		),
+		// reason and attribution are closed sets fixed in the heuristic
+		// package; rpc_type likewise. Client attempts only: probes do not
+		// run through the middleware chain (see RecordProbeRelay).
+		heuristicVerdicts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "heuristic_verdicts_total",
+				Help:      "Heuristic verdicts on upstream answers to client relay attempts, by service, RPC type, the reason the verdict settled on (success, internal_error, http_408, transport_timeout, ...) and the side it attributed the outcome to (supplier, blockchain, client, unknown). One verdict per attempt, so a retried request counts once per attempt. This is the complete account of what the gateway concluded about every answer; reputation_attempts_total counts only what scoring kept and retry_total only what retried.",
+			},
+			[]string{"service_id", "rpc_type", "reason", "attribution"},
+		),
 	}
 
 	r.healthCheckResults = prometheus.NewCounterVec(
@@ -307,6 +319,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.relayMinerErrors,
 		r.methodBlockEvents,
 		r.reputationAttempts,
+		r.heuristicVerdicts,
 	)
 
 	r.initHealthCheckSkipped(knownServices)
@@ -564,6 +577,18 @@ func (r *Recorder) RecordReputationAttempt(serviceID domain.ServiceID, rpcType, 
 		rpcType,
 		signal,
 		strconv.FormatBool(probe),
+	).Inc()
+}
+
+// RecordVerdict satisfies relay/middleware.MetricsRecorder: one heuristic
+// verdict on one client relay attempt. reason and attribution come from
+// heuristic.AnalysisResult, both closed sets, so neither is bounded here.
+func (r *Recorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCType, reason, attribution string) {
+	r.heuristicVerdicts.WithLabelValues(
+		r.services.serviceValue(serviceID),
+		string(rpcType),
+		reason,
+		attribution,
 	).Inc()
 }
 

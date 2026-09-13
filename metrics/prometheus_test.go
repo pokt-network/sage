@@ -102,6 +102,10 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "reputation_attempts_total"},
 			[]string{"service_id", "rpc_type", "signal", "probe"},
 		),
+		heuristicVerdicts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "heuristic_verdicts_total"},
+			[]string{"service_id", "rpc_type", "reason", "attribution"},
+		),
 	}
 	reg.MustRegister(
 		r.relayTotal,
@@ -667,5 +671,32 @@ func TestRecordRPCType_LabelsSourceAndMismatchReason(t *testing.T) {
 	r.RecordRPCType("nope", domain.RPCTypeREST, "detected")
 	if _, err := r.rpcTypeTotal.GetMetricWithLabelValues(unknownLabel, "rest", "detected"); err != nil {
 		t.Errorf("unknown service not collapsed: %v", err)
+	}
+}
+
+func TestRecordVerdict_LabelsReasonAndAttribution(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordVerdict("eth", domain.RPCTypeCometBFT, "internal_error", "blockchain")
+	r.RecordVerdict("eth", domain.RPCTypeCometBFT, "internal_error", "blockchain")
+	r.RecordVerdict("eth", domain.RPCTypeJSONRPC, "success", "unknown")
+
+	c, err := r.heuristicVerdicts.GetMetricWithLabelValues("eth", "comet_bft", "internal_error", "blockchain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 2 {
+		t.Errorf("heuristic_verdicts_total{comet_bft,internal_error,blockchain} = %v, want 2", got)
+	}
+	c, err = r.heuristicVerdicts.GetMetricWithLabelValues("eth", "json_rpc", "success", "unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 1 {
+		t.Errorf("heuristic_verdicts_total{json_rpc,success,unknown} = %v, want 1", got)
+	}
+	// An unconfigured service collapses to the unknown label, as everywhere.
+	r.RecordVerdict("nope", domain.RPCTypeREST, "success", "unknown")
+	if _, err := r.heuristicVerdicts.GetMetricWithLabelValues(unknownLabel, "rest", "success", "unknown"); err != nil {
+		t.Fatalf("unknown service should be recorded under %q: %v", unknownLabel, err)
 	}
 }
