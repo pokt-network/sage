@@ -341,7 +341,8 @@ func (p *Protocol) SendRelay(
 				"endpoint_addr", endpointAddr,
 				"http_status", httpStatus,
 			)
-			return nil, domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable", nil, true)
+			return nil, domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable",
+				&domain.UpstreamStatusError{Status: httpStatus}, true)
 		}
 	}
 
