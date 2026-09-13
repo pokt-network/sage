@@ -59,6 +59,7 @@ type Recorder struct {
 	methodBlockEvents     *prometheus.CounterVec
 	reputationAttempts    *prometheus.CounterVec
 	heuristicVerdicts     *prometheus.CounterVec
+	externalSourceFails   *prometheus.CounterVec
 	healthCheckResults    *prometheus.CounterVec
 	healthCheckSkipped    *prometheus.CounterVec
 	healthCheckCycle      prometheus.Histogram
@@ -249,6 +250,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "rpc_type", "reason", "attribution"},
 		),
+		externalSourceFails: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "external_block_source_failures_total",
+				Help:      "Polls of a service's external_block_sources that produced no height (every configured source failed that tick), by service. While this rises the service's external floor under the perceived head is not lifted; relays are unaffected. A steady rate on one service is a dead or misconfigured source.",
+			},
+			[]string{"service_id"},
+		),
 	}
 
 	r.healthCheckResults = prometheus.NewCounterVec(
@@ -320,6 +329,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.methodBlockEvents,
 		r.reputationAttempts,
 		r.heuristicVerdicts,
+		r.externalSourceFails,
 	)
 
 	r.initHealthCheckSkipped(knownServices)
@@ -590,6 +600,12 @@ func (r *Recorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCT
 		reason,
 		attribution,
 	).Inc()
+}
+
+// RecordExternalSourceFailure satisfies healthcheck.ExternalSourceFailureRecorder:
+// one poll of a service's external block sources that produced no height.
+func (r *Recorder) RecordExternalSourceFailure(serviceID domain.ServiceID) {
+	r.externalSourceFails.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // ServeHTTP returns a standard Prometheus HTTP handler suitable for mounting

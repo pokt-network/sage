@@ -106,6 +106,10 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "heuristic_verdicts_total"},
 			[]string{"service_id", "rpc_type", "reason", "attribution"},
 		),
+		externalSourceFails: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "external_block_source_failures_total"},
+			[]string{"service_id"},
+		),
 	}
 	reg.MustRegister(
 		r.relayTotal,
@@ -698,5 +702,18 @@ func TestRecordVerdict_LabelsReasonAndAttribution(t *testing.T) {
 	r.RecordVerdict("nope", domain.RPCTypeREST, "success", "unknown")
 	if _, err := r.heuristicVerdicts.GetMetricWithLabelValues(unknownLabel, "rest", "success", "unknown"); err != nil {
 		t.Fatalf("unknown service should be recorded under %q: %v", unknownLabel, err)
+	}
+}
+
+func TestRecordExternalSourceFailure_CountsPerService(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordExternalSourceFailure("eth")
+	r.RecordExternalSourceFailure("eth")
+	c, err := r.externalSourceFails.GetMetricWithLabelValues("eth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 2 {
+		t.Errorf("external_block_source_failures_total{eth} = %v, want 2", got)
 	}
 }
