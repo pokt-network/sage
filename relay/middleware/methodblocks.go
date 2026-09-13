@@ -22,6 +22,9 @@ const (
 	MethodBlockEventMark     = "mark"
 	MethodBlockEventEscalate = "escalate"
 	MethodBlockEventBypass   = "bypass"
+	// MethodBlockEventFamily: a -32601 on a catalogued method marked the
+	// host for the whole family the plugin named (qos.MethodFamilyLister).
+	MethodBlockEventFamily = "family"
 )
 
 // MethodBlocks returns a middleware that keeps a method away from a host that
@@ -115,11 +118,28 @@ func MethodBlocks(
 				// would remove the node from everything.
 				escalates := ctx.HeuristicResult.Attribution == heuristic.AttrSupplier
 				event := MethodBlockEventMark
-				if store.Mark(serviceID, ctx.Endpoint.Domain(), method, escalates) {
+				host := ctx.Endpoint.Domain()
+				if store.Mark(serviceID, host, method, escalates) {
 					event = MethodBlockEventEscalate
 				}
 				if events != nil {
 					events.RecordMethodBlockEvent(ctx.ServiceID, method, event)
+				}
+				// A host that does not serve this method may not serve its
+				// family either; the plugin says which methods those are. The
+				// family marks are client-attributed like the one they came
+				// from, so they never add up to a host-wide block.
+				if ctx.HeuristicResult.Reason == heuristic.ReasonMethodNotFound {
+					if family := methodFamily(registry, ctx, method); len(family) > 0 {
+						for _, m := range family {
+							if m != method {
+								store.Mark(serviceID, host, m, false)
+							}
+						}
+						if events != nil {
+							events.RecordMethodBlockEvent(ctx.ServiceID, method, MethodBlockEventFamily)
+						}
+					}
 				}
 			}
 			return err
@@ -160,4 +180,18 @@ func normalizedMethod(registry *qos.Registry, ctx *relay.Context) string {
 		return ""
 	}
 	return normalizer.NormalizeMethod(ctx.Payloads[0])
+}
+
+// methodFamily asks the service's plugin which catalogued methods a host
+// that refused method will refuse too; nil when the plugin cannot say.
+func methodFamily(registry *qos.Registry, ctx *relay.Context, method string) []string {
+	plugin := ctx.Plugin
+	if plugin == nil && registry != nil {
+		plugin = registry.Get(ctx.ServiceID)
+	}
+	lister, ok := plugin.(qos.MethodFamilyLister)
+	if !ok {
+		return nil
+	}
+	return lister.MethodFamily(method)
 }

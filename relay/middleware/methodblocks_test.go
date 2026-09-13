@@ -3,6 +3,8 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -552,5 +554,74 @@ func TestMethodBlocks_OtherBucketIsNeverMarkedOrFiltered(t *testing.T) {
 	}
 	if store.Blocked("eth", eps[1].Domain(), qos.MethodOther) {
 		t.Fatal("a MethodBlocking verdict on an uncatalogued method must not mark the _other bucket")
+	}
+}
+
+// familyPlugin is normPlugin plus a family: any eth_ method belongs with the
+// other two, the way the cosmos plugin answers for the EVM face of kava.
+type familyPlugin struct{ normPlugin }
+
+func (familyPlugin) MethodFamily(method string) []string {
+	if strings.HasPrefix(method, "eth_") {
+		return []string{"eth_blockNumber", "eth_call", "eth_getLogs"}
+	}
+	return nil
+}
+
+// A -32601 on a catalogued method marks the host for the whole family the
+// plugin names, so the pool stops paying one failed relay per host and
+// method to learn what one answer already said. A supplier-attributed
+// verdict on the same method marks that method alone, and the family marks
+// never escalate to a host-wide block.
+func TestMethodBlocks_MethodNotFoundMarksTheFamily(t *testing.T) {
+	reg := qos.NewRegistry()
+	if err := reg.Register("kava", familyPlugin{}); err != nil {
+		t.Fatal(err)
+	}
+	store := methodblock.New()
+	events := &spyEvents{}
+	eps := testEndpoints(1)
+	host := eps[0].Domain()
+
+	notFound := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = eps[0]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{
+			MethodBlocking: true, Attribution: heuristic.AttrClient, Reason: heuristic.ReasonMethodNotFound,
+		}
+		return retryableErr("method not found")
+	})
+	ctx := methodCtx("eth_blockNumber", eps)
+	ctx.ServiceID = "kava"
+	_ = MethodBlocks(store, reg, nil, newFlags("method_blocks"), nil, events)(notFound).HandleRelay(ctx)
+
+	for _, m := range []string{"eth_blockNumber", "eth_call", "eth_getLogs"} {
+		if !store.Blocked("kava", host, m) {
+			t.Fatalf("%s should be blocked on the host after one -32601 on eth_blockNumber", m)
+		}
+	}
+	if store.Blocked("kava", host, "status") {
+		t.Fatal("a CometBFT method is not in the EVM family and must stay open")
+	}
+	events.mu.Lock()
+	got := append([]string(nil), events.events...)
+	events.mu.Unlock()
+	if !slices.Contains(got, "mark:eth_blockNumber") || !slices.Contains(got, "family:eth_blockNumber") {
+		t.Fatalf("events = %v, want a mark and one family event", got)
+	}
+
+	// Supplier-attributed on another host: that method only.
+	timeout := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = testEndpoints(2)[1]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{
+			MethodBlocking: true, Attribution: heuristic.AttrSupplier, Reason: "transport_timeout",
+		}
+		return retryableErr("timeout")
+	})
+	ctx = methodCtx("eth_call", testEndpoints(2))
+	ctx.ServiceID = "kava"
+	_ = MethodBlocks(store, reg, nil, newFlags("method_blocks"), nil, events)(timeout).HandleRelay(ctx)
+	other := testEndpoints(2)[1].Domain()
+	if !store.Blocked("kava", other, "eth_call") || store.Blocked("kava", other, "eth_getLogs") {
+		t.Fatal("a timeout marks the one method, never the family")
 	}
 }

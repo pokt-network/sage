@@ -150,6 +150,15 @@ type ExternalFloorSetter interface {
 	SetExternalFloor(height uint64)
 }
 
+// MethodFamilyLister is implemented by a plugin that can say which other
+// catalogued methods a host refusing one method will refuse too. The cosmos
+// plugin answers for the EVM face of a chain like kava: a json_rpc host that
+// says -32601 to eth_blockNumber is a CometBFT node with no EVM at all, and
+// every eth_ method will get the same answer. Nil means no inference.
+type MethodFamilyLister interface {
+	MethodFamily(method string) []string
+}
+
 // SyncAllowanceTuner is implemented by plugins whose block-height filter has
 // a sync allowance that the tuning knob qos.sync_allowance may move at
 // runtime, per service. SyncAllowance reports the value in force.

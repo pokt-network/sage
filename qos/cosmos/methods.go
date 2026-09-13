@@ -140,3 +140,17 @@ func (p *Plugin) NormalizeMethod(payload domain.Payload) string {
 	}
 	return qos.MethodOther
 }
+
+// MethodFamily implements qos.MethodFamilyLister: an EVM-catalogued method
+// belongs to the EVM face, and a json_rpc host that refuses one of them is a
+// CometBFT node with no EVM, so the whole catalogue is the family. On the
+// 2026-09-13 canary two thirds of kava's json_rpc hosts were such nodes and
+// the method blocks learned them one method at a time, one paid failed
+// relay per host and method. CometBFT and REST methods have no family: a
+// node missing one CometBFT method says nothing about the others.
+func (p *Plugin) MethodFamily(method string) []string {
+	if evm.KnownMethod(method) {
+		return evm.KnownMethods()
+	}
+	return nil
+}
