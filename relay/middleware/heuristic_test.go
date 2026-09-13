@@ -13,7 +13,7 @@ import (
 
 func TestHeuristic_SuccessResponse_NoError(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags)
+	mw := middleware.Heuristic(flags, nil)
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -42,7 +42,7 @@ func TestHeuristic_SuccessResponse_NoError(t *testing.T) {
 
 func TestHeuristic_500Response_TriggersRetry(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags)
+	mw := middleware.Heuristic(flags, nil)
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -73,7 +73,7 @@ func TestHeuristic_500Response_TriggersRetry(t *testing.T) {
 
 func TestHeuristic_EmptyBody_TriggersRetry(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags)
+	mw := middleware.Heuristic(flags, nil)
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -101,7 +101,7 @@ func TestHeuristic_EmptyBody_TriggersRetry(t *testing.T) {
 
 func TestHeuristic_FlagDisabled_NoAnalysis(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": false})
-	mw := middleware.Heuristic(flags)
+	mw := middleware.Heuristic(flags, nil)
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -125,7 +125,7 @@ func TestHeuristic_FlagDisabled_NoAnalysis(t *testing.T) {
 
 func TestHeuristic_NilResponse_NoAnalysis(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags)
+	mw := middleware.Heuristic(flags, nil)
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -145,7 +145,7 @@ func TestHeuristic_NilResponse_NoAnalysis(t *testing.T) {
 
 func TestHeuristic_InnerHandlerError_Propagated(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags)
+	mw := middleware.Heuristic(flags, nil)
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -165,7 +165,7 @@ func TestHeuristic_InnerHandlerError_Propagated(t *testing.T) {
 
 func TestHeuristic_4xxResponse_NoRetry(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags)
+	mw := middleware.Heuristic(flags, nil)
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -202,7 +202,7 @@ func TestHeuristic_TransportErrorIsGraded(t *testing.T) {
 		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.DeadlineExceeded, true)
 	})
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	h := middleware.Heuristic(flags)(inner)
+	h := middleware.Heuristic(flags, nil)(inner)
 
 	ctx := newCtx(newPOSTRequest("/v1", ""))
 	err := h.HandleRelay(ctx)
@@ -226,7 +226,7 @@ func TestHeuristic_ClientCancelIsAttributedToClient(t *testing.T) {
 		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.Canceled, true)
 	})
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	h := middleware.Heuristic(flags)(inner)
+	h := middleware.Heuristic(flags, nil)(inner)
 
 	ctx := newCtx(newPOSTRequest("/v1", ""))
 	ctx.Ctx = goCtx
@@ -241,7 +241,7 @@ func TestHeuristic_ClientCancelIsAttributedToClient(t *testing.T) {
 // that has nothing to deliver.
 func TestHeuristic_RetryVerdict_IsIdentifiable(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	handler := middleware.Heuristic(flags)(relay.Noop)
+	handler := middleware.Heuristic(flags, nil)(relay.Noop)
 
 	ctx := newCtx(newPOSTRequest("/v1", ""))
 	ctx.ServiceID = "eth"

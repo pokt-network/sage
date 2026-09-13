@@ -4,6 +4,7 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
+	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -20,7 +21,7 @@ import (
 // "heuristic" feature flag — grading a transport error is attribution, not
 // response analysis, and the circuit breaker, the method blocks and
 // reputation all key on it. The flag gates body analysis only.
-func Heuristic(flags featureflag.FlagStore) relay.Middleware {
+func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			// Run the inner chain first.
@@ -62,6 +63,19 @@ func Heuristic(flags featureflag.FlagStore) relay.Middleware {
 				)
 			}
 
+			// A -32601 on a method the plugin catalogues is retried on another
+			// operator. The analyzer leaves it unretried because it cannot tell
+			// a real method from a bogus name, and a bogus name must not bounce
+			// across the pool; here the catalogue tells them apart. On the
+			// 2026-09-13 canary two thirds of kava's json_rpc stakes fronted a
+			// CometBFT node and answered eth_blockNumber with -32601; the
+			// method block that verdict sets steers the NEXT request, this
+			// retry serves the one in hand. PATH passes the -32601 to the
+			// client. Attribution stays client so nothing is scored.
+			if result.Reason == heuristic.ReasonMethodNotFound && !result.ShouldRetry && namedMethod(registry, ctx) {
+				result.ShouldRetry = true
+			}
+
 			ctx.HeuristicResult = &result
 
 			if result.ShouldRetry {
@@ -78,4 +92,11 @@ func Heuristic(flags featureflag.FlagStore) relay.Middleware {
 			return nil
 		})
 	}
+}
+
+// namedMethod reports whether the request's method is one the service's
+// plugin catalogues: not empty, not the MethodOther bucket.
+func namedMethod(registry *qos.Registry, ctx *relay.Context) bool {
+	m := normalizedMethod(registry, ctx)
+	return m != "" && m != qos.MethodOther
 }

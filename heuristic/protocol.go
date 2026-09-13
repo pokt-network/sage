@@ -120,7 +120,7 @@ func classifyJSONRPCError(code int64, message string) AnalysisResult {
 			ShouldPenalize:     false,
 			Attribution:        AttrClient,
 			Confidence:         0.95,
-			Reason:             "method_not_found",
+			Reason:             ReasonMethodNotFound,
 			Details:            "method not found: " + message,
 			MethodBlocking:     true,
 		}

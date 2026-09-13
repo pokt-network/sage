@@ -577,7 +577,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	})
 	mwReg.Register(relay.MWScore, func() relay.Middleware { return middleware.Score(flags, repSvc) })
 	mwReg.Register(relay.MWDebugLog, func() relay.Middleware { return middleware.DebugLog(flags) })
-	mwReg.Register(relay.MWHeuristic, func() relay.Middleware { return middleware.Heuristic(flags) })
+	mwReg.Register(relay.MWHeuristic, func() relay.Middleware { return middleware.Heuristic(flags, qosReg) })
 	mwReg.Register(relay.MWSendRelay, func() relay.Middleware { return middleware.SendRelay(proto) })
 
 	order := cfg.Gateway.EffectiveMiddlewareChain()

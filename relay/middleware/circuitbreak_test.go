@@ -370,7 +370,7 @@ func TestCircuitBreak_ConnectFailureFeedsTheBreaker(t *testing.T) {
 	})
 	// Heuristic sits inside CircuitBreak in the real chain; compose them so the
 	// verdict is produced by the production classifier, not stubbed.
-	h := CircuitBreak(breaker, nil, newFlags("circuit_breaker"), nil)(Heuristic(newFlags("heuristic"))(inner))
+	h := CircuitBreak(breaker, nil, newFlags("circuit_breaker"), nil)(Heuristic(newFlags("heuristic"), nil)(inner))
 
 	ctx := baseContext()
 	ctx.Endpoints = eps
