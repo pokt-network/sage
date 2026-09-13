@@ -217,3 +217,34 @@ Every admin response says `persisted: true|false`, so an operator on a Redis-
 less gateway knows the change is this pod only. A file reload still
 re-applies the file's method-block knobs over a tuning override until the
 next tuning change; noted, not fixed.
+
+## Addendum: the paired SAGE-vs-PATH hour, 13:51–14:51Z on `1440b96`
+
+Both canaries, same seven services, same hour; SAGE at ~2% of PATH's volume.
+The rpcgate timeout wave that hit both gateways ended around 13:55, so the
+first minutes carry its tail on both sides. Inside the hour: osmosis
+`retry.max_retries` 3 and the nine retired external sources (14:20). Not yet:
+the 10 s request deadline and the osmosis retry budget (14:47).
+
+Client non-200 share, SAGE | PATH: akash 0.00% | 0.71%; kava 2.15% | 5.28%;
+osmosis 6.00% | 5.70%; persistence 0.00% | 5.36%; pocket 0.00% | 1.92%;
+sei 5.36% | 10.15%; shentu 0.35% | 0.91%. SAGE better on six, osmosis at
+parity — its residual 500s were clients hanging up mid-retry, which
+`8dd24b7` reports as 499 from 14:51Z.
+
+Client-serving relays per client request, SAGE | PATH: akash 1.11 | 1.04;
+kava 1.45 | 1.15; osmosis 1.29 | 1.13; persistence 1.03 | 1.01; pocket 1.23 |
+1.02; sei 1.43 | 3.04 (PATH hedges sei); shentu 1.03 | 1.01. Counting probes
+and health checks PATH spends more than SAGE on persistence, pocket, sei and
+shentu, because PATH probes at 0.7–1.8 relays/s per service regardless of
+traffic.
+
+Exhaustion per request, SAGE | PATH: sei 0.098 | 0.089; kava 0.103 | 0.027;
+osmosis 0.008 | 0.053; pocket 0.018 | 0.018; persistence 0 | 0.046; shentu
+0 | 0.008; akash 0 | 0.006. Kava's is half `method_not_found` (the
+retry-once path still costs one relay per newly met host and method) and a
+quarter `timeout`; pocket's `timeout` exhaustion matches PATH's transport
+figure and points at slow pocket suppliers, not examined.
+
+Where SAGE spends more relays it is retries that recover half the time on
+kava and sei; where PATH spends more it is hedging (sei) and probing.
