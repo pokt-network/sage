@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -47,7 +48,7 @@ type cosmosEndpoint struct {
 //   - qos.SubscriptionClassifier
 type Plugin struct {
 	logger            *slog.Logger
-	syncAllowance     uint64
+	syncAllowance     atomic.Uint64
 	supportedRPCTypes []domain.RPCType
 	expectedChainID   string
 
@@ -125,15 +126,16 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 			domain.RPCTypeJSONRPC,
 		}
 	}
-	return &Plugin{
+	p := &Plugin{
 		logger:            logger,
-		syncAllowance:     cfg.SyncAllowance,
 		supportedRPCTypes: supportedRPCTypes,
 		expectedChainID:   cfg.ExpectedChainID,
 		store:             qos.NewEndpointStore[cosmosEndpoint](logger),
 		consensus:         qos.NewBlockConsensus(logger, cfg.SyncAllowance),
 		pruned:            newPrunedMemory(),
 	}
+	p.syncAllowance.Store(cfg.SyncAllowance)
+	return p
 }
 
 // --- qos.Plugin --- //
@@ -210,8 +212,8 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		}
 	}
 
-	baseFilters := []qos.FilterFunc{makeBlockFilter(p.syncAllowance)}
-	relaxedFilters := []qos.FilterFunc{makeBlockFilter(p.syncAllowance * 2)}
+	baseFilters := []qos.FilterFunc{makeBlockFilter(p.syncAllowance.Load())}
+	relaxedFilters := []qos.FilterFunc{makeBlockFilter(p.syncAllowance.Load() * 2)}
 	nonBlockFilters := []qos.FilterFunc{}
 	if rpcTypeFilter != nil {
 		baseFilters = append(baseFilters, rpcTypeFilter)
@@ -225,8 +227,10 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	// a choice when the pool is degraded. If it empties every tier the
 	// selector falls back to the full list and the query is sent once, so
 	// the client gets the node's answer and nothing is retried.
+	heightFiltered := false
 	if len(payloads) > 0 {
 		if height, ok := requestedHeight(payloads[0]); ok {
+			heightFiltered = true
 			heightFilter := func(addr domain.EndpointAddr) error {
 				lowest, known := p.pruned.lowest(addr.Domain())
 				if !known || lowest <= height {
@@ -248,10 +252,20 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	result := qos.SelectWithKnownHeights(endpoints, getHeight, baseFilters, relaxedFilters, nonBlockFilters, ranker)
 
 	if result.Degraded {
-		p.logger.Warn("cosmos: endpoint selection degraded",
-			"tier", result.Tier,
-			"endpoint_count", len(result.Endpoints),
-		)
+		// A pool with nothing that holds the requested height is the
+		// ordinary outcome of an archival query on a pruned face, once per
+		// such query; it is not the pool being unhealthy. Debug for that
+		// case, Warn for the rest.
+		if heightFiltered && result.Tier == 3 {
+			p.logger.Debug("cosmos: no endpoint holds the requested height; sending once for the node's answer",
+				"endpoint_count", len(result.Endpoints),
+			)
+		} else {
+			p.logger.Warn("cosmos: endpoint selection degraded",
+				"tier", result.Tier,
+				"endpoint_count", len(result.Endpoints),
+			)
+		}
 	}
 
 	return result.Endpoints, nil
@@ -455,3 +469,10 @@ func (p *Plugin) ResetState() {
 	p.store.Clear()
 	p.pruned.reset()
 }
+
+// SyncAllowance implements qos.SyncAllowanceTuner.
+func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
+
+// SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
+// qos.sync_allowance, per service, without a restart.
+func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }
