@@ -248,3 +248,34 @@ figure and points at slow pocket suppliers, not examined.
 
 Where SAGE spends more relays it is retries that recover half the time on
 kava and sei; where PATH spends more it is hedging (sei) and probing.
+
+## Addendum, evening: five more on the canary (`2318987`, live 22:25Z)
+
+- Family marks (`041bee9`): a `-32601` on a catalogued `eth_` method marks
+  the host for the whole EVM catalogue; seven kava hosts held 53 methods
+  each after one visit, `method_not_found` exhaustion gone.
+- `sage_client_latency_seconds` (`be348e1`): the caller's wait. First read,
+  SAGE | PATH p50/p95/p99: osmosis 0.170/0.595/0.984 | 0.077/0.241/0.714;
+  kava 0.079/0.435/1.923 | 0.043/0.203/0.353. The p99 gap on kava is retry
+  chains; the p50 gap is not — SAGE's own per-relay p50 on osmosis is
+  0.098 s, so about 70 ms sit inside SAGE between router and upstream on
+  the median request. Open.
+- EVM archival marks per host (`9f32c27`).
+- Relay-miner statuses graded by status (`c73510e`): `upstream_5xx`,
+  `upstream_4xx`, `upstream_429`, `upstream_413`; `transport_error` fell to
+  near zero. Base's suppliers were sick for both gateways all afternoon
+  (SAGE 4.2/s miner 5xx, PATH 22% errors); the new rows named it.
+- Reputation keys and method-block hosts follow the URL dialed per RPC type
+  (`2318987`): on osmosis the old `…-json…|rest` keys froze at the roll and
+  `eu-s-01-osmosis-rest.kleomedes.network|rest` and
+  `osmosis-rest-europe.highstakes.ch|rest` carry the traffic.
+
+Also live through the override store, no deploy: `timeout.relay_timeout`
+10 s global (nothing needed a higher block: relays over 10 s were 0.02% of
+traffic, 504 fell), osmosis `retry.max_retries` 3 and `retry.max_latency`
+1500 ms, nine dead external sources retired. Ops keeps the register in
+pnf-ops `organizations/pnf/apps/sage/RUNTIME-OVERRIDES.md`.
+
+Open now: the ~70 ms in-process median gap; nodefleet outreach on kava;
+`evm_chain_id` for the Cosmos EVM face; RPC type in the method-block key
+if a cross-face mark ever shows; the merge.
