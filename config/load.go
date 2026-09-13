@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -43,6 +45,7 @@ func parse(data []byte) (*Config, error) {
 	cfg.Warnings = append(cfg.Warnings, applyRetryDisabled(&cfg, tree)...)
 	cfg.Warnings = append(cfg.Warnings, applyHealthChecksDisabled(&cfg, tree)...)
 	cfg.Warnings = append(cfg.Warnings, gatewayModeWarnings(cfg.Gateway.GatewayMode)...)
+	cfg.Warnings = append(cfg.Warnings, applyLogLevelEnv(&cfg, os.Getenv(EnvLogLevel))...)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
@@ -349,4 +352,46 @@ func reputationWarnings(r ReputationConfig) []string {
 			sel.MinThreshold, sel.ProbationThreshold, sel.MinThreshold))
 	}
 	return out
+}
+
+// logLevels is what logger_config.level, EnvLogLevel and PUT /admin/log-level
+// accept. "warning" is kept because cmd/sagegw's parser has always taken it.
+var logLevels = map[string]bool{"debug": true, "info": true, "warn": true, "warning": true, "error": true}
+
+// ParseLogLevel maps a configured level name to its slog.Level. ok is false
+// for a name that is not a level; the returned level is then info, which is
+// what an unrecognised name has always meant here.
+func ParseLogLevel(level string) (lvl slog.Level, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "debug":
+		return slog.LevelDebug, true
+	case "info":
+		return slog.LevelInfo, true
+	case "warn", "warning":
+		return slog.LevelWarn, true
+	case "error":
+		return slog.LevelError, true
+	default:
+		return slog.LevelInfo, false
+	}
+}
+
+// applyLogLevelEnv lets EnvLogLevel replace the file's logger level. Applied
+// after defaults so the warning can name what the file said. Returns the
+// warnings to report: one when the override took effect, one when the value
+// was not a level and the file's setting stands.
+func applyLogLevelEnv(cfg *Config, env string) []string {
+	env = strings.ToLower(strings.TrimSpace(env))
+	if env == "" {
+		return nil
+	}
+	if !logLevels[env] {
+		return []string{fmt.Sprintf("%s=%q is not a log level (debug, info, warn, error); ignored, logger_config.level %q stands", EnvLogLevel, env, cfg.Logger.Level)}
+	}
+	if env == cfg.Logger.Level {
+		return nil
+	}
+	was := cfg.Logger.Level
+	cfg.Logger.Level = env
+	return []string{fmt.Sprintf("logger_config.level %q overridden by %s=%q; unset the variable and restart to return to the file's level", was, EnvLogLevel, env)}
 }

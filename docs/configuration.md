@@ -67,7 +67,7 @@ Controls logging.
 
 | Key | Type | Description |
 |---|---|---|
-| `level` | string | The minimum level logged: "debug", "info", "warn" or "error". Default: "info". |
+| `level` | string | The minimum level logged: "debug", "info", "warn" or "error". Default: "info". EnvLogLevel overrides it, so the level can be raised on a deployment whose config file is a sealed secret without editing the secret; the override is reported as a startup warning. |
 
 ## `metrics_config`
 
