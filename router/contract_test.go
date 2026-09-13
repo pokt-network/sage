@@ -118,6 +118,9 @@ func TestContract_GatewayErrorStatusFollowsTheCause(t *testing.T) {
 		want int
 	}{
 		{"timeout", domain.NewRelayError(domain.ErrTransport, "relay timeout exceeded", context.DeadlineExceeded, true), http.StatusGatewayTimeout},
+		// The client hung up first: 499, never 500, so the client counter
+		// cannot blame the gateway for a caller that left.
+		{"client hung up", domain.NewRelayError(domain.ErrTransport, "relay send failed", context.Canceled, true), statusClientClosedRequest},
 		{"transport", domain.NewRelayError(domain.ErrTransport, "dial failed", errors.New("x"), true), http.StatusInternalServerError},
 		{"protocol", domain.NewRelayError(domain.ErrProtocol, "no endpoints", nil, false), http.StatusInternalServerError},
 		{"rate limit", domain.NewRelayError(domain.ErrRateLimit, "slow down", nil, false), http.StatusTooManyRequests},

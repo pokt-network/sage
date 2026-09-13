@@ -479,6 +479,11 @@ func (r *Router) recordRPCType(ctx *relay.Context) {
 // retyped: the service serves no surface the request could be counted under.
 const rpcTypeNone domain.RPCType = "none"
 
+// statusClientClosedRequest is nginx's 499: the client closed the connection
+// before the gateway answered. Not in net/http; used only so the metric and
+// the access log can tell a client leaving from the gateway failing.
+const statusClientClosedRequest = 499
+
 // statusForError maps a gateway-made failure to the HTTP status a client
 // sees. The body carries the JSON-RPC code either way; the status is what a
 // load balancer, a dashboard and a client's retry policy branch on, and a
@@ -488,6 +493,13 @@ const rpcTypeNone domain.RPCType = "none"
 func statusForError(err error) int {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return http.StatusGatewayTimeout
+	}
+	// The client hung up before an answer. Nothing is written to a closed
+	// connection, but the status is what sage_client_requests_total counts,
+	// and as a 500 it read as SAGE failing: on the 2026-09-13 canary most of
+	// osmosis's residual "500s" were clients leaving mid-retry.
+	if errors.Is(err, context.Canceled) {
+		return statusClientClosedRequest
 	}
 	var re *domain.RelayError
 	if errors.As(err, &re) {
