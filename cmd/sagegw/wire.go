@@ -26,6 +26,7 @@ import (
 	"github.com/pokt-network/sage/methodblock"
 	"github.com/pokt-network/sage/metrics"
 	"github.com/pokt-network/sage/observe"
+	"github.com/pokt-network/sage/override"
 	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/protocol/mock"
 	"github.com/pokt-network/sage/protocol/shannon"
@@ -113,6 +114,12 @@ type App struct {
 	Redis     *redis.Client
 	Metrics   *metrics.Recorder
 	Logger    *slog.Logger
+	// Overrides is the store the runtime seams persist through; see package
+	// override. cmd/sagegw watches the log-level key on it.
+	Overrides override.Store
+	// overrideRaw is the uploaded config in force on this replica, if any.
+	overrideMu  sync.Mutex
+	overrideRaw string
 }
 
 // methodBlockLister adapts methodblock.Store to metrics.MethodBlockLister so
@@ -251,6 +258,16 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		flags = featureflag.NewRedisStore(redisClient, cfg.FeatureFlags)
 	}
 	app.Flags = flags
+
+	// Operator overrides that must outlive the process and reach every
+	// replica: log level, external block sources, tuning, an uploaded
+	// config. Redis when there is one, else this process only, and every
+	// admin route that writes here says which.
+	var overrides override.Store = override.NewMemoryStore()
+	if redisClient != nil {
+		overrides = override.NewRedisStore(redisClient)
+	}
+	app.Overrides = overrides
 
 	// 3. Reputation
 	timeline := reputation.NewTimeline(100)
@@ -505,11 +522,37 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// call these per request, so the next relay picks up whatever the admin API
 	// last stored. A knob that is NOT read through a closure like this cannot be
 	// made runtime-changeable by registering it — see the tuning package doc.
-	tuningStore := tuning.NewStore()
+	tuningStore := tuning.NewStore(tuning.WithPersistence(overrides, logger))
 	// What the config file says, so GET /admin/tuning/{knob} can answer "what
 	// is in force" rather than only "what has been overridden". Display only —
 	// every reader still passes its own base when resolving.
 	registerTuningBases(tuningStore, cfg)
+	// Readers that keep their own state re-pull on every change (a local
+	// PUT, or a reload from the persistence store). Registered before Start
+	// so the first reload from the store reaches them too.
+	syncBases := make(map[domain.ServiceID]uint64)
+	for _, svc := range cfg.Gateway.AllServices() {
+		if tuner, ok := qosReg.Get(domain.ServiceID(svc.ID)).(qos.SyncAllowanceTuner); ok {
+			syncBases[domain.ServiceID(svc.ID)] = tuner.SyncAllowance()
+		}
+	}
+	baseSampleRate := cfg.Gateway.ObservationPipeline.SampleRate
+	if baseSampleRate <= 0 || baseSampleRate > 1 {
+		baseSampleRate = 1
+	}
+	tuningStore.SetChangeHook(func() {
+		mb := cfg.Gateway.MethodBlocks
+		blocks.SetTTL(tuningStore.Duration(tuning.KnobMethodBlockTTL, "", mb.EffectiveTTL()))
+		blocks.SetClientTTL(tuningStore.Duration(tuning.KnobMethodBlockClientTTL, "", mb.EffectiveClientTTL()))
+		blocks.SetEscalation(tuningStore.Int(tuning.KnobMethodBlockEscalation, "", mb.EffectiveEscalation()))
+		obsQueue.SetSampleRate(tuningStore.Float(tuning.KnobObservationSampleRate, "", baseSampleRate))
+		for id, base := range syncBases {
+			if tuner, ok := qosReg.Get(id).(qos.SyncAllowanceTuner); ok {
+				tuner.SetSyncAllowance(uint64(tuningStore.Int(tuning.KnobSyncAllowance, id, int(base))))
+			}
+		}
+	})
+	tuningStore.Start(ctx)
 	retryFn := newRetryFn(app.Config.Load, tuningStore)
 	timeoutFn := newTimeoutFn(app.Config.Load, tuningStore)
 
@@ -781,6 +824,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 				"services[%s].external_block_sources: the service's QoS plugin tracks no block height, so the sources are not polled", svc.ID))
 		}
 	}
+	externalSources.SetOverrides(overrides)
 	externalSources.Start(ctx)
 
 	// 15. WebSocket relayer — single public entry point for WS upgrades.
@@ -814,6 +858,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// SelectEndpoint and CircuitBreak use.
 	app.Admin = router.NewAdminAPI(flags, repSvc, timeline, cb, blocks, drainStore, proto, cfg.Admin.EffectiveMaxDrain(), qosReg, tuningStore, app, sampler, logger)
 	app.Admin.SetExternalSources(externalSources)
+	app.Admin.SetOverrides(overrides)
 	// The WS relayer also answers the admin rebind route. Type-asserted
 	// rather than typed: wsRelayer is the router's opener interface, nil
 	// under the mock backend, and the rebinder is the same object.
@@ -910,6 +955,14 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobRelayTimeout, cfg.Gateway.Defaults.Timeout.RelayTimeout.String())
 	store.SetBase(tuning.KnobHealthCheckInterval, effectiveHealthCheckInterval(cfg).String())
 	store.SetBase(tuning.KnobHealthCheckWorkers, strconv.Itoa(cfg.Gateway.HealthChecks.MaxWorkers))
+	store.SetBase(tuning.KnobMethodBlockTTL, cfg.Gateway.MethodBlocks.EffectiveTTL().String())
+	store.SetBase(tuning.KnobMethodBlockClientTTL, cfg.Gateway.MethodBlocks.EffectiveClientTTL().String())
+	store.SetBase(tuning.KnobMethodBlockEscalation, strconv.Itoa(cfg.Gateway.MethodBlocks.EffectiveEscalation()))
+	rate := cfg.Gateway.ObservationPipeline.SampleRate
+	if rate <= 0 || rate > 1 {
+		rate = 1
+	}
+	store.SetBase(tuning.KnobObservationSampleRate, strconv.FormatFloat(rate, 'f', -1, 64))
 }
 
 func newRetryFn(cfgFn func() *config.Config, store *tuning.Store) func(domain.ServiceID) config.RetryConfig {

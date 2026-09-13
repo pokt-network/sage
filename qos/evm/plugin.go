@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -77,7 +78,7 @@ type Plugin struct {
 	logger          *slog.Logger
 	store           *qos.EndpointStore[evmEndpoint]
 	consensus       *qos.BlockConsensus
-	syncAllowance   uint64
+	syncAllowance   atomic.Uint64
 	expectedChainID string
 }
 
@@ -125,13 +126,14 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Plugin{
+	p := &Plugin{
 		logger:          logger,
 		store:           qos.NewEndpointStore[evmEndpoint](logger),
 		consensus:       qos.NewBlockConsensus(logger, cfg.SyncAllowance),
-		syncAllowance:   cfg.SyncAllowance,
 		expectedChainID: cfg.ExpectedChainID,
 	}
+	p.syncAllowance.Store(cfg.SyncAllowance)
+	return p
 }
 
 // --- qos.Plugin ---
@@ -185,8 +187,8 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		return nil
 	}
 
-	minHeight := qos.MinAllowedHeight(perceived, p.syncAllowance)
-	relaxedMin := qos.MinAllowedHeight(perceived, p.syncAllowance*2)
+	minHeight := qos.MinAllowedHeight(perceived, p.syncAllowance.Load())
+	relaxedMin := qos.MinAllowedHeight(perceived, p.syncAllowance.Load()*2)
 
 	blockFilter := qos.BlockHeightFilter(getHeight, minHeight)
 	relaxedBlockFilter := qos.BlockHeightFilter(getHeight, relaxedMin)
@@ -550,3 +552,10 @@ func (p *Plugin) ResetState() {
 	p.consensus.Reset()
 	p.store.Clear()
 }
+
+// SyncAllowance implements qos.SyncAllowanceTuner.
+func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
+
+// SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
+// qos.sync_allowance, per service, without a restart.
+func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }

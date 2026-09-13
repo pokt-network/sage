@@ -150,6 +150,14 @@ type ExternalFloorSetter interface {
 	SetExternalFloor(height uint64)
 }
 
+// SyncAllowanceTuner is implemented by plugins whose block-height filter has
+// a sync allowance that the tuning knob qos.sync_allowance may move at
+// runtime, per service. SyncAllowance reports the value in force.
+type SyncAllowanceTuner interface {
+	SyncAllowance() uint64
+	SetSyncAllowance(blocks uint64)
+}
+
 // MethodOther is the bucket NormalizeMethod returns for a method the plugin
 // does not catalogue. One bucket, so unknown methods cost one key, not one
 // per client-chosen string.

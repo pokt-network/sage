@@ -17,6 +17,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/internal/safego"
+	"github.com/pokt-network/sage/override"
 	"github.com/pokt-network/sage/reload"
 	"github.com/pokt-network/sage/router"
 )
@@ -98,8 +99,27 @@ func main() {
 		log.Fatalf(`{"level":"fatal","error":"%v","message":"failed to build application"}`, err)
 	}
 	if app.Admin != nil {
-		app.Admin.SetLogLevel(logLevel)
+		app.Admin.SetLogLevel(logLevel, parseLogLevel(cfg.Logger.Level))
 	}
+	// The admin-set level lives in the override store: a replica that did not
+	// take the PUT follows within the watch interval, and a restarted process
+	// starts at it rather than at the file's level. The first poll applies at
+	// once. Absent key means the file's (or SAGE_LOG_LEVEL's) level.
+	app.WatchConfigOverride(ctx)
+	baseLevel := parseLogLevel(cfg.Logger.Level)
+	override.Watch(ctx, logger, app.Overrides, router.LogLevelOverrideKey, 0, func(m map[string]string) {
+		want := baseLevel
+		if v, ok := m[router.LogLevelOverrideKey]; ok {
+			if lvl, ok := config.ParseLogLevel(v); ok {
+				want = lvl
+			}
+		}
+		if logLevel.Level() == want {
+			return
+		}
+		logger.Warn("log level set from the override store", "from", logLevel.Level().String(), "to", want.String())
+		logLevel.Set(want)
+	})
 	// What wiring had to say about the config — a flag name SAGE does not
 	// have, a health-check rule it could not build — through the same
 	// unsilenceable reporter as the parse findings above. These went through

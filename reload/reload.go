@@ -18,6 +18,11 @@ import "errors"
 // SIGHUP logs it and does nothing.
 var ErrNoConfigFile = errors.New("no config file to reload from (started from GATEWAY_CONFIG)")
 
+// ErrConfigOverridden says a config uploaded through PUT /admin/config is in
+// force, so re-reading the file would silently undo it; DELETE /admin/config
+// first.
+var ErrConfigOverridden = errors.New("a config override is stored (PUT /admin/config); DELETE /admin/config before reloading the file")
+
 // Result is the honest account of one reload.
 //
 // Applied and NeedsRestart are key paths into the YAML, in the same vocabulary

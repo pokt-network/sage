@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,46 +15,73 @@ import (
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/internal/safego"
+	"github.com/pokt-network/sage/override"
 	"github.com/pokt-network/sage/qos"
 )
 
 // ExternalSourceManager owns one ExternalBlockFetcher per service and lets the
-// admin API replace a service's sources on a running process.
+// admin API replace a service's sources on a running gateway.
 //
 // The sources come from `external_block_sources` in the config file, and on
 // the deployment this was built for that file is a sealed secret the operator
 // could not reach when thirteen of its sixty-eight sources turned out to be
-// retired, misnamed or rate-limited (2026-09-13). A change here is
-// per process and does not survive a restart: the process comes back on the
-// file's sources. It is the same contract as PUT /admin/log-level, for the
-// same reason.
+// retired, misnamed or rate-limited (2026-09-13). An admin change is kept in
+// the override store (package override): every replica applies it within the
+// watch interval and a restarted process starts with it; without Redis the
+// store is this process only. The file's sources stay known underneath, so
+// DELETE returns to them.
 type ExternalSourceManager struct {
 	logger   *slog.Logger
 	failures ExternalSourceFailureRecorder
 	// resolve returns the floor setter for a service, or false when the
-	// service has no plugin or its plugin tracks no block height. Nil means
-	// "every service resolves to nothing", which makes Set refuse everything;
-	// tests pass their own.
+	// service has no plugin or its plugin tracks no block height.
 	resolve func(domain.ServiceID) (qos.ExternalFloorSetter, bool)
 
-	mu       sync.Mutex
-	ctx      context.Context // set by Start; nil before
-	services map[domain.ServiceID]*managedSources
+	mu        sync.Mutex
+	ctx       context.Context // set by Start; nil before
+	overrides override.Store  // may be nil: per process, nothing persisted
+	services  map[domain.ServiceID]*managedSources
 }
 
 type managedSources struct {
-	sources []config.ExternalBlockSource
-	origin  string
-	setter  qos.ExternalFloorSetter
-	fetcher *ExternalBlockFetcher
-	cancel  context.CancelFunc
+	configured  []config.ExternalBlockSource // the file's; nil when it has none
+	override    []config.ExternalBlockSource // the admin's; nil when none, empty when "stop polling"
+	hasOverride bool
+	overrideRaw string // as stored, to skip re-applying the same value
+	setter      qos.ExternalFloorSetter
+	fetcher     *ExternalBlockFetcher
+	cancel      context.CancelFunc
 }
 
-// Where a service's sources came from, in the admin view.
+// effective is what is polled: the override when there is one, else the file's.
+func (ms *managedSources) effective() []config.ExternalBlockSource {
+	if ms.hasOverride {
+		return ms.override
+	}
+	return ms.configured
+}
+
+// Where a service's sources come from, in the admin view.
 const (
+	// SourceOriginConfig: the file's sources are polled.
 	SourceOriginConfig = "config"
-	SourceOriginAdmin  = "admin"
+	// SourceOriginAdmin: an admin-set list is polled.
+	SourceOriginAdmin = "admin"
+	// SourceOriginAdminDisabled: an admin stopped polling; the file's sources
+	// are known but idle.
+	SourceOriginAdminDisabled = "admin-disabled"
+	// SourceOriginNone: nothing to poll.
+	SourceOriginNone = "none"
 )
+
+// overridePrefix is the manager's key space in the override store; one key
+// per service, holding {"sources":[...]} ("sources":[] means stop polling).
+const overridePrefix = "external_sources/"
+
+func overrideKey(serviceID domain.ServiceID) string { return overridePrefix + string(serviceID) }
+
+// persistTimeout bounds one write-through; the admin caller is waiting.
+const persistTimeout = 3 * time.Second
 
 // Errors the admin API maps to statuses.
 var (
@@ -83,6 +111,22 @@ func NewExternalSourceManager(
 	}
 }
 
+// SetOverrides attaches the store admin changes persist through. Call before
+// Start; Start then applies what the store holds and watches it.
+func (m *ExternalSourceManager) SetOverrides(store override.Store) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.overrides = store
+}
+
+// Persistent reports whether admin changes reach other replicas and survive a
+// restart.
+func (m *ExternalSourceManager) Persistent() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.overrides != nil && m.overrides.Shared()
+}
+
 // Configure registers a service's sources from the config file. Call before
 // Start. It resolves the floor setter now so a service whose plugin cannot
 // take a floor is reported at startup, not discovered at poll time.
@@ -93,63 +137,96 @@ func (m *ExternalSourceManager) Configure(serviceID domain.ServiceID, sources []
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.services[serviceID] = &managedSources{sources: sources, origin: SourceOriginConfig, setter: setter}
+	ms := m.services[serviceID]
+	if ms == nil {
+		ms = &managedSources{}
+		m.services[serviceID] = ms
+	}
+	ms.configured = sources
+	ms.setter = setter
 	return nil
 }
 
-// Start begins polling every configured service. Sources set afterwards
-// start polling as they are set; the fetchers stop when ctx is cancelled.
+// Start begins polling every service's effective sources and, when an
+// override store is attached, applies what it holds and follows its changes.
+// Fetchers stop when ctx is cancelled.
 func (m *ExternalSourceManager) Start(ctx context.Context) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.ctx = ctx
 	for id, ms := range m.services {
-		m.startLocked(id, ms)
+		m.restartLocked(id, ms)
+	}
+	store := m.overrides
+	m.mu.Unlock()
+	if store != nil {
+		override.Watch(ctx, m.logger, store, overridePrefix, 0, m.applyPersisted)
 	}
 }
 
-// Set replaces a service's sources and restarts its polling. It returns the
-// resulting view. ErrInvalidSources, ErrUnknownService and ErrNoFloor are
-// the failures the caller can act on.
+// Set replaces a service's sources: validated, persisted, then applied here
+// (other replicas follow through the store). An empty list means "stop
+// polling this service". ErrInvalidSources, ErrUnknownService and ErrNoFloor
+// are the failures the caller can act on.
 func (m *ExternalSourceManager) Set(serviceID domain.ServiceID, sources []config.ExternalBlockSource) (ExternalSourceView, error) {
-	if err := ValidateExternalSources(sources); err != nil {
-		return ExternalSourceView{}, fmt.Errorf("%w: %w", ErrInvalidSources, err)
+	if len(sources) > 0 {
+		if err := ValidateExternalSources(sources); err != nil {
+			return ExternalSourceView{}, fmt.Errorf("%w: %w", ErrInvalidSources, err)
+		}
 	}
 	setter, err := m.setterFor(serviceID)
 	if err != nil {
 		return ExternalSourceView{}, err
 	}
+	raw, err := encodeSources(sources)
+	if err != nil {
+		return ExternalSourceView{}, err
+	}
+	m.mu.Lock()
+	store := m.overrides
+	m.mu.Unlock()
+	if store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), persistTimeout)
+		defer cancel()
+		if err := store.Set(ctx, overrideKey(serviceID), raw); err != nil {
+			return ExternalSourceView{}, fmt.Errorf("external sources not persisted, not applied: %w", err)
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if prev, ok := m.services[serviceID]; ok {
-		m.stopLocked(prev)
+	ms := m.services[serviceID]
+	if ms == nil {
+		ms = &managedSources{}
+		m.services[serviceID] = ms
 	}
-	ms := &managedSources{sources: sources, origin: SourceOriginAdmin, setter: setter}
-	m.services[serviceID] = ms
-	if m.ctx != nil {
-		m.startLocked(serviceID, ms)
-	}
-	m.logger.Warn("external block sources replaced through the admin API; not persisted, the file's sources return on restart",
-		"service_id", serviceID,
-		"sources", len(sources),
-	)
+	ms.setter = setter
+	m.applyOverrideLocked(serviceID, ms, sources, raw)
+	m.logger.Warn("external block sources replaced through the admin API",
+		"service_id", serviceID, "sources", len(sources), "persisted", store != nil && store.Shared())
 	return m.viewLocked(serviceID, ms), nil
 }
 
-// Remove stops polling a service and forgets its sources. It reports whether
-// the service had any.
+// Remove clears a service's admin override: polling returns to the file's
+// sources, or stops if the file has none. It reports whether there was an
+// override to clear.
 func (m *ExternalSourceManager) Remove(serviceID domain.ServiceID) bool {
+	m.mu.Lock()
+	store := m.overrides
+	m.mu.Unlock()
+	if store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), persistTimeout)
+		defer cancel()
+		if err := store.Delete(ctx, overrideKey(serviceID)); err != nil {
+			m.logger.Warn("external block sources: override removed here but not from the store; it will return on the next reload", "service_id", serviceID, "error", err)
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ms, ok := m.services[serviceID]
-	if !ok {
+	if !ok || !ms.hasOverride {
 		return false
 	}
-	m.stopLocked(ms)
-	delete(m.services, serviceID)
-	m.logger.Warn("external block sources removed through the admin API; not persisted, the file's sources return on restart",
-		"service_id", serviceID,
-	)
+	m.clearOverrideLocked(serviceID, ms)
+	m.logger.Warn("external block sources override cleared through the admin API; the file's sources are polled again", "service_id", serviceID)
 	return true
 }
 
@@ -176,22 +253,74 @@ func (m *ExternalSourceManager) View() []ExternalSourceView {
 	return out
 }
 
-func (m *ExternalSourceManager) setterFor(serviceID domain.ServiceID) (qos.ExternalFloorSetter, error) {
-	if m.resolve == nil {
-		return nil, ErrUnknownService
+// applyPersisted brings the manager in line with the override store: every
+// key is an override to hold, every managed override without a key is one
+// that was cleared elsewhere.
+func (m *ExternalSourceManager) applyPersisted(entries map[string]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := make(map[domain.ServiceID]bool, len(entries))
+	for key, raw := range entries {
+		serviceID := domain.ServiceID(strings.TrimPrefix(key, overridePrefix))
+		seen[serviceID] = true
+		ms := m.services[serviceID]
+		if ms != nil && ms.hasOverride && ms.overrideRaw == raw {
+			continue
+		}
+		sources, err := decodeSources(raw)
+		if err != nil {
+			m.logger.Warn("external block sources: ignoring a persisted override that does not parse", "service_id", serviceID, "error", err)
+			continue
+		}
+		if ms == nil {
+			setter, err := m.setterFor(serviceID)
+			if err != nil {
+				m.logger.Warn("external block sources: persisted override for a service that cannot take one", "service_id", serviceID, "error", err)
+				continue
+			}
+			ms = &managedSources{setter: setter}
+			m.services[serviceID] = ms
+		}
+		m.applyOverrideLocked(serviceID, ms, sources, raw)
+		m.logger.Info("external block sources applied from the override store", "service_id", serviceID, "sources", len(sources))
 	}
-	setter, ok := m.resolve(serviceID)
-	if !ok || setter == nil {
-		return nil, ErrNoFloor
+	for serviceID, ms := range m.services {
+		if ms.hasOverride && !seen[serviceID] {
+			m.clearOverrideLocked(serviceID, ms)
+			m.logger.Info("external block sources override cleared from the override store; the file's sources are polled again", "service_id", serviceID)
+		}
 	}
-	return setter, nil
 }
 
-// startLocked starts a fetcher for ms and the goroutine that applies its
-// heights. Caller holds m.mu and m.ctx is set.
-func (m *ExternalSourceManager) startLocked(serviceID domain.ServiceID, ms *managedSources) {
+func (m *ExternalSourceManager) applyOverrideLocked(serviceID domain.ServiceID, ms *managedSources, sources []config.ExternalBlockSource, raw string) {
+	ms.override = sources
+	ms.hasOverride = true
+	ms.overrideRaw = raw
+	m.restartLocked(serviceID, ms)
+}
+
+func (m *ExternalSourceManager) clearOverrideLocked(serviceID domain.ServiceID, ms *managedSources) {
+	ms.override = nil
+	ms.hasOverride = false
+	ms.overrideRaw = ""
+	if ms.configured == nil {
+		m.stopLocked(ms)
+		delete(m.services, serviceID)
+		return
+	}
+	m.restartLocked(serviceID, ms)
+}
+
+// restartLocked stops any running fetcher and starts one for the effective
+// sources, if there are any and Start has run. Caller holds m.mu.
+func (m *ExternalSourceManager) restartLocked(serviceID domain.ServiceID, ms *managedSources) {
+	m.stopLocked(ms)
+	sources := ms.effective()
+	if m.ctx == nil || len(sources) == 0 || ms.setter == nil {
+		return
+	}
 	ctx, cancel := context.WithCancel(m.ctx)
-	fetcher := NewExternalBlockFetcher(serviceID, ms.sources, m.logger)
+	fetcher := NewExternalBlockFetcher(serviceID, sources, m.logger)
 	fetcher.SetFailureRecorder(m.failures)
 	heights := fetcher.Start(ctx)
 	setter := ms.setter
@@ -212,10 +341,34 @@ func (m *ExternalSourceManager) stopLocked(ms *managedSources) {
 	ms.fetcher = nil
 }
 
+func (m *ExternalSourceManager) setterFor(serviceID domain.ServiceID) (qos.ExternalFloorSetter, error) {
+	if m.resolve == nil {
+		return nil, ErrUnknownService
+	}
+	setter, ok := m.resolve(serviceID)
+	if !ok || setter == nil {
+		return nil, ErrNoFloor
+	}
+	return setter, nil
+}
+
 func (m *ExternalSourceManager) viewLocked(serviceID domain.ServiceID, ms *managedSources) ExternalSourceView {
-	v := ExternalSourceView{ServiceID: serviceID, Origin: ms.origin, Sources: make([]ExternalSourceSpec, 0, len(ms.sources))}
-	for _, s := range ms.sources {
+	v := ExternalSourceView{ServiceID: serviceID, Sources: []ExternalSourceSpec{}, Configured: []ExternalSourceSpec{}}
+	switch {
+	case ms.hasOverride && len(ms.override) == 0:
+		v.Origin = SourceOriginAdminDisabled
+	case ms.hasOverride:
+		v.Origin = SourceOriginAdmin
+	case len(ms.configured) > 0:
+		v.Origin = SourceOriginConfig
+	default:
+		v.Origin = SourceOriginNone
+	}
+	for _, s := range ms.effective() {
 		v.Sources = append(v.Sources, SpecFromSource(s))
+	}
+	for _, s := range ms.configured {
+		v.Configured = append(v.Configured, SpecFromSource(s))
 	}
 	if ms.fetcher != nil {
 		v.Status = ms.fetcher.Status()
@@ -226,10 +379,15 @@ func (m *ExternalSourceManager) viewLocked(serviceID domain.ServiceID, ms *manag
 
 // ExternalSourceView is one service's sources and their poll status.
 type ExternalSourceView struct {
-	ServiceID domain.ServiceID     `json:"service_id"`
-	Origin    string               `json:"origin"`
-	Sources   []ExternalSourceSpec `json:"sources"`
-	Status    ExternalSourceStatus `json:"status"`
+	ServiceID domain.ServiceID `json:"service_id"`
+	// Origin says whose sources are polled: config, admin, admin-disabled or
+	// none.
+	Origin string `json:"origin"`
+	// Sources are the ones polled now.
+	Sources []ExternalSourceSpec `json:"sources"`
+	// Configured are the file's, whatever is polled; what DELETE returns to.
+	Configured []ExternalSourceSpec `json:"configured"`
+	Status     ExternalSourceStatus `json:"status"`
 }
 
 // ExternalSourceSpec is one source as the admin API reads and writes it:
@@ -272,6 +430,44 @@ func SourceFromSpec(spec ExternalSourceSpec) (config.ExternalBlockSource, error)
 	return src, nil
 }
 
+// The stored shape: the specs, so what is read back is what was written.
+type storedSources struct {
+	Sources []ExternalSourceSpec `json:"sources"`
+}
+
+func encodeSources(sources []config.ExternalBlockSource) (string, error) {
+	st := storedSources{Sources: make([]ExternalSourceSpec, 0, len(sources))}
+	for _, s := range sources {
+		st.Sources = append(st.Sources, SpecFromSource(s))
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func decodeSources(raw string) ([]config.ExternalBlockSource, error) {
+	var st storedSources
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		return nil, err
+	}
+	out := make([]config.ExternalBlockSource, 0, len(st.Sources))
+	for _, spec := range st.Sources {
+		src, err := SourceFromSpec(spec)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, src)
+	}
+	if len(out) > 0 {
+		if err := ValidateExternalSources(out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // maxExternalSourcesPerService bounds an admin submission. Several sources
 // are polled in parallel on one ticker, so each one is a request per tick.
 const maxExternalSourcesPerService = 8
@@ -283,7 +479,7 @@ const maxExternalSourcesPerService = 8
 // caught before it becomes a poll every fifteen seconds.
 func ValidateExternalSources(sources []config.ExternalBlockSource) error {
 	if len(sources) == 0 {
-		return errors.New("at least one source is required; use DELETE to stop polling")
+		return errors.New("at least one source is required")
 	}
 	if len(sources) > maxExternalSourcesPerService {
 		return fmt.Errorf("%d sources; at most %d per service", len(sources), maxExternalSourcesPerService)

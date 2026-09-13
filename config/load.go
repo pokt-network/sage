@@ -31,6 +31,11 @@ func LoadFromEnv() (*Config, error) {
 	return parse([]byte(data))
 }
 
+// LoadFromBytes parses and validates a config from its YAML bytes, exactly as
+// LoadFromFile does for a file. PUT /admin/config uses it: the same document
+// the file would hold, from a request body instead.
+func LoadFromBytes(data []byte) (*Config, error) { return parse(data) }
+
 func parse(data []byte) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {

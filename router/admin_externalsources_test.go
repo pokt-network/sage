@@ -49,6 +49,8 @@ func (f *fakeExternalSources) Set(id domain.ServiceID, srcs []config.ExternalBlo
 	return v, nil
 }
 
+func (f *fakeExternalSources) Persistent() bool { return false }
+
 func (f *fakeExternalSources) Remove(id domain.ServiceID) bool {
 	_, ok := f.set[id]
 	delete(f.set, id)
@@ -86,8 +88,8 @@ func TestAdminExternalSources_SetGetDelete(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("GET list: status %d", status)
 	}
-	if services, _ := resp["services"].([]any); len(services) != 1 {
-		t.Fatalf("list = %v, want one service", resp)
+	if services, _ := resp["services"].([]any); len(services) != 1 || resp["persisted"] != false {
+		t.Fatalf("list = %v, want one service and persisted false", resp)
 	}
 
 	status, resp = doTuning(t, srv.URL, http.MethodDelete, "/admin/external-sources/sui", "")

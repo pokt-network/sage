@@ -24,8 +24,9 @@ import (
 // rather than leaving to be discovered.
 func (a *AdminAPI) handleListTuning(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"knobs": a.tuning.All(),
-		"note":  "overrides are held in memory and are lost on restart; the config file is authoritative again after one",
+		"knobs":     a.tuning.All(),
+		"persisted": a.tuning.Persistent(),
+		"note":      persistenceNote(a.tuning.Persistent()),
 	})
 }
 
@@ -143,4 +144,13 @@ func (a *AdminAPI) clearTuning(w http.ResponseWriter, req *http.Request, service
 		"service_id": string(serviceID),
 		"cleared":    cleared,
 	})
+}
+
+// persistenceNote says where an override lives, so the reader does not have
+// to discover it at the next restart.
+func persistenceNote(persistent bool) string {
+	if persistent {
+		return "overrides are persisted in Redis: they reach every replica within the watch interval and survive restarts; DELETE ends one"
+	}
+	return "overrides are held in memory on this replica and are lost on restart; the config file is authoritative again after one"
 }

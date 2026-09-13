@@ -11,6 +11,7 @@ import (
 	"github.com/pokt-network/sage/drain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/methodblock"
+	"github.com/pokt-network/sage/override"
 	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/reputation"
@@ -20,24 +21,26 @@ import (
 
 // AdminAPI provides HTTP endpoints for runtime inspection and control.
 type AdminAPI struct {
-	flags       featureflag.FlagStore
-	repService  reputation.Service
-	timeline    *reputation.Timeline
-	breaker     *circuitbreaker.Breaker
-	blocks      *methodblock.Store
-	drains      drain.Store
-	endpoints   protocol.EndpointProvider
-	maxDrain    time.Duration
-	qosRegistry *qos.Registry
-	tuning      *tuning.Store
-	reloader    Reloader
-	sampler     *traffic.Sampler
-	wsRebinder  WSRebinder
-	blocklist   Blocklist
-	logger      *slog.Logger
-	logLevel    *slog.LevelVar
+	flags        featureflag.FlagStore
+	repService   reputation.Service
+	timeline     *reputation.Timeline
+	breaker      *circuitbreaker.Breaker
+	blocks       *methodblock.Store
+	drains       drain.Store
+	endpoints    protocol.EndpointProvider
+	maxDrain     time.Duration
+	qosRegistry  *qos.Registry
+	tuning       *tuning.Store
+	reloader     Reloader
+	sampler      *traffic.Sampler
+	wsRebinder   WSRebinder
+	blocklist    Blocklist
+	logger       *slog.Logger
+	logLevel     *slog.LevelVar
+	logLevelBase slog.Level
 
 	externalSources ExternalSourceAdmin
+	overrides       override.Store
 }
 
 // WSRebinder replaces the supplier under every live WebSocket connection of
@@ -139,13 +142,16 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/tuning/{knob}", a.handleClearTuning)
 	mux.HandleFunc("DELETE /admin/tuning/{knob}/{serviceID}", a.handleClearTuningForService)
 
-	// Config dump and reload
+	// Config dump, reload, and upload
 	mux.HandleFunc("GET /admin/config", a.handleGetConfig)
 	mux.HandleFunc("POST /admin/reload", a.handleReload)
+	mux.HandleFunc("PUT /admin/config", a.handleApplyConfig)
+	mux.HandleFunc("DELETE /admin/config", a.handleClearConfigOverride)
 
 	// Log level, live
 	mux.HandleFunc("GET /admin/log-level", a.handleGetLogLevel)
 	mux.HandleFunc("PUT /admin/log-level", a.handleSetLogLevel)
+	mux.HandleFunc("DELETE /admin/log-level", a.handleClearLogLevel)
 
 	// External block sources, live
 	mux.HandleFunc("GET /admin/external-sources", a.handleListExternalSources)

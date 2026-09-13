@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -64,7 +65,7 @@ type Chain struct {
 type Plugin struct {
 	chain         Chain
 	logger        *slog.Logger
-	syncAllowance uint64
+	syncAllowance atomic.Uint64
 
 	store     *qos.EndpointStore[endpointState]
 	consensus *qos.BlockConsensus
@@ -79,13 +80,14 @@ func NewPlugin(logger *slog.Logger, chain Chain, syncAllowance uint64) *Plugin {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Plugin{
-		chain:         chain,
-		logger:        logger,
-		syncAllowance: syncAllowance,
-		store:         qos.NewEndpointStore[endpointState](logger),
-		consensus:     qos.NewBlockConsensus(logger, syncAllowance),
+	p := &Plugin{
+		chain:     chain,
+		logger:    logger,
+		store:     qos.NewEndpointStore[endpointState](logger),
+		consensus: qos.NewBlockConsensus(logger, syncAllowance),
 	}
+	p.syncAllowance.Store(syncAllowance)
+	return p
 }
 
 // --- qos.Plugin --- //
@@ -129,8 +131,8 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 	result := qos.SelectWithKnownHeights(
 		endpoints,
 		getHeight,
-		[]qos.FilterFunc{qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance))},
-		[]qos.FilterFunc{qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance*2))},
+		[]qos.FilterFunc{qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance.Load()))},
+		[]qos.FilterFunc{qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance.Load()*2))},
 		nil,
 		qos.LeastStaleFallback(getHeight, perceived),
 	)
@@ -182,7 +184,7 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		}
 		return &qos.ExtractedData{}, nil
 	}
-	if _, err := qos.ValidateBlockHeight(height, p.consensus.PerceivedBlock(), p.syncAllowance); err != nil {
+	if _, err := qos.ValidateBlockHeight(height, p.consensus.PerceivedBlock(), p.syncAllowance.Load()); err != nil {
 		return nil, fmt.Errorf("%s: invalid block height from endpoint %s: %w", p.chain.Name, endpoint, err)
 	}
 	p.UpdateBlockHeight(endpoint, height)
@@ -304,3 +306,10 @@ var (
 	_ qos.EndpointHeightLister = (*Plugin)(nil)
 	_ qos.ExternalFloorSetter  = (*Plugin)(nil)
 )
+
+// SyncAllowance implements qos.SyncAllowanceTuner.
+func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
+
+// SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
+// qos.sync_allowance, per service, without a restart.
+func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }

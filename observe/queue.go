@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pokt-network/sage/internal/safego"
 )
@@ -31,7 +33,25 @@ type Queue struct {
 	logger  *slog.Logger
 	wg      sync.WaitGroup
 	done    chan struct{}
+	// sampleRate is the live rate as float64 bits; SetSampleRate moves it
+	// from the tuning knob observation_pipeline.sample_rate.
+	sampleRate atomic.Uint64
 }
+
+// SetSampleRate changes the fraction of client relays observed, clamped to
+// [0, 1]. Probes are always observed.
+func (q *Queue) SetSampleRate(rate float64) {
+	if rate < 0 {
+		rate = 0
+	}
+	if rate > 1 {
+		rate = 1
+	}
+	q.sampleRate.Store(math.Float64bits(rate))
+}
+
+// SampleRate returns the live sampling fraction.
+func (q *Queue) SampleRate() float64 { return math.Float64frombits(q.sampleRate.Load()) }
 
 // NewQueue creates a new observation queue. Call Start to begin processing.
 func NewQueue(cfg QueueConfig, handler Handler, logger *slog.Logger) *Queue {
@@ -47,13 +67,15 @@ func NewQueue(cfg QueueConfig, handler Handler, logger *slog.Logger) *Queue {
 	if cfg.SampleRate > 1.0 {
 		cfg.SampleRate = 1.0
 	}
-	return &Queue{
+	q := &Queue{
 		cfg:     cfg,
 		ch:      make(chan Observation, cfg.QueueSize),
 		handler: handler,
 		logger:  logger,
 		done:    make(chan struct{}),
 	}
+	q.SetSampleRate(cfg.SampleRate)
+	return q
 }
 
 // Submit enqueues an observation for async processing.
@@ -66,7 +88,7 @@ func (q *Queue) Submit(obs Observation) {
 
 	// Health check observations bypass sampling.
 	if obs.Source != SourceHealthCheck {
-		if q.cfg.SampleRate < 1.0 && rand.Float64() >= q.cfg.SampleRate {
+		if rate := q.SampleRate(); rate < 1.0 && rand.Float64() >= rate {
 			return
 		}
 	}

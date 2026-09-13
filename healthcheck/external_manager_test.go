@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/override"
 	"github.com/pokt-network/sage/qos"
 )
 
@@ -81,14 +83,82 @@ func TestExternalSourceManager_SetReplacesRunningSource(t *testing.T) {
 	if !ok || got.Status.LastHeight != 200 || got.Status.Failing {
 		t.Fatalf("Get after Set = %+v, %v", got, ok)
 	}
+	// Remove clears the admin override: the file's source is polled again.
 	if !m.Remove("eth") {
-		t.Fatal("Remove should report the service had sources")
+		t.Fatal("Remove should report there was an override")
 	}
-	if _, ok := m.Get("eth"); ok {
-		t.Fatal("Get after Remove should be empty")
+	waitFloor(t, spy, 100)
+	back, ok := m.Get("eth")
+	if !ok || back.Origin != SourceOriginConfig || back.Sources[0].URL != old.URL {
+		t.Fatalf("after Remove = %+v, %v; want the file's source back", back, ok)
 	}
 	if m.Remove("eth") {
-		t.Fatal("second Remove should report nothing to remove")
+		t.Fatal("second Remove should report no override")
+	}
+
+	// An empty list stops polling but keeps the file's sources known.
+	v, err = m.Set("eth", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Origin != SourceOriginAdminDisabled || v.Status.Running || len(v.Configured) != 1 {
+		t.Fatalf("disabled view = %+v", v)
+	}
+}
+
+// An override persisted by one manager is applied by another sharing the
+// store — a second replica, or the process after a restart — and clearing it
+// on one clears it on the other.
+func TestExternalSourceManager_PersistsAcrossManagers(t *testing.T) {
+	shared := override.NewMemoryStore()
+	file := heightServer(t, "0x64")   // 100, the "config file" source
+	fresh := heightServer(t, "0x12c") // 300, the admin's
+
+	spyA := &floorSpy{}
+	a := NewExternalSourceManager(slog.Default(), nil, resolveTo(spyA, "eth"))
+	a.SetOverrides(shared)
+	_ = a.Configure("eth", []config.ExternalBlockSource{{URL: file.URL, Interval: time.Second}})
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+	a.Start(ctxA)
+	waitFloor(t, spyA, 100)
+	if _, err := a.Set("eth", []config.ExternalBlockSource{{URL: fresh.URL, Interval: time.Second}}); err != nil {
+		t.Fatal(err)
+	}
+	waitFloor(t, spyA, 300)
+	if v, ok, _ := shared.Get(context.Background(), "external_sources/eth"); !ok || !strings.Contains(v, fresh.URL) {
+		t.Fatalf("store = %q,%v; want the override persisted", v, ok)
+	}
+
+	// The "restarted" process: same file, same store, no admin call.
+	spyB := &floorSpy{}
+	b := NewExternalSourceManager(slog.Default(), nil, resolveTo(spyB, "eth"))
+	b.SetOverrides(shared)
+	_ = b.Configure("eth", []config.ExternalBlockSource{{URL: file.URL, Interval: time.Second}})
+	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
+	b.Start(ctxB)
+	waitFloor(t, spyB, 300)
+	if v, _ := b.Get("eth"); v.Origin != SourceOriginAdmin {
+		t.Fatalf("second manager origin = %q, want admin from the store", v.Origin)
+	}
+
+	// Cleared on A, B follows back to the file's source.
+	if !a.Remove("eth") {
+		t.Fatal("Remove on A should clear the override")
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if v, _ := b.Get("eth"); v.Origin == SourceOriginConfig {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if v, _ := b.Get("eth"); v.Origin != SourceOriginConfig {
+		t.Fatalf("B origin = %q after A cleared the override, want config", v.Origin)
+	}
+	if a.Persistent() {
+		t.Fatal("a memory store is not shared")
 	}
 }
 
@@ -126,7 +196,6 @@ func TestExternalSourceManager_SetRefusals(t *testing.T) {
 		t.Fatalf("unknown service: err = %v, want ErrNoFloor from the resolver", err)
 	}
 	cases := map[string][]config.ExternalBlockSource{
-		"empty":        {},
 		"bad scheme":   {{URL: "ftp://example.com"}},
 		"no host":      {{URL: "https://"}},
 		"bad type":     {{URL: "https://example.com", Type: "grpc"}},
