@@ -41,8 +41,11 @@ func main() {
 	}
 
 	// Initialize logger
-	level := parseLogLevel(cfg.Logger.Level)
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+	// The level lives in a LevelVar so PUT /admin/log-level can move it on a
+	// running process; the config (or SAGE_LOG_LEVEL) only sets where it starts.
+	logLevel := new(slog.LevelVar)
+	logLevel.Set(parseLogLevel(cfg.Logger.Level))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 
 	// What SAGE made of the config it was given, said once at boot through a
 	// logger the configured level cannot silence. See startupReporter.
@@ -93,6 +96,9 @@ func main() {
 	app, err := Build(ctx, cfg, logger)
 	if err != nil {
 		log.Fatalf(`{"level":"fatal","error":"%v","message":"failed to build application"}`, err)
+	}
+	if app.Admin != nil {
+		app.Admin.SetLogLevel(logLevel)
 	}
 	// What wiring had to say about the config — a flag name SAGE does not
 	// have, a health-check rule it could not build — through the same
@@ -374,16 +380,8 @@ func startupReporter(configured string) *slog.Logger {
 }
 
 func parseLogLevel(level string) slog.Level {
-	switch strings.ToLower(level) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
+	lvl, _ := config.ParseLogLevel(level)
+	return lvl
 }
 
 // isLoopbackAddr reports whether a listen address reaches only this host.

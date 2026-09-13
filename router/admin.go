@@ -35,6 +35,7 @@ type AdminAPI struct {
 	wsRebinder  WSRebinder
 	blocklist   Blocklist
 	logger      *slog.Logger
+	logLevel    *slog.LevelVar
 }
 
 // WSRebinder replaces the supplier under every live WebSocket connection of
@@ -139,6 +140,10 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Config dump and reload
 	mux.HandleFunc("GET /admin/config", a.handleGetConfig)
 	mux.HandleFunc("POST /admin/reload", a.handleReload)
+
+	// Log level, live
+	mux.HandleFunc("GET /admin/log-level", a.handleGetLogLevel)
+	mux.HandleFunc("PUT /admin/log-level", a.handleSetLogLevel)
 
 	// WebSocket
 	mux.HandleFunc("POST /admin/websocket/rebind/{serviceID}", a.handleWebSocketRebind)

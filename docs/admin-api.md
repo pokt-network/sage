@@ -121,6 +121,8 @@ failureThreshold) here.
 | `DELETE` | `/admin/tuning/{knob}/{serviceID}` | Removes one service's override, leaving the global one (or the config value) in effect for it. |
 | `GET` | `/admin/config` | Returns the gateway's effective runtime configuration: resolved feature flags, registered services and their QoS plugins. |
 | `POST` | `/admin/reload` | Re-reads the config file the gateway started with (`-config`), validates it exactly as startup does, and applies the sections that have a runtime seam: the retry/hedge/timeout knobs, `feature_flags`, `active_health_checks`, `blocked_domains` and the `method_blocks` knobs. |
+| `GET` | `/admin/log-level` | Returns the level the process is logging at right now. |
+| `PUT` | `/admin/log-level` | Changes the process's log level without a restart. |
 | `POST` | `/admin/websocket/rebind/{serviceID}` | Replaces the supplier under every live WebSocket connection of a service, without closing any client. |
 | `GET` | `/admin/request-sample` | Returns every service the request-shape sampler has observed, each with its most recently completed traffic summary. |
 | `GET` | `/admin/request-sample/{serviceID}` | Returns one service's request-shape summary plus its top fingerprints for a single window. |
@@ -414,6 +416,25 @@ global values only, and a deleted line in a file must not revoke a decision
 it never made.
 
 `SIGHUP` does the same thing.
+
+### `GET /admin/log-level`
+
+Returns the level the process is logging at right now.
+
+This is the live value, which may differ from logger_config.level: the
+SAGE_LOG_LEVEL environment variable overrides the file at startup, and PUT
+/admin/log-level moves it at runtime.
+
+### `PUT /admin/log-level`
+
+Changes the process's log level without a restart.
+
+Body: `{"level": "debug"}`, one of debug, info, warn, error. The change
+applies to this instance only and does not survive a restart: the process
+comes back at logger_config.level, or at SAGE_LOG_LEVEL if that is set. It
+exists for the ten-minute look at a live problem: raise it, capture, put it
+back. The `debug_log` feature flag, which logs request and response bodies
+per service, only produces output while this level is debug.
 
 ### `POST /admin/websocket/rebind/{serviceID}`
 
