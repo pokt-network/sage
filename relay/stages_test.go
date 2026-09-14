@@ -24,16 +24,24 @@ func TestStageTimes_ExclusivePerStage(t *testing.T) {
 	terminal := HandlerFunc(func(*Context) error { return nil })
 	chain := Chain(terminal, timed("outer", outer), timed("inner", inner))
 
+	// No upper bounds on a sleep: a loaded CI runner oversleeps 10 ms into
+	// 48. Double counting shows instead as stages summing past the wall time
+	// of the whole chain, which no oversleep can produce.
 	ctx := &Context{Stages: NewStageTimes()}
+	start := time.Now()
 	if err := chain.HandleRelay(ctx); err != nil {
 		t.Fatal(err)
 	}
+	wall := time.Since(start)
 	got := ctx.Stages.Exclusive()
-	if got["outer"] < 5*time.Millisecond || got["outer"] > 12*time.Millisecond {
-		t.Errorf("outer exclusive = %s, want about 5ms", got["outer"])
+	if got["outer"] < 5*time.Millisecond {
+		t.Errorf("outer exclusive = %s, want at least 5ms", got["outer"])
 	}
-	if got["inner"] < 10*time.Millisecond || got["inner"] > 20*time.Millisecond {
-		t.Errorf("inner exclusive = %s, want about 10ms", got["inner"])
+	if got["inner"] < 10*time.Millisecond {
+		t.Errorf("inner exclusive = %s, want at least 10ms", got["inner"])
+	}
+	if sum := got["outer"] + got["inner"]; sum > wall {
+		t.Errorf("outer + inner = %s exceeds the chain's wall time %s: inner time counted twice", sum, wall)
 	}
 
 	// A stage that calls next twice (retry) sums both calls' inner time.
@@ -45,10 +53,12 @@ func TestStageTimes_ExclusivePerStage(t *testing.T) {
 	})
 	chain = Chain(terminal, timed("twice", twice), timed("inner", inner))
 	ctx = &Context{Stages: NewStageTimes()}
+	start = time.Now()
 	_ = chain.HandleRelay(ctx)
+	wall = time.Since(start)
 	got = ctx.Stages.Exclusive()
-	if got["twice"] > 6*time.Millisecond {
-		t.Errorf("twice exclusive = %s, want near zero: its time is all inner", got["twice"])
+	if sum := got["twice"] + got["inner"]; sum > wall {
+		t.Errorf("twice + inner = %s exceeds the chain's wall time %s: its time is all inner", sum, wall)
 	}
 	if got["inner"] < 20*time.Millisecond {
 		t.Errorf("inner exclusive = %s, want both calls summed", got["inner"])
