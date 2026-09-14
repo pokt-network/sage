@@ -32,6 +32,14 @@ func SendRelay(relayer protocol.Relayer) relay.Middleware {
 				if ctx.Response == nil {
 					ctx.Response = resp
 				}
+				// The split inside the upstream call, for sage_stage_seconds_total:
+				// these are a breakdown of send_relay's own time, not additions.
+				if st := ctx.Stages; st != nil {
+					st.Add("send_relay.prepare", resp.Phases.Prepare)
+					st.Add("send_relay.sign", resp.Phases.Sign)
+					st.Add("send_relay.http", resp.Phases.HTTP)
+					st.Add("send_relay.verify", resp.Phases.Verify)
+				}
 			}
 			return nil
 		})

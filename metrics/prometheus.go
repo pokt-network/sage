@@ -275,7 +275,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "stage_seconds_total",
-				Help:      "Seconds spent in each middleware stage, exclusive of the stages nested inside it, summed over client requests, by service and stage (the registered middleware name, or router_write for the response write). Divide by sage_client_requests_total for the mean per request. send_relay is the upstream call; everything else is SAGE's own time — the split the per-attempt relay latency cannot show.",
+				Help:      "Seconds spent in each middleware stage, exclusive of the stages nested inside it, summed over client requests, by service and stage (the registered middleware name, or router_write for the response write). Divide by sage_client_requests_total for the mean per request. send_relay is the upstream call and send_relay.prepare / .sign / .http / .verify are its breakdown (not additions); everything else is SAGE's own time — the split the per-attempt relay latency cannot show.",
 			},
 			[]string{"service_id", "stage"},
 		),

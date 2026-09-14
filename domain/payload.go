@@ -94,6 +94,25 @@ type Response struct {
 	// populated only where a header changes the meaning of the response, which
 	// today means gRPC: its outcome travels in grpc-status, not in the body.
 	Headers map[string]string
+
+	// Phases is how the relay's wall time split inside the protocol layer,
+	// for the per-stage split (relay.StageTimes): what a relay costs before
+	// the wire, on the wire, and after it. Zero when the transport did not
+	// measure.
+	Phases RelayPhases
+}
+
+// RelayPhases splits one relay attempt's time inside the protocol layer.
+type RelayPhases struct {
+	// Prepare: session and endpoint lookup, request build and serialisation,
+	// up to signing.
+	Prepare time.Duration
+	// Sign: the relay request's ring signature and wire marshal.
+	Sign time.Duration
+	// HTTP: the round trip to the relay miner, body read included.
+	HTTP time.Duration
+	// Verify: the supplier's response signature and payload deserialisation.
+	Verify time.Duration
 }
 
 // GRPCStatus reports the gRPC status code and message a response carried, and

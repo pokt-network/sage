@@ -268,6 +268,8 @@ func (p *Protocol) SendRelay(
 		return nil, domain.NewRelayError(domain.ErrProtocol, "failed to fetch app for signing", err, true)
 	}
 
+	tSign := time.Now()
+	prepareDur := tSign.Sub(start)
 	signedReq, err := p.signer.signRelayRequest(ctx, unsignedReq, app)
 	if err != nil {
 		p.logger.Error("SendRelay: failed to sign relay request",
@@ -284,6 +286,8 @@ func (p *Protocol) SendRelay(
 	if err != nil {
 		return nil, domain.NewRelayError(domain.ErrProtocol, "failed to marshal relay request", err, false)
 	}
+	tHTTP := time.Now()
+	signDur := tHTTP.Sub(tSign)
 
 	// Send the relay. gRPC does not go over the miner's HTTP path: that one
 	// rebuilds the request as HTTP/1.1, which a gRPC backend refuses. Only the
@@ -346,6 +350,9 @@ func (p *Protocol) SendRelay(
 		}
 	}
 
+	tVerify := time.Now()
+	httpDur := tVerify.Sub(tHTTP)
+
 	// Verify the supplier's signature over the response. See
 	// FullNode.ValidateRelayResponse: the key is the one belonging to the
 	// supplier we selected, which is what makes these bytes attributable.
@@ -384,6 +391,12 @@ func (p *Protocol) SendRelay(
 		Latency:        latency,
 		EndpointAddr:   endpointAddr,
 		Headers:        grpcResponseHeaders(payload.RPCType(), poktHTTPResp),
+		Phases: domain.RelayPhases{
+			Prepare: prepareDur,
+			Sign:    signDur,
+			HTTP:    httpDur,
+			Verify:  time.Since(tVerify),
+		},
 	}, nil
 }
 
