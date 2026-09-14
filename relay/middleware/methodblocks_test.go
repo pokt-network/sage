@@ -214,6 +214,40 @@ func TestMethodBlocks_FiltersWhenSurvivorIsVouched(t *testing.T) {
 	}
 }
 
+// The sei shape: four vouched hosts, three blocked for the method. One
+// vouched survivor would take all of the method's load, so the block is
+// bypassed; with two of four left the filter applies.
+func TestMethodBlocks_BypassesWhenFilterShedsMostVouchedCapacity(t *testing.T) {
+	eps := testEndpoints(5)
+	rep := &stubRepService{scores: map[domain.EndpointAddr]float64{
+		eps[0]: 70, eps[1]: 70, eps[2]: 70, eps[3]: 70, eps[4]: 0,
+	}}
+	var seen domain.EndpointAddrList
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		seen = ctx.Endpoints
+		return nil
+	})
+
+	for _, tc := range []struct {
+		blocked  int
+		wantSeen int
+	}{{blocked: 3, wantSeen: 5}, {blocked: 2, wantSeen: 3}} {
+		store := methodblock.New()
+		for _, ep := range eps[:tc.blocked] {
+			store.Mark("eth", ep.Domain(), "eth_call", true)
+		}
+		h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), rep, nil)(inner)
+		ctx := methodCtx("eth_call", eps)
+		_ = h.HandleRelay(ctx)
+		if len(seen) != tc.wantSeen {
+			t.Fatalf("%d of 4 vouched blocked: inner saw %d endpoints, want %d", tc.blocked, len(seen), tc.wantSeen)
+		}
+		if ctx.Degraded != (tc.wantSeen == len(eps)) {
+			t.Fatalf("%d blocked: degraded = %v", tc.blocked, ctx.Degraded)
+		}
+	}
+}
+
 // B has no recorded score at all — the cold-start case that let a mark
 // divert onto a DNS-dead host right after boot, before the first health
 // check: scoreForSelector would answer InitialScore, but Vouched must not.
