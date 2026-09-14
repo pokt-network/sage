@@ -626,6 +626,38 @@ func TestMethodBlocks_MethodNotFoundMarksTheFamily(t *testing.T) {
 	}
 }
 
+// A -32601 retry exists to reach another host. When the mark leaves no host
+// open for the method, the verdict is dropped and the answer delivered; with
+// another host still open, the retry stands.
+func TestMethodBlocks_MethodNotFoundRetryNeedsAnOpenHost(t *testing.T) {
+	reg := qos.NewRegistry()
+	if err := reg.Register("kava", familyPlugin{}); err != nil {
+		t.Fatal(err)
+	}
+	notFound := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = ctx.Endpoints[0]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{
+			MethodBlocking: true, ShouldRetry: true, Attribution: heuristic.AttrClient, Reason: heuristic.ReasonMethodNotFound,
+		}
+		ctx.Err = retryableErr("method not found")
+		return ctx.Err
+	})
+
+	ctx := methodCtx("eth_blockNumber", testEndpoints(1))
+	ctx.ServiceID = "kava"
+	err := MethodBlocks(methodblock.New(), reg, nil, newFlags("method_blocks"), nil, nil)(notFound).HandleRelay(ctx)
+	if err != nil || ctx.Err != nil || ctx.HeuristicResult.ShouldRetry {
+		t.Fatalf("one host, now blocked: err = %v, ctx.Err = %v, retry = %v; want the answer delivered", err, ctx.Err, ctx.HeuristicResult.ShouldRetry)
+	}
+
+	ctx = methodCtx("eth_blockNumber", testEndpoints(2))
+	ctx.ServiceID = "kava"
+	err = MethodBlocks(methodblock.New(), reg, nil, newFlags("method_blocks"), nil, nil)(notFound).HandleRelay(ctx)
+	if err == nil || !ctx.HeuristicResult.ShouldRetry {
+		t.Fatalf("a second host is open: err = %v, retry = %v; want the retry to stand", err, ctx.HeuristicResult.ShouldRetry)
+	}
+}
+
 // resolvingProvider is an endpoint provider that also says which host a face
 // is dialed from: the REST face of eps[0] lives on another host than the
 // address names.

@@ -94,10 +94,12 @@ func MethodBlocks(
 				// fetch and surfaces the error.
 			}
 
+			open := func(ep domain.EndpointAddr) bool {
+				return !store.Blocked(serviceID, blockHost(endpointProvider, ep, ctx.RPCType), method)
+			}
+			pool := ctx.Endpoints
 			if len(ctx.Endpoints) > 0 {
-				filtered := filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool {
-					return !store.Blocked(serviceID, blockHost(endpointProvider, ep, ctx.RPCType), method)
-				})
+				filtered := filterEndpoints(ctx.Endpoints, open)
 				bypass := len(filtered) == 0 ||
 					(len(filtered) < len(ctx.Endpoints) && !anyVouched(repSvc, ctx, filtered))
 				if bypass {
@@ -141,6 +143,18 @@ func MethodBlocks(
 						if events != nil {
 							events.RecordMethodBlockEvent(ctx.ServiceID, method, MethodBlockEventFamily)
 						}
+					}
+					// The heuristic promotes a -32601 on a catalogued method to
+					// a retry so another host can serve it. When the mark just
+					// set leaves no host in the pool open for the method, a
+					// retry can only reach one that already said no: on beta,
+					// 32 registrations on one host made one eth_blockNumber
+					// three paid relays for the same answer. Deliver this one.
+					if ctx.HeuristicResult.Reason == heuristic.ReasonMethodNotFound && ctx.HeuristicResult.ShouldRetry &&
+						len(filterEndpoints(pool, open)) == 0 {
+						ctx.HeuristicResult.ShouldRetry = false
+						ctx.Err = nil
+						err = nil
 					}
 				}
 			}
