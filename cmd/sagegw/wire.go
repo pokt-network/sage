@@ -514,6 +514,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		recorder.RecordReputationAttempt(serviceID, string(rpcType), string(signal), probe)
 	})
 
+	// Latency tie-break inside the winning tier: ask faster hosts more often
+	// among equals. Gated per relay like the cap; scores stay latency-blind.
+	repSvc.SetLatencyTieBreak(func(ctx context.Context, serviceID domain.ServiceID) bool {
+		return flags.IsEnabled(ctx, featureflag.FlagLatencyTieBreak, serviceID)
+	})
+
 	// Per-operator concentration cap. Gated per relay so an operator can turn
 	// it off at runtime — globally or for one service — without a deploy.
 	repSvc.SetOperatorCap(

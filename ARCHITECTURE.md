@@ -246,6 +246,7 @@ re-break as a repeat offender.
 | hedge | on | Parallel race (primary + delayed secondary) |
 | circuit_breaker | on | Domain-wide broken tracking |
 | method_blocks | on | Per-host, per-method memory: a host that timed out on a method stops receiving it for a TTL |
+| latency_tiebreak | on | Inside tier 1 of selection, a faster host is asked more often than a slower equal, by the per-key latency EWMA; scores stay latency-blind |
 | singleflight | on | Coalesce identical concurrent requests |
 | cache | on | LRU response cache for finalized data |
 | cross_validation | on | Cross-endpoint response digest comparison. Report-only: an outlier is logged, and nothing feeds reputation or the blocks — deciding which of three disagreeing endpoints is wrong needs its own design (`docs/next-steps.md`) |

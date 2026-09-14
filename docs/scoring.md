@@ -334,6 +334,18 @@ cold, and on beta the probe tail was 2.4× the traffic tail at p90 (500 ms vs
 `latency_profile` stay parsed, inert and reported at startup, and this section
 is the reason.
 
+**Amendment 2026-09-14: latency chooses among equals, still never scores.**
+The per-key traffic EWMA kept for the listing now also drives a tie-break
+inside tier 1 of selection (`latency_tiebreak` flag, on by default): among
+the hosts reputation calls equally good, one is picked with probability
+proportional to 1/latency, floored at 20 ms, an unmeasured host taking the
+tier's mean so it still gets traffic. Tiers, scores and the operator cap are
+untouched; the cap still chooses the operator, the tie-break chooses within
+it. The evidence: on the 2026-09-14 canary SAGE's upstream p50 on osmosis was
+0.074 s against PATH's 0.044 s for the same suppliers, because SAGE picked
+uniformly inside a tier while PATH's selection bands excluded slow hosts.
+A slow correct host keeps its score; it is asked less often.
+
 ### 7.3 The ratio, and the term the ratio cannot buy
 
 The additive term with `+5 / -25` has a break-even failure rate of

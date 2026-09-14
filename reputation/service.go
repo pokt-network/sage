@@ -256,6 +256,26 @@ func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.Servi
 	return s.effective(st), true
 }
 
+// latencyForSelector is the LatencyFn the selector's tie-break reads: the
+// per-key traffic latency EWMA, in milliseconds, when one exists.
+func (s *serviceImpl) latencyForSelector(_ context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (float64, bool) {
+	key := s.keyOf(ep, rpcType)
+	sh := s.shard(key)
+	sh.mu.RLock()
+	st, ok := sh.cache[serviceID][key]
+	sh.mu.RUnlock()
+	if !ok || st.LatencyMS <= 0 {
+		return 0, false
+	}
+	return st.LatencyMS, true
+}
+
+// SetLatencyTieBreak enables the selector's latency tie-break inside the
+// winning tier, gated per relay. Call at wire time.
+func (s *serviceImpl) SetLatencyTieBreak(gate func(context.Context, domain.ServiceID) bool) {
+	s.selector.SetLatencyTieBreak(s.latencyForSelector, gate)
+}
+
 // SetCollapseHook registers a callback fired whenever the selector's
 // pool-collapse guard has to serve an endpoint scoring below the minimum
 // threshold because no endpoint cleared it. Call at wire time.
