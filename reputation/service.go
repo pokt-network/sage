@@ -667,6 +667,11 @@ func (s *serviceImpl) ResetMatching(_ context.Context, serviceID domain.ServiceI
 	return reset, nil
 }
 
+// sameURL compares two identities ignoring one trailing slash.
+func sameURL(a, b string) bool {
+	return strings.TrimSuffix(a, "/") == strings.TrimSuffix(b, "/")
+}
+
 // resetTargets reports whether a reset naming target reaches key. A key is
 // "<identity>|<rpc type>", the identity being the dialed URL at the default
 // granularity, a host or a supplier address at the coarser ones, or the
@@ -690,7 +695,11 @@ func resetTargets(key, target string) bool {
 	if i := strings.LastIndexByte(key, '|'); i >= 0 {
 		ident = key[:i]
 	}
-	if ident == target {
+	// A trailing slash is not part of what a URL names: the key holds the
+	// dialed URL as the supplier staked it, and "https://host/" and
+	// "https://host" are the same backend. Ops reset nodefleet's sei hosts
+	// by URL on 2026-09-14 and matched none of the ones staked with a slash.
+	if sameURL(ident, target) {
 		return true
 	}
 	host := hostOf(ident)
@@ -706,7 +715,7 @@ func resetTargets(key, target string) bool {
 	}
 	ep := domain.EndpointAddr(target)
 	if url, err := ep.URL(); err == nil {
-		if url == ident || (host != "" && hostOf(url) == host) {
+		if sameURL(url, ident) || (host != "" && hostOf(url) == host) {
 			return true
 		}
 	}
