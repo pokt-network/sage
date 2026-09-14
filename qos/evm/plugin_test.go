@@ -189,8 +189,8 @@ func TestSelectEndpoints_ArchivalFiltering(t *testing.T) {
 	p := newTestPlugin(5)
 
 	// Two endpoints; "nonarchival" has told us it does not retain the state.
-	p.UpdateBlockHeight("archival", 100)
-	p.UpdateBlockHeight("nonarchival", 100)
+	p.UpdateBlockHeight("archival", 1000)
+	p.UpdateBlockHeight("nonarchival", 1000)
 	p.archival.set(hostKey("archival"), true)
 	p.archival.set(hostKey("nonarchival"), false)
 
@@ -729,8 +729,8 @@ func TestConfig_Validate(t *testing.T) {
 func TestSelectEndpoints_ArchivalUnobservedNotExcluded(t *testing.T) {
 	p := newTestPlugin(5)
 
-	p.UpdateBlockHeight("never-asked", 100)
-	p.UpdateBlockHeight("known-pruned", 100)
+	p.UpdateBlockHeight("never-asked", 1000)
+	p.UpdateBlockHeight("known-pruned", 1000)
 	p.archival.set(hostKey("known-pruned"), false)
 
 	addrs := domain.EndpointAddrList{"never-asked", "known-pruned"}
@@ -762,8 +762,8 @@ func TestSelectEndpoints_ArchivalObservationExpires(t *testing.T) {
 	// parse to the host "negative" and share one mark.
 	stale := domain.EndpointAddr("s1-https://stale.example")
 	fresh := domain.EndpointAddr("s2-https://fresh.example")
-	p.UpdateBlockHeight(stale, 100)
-	p.UpdateBlockHeight(fresh, 100)
+	p.UpdateBlockHeight(stale, 1000)
+	p.UpdateBlockHeight(fresh, 1000)
 	p.archival.setUntil(hostKey(stale), false, time.Now().Add(-time.Minute))
 	p.archival.setUntil(hostKey(fresh), false, time.Now().Add(archivalTTL))
 
@@ -870,11 +870,36 @@ func TestExtractData_ArchivalInference(t *testing.T) {
 // hex parse below it never sees it; treating it like "latest" made the deepest
 // query on the chain read as the shallowest.
 func TestIsArchivalRequest_Earliest(t *testing.T) {
-	if !isArchivalRequest("eth_getBalance", []byte(`["0xabc","earliest"]`)) {
+	if !isArchivalRequest("eth_getBalance", []byte(`["0xabc","earliest"]`), 1000) {
 		t.Fatal("earliest must count as archival")
 	}
-	if isArchivalRequest("eth_getBalance", []byte(`["0xabc","latest"]`)) {
+	if isArchivalRequest("eth_getBalance", []byte(`["0xabc","latest"]`), 1000) {
 		t.Fatal("latest must not count as archival")
+	}
+}
+
+// A numbered block near the head is recent state any full node serves, not
+// archival: counting it archival excluded base's full nodes from every
+// numbered request once one of them answered a truly old query "pruned"
+// (mainnet, 2026-09-14). Unknown head keeps the old rule.
+func TestIsArchivalRequest_NearHeadIsNotArchival(t *testing.T) {
+	const head = 1000
+	cases := []struct {
+		block string
+		head  uint64
+		want  bool
+	}{
+		{"0x3e8", head, false}, // the head itself
+		{"0x368", head, false}, // exactly nearHeadBlocks behind
+		{"0x367", head, true},  // one further: archival
+		{"0x1", head, true},    // deep history
+		{"0x3f0", head, false}, // a block ahead of our perceived head
+		{"0x3e8", 0, true},     // head unknown: every number is archival, as before
+	}
+	for _, c := range cases {
+		if got := isArchivalRequest("eth_call", []byte(`[{"to":"0x0"},"`+c.block+`"]`), c.head); got != c.want {
+			t.Errorf("block %s head %d: archival = %v, want %v", c.block, c.head, got, c.want)
+		}
 	}
 }
 
@@ -939,7 +964,7 @@ func TestArchivalMemory_SharedAcrossAddressesOfOneHost(t *testing.T) {
 	b := domain.EndpointAddr("pokt1b-https://pkp-og.example.net")
 	other := domain.EndpointAddr("pokt1c-https://r001.example.xyz")
 	for _, ep := range []domain.EndpointAddr{a, b, other} {
-		p.UpdateBlockHeight(ep, 100)
+		p.UpdateBlockHeight(ep, 1000)
 	}
 	req := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`)
 	missing := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"missing trie node abc"}}`)
