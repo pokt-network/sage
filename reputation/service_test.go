@@ -251,6 +251,82 @@ func TestService_ResetScore(t *testing.T) {
 	}
 }
 
+// A reset reaches only what is recorded, and by every spelling an operator
+// has to hand: the listing's key, the URL, the host, the endpoint address.
+// A target that matches nothing creates nothing and says so.
+func TestService_ResetMatching(t *testing.T) {
+	svc, _ := newTestServiceStore()
+	defer svc.Stop()
+	ctx := context.Background()
+	svcID := domain.ServiceID("osmosis")
+	ep := domain.EndpointAddr("pokt1abc-https://rm02.kalorius.tech")
+	other := domain.EndpointAddr("pokt1def-https://rm01.kalorius.tech")
+	for _, rt := range []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeREST} {
+		require.NoError(t, svc.RecordSignal(ctx, svcID, ep, rt, NewCriticalErrorSignal("bad", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, svcID, other, rt, NewCriticalErrorSignal("bad", 0)))
+	}
+	restKey := svc.keyOf(ep, domain.RPCTypeREST)
+	jsonKey := svc.keyOf(ep, domain.RPCTypeJSONRPC)
+
+	// The listing's key resets that face only.
+	keys, err := svc.ResetMatching(ctx, svcID, restKey)
+	require.NoError(t, err)
+	assert.Equal(t, []string{restKey}, keys)
+	score, _ := svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
+	assert.NotEqual(t, 100.0, score, "the other face must keep its penalty")
+
+	// Host, URL and endpoint address reset every face of that host and
+	// nothing of the other host.
+	for _, target := range []string{"rm02.kalorius.tech", "https://rm02.kalorius.tech", string(ep)} {
+		for _, rt := range []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeREST} {
+			require.NoError(t, svc.RecordSignal(ctx, svcID, ep, rt, NewCriticalErrorSignal("bad", 0)))
+		}
+		keys, err := svc.ResetMatching(ctx, svcID, target)
+		require.NoError(t, err, target)
+		assert.Equal(t, []string{jsonKey, restKey}, keys, target)
+		score, _ = svc.GetScore(ctx, svcID, other, domain.RPCTypeREST)
+		assert.NotEqual(t, 100.0, score, "%s must not reach rm01", target)
+	}
+
+	// Nothing matched: nothing created.
+	before, _ := svc.GetScores(ctx, svcID)
+	_, err = svc.ResetMatching(ctx, svcID, "https://rm02.kalorius.tech|rest|json_rpc")
+	require.ErrorIs(t, err, ErrNoScore)
+	_, err = svc.ResetMatching(ctx, svcID, "rm03.kalorius.tech")
+	require.ErrorIs(t, err, ErrNoScore)
+	require.ErrorIs(t, svc.ResetScore(ctx, svcID, "pokt1zzz-https://rm03.kalorius.tech"), ErrNoScore)
+	after, _ := svc.GetScores(ctx, svcID)
+	assert.Equal(t, len(before), len(after), "an unmatched reset must not create keys")
+}
+
+func TestResetTargets(t *testing.T) {
+	key := "https://rm02.kalorius.tech|rest"
+	for _, target := range []string{
+		key, "https://rm02.kalorius.tech", "rm02.kalorius.tech", "rm02.kalorius.tech:443",
+		"pokt1abc-https://rm02.kalorius.tech", "pokt1abc-https://rm02.kalorius.tech:443/v1",
+	} {
+		assert.True(t, resetTargets(key, target), target)
+	}
+	for _, target := range []string{
+		"", "https://rm02.kalorius.tech|json_rpc", "https://rm02.kalorius.tech|rest|json_rpc",
+		"rm01.kalorius.tech", "https://rm01.kalorius.tech", "kalorius.tech", "pokt1abc-https://rm01.kalorius.tech",
+		"https://rm02.kalorius.tech/v1",
+	} {
+		assert.False(t, resetTargets(key, target), target)
+	}
+	// Coarser granularities: the identity is a host or a supplier.
+	assert.True(t, resetTargets("rm02.kalorius.tech|rest", "pokt1abc-https://rm02.kalorius.tech"))
+	assert.True(t, resetTargets("pokt1abc|rest", "pokt1abc-https://rm02.kalorius.tech"))
+	assert.True(t, resetTargets("pokt1abc|rest", "pokt1abc"))
+	assert.False(t, resetTargets("pokt1abc|rest", "pokt1abcd"))
+	// Per-endpoint: the identity is the whole address.
+	assert.True(t, resetTargets("pokt1abc-https://rm02.kalorius.tech|rest", "rm02.kalorius.tech"))
+	assert.True(t, resetTargets("pokt1abc-https://rm02.kalorius.tech|rest", "pokt1abc-https://rm02.kalorius.tech"))
+	// A URL whose host carries a dash is not an endpoint address.
+	assert.True(t, resetTargets("https://eu-s-01.example.com|rest", "https://eu-s-01.example.com"))
+	assert.False(t, resetTargets("https://s-01.example.com|rest", "https://eu-s-01.example.com"))
+}
+
 // TestService_Vouched exercises the beta-observed cold-start hole: right
 // after boot, before any signal, an endpoint has no recorded score, and
 // scoreForSelector would substitute InitialScore — enough to clear the

@@ -2,6 +2,8 @@ package router
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -345,11 +347,15 @@ func (a *AdminAPI) handleGetReputation(w http.ResponseWriter, req *http.Request)
 	writeJSON(w, http.StatusOK, scores)
 }
 
-// handleResetReputation returns one endpoint to the initial score.
+// handleResetReputation returns one endpoint's recorded scores to the initial
+// score.
 //
 // The reset spans every RPC type: scores are kept per (identity, RPC type), but
 // an operator resetting an endpoint means the endpoint, not whichever protocol
-// they happened to name.
+// they happened to name. The target may be a host, a URL, an endpoint address,
+// or a key as GET /admin/reputation/{serviceID} lists it — the last form
+// resets that one face. Only keys that exist are touched; a target matching
+// none is a 404, so a typo cannot create a key.
 //
 // Reach for this when an endpoint was penalised for something since fixed and
 // you do not want to wait for probation traffic to rehabilitate it.
@@ -361,16 +367,34 @@ func (a *AdminAPI) handleResetReputation(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	if err := a.repService.ResetScore(req.Context(), serviceID, endpoint); err != nil {
+	// Only recorded keys are reset (reputation.ResetMatching): a target that
+	// matches nothing is a 404 and creates nothing. The response names the
+	// keys touched when the service can say.
+	var keys []string
+	var err error
+	if kr, ok := a.repService.(reputation.KeyResetter); ok {
+		keys, err = kr.ResetMatching(req.Context(), serviceID, string(endpoint))
+	} else {
+		err = a.repService.ResetScore(req.Context(), serviceID, endpoint)
+	}
+	if errors.Is(err, reputation.ErrNoScore) {
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("no recorded score on %s matches %q; GET /admin/reputation/%s lists the keys, and a host, a URL, an endpoint address or a listed key all name one", serviceID, endpoint, serviceID))
+		return
+	}
+	if err != nil {
 		a.logger.Error("admin: reset reputation", "service", serviceID, "endpoint", endpoint, "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "failed to reset score")
 		return
 	}
+	if keys == nil {
+		keys = []string{}
+	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"service_id": string(serviceID),
 		"endpoint":   string(endpoint),
 		"status":     "reset",
+		"keys":       keys,
 	})
 }
 

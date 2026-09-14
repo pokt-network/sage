@@ -132,6 +132,9 @@ func (m *mockRepService) SelectSpread(_ context.Context, _ domain.ServiceID, end
 
 func (m *mockRepService) ResetScore(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) error {
 	key := string(serviceID) + ":" + string(endpoint)
+	if _, ok := m.scores[key]; !ok {
+		return reputation.ErrNoScore
+	}
 	m.scores[key] = 100
 	return nil
 }
@@ -500,12 +503,35 @@ func TestAdminResetReputation(t *testing.T) {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 
-	var out map[string]string
+	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
 	if out["status"] != "reset" {
 		t.Errorf("status = %q, want reset", out["status"])
+	}
+}
+
+// A target no recorded score matches is a 404 and creates nothing: the
+// ops-observed phantom keys came from a reset named by a listing key.
+func TestAdminResetReputation_UnknownTargetIs404(t *testing.T) {
+	api, srv := newAdminServer(t)
+	before := len(api.repService.(*mockRepService).scores)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/admin/reputation/reset/eth/https://nobody.example|rest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	if got := len(api.repService.(*mockRepService).scores); got != before {
+		t.Fatalf("an unmatched reset created %d key(s)", got-before)
 	}
 }
 

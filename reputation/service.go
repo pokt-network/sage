@@ -2,7 +2,10 @@ package reputation
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,9 +37,10 @@ type Service interface {
 	// load (e.g., open WS bridges). Used when many concurrent connections
 	// must be distributed to prevent supplier concentration.
 	SelectSpread(ctx context.Context, serviceID domain.ServiceID, endpoints domain.EndpointAddrList, rpcType domain.RPCType, activeLoad map[domain.EndpointAddr]int) domain.EndpointAddr
-	// ResetScore resets an endpoint's score to the initial value across every
-	// RPC type. An operator resetting an endpoint means the endpoint, not one
-	// of the protocols it happens to serve.
+	// ResetScore resets an endpoint's recorded scores to the initial value
+	// across every RPC type. An operator resetting an endpoint means the
+	// endpoint, not one of the protocols it happens to serve. Only keys that
+	// exist are touched; ErrNoScore says none matched.
 	ResetScore(ctx context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) error
 	// Vouched reports whether an endpoint has a recorded score for this RPC
 	// type, and that score clears the selector's probation threshold. An
@@ -603,33 +607,124 @@ func (s *serviceImpl) SelectSpread(ctx context.Context, serviceID domain.Service
 	return pickWeightedByInverseLoad(candidates, activeLoad)
 }
 
-// ResetScore resets the score the endpoint maps to. At a coarser granularity
-// than per-endpoint this necessarily resets every endpoint sharing that key —
-// resetting one supplier on a shared backend cannot mean anything else, since
-// the shared backend is the thing being scored.
-func (s *serviceImpl) ResetScore(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) error {
-	for _, rpcType := range domain.AllRPCTypes() {
-		repKey := s.keyOf(endpoint, rpcType)
-		sh := s.shard(repKey)
-		sh.mu.Lock()
-		svcStates := sh.cache[serviceID]
-		if svcStates == nil {
-			svcStates = make(map[string]State)
-			sh.cache[serviceID] = svcStates
-		}
-		fresh := State{Score: s.cfg.InitialScore}
-		svcStates[repKey] = fresh
-		sh.mu.Unlock()
+// ErrNoScore is returned by a reset that matched no recorded score. Nothing
+// is created for an unmatched target: until 2026-09-14 a reset named by the
+// key string an operator had copied from the listing ("https://host|rest")
+// was pushed through the key function once per RPC type and left four
+// phantom keys ("https://host|rest|json_rpc", …) at the initial score.
+var ErrNoScore = errors.New("no recorded score matches the target")
 
-		select {
-		case s.writeCh <- writeOp{key: scoreKey(serviceID, repKey), state: fresh, force: true}:
-		default:
-			// Said, not swallowed: the local cache is reset either way, but
-			// the other replicas learn of it through storage.
-			return fmt.Errorf("reset of %s applied locally, but the storage write was dropped (write queue full); other replicas keep the old score", endpoint)
+// KeyResetter is the optional half of Service the admin reset route prefers:
+// the same reset as ResetScore, reporting which keys it touched.
+type KeyResetter interface {
+	ResetMatching(ctx context.Context, serviceID domain.ServiceID, target string) ([]string, error)
+}
+
+// ResetScore resets every recorded score the endpoint reaches (see
+// resetTargets). At a coarser granularity than per-endpoint this necessarily
+// resets every endpoint sharing that key — resetting one supplier on a shared
+// backend cannot mean anything else, since the shared backend is the thing
+// being scored.
+func (s *serviceImpl) ResetScore(ctx context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) error {
+	_, err := s.ResetMatching(ctx, serviceID, string(endpoint))
+	return err
+}
+
+// ResetMatching implements KeyResetter: every recorded key of the service
+// that resetTargets says target names goes back to the initial score, in
+// the cache and, forced past the leader gate, in storage. The keys are
+// returned sorted; ErrNoScore when there were none.
+func (s *serviceImpl) ResetMatching(_ context.Context, serviceID domain.ServiceID, target string) ([]string, error) {
+	var reset []string
+	dropped := false
+	fresh := State{Score: s.cfg.InitialScore}
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		for key := range sh.cache[serviceID] {
+			if !resetTargets(key, target) {
+				continue
+			}
+			sh.cache[serviceID][key] = fresh
+			reset = append(reset, key)
+			select {
+			case s.writeCh <- writeOp{key: scoreKey(serviceID, key), state: fresh, force: true}:
+			default:
+				dropped = true
+			}
+		}
+		sh.mu.Unlock()
+	}
+	if len(reset) == 0 {
+		return nil, fmt.Errorf("%w: %q on %s", ErrNoScore, target, serviceID)
+	}
+	sort.Strings(reset)
+	if dropped {
+		// Said, not swallowed: the local cache is reset either way, but the
+		// other replicas learn of it through storage.
+		return reset, fmt.Errorf("reset of %s applied locally, but a storage write was dropped (write queue full); other replicas may keep the old score", target)
+	}
+	return reset, nil
+}
+
+// resetTargets reports whether a reset naming target reaches key. A key is
+// "<identity>|<rpc type>", the identity being the dialed URL at the default
+// granularity, a host or a supplier address at the coarser ones, or the
+// whole endpoint address at per-endpoint. target may be:
+//   - the key itself, as the listing shows it;
+//   - the identity ("https://rm02.kalorius.tech");
+//   - the identity's host ("rm02.kalorius.tech"), with or without a port;
+//   - an endpoint address ("pokt1abc-https://rm02.kalorius.tech"), matched
+//     by its URL, its host, or its supplier.
+//
+// An RPC type in the target ("…|rest") is honoured through the exact form
+// only, so a listing key resets one face and a URL resets all of them.
+func resetTargets(key, target string) bool {
+	if target == "" {
+		return false
+	}
+	if key == target {
+		return true
+	}
+	ident := key
+	if i := strings.LastIndexByte(key, '|'); i >= 0 {
+		ident = key[:i]
+	}
+	if ident == target {
+		return true
+	}
+	host := hostOf(ident)
+	if host != "" && host == hostOf(target) && !strings.ContainsAny(target, "/|") {
+		return true
+	}
+	// An endpoint address: "<supplier>-<url>". A bare URL also contains a
+	// dash on occasion (eu-s-01…), so only treat the target as an address
+	// when the dash sits before the scheme, or there is no scheme at all.
+	scheme := strings.Index(target, "://")
+	if scheme >= 0 && !strings.Contains(target[:scheme], "-") {
+		return false
+	}
+	ep := domain.EndpointAddr(target)
+	if url, err := ep.URL(); err == nil {
+		if url == ident || (host != "" && hostOf(url) == host) {
+			return true
 		}
 	}
-	return nil
+	return ep.Supplier() == ident
+}
+
+// hostOf is the host of a URL or a bare host, scheme, path and port removed.
+func hostOf(s string) string {
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndexByte(s, ':'); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }
 
 // Vouched reports whether an endpoint has a recorded score for the given RPC

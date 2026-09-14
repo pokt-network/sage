@@ -99,7 +99,7 @@ failureThreshold) here.
 | `PUT` | `/admin/flags/{flag}/{serviceID}` | Toggles a feature flag for one service only. |
 | `DELETE` | `/admin/flags/{flag}/{serviceID}` | Removes a per-service override, so the service follows the global value again. |
 | `GET` | `/admin/reputation/{serviceID}` | Returns every reputation state for a service. |
-| `POST` | `/admin/reputation/reset/{serviceID}/{endpoint...}` | Returns one endpoint to the initial score. |
+| `POST` | `/admin/reputation/reset/{serviceID}/{endpoint...}` | Returns one endpoint's recorded scores to the initial score. |
 | `GET` | `/admin/chain-state/{serviceID}` | Reads what a service's plugin believes about its chain: the perceived head, and the latest height each endpoint reported. |
 | `POST` | `/admin/chain-state/clear/{serviceID}` | Discards the QoS state a service's plugin has learned: block consensus (perceived height, external floor) and its per-endpoint QoS store (block heights, chain-id observations, archival marks — see qos.StateResetter). |
 | `GET` | `/admin/timeline/{serviceID}` | Returns the recent reputation events for every endpoint of a service, newest last. |
@@ -201,11 +201,15 @@ keys to numeric scores.
 
 ### `POST /admin/reputation/reset/{serviceID}/{endpoint...}`
 
-Returns one endpoint to the initial score.
+Returns one endpoint's recorded scores to the initial
+score.
 
 The reset spans every RPC type: scores are kept per (identity, RPC type), but
 an operator resetting an endpoint means the endpoint, not whichever protocol
-they happened to name.
+they happened to name. The target may be a host, a URL, an endpoint address,
+or a key as GET /admin/reputation/{serviceID} lists it — the last form
+resets that one face. Only keys that exist are touched; a target matching
+none is a 404, so a typo cannot create a key.
 
 Reach for this when an endpoint was penalised for something since fixed and
 you do not want to wait for probation traffic to rehabilitate it.

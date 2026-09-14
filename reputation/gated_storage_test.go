@@ -3,6 +3,8 @@ package reputation
 import (
 	"context"
 	"testing"
+
+	"github.com/pokt-network/sage/domain"
 )
 
 func TestLeaderOnlyStorage_DropsFollowerWrites(t *testing.T) {
@@ -36,7 +38,11 @@ func TestResetScore_WritesThroughOnAFollower(t *testing.T) {
 	svc.Start()
 
 	ctx := context.Background()
-	if err := svc.ResetScore(ctx, "eth", "ep1"); err != nil {
+	ep := domain.EndpointAddr("pokt1abc-https://rm.example.net")
+	if err := svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ResetScore(ctx, "eth", ep); err != nil {
 		t.Fatal(err)
 	}
 	svc.Stop() // drains the write queue
