@@ -20,6 +20,13 @@ func newKillableEchoServer(t *testing.T) (*httptest.Server, func()) {
 	t.Helper()
 	var mu sync.Mutex
 	var conns []*websocket.Conn
+	// registered closes once the first connection is recorded. The dialer's
+	// handshake completes before this handler runs its next line, so a kill
+	// straight after the bridge starts could find no connection to close and
+	// the bridge would never lose its endpoint: a CI-only flake under -race
+	// (TestBridge_RebindHandlerErrorClosesClientWith1012, three runs to 2026-09-14).
+	registered := make(chan struct{})
+	var once sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -29,6 +36,7 @@ func newKillableEchoServer(t *testing.T) (*httptest.Server, func()) {
 		mu.Lock()
 		conns = append(conns, conn)
 		mu.Unlock()
+		once.Do(func() { close(registered) })
 		for {
 			mt, msg, err := conn.ReadMessage()
 			if err != nil {
@@ -40,6 +48,11 @@ func newKillableEchoServer(t *testing.T) (*httptest.Server, func()) {
 		}
 	}))
 	kill := func() {
+		select {
+		case <-registered:
+		case <-time.After(5 * time.Second):
+			t.Error("killable server: no connection was ever registered")
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		for _, c := range conns {
