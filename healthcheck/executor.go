@@ -68,6 +68,14 @@ type Executor struct {
 	source   ProbeSource
 	recorder ResultRecorder
 
+	// peerSource is another SAGE instance's probe feed, read-only; see
+	// SetPeerSource. peerSeen is when each check was last covered by it,
+	// written by the feed's goroutine and read by runOnce's, hence peerMu.
+	peerSource ProbeSource
+	peerMaxAge func(domain.ServiceID) time.Duration
+	peerMu     sync.Mutex
+	peerSeen   map[probeKey]time.Time
+
 	// warm tracks readiness: the pod can steer selection once it has applied
 	// health-check results (leader probes or follower stream) for enough of
 	// the configured services. Before that a fresh pod selects blind and
@@ -401,30 +409,41 @@ func (e *Executor) Start(ctx context.Context) {
 		}
 	}()
 
-	// The feed of other replicas' probe results. Restarted after every
-	// return with a short pause: a Redis blip must not leave a follower
-	// blind until the process restarts.
+	// The feed of other replicas' probe results.
 	if e.source != nil {
-		e.wg.Add(1)
-		go func() {
-			defer safego.Recover(e.logger, "healthcheck.probe.source.loop")
-			defer e.wg.Done()
-			for ctx.Err() == nil {
-				safego.Run(e.logger, "healthcheck.probe.source", func() {
-					if err := e.source.Run(ctx, func(r ProbeResult) {
-						r.Source = ResultSourceStream
-						e.applyResult(ctx, r)
-					}); err != nil && ctx.Err() == nil {
-						e.logger.Warn("healthcheck: probe source stopped, restarting", "error", err)
-					}
-				})
-				select {
-				case <-ctx.Done():
-				case <-time.After(time.Second):
-				}
-			}
-		}()
+		e.runFeed(ctx, e.source, "healthcheck.probe.source", func(r ProbeResult) {
+			r.Source = ResultSourceStream
+			e.applyResult(ctx, r)
+		})
 	}
+	// Another instance's results, read-only; every replica applies them.
+	if e.peerSource != nil {
+		e.runFeed(ctx, e.peerSource, "healthcheck.probe.peer", func(r ProbeResult) {
+			e.applyPeerResult(ctx, r)
+		})
+	}
+}
+
+// runFeed runs a probe feed until ctx is done, restarting it after every
+// return with a short pause: a Redis blip must not leave a replica blind
+// until the process restarts.
+func (e *Executor) runFeed(ctx context.Context, src ProbeSource, name string, apply func(ProbeResult)) {
+	e.wg.Add(1)
+	go func() {
+		defer safego.Recover(e.logger, name+".loop")
+		defer e.wg.Done()
+		for ctx.Err() == nil {
+			safego.Run(e.logger, name, func() {
+				if err := src.Run(ctx, apply); err != nil && ctx.Err() == nil {
+					e.logger.Warn("healthcheck: probe feed stopped, restarting", "feed", name, "error", err)
+				}
+			})
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+			}
+		}
+	}()
 }
 
 // Stop cancels the background loop and waits for all goroutines to exit.
@@ -533,6 +552,12 @@ func (e *Executor) runOnce(ctx context.Context) {
 					if !e.due(probeKey{serviceID, group.key, check.Name}, interval, tick, now, next) {
 						continue
 					}
+					// After due, for the reason the traffic skip below is: a
+					// check the other instance ran recently is covered, not
+					// overdue.
+					if e.coveredByPeer(ctx, probeKey{serviceID, group.key, check.Name}, interval, now) {
+						continue
+					}
 					// After due, not before: the skip decision needs this
 					// cycle's traffic reading recorded for every backend that
 					// was going to be probed, and a check whose own interval
@@ -565,6 +590,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 	}
 
 	e.lastRun = next
+	e.prunePeerSeen(now)
 	if e.recorder != nil {
 		e.recorder.RecordHealthCheckCycleProbes(issued)
 	}

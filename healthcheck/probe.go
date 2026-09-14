@@ -51,6 +51,9 @@ const (
 	ResultSourceProbe ResultSource = "probe"
 	// ResultSourceStream: another replica sent it and published the result.
 	ResultSourceStream ResultSource = "stream"
+	// ResultSourcePeer: another SAGE instance sent it, read from its stream
+	// through active_health_checks.peer_probe_stream.
+	ResultSourcePeer ResultSource = "peer"
 )
 
 // maxProbeBodyBytes caps the response body a result carries. Health-check

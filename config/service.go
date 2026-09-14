@@ -869,12 +869,44 @@ type HealthCheckConfig struct {
 	// probe.
 	MinTrafficSignals uint64 `yaml:"min_traffic_signals"`
 
+	// PeerProbeStream reads another SAGE instance's health-check results,
+	// read-only, so this instance does not probe again what the other has
+	// just probed. See PeerProbeStreamConfig. A SAGE key; PATH has no
+	// equivalent.
+	PeerProbeStream PeerProbeStreamConfig `yaml:"peer_probe_stream"`
+
 	// Local defines per-service health checks in the config file. They are
 	// additional to whatever the service's QoS plugin already checks, never a
 	// replacement: the plugin's checks are what make block height and chain ID
 	// tracking work, and a config that silently switched them off would degrade
 	// endpoint selection without saying so.
 	Local []ServiceHealthChecks `yaml:"local"`
+}
+
+// PeerProbeStreamConfig points at another SAGE instance's probe stream on the
+// same Redis server.
+//
+// Every replica of this instance applies the other's results as if its own
+// leader had probed them, re-pointed at this instance's own registrations of
+// the same backend URL, and the leader skips a check the other ran within
+// max_age. Whatever the other does not cover — a service it does not serve, a
+// backend outside its session, or everything once its results go stale
+// because it stopped publishing — this instance still probes itself, so there
+// is no failover to operate. The other instance needs no change: it publishes
+// its stream anyway.
+type PeerProbeStreamConfig struct {
+	// Enabled turns the feed on. Off by default: trusting another instance's
+	// verdicts is a decision, not a default.
+	Enabled bool `yaml:"enabled"`
+	// DB is the Redis logical database the other instance publishes in
+	// (its redis_config.db), on this instance's redis_config server. It must
+	// differ from this instance's own db: reading its own stream as a peer
+	// would make the leader skip its own probes.
+	DB int `yaml:"db"`
+	// MaxAge is how long one of the other's results stands in for this
+	// instance's own check. Zero means the check's own interval, which is the
+	// age at which this instance would have probed anyway.
+	MaxAge time.Duration `yaml:"max_age"`
 }
 
 // ServiceHealthChecks is the set of configured checks for one service.

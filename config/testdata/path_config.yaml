@@ -153,6 +153,10 @@ gateway_config:
     min_traffic_signals: 20
     probe_timeout: 5s
     max_workers: 8
+    peer_probe_stream:
+      enabled: false
+      db: 7
+      max_age: 150s
     local:
       - service_id: eth
         check_interval: 30s

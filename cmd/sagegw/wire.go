@@ -734,6 +734,33 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		healthExe.SetProbeSink(probeStream)
 		healthExe.SetProbeSource(probeStream)
 	}
+	// Another instance's probe results, read-only, on the same Redis server:
+	// what it probed recently this instance does not probe again. An empty
+	// producer id, because every entry there is someone else's.
+	if peer := cfg.Gateway.HealthChecks.PeerProbeStream; peer.Enabled {
+		if redisClient == nil {
+			app.StartupWarnings = append(app.StartupWarnings,
+				"active_health_checks.peer_probe_stream is enabled but Redis is not available: this instance probes everything itself")
+		} else {
+			peerClient := redis.NewClient(&redis.Options{
+				Addr:         cfg.Redis.Address,
+				Password:     cfg.Redis.Password,
+				DB:           peer.DB,
+				PoolSize:     2,
+				DialTimeout:  cfg.Redis.DialTimeout,
+				ReadTimeout:  cfg.Redis.ReadTimeout,
+				WriteTimeout: cfg.Redis.WriteTimeout,
+			})
+			// max_age is live through PUT /admin/tuning/health_checks.peer_max_age,
+			// and the skipping itself through the peer_probe_skip flag.
+			peerMaxAge := peer.MaxAge
+			healthExe.SetPeerSource(healthcheck.NewRedisProbeStream(peerClient, "", 2*healthCheckInterval),
+				func(svc domain.ServiceID) time.Duration {
+					return tuningStore.Duration(tuning.KnobPeerProbeMaxAge, svc, peerMaxAge)
+				})
+			logger.Info("health checks: reading a peer instance's probe stream", "db", peer.DB, "max_age", peer.MaxAge)
+		}
+	}
 
 	// Warm the session cache before this pod can be marked ready. A hydrated
 	// pod goes ready in seconds, well before the first probe cycle, and
@@ -978,6 +1005,7 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobRelayTimeout, cfg.Gateway.Defaults.Timeout.RelayTimeout.String())
 	store.SetBase(tuning.KnobHealthCheckInterval, effectiveHealthCheckInterval(cfg).String())
 	store.SetBase(tuning.KnobHealthCheckWorkers, strconv.Itoa(cfg.Gateway.HealthChecks.MaxWorkers))
+	store.SetBase(tuning.KnobPeerProbeMaxAge, cfg.Gateway.HealthChecks.PeerProbeStream.MaxAge.String())
 	store.SetBase(tuning.KnobMethodBlockTTL, cfg.Gateway.MethodBlocks.EffectiveTTL().String())
 	store.SetBase(tuning.KnobMethodBlockClientTTL, cfg.Gateway.MethodBlocks.EffectiveClientTTL().String())
 	store.SetBase(tuning.KnobMethodBlockEscalation, strconv.Itoa(cfg.Gateway.MethodBlocks.EffectiveEscalation()))
