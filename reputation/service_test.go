@@ -316,6 +316,12 @@ func TestResetTargets(t *testing.T) {
 	}
 	// Coarser granularities: the identity is a host or a supplier.
 	assert.True(t, resetTargets("rm02.kalorius.tech|rest", "pokt1abc-https://rm02.kalorius.tech"))
+	// A URL staked with a trailing slash is the same backend as without one,
+	// in either direction (nodefleet's sei hosts, 2026-09-14).
+	assert.True(t, resetTargets("https://dopokt.example.net/|json_rpc", "https://dopokt.example.net"))
+	assert.True(t, resetTargets("https://igniter.example.net|json_rpc", "https://igniter.example.net/"))
+	assert.True(t, resetTargets("https://dopokt.example.net/|json_rpc", "pokt1abc-https://dopokt.example.net"))
+	assert.False(t, resetTargets("https://dopokt.example.net/v1|json_rpc", "https://dopokt.example.net"))
 	assert.True(t, resetTargets("pokt1abc|rest", "pokt1abc-https://rm02.kalorius.tech"))
 	assert.True(t, resetTargets("pokt1abc|rest", "pokt1abc"))
 	assert.False(t, resetTargets("pokt1abc|rest", "pokt1abcd"))

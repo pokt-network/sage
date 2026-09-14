@@ -102,6 +102,7 @@ func (a *AdminAPI) setTuning(w http.ResponseWriter, req *http.Request, serviceID
 		"knob":       knob,
 		"service_id": string(serviceID),
 		"value":      body.Value,
+		"persisted":  a.tuning.Persistent(),
 	})
 }
 
@@ -143,6 +144,7 @@ func (a *AdminAPI) clearTuning(w http.ResponseWriter, req *http.Request, service
 		"knob":       knob,
 		"service_id": string(serviceID),
 		"cleared":    cleared,
+		"persisted":  a.tuning.Persistent(),
 	})
 }
 

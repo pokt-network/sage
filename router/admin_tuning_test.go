@@ -40,8 +40,14 @@ func TestAdminTuning_SetAndClear(t *testing.T) {
 	defer srv.Close()
 
 	// A global override, then a narrower per-service one.
-	if status, _ := doTuning(t, srv.URL, http.MethodPut, "/admin/tuning/"+tuning.KnobRetryMaxRetries, `{"value":"5"}`); status != http.StatusOK {
+	status, body := doTuning(t, srv.URL, http.MethodPut, "/admin/tuning/"+tuning.KnobRetryMaxRetries, `{"value":"5"}`)
+	if status != http.StatusOK {
 		t.Fatalf("set global: status %d", status)
+	}
+	// Every override route says where the change lives; this one did not
+	// until 2026-09-14 (ops, setting sei's relay timeout on mainnet).
+	if _, ok := body["persisted"].(bool); !ok {
+		t.Fatalf("set response = %v, want a persisted field", body)
 	}
 	if status, _ := doTuning(t, srv.URL, http.MethodPut, "/admin/tuning/"+tuning.KnobRetryMaxRetries+"/eth", `{"value":"1"}`); status != http.StatusOK {
 		t.Fatalf("set per-service: status %d", status)
@@ -57,9 +63,12 @@ func TestAdminTuning_SetAndClear(t *testing.T) {
 	}
 
 	// Clearing the global must leave the narrower statement standing.
-	status, body := doTuning(t, srv.URL, http.MethodDelete, "/admin/tuning/"+tuning.KnobRetryMaxRetries, "")
+	status, body = doTuning(t, srv.URL, http.MethodDelete, "/admin/tuning/"+tuning.KnobRetryMaxRetries, "")
 	if status != http.StatusOK {
 		t.Fatalf("clear global: status %d", status)
+	}
+	if _, ok := body["persisted"].(bool); !ok {
+		t.Fatalf("clear response = %v, want a persisted field", body)
 	}
 	if cleared, _ := body["cleared"].(bool); !cleared {
 		t.Fatal("clearing an override that existed should report cleared=true")
