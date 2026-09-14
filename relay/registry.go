@@ -86,7 +86,8 @@ func (r *MiddlewareRegistry) BuildChain(order []string) (Handler, error) {
 		if mw == nil {
 			return nil, fmt.Errorf("factory for middleware %q returned nil", name)
 		}
-		mws = append(mws, mw)
+		// Every stage is timed under its registered name; see StageTimes.
+		mws = append(mws, timed(name, mw))
 	}
 
 	// Reaching the terminal means the chain ran out of middlewares with nobody

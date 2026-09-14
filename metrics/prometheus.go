@@ -61,6 +61,7 @@ type Recorder struct {
 	heuristicVerdicts     *prometheus.CounterVec
 	externalSourceFails   *prometheus.CounterVec
 	clientLatency         *prometheus.HistogramVec
+	stageSeconds          *prometheus.CounterVec
 	healthCheckResults    *prometheus.CounterVec
 	healthCheckSkipped    *prometheus.CounterVec
 	healthCheckCycle      prometheus.Histogram
@@ -268,6 +269,16 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "status"},
 		),
+		// stage is the registered middleware name (relay/chain_order.go) or
+		// router_write: a closed set.
+		stageSeconds: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "stage_seconds_total",
+				Help:      "Seconds spent in each middleware stage, exclusive of the stages nested inside it, summed over client requests, by service and stage (the registered middleware name, or router_write for the response write). Divide by sage_client_requests_total for the mean per request. send_relay is the upstream call; everything else is SAGE's own time — the split the per-attempt relay latency cannot show.",
+			},
+			[]string{"service_id", "stage"},
+		),
 	}
 
 	r.healthCheckResults = prometheus.NewCounterVec(
@@ -341,6 +352,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.heuristicVerdicts,
 		r.externalSourceFails,
 		r.clientLatency,
+		r.stageSeconds,
 	)
 
 	r.initHealthCheckSkipped(knownServices)
@@ -617,6 +629,15 @@ func (r *Recorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCT
 // wall time, by the status the client saw.
 func (r *Recorder) RecordClientLatency(serviceID domain.ServiceID, status int, latency time.Duration) {
 	r.clientLatency.WithLabelValues(r.services.serviceValue(serviceID), strconv.Itoa(status)).Observe(latency.Seconds())
+}
+
+// RecordStageTime satisfies router.ClientMetrics: one request's exclusive
+// time in one stage.
+func (r *Recorder) RecordStageTime(serviceID domain.ServiceID, stage string, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	r.stageSeconds.WithLabelValues(r.services.serviceValue(serviceID), stage).Add(d.Seconds())
 }
 
 // RecordExternalSourceFailure satisfies healthcheck.ExternalSourceFailureRecorder:

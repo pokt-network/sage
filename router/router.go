@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,9 @@ type ClientMetrics interface {
 	// RecordClientLatency observes one client request's wall time, by the
 	// status the client saw; sage_client_latency_seconds.
 	RecordClientLatency(serviceID domain.ServiceID, status int, latency time.Duration)
+	// RecordStageTime adds one request's exclusive time in a middleware
+	// stage (or the router's own write); sage_stage_seconds_total.
+	RecordStageTime(serviceID domain.ServiceID, stage string, d time.Duration)
 }
 
 // Warmup reports whether the gateway can steer endpoint selection yet — i.e.
@@ -306,6 +310,16 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 			r.clientMetrics.RecordClientRequest(ctx.ServiceID, rw.Status())
 			r.clientMetrics.RecordClientLatency(ctx.ServiceID, rw.Status(), time.Since(start))
 			r.recordRPCType(ctx)
+			// Where the wall time went, stage by stage. The sum over stages
+			// plus the upstream call is the client latency above; the gap
+			// between the two on the canary was the question this answers.
+			stages := ctx.Stages.Exclusive()
+			for stage, d := range stages {
+				r.clientMetrics.RecordStageTime(ctx.ServiceID, stage, d)
+			}
+			if r.logger.Enabled(ctx.Ctx, slog.LevelDebug) {
+				r.logger.Debug("relay stages", "service", ctx.ServiceID, "total_ms", time.Since(start).Milliseconds(), "stages", stageSummary(stages))
+			}
 		}()
 	}
 
@@ -357,10 +371,36 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 		}
 
 		rw.SetStatusCode(status)
+		writeStart := time.Now()
 		if writeErr := rw.Write(body); writeErr != nil {
 			r.logger.Error("failed to write relay response", "error", writeErr)
 		}
+		ctx.Stages.Add("router_write", time.Since(writeStart))
 	}
+}
+
+// stageSummary renders stage times as "name=ms" pairs for the debug line,
+// largest first.
+func stageSummary(stages map[string]time.Duration) string {
+	type kv struct {
+		name string
+		d    time.Duration
+	}
+	items := make([]kv, 0, len(stages))
+	for name, d := range stages {
+		if d > 0 {
+			items = append(items, kv{name, d})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].d > items[j].d })
+	var b strings.Builder
+	for i, it := range items {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%s=%.2fms", it.name, float64(it.d.Microseconds())/1000)
+	}
+	return b.String()
 }
 
 // responseContentType names the body's media type. JSON-RPC and CometBFT are

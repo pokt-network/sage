@@ -51,7 +51,12 @@ type Context struct {
 	// when a header was sent the two can differ, which is the one place the
 	// detector is graded against a client that knows.
 	RPCTypeDetected domain.RPCType
-	Plugin          qos.Plugin // nil if no plugin registered for the service
+
+	// Stages accumulates each middleware's exclusive time for this request;
+	// set by NewContext, shared by clones, read by the router at the end.
+	// See StageTimes.
+	Stages *StageTimes
+	Plugin qos.Plugin // nil if no plugin registered for the service
 
 	// Set by QoS parsing
 	Payloads []domain.Payload
@@ -143,6 +148,7 @@ func NewContext(ctx context.Context, req *http.Request, logger *slog.Logger, wri
 		HTTPRequest: req,
 		Logger:      logger,
 		Writer:      writer,
+		Stages:      NewStageTimes(),
 	}
 }
 

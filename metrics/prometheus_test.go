@@ -115,6 +115,10 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.HistogramOpts{Namespace: "sage_test", Name: "client_latency_seconds", Buckets: relayLatencyBuckets},
 			[]string{"service_id", "status"},
 		),
+		stageSeconds: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "stage_seconds_total"},
+			[]string{"service_id", "stage"},
+		),
 	}
 	reg.MustRegister(
 		r.relayTotal,
@@ -745,4 +749,18 @@ func histogramCount(t *testing.T, h prometheus.Observer) uint64 {
 		t.Fatal(err)
 	}
 	return m.GetHistogram().GetSampleCount()
+}
+
+func TestRecordStageTime_SumsPerStage(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordStageTime("eth", "parse", 2*time.Millisecond)
+	r.RecordStageTime("eth", "parse", 3*time.Millisecond)
+	r.RecordStageTime("eth", "router_write", 0) // nothing to add
+	c, err := r.stageSeconds.GetMetricWithLabelValues("eth", "parse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got < 0.0049 || got > 0.0051 {
+		t.Errorf("stage_seconds_total{eth,parse} = %v, want 0.005", got)
+	}
 }

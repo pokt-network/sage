@@ -865,6 +865,7 @@ type recordingClientRec struct {
 	rpcTypes   []rpcTypeRecord
 	mismatches []rpcTypeMismatch
 	latencies  []clientLatencyRecord
+	stages     map[string]time.Duration
 }
 
 type clientLatencyRecord struct {
@@ -874,6 +875,13 @@ type clientLatencyRecord struct {
 
 func (r *recordingClientRec) RecordClientLatency(_ domain.ServiceID, status int, latency time.Duration) {
 	r.latencies = append(r.latencies, clientLatencyRecord{status, latency})
+}
+
+func (r *recordingClientRec) RecordStageTime(_ domain.ServiceID, stage string, d time.Duration) {
+	if r.stages == nil {
+		r.stages = map[string]time.Duration{}
+	}
+	r.stages[stage] += d
 }
 
 func (r *recordingClientRec) RecordClientRequest(_ domain.ServiceID, status int) {
