@@ -141,16 +141,26 @@ func (p *Plugin) NormalizeMethod(payload domain.Payload) string {
 	return qos.MethodOther
 }
 
-// MethodFamily implements qos.MethodFamilyLister: an EVM-catalogued method
-// belongs to the EVM face, and a json_rpc host that refuses one of them is a
-// CometBFT node with no EVM, so the whole catalogue is the family. On the
-// 2026-09-13 canary two thirds of kava's json_rpc hosts were such nodes and
-// the method blocks learned them one method at a time, one paid failed
-// relay per host and method. CometBFT and REST methods have no family: a
+// MethodFamily implements qos.MethodFamilyLister: a json_rpc host that
+// refuses a method EVERY EVM node serves is a CometBFT node with no EVM, so
+// the whole EVM catalogue is the family. On the 2026-09-13 canary two thirds
+// of kava's json_rpc hosts were such nodes and the method blocks learned them
+// one method at a time, one paid failed relay per host and method.
+//
+// Only those methods. Refusing any other catalogued method says the node
+// lacks that method, not the EVM: sei's EVM does not implement net_listening,
+// and when any EVM method counted, 145 net_listening refusals in the first
+// minutes of mainnet traffic (2026-09-14) blocked every EVM method on
+// nodefleet's healthy sei hosts for 30 minutes and sent the service to the
+// one supplier answering 408. CometBFT and REST methods have no family: a
 // node missing one CometBFT method says nothing about the others.
 func (p *Plugin) MethodFamily(method string) []string {
-	if evm.KnownMethod(method) {
+	if evmFaceProbes[method] {
 		return evm.KnownMethods()
 	}
 	return nil
 }
+
+// evmFaceProbes are the methods any EVM node answers, so a refusal of one is
+// evidence of no EVM at all rather than of one missing method.
+var evmFaceProbes = map[string]bool{"eth_blockNumber": true, "eth_chainId": true}

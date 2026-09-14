@@ -25,6 +25,23 @@ func TestTemplatePath(t *testing.T) {
 	}
 }
 
+// A -32601 marks the whole EVM family only for a method every EVM node
+// serves. sei's EVM lacks net_listening, and when any EVM method counted
+// that one refusal blocked every EVM method on healthy hosts (2026-09-14).
+func TestMethodFamily_OnlyForMethodsEveryEVMServes(t *testing.T) {
+	p := NewPlugin(nil, Config{})
+	for _, m := range []string{"eth_blockNumber", "eth_chainId"} {
+		if fam := p.MethodFamily(m); len(fam) == 0 {
+			t.Errorf("MethodFamily(%q) is empty: a node refusing it has no EVM", m)
+		}
+	}
+	for _, m := range []string{"net_listening", "web3_clientVersion", "debug_traceTransaction", "eth_getLogs", "status", "/cosmos/bank/v1beta1/params"} {
+		if fam := p.MethodFamily(m); len(fam) != 0 {
+			t.Errorf("MethodFamily(%q) = %d methods, want none: refusing it says nothing about the rest", m, len(fam))
+		}
+	}
+}
+
 func TestNormalizeMethod(t *testing.T) {
 	p := NewPlugin(nil, Config{})
 	jsonrpc := func(m string) domain.Payload { return domain.NewPayload([]byte(`{}`), domain.RPCTypeCometBFT, m) }
