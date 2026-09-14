@@ -592,7 +592,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg := relay.NewMiddlewareRegistry()
 	mwReg.Register(relay.MWShadow, func() relay.Middleware { return middleware.Shadow(flags) })
 	mwReg.Register(relay.MWTracing, func() relay.Middleware { return middleware.Tracing(flags) })
-	mwReg.Register(relay.MWTimeout, func() relay.Middleware { return middleware.Timeout(timeoutFn) })
+	// relay_timeout is per attempt; the request deadline covers every attempt.
+	mwReg.Register(relay.MWTimeout, func() relay.Middleware {
+		return middleware.Timeout(middleware.AttemptScaledTimeout(timeoutFn, retryFn))
+	})
 	mwReg.Register(relay.MWRequestID, func() relay.Middleware { return middleware.RequestID() })
 	mwReg.Register(relay.MWClientIP, func() relay.Middleware { return middleware.ClientIP(trustedProxies) })
 	mwReg.Register(relay.MWMetrics, func() relay.Middleware { return middleware.Metrics(recorder) })
@@ -622,7 +625,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWCrossValidate, func() relay.Middleware {
 		return middleware.CrossValidate(flags, crossVal)
 	})
-	mwReg.Register(relay.MWRetry, func() relay.Middleware { return middleware.RetryWithRecorder(flags, retryFn, recorder) })
+	mwReg.Register(relay.MWRetry, func() relay.Middleware {
+		return middleware.RetryWithRecorder(flags, retryFn, recorder, middleware.RetryVouchedBy(repSvc))
+	})
 	mwReg.Register(relay.MWHedge, func() relay.Middleware { return middleware.HedgeWithRecorder(flags, retryFn, recorder) })
 	mwReg.Register(relay.MWSupplierAffinity, func() relay.Middleware {
 		return middleware.SupplierAffinity(flags, 10*time.Second)

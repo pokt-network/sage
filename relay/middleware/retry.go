@@ -10,6 +10,7 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/relay"
+	"github.com/pokt-network/sage/reputation"
 )
 
 // RetryRecorder is notified once per retry attempt with a coarse reason.
@@ -17,6 +18,20 @@ import (
 type RetryRecorder interface {
 	RecordRetry(serviceID domain.ServiceID, reason string)
 	RecordRetryResolution(serviceID domain.ServiceID, reason, outcome string)
+}
+
+// RetryOption configures RetryWithRecorder.
+type RetryOption func(*retryOptions)
+
+type retryOptions struct {
+	repSvc reputation.Service
+}
+
+// RetryVouchedBy lets the operator-aware retry check that the operators it
+// narrows to still hold an endpoint reputation vouches for. Without it the
+// narrowing always applies, as before.
+func RetryVouchedBy(repSvc reputation.Service) RetryOption {
+	return func(o *retryOptions) { o.repSvc = repSvc }
 }
 
 // Retry returns a middleware that retries failed relay attempts up to
@@ -29,7 +44,11 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 
 // RetryWithRecorder returns the retry middleware, recording sage_retry_total
 // on each retry when rec is non-nil.
-func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec RetryRecorder) relay.Middleware {
+func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec RetryRecorder, opts ...RetryOption) relay.Middleware {
+	var o retryOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) (retErr error) {
 			if !flags.IsEnabled(ctx.Ctx, featureflag.FlagRetry, ctx.ServiceID) {
@@ -210,8 +229,19 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					// preference, not a filter: ExcludeOperators returns the
 					// list untouched when every remaining candidate belongs to
 					// an operator we have tried.
+					//
+					// Never into junk: when the operators left have no endpoint
+					// reputation vouches for but the tried operators still do,
+					// the preference yields. On mainnet base (2026-09-14) the
+					// operators left after one full-node try were a relay miner
+					// answering 503 and one answering 408, and the pool-collapse
+					// fallback sent them the retry while two healthy operators
+					// sat excluded. Same guard as MethodBlocks (anyVouched).
 					if operatorAware {
-						available = available.ExcludeOperators(triedOperators)
+						narrowed := available.ExcludeOperators(triedOperators)
+						if anyVouched(o.repSvc, ctx, narrowed) || !anyVouched(o.repSvc, ctx, available) {
+							available = narrowed
+						}
 					}
 					ctx.Endpoints = available
 

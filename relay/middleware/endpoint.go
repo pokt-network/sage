@@ -29,9 +29,21 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 			// Apply chain-specific filtering via QoS plugin.
 			if ctx.Plugin != nil {
 				filtered, err := ctx.Plugin.SelectEndpoints(ctx.Endpoints, ctx.Payloads)
-				if err == nil && len(filtered) > 0 {
+				switch {
+				case err == nil && len(filtered) > 0 && len(filtered) < len(ctx.Endpoints) &&
+					!anyVouched(repSvc, ctx, filtered) && anyVouched(repSvc, ctx, ctx.Endpoints):
+					// Never into junk: the plugin's filters (block height, the
+					// archival filter) left only endpoints reputation does not
+					// vouch for, while it removed ones it does. On mainnet base
+					// (2026-09-14) the archival filter excluded every full node
+					// known to be pruned and left two relay miners that never
+					// answer — so never marked — to serve the request with a
+					// 503 or a 408. The healthy node's own answer, even "state
+					// pruned", is the better outcome. Same guard as MethodBlocks.
+					ctx.Degraded = true
+				case err == nil && len(filtered) > 0:
 					candidates = filtered
-				} else {
+				default:
 					// Graceful degraded fallback: use original endpoints.
 					ctx.Degraded = true
 				}

@@ -117,7 +117,7 @@ var Knobs = []Knob{
 	{
 		Name:        KnobRelayTimeout,
 		Kind:        KindDuration,
-		Description: "Ceiling on one relay, applied by the timeout middleware around the whole chain.",
+		Description: "Ceiling on one relay attempt to one endpoint. The request as a whole may take relay_timeout × (max_retries + 1), and each attempt gets a full relay_timeout, as PATH gives it.",
 		Min:         100,
 		Max:         300_000,
 		Unit:        "ms",
