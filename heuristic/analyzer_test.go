@@ -16,10 +16,10 @@ func TestAnalyze_Tier0_HTTPStatus(t *testing.T) {
 		wantAttribution  ErrorAttribution
 	}{
 		{
-			name:             "500 server error",
+			name:             "500 server error — retry, major, no breaker vote",
 			statusCode:       500,
 			wantRetry:        true,
-			wantCircuitBreak: true,
+			wantCircuitBreak: false,
 			wantPenalize:     true,
 			wantAttribution:  AttrSupplier,
 		},
@@ -27,7 +27,7 @@ func TestAnalyze_Tier0_HTTPStatus(t *testing.T) {
 			name:             "502 bad gateway",
 			statusCode:       502,
 			wantRetry:        true,
-			wantCircuitBreak: true,
+			wantCircuitBreak: false,
 			wantPenalize:     true,
 			wantAttribution:  AttrSupplier,
 		},
@@ -35,7 +35,7 @@ func TestAnalyze_Tier0_HTTPStatus(t *testing.T) {
 			name:             "503 service unavailable",
 			statusCode:       503,
 			wantRetry:        true,
-			wantCircuitBreak: true,
+			wantCircuitBreak: false,
 			wantPenalize:     true,
 			wantAttribution:  AttrSupplier,
 		},
@@ -373,13 +373,18 @@ func TestAnalyze_RetryAndCircuitBreakAreIndependent(t *testing.T) {
 		t.Error("429: ShouldCircuitBreak should be false")
 	}
 
-	// 500: retry=true, circuit_break=true
+	// 500: retry=true, circuit_break=false, major. One 5xx is a weak
+	// statement about a host; the breaker's votes are for verdicts that say
+	// the host itself is gone.
 	result500 := Analyze([]byte(`{}`), 500, domain.RPCTypeJSONRPC)
 	if !result500.ShouldRetry {
 		t.Error("500: ShouldRetry should be true")
 	}
-	if !result500.ShouldCircuitBreak {
-		t.Error("500: ShouldCircuitBreak should be true")
+	if result500.ShouldCircuitBreak {
+		t.Error("500: ShouldCircuitBreak should be false")
+	}
+	if result500.PenaltySeverity != SeverityMajor || result500.Reason != "http_5xx" {
+		t.Errorf("500: severity %q reason %q, want major http_5xx", result500.PenaltySeverity, result500.Reason)
 	}
 
 	// 400: retry=false, circuit_break=false

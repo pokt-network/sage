@@ -200,7 +200,7 @@ behavior rather than giving up the attempt.
 
 | Tier | What | Examples |
 |---|---|---|
-| 0. HTTP Status | Status code | 5xx → retry + circuit break, 429 → retry only |
+| 0. HTTP Status | Status code | 5xx → retry + major penalty (no breaker vote), 429 → retry + minor |
 | 1. Structural | Response shape | Empty body, HTML error page, XML |
 | 2. Protocol | JSON-RPC parsing (gjson) | Error codes, `result:null + error`, fabricated responses |
 | 3. Indicators | Content patterns | "missing trie node", "connection refused" |
