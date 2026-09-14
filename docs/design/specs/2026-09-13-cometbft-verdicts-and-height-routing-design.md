@@ -279,3 +279,32 @@ pnf-ops `organizations/pnf/apps/sage/RUNTIME-OVERRIDES.md`.
 Open now: the ~70 ms in-process median gap; nodefleet outreach on kava;
 `evm_chain_id` for the Cosmos EVM face; RPC type in the method-block key
 if a cross-face mark ever shows; the merge.
+
+## Addendum 2026-09-14: the latency dig, closed
+
+Three images (`d4453b9` per-stage timing, `c3da9a8` flag snapshot, `36fb1c1`
+send_relay phases and the hedge accounting fix) answered where SAGE's
+client latency goes.
+
+- In-process overhead: 30 ms per request canary-wide before, 7 ms after,
+  6.5 of which is `parse` reading the request body. The 23 ms that went was
+  the feature-flag store's per-key Redis cache, whose 5 s TTL expired
+  between requests on every service below 0.2 req/s, one or two round
+  trips per flag-gated stage per relay. Flags are now served from a polled
+  snapshot; propagation pod to pod is under a second.
+- Inside `send_relay`: signing is ~0.3 ms per attempt everywhere; verify is
+  ~1 ms except osmosis REST at 3.7 ms per attempt (body deserialisation);
+  prepare is nothing. The round trip to the miner is ~96% of the upstream
+  call. SAGE compute is not the gap.
+- What remains against PATH on osmosis: SAGE relay p50 0.074 s vs PATH
+  0.044 s (same suppliers), and SAGE client-minus-relay 64 ms vs PATH 3 ms.
+  The first is host choice: SAGE picks uniformly inside a score tier and
+  latency has reporting power only (`docs/scoring.md` §7.2), while PATH's
+  selection bands exclude slow hosts. The second is retry serialisation at
+  1.88 attempts per request, mostly miner 502s now graded `upstream_5xx`.
+  Both are policy, not overhead, and both are now measurable per stage.
+
+Left as measured: the phase counters are recorded on successful attempts
+only, so their sum trails `send_relay` by the failed attempts' time
+(osmosis 70 ms/req, arb-one 6 ms); the gap is itself the cost of failed
+attempts and is readable as such.
