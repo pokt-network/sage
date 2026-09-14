@@ -758,7 +758,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 				func(svc domain.ServiceID) time.Duration {
 					return tuningStore.Duration(tuning.KnobPeerProbeMaxAge, svc, peerMaxAge)
 				})
-			logger.Info("health checks: reading a peer instance's probe stream", "db", peer.DB, "max_age", peer.MaxAge)
+			// A startup note, not an Info line: the canary runs its file at
+			// "error", so an Info line here was never seen (ops, 2026-09-14).
+			app.StartupNotes = append(app.StartupNotes, fmt.Sprintf(
+				"health checks: reading a peer instance's probe stream in Redis db %d (max_age %s; 0 means each check's interval); checks it ran recently are not probed here", peer.DB, peer.MaxAge))
 		}
 	}
 
