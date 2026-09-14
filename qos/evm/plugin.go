@@ -247,7 +247,7 @@ func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
 func (p *Plugin) IsArchivalRequest(payloads []domain.Payload) bool {
 	for _, payload := range payloads {
 		params := gjson.GetBytes(payload.Bytes(), "params").Raw
-		if isArchivalRequest(payload.Method(), json.RawMessage(params)) {
+		if isArchivalRequest(payload.Method(), json.RawMessage(params), p.consensus.PerceivedBlock()) {
 			return true
 		}
 	}
@@ -276,7 +276,7 @@ func (p *Plugin) IsArchivalEndpoint(endpoint domain.EndpointAddr) bool {
 // here is isArchivalRequest, which is why that cannot happen.
 func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, request, response []byte) (archival bool, observed bool) {
 	params := gjson.GetBytes(request, "params").Raw
-	if !isArchivalRequest(method, json.RawMessage(params)) {
+	if !isArchivalRequest(method, json.RawMessage(params), p.consensus.PerceivedBlock()) {
 		return false, false
 	}
 

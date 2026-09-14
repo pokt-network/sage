@@ -88,9 +88,22 @@ func extractChainID(response []byte) (string, error) {
 	return s, nil
 }
 
-// isArchivalRequest returns true if the method + params indicate an archival data request.
-// A request is archival when it targets a specific historical block (not a recent-state tag).
-func isArchivalRequest(method string, params json.RawMessage) bool {
+// nearHeadBlocks is how far behind the head a numbered block may be and still
+// be recent state rather than archival: geth-family full nodes keep the last
+// 128 blocks of state, so any of them answers there.
+//
+// Before this every hex block number counted as archival. On mainnet base
+// (2026-09-14) clients query recent blocks by number constantly; a full node
+// that once answered a truly old query "pruned" was then excluded from ALL
+// numbered requests for the archival TTL, leaving only the relay miners that
+// never answer (and so were never marked) — which returned 503 and 408.
+const nearHeadBlocks = 128
+
+// isArchivalRequest returns true if the method + params indicate an archival
+// data request: a specific block more than nearHeadBlocks behind head, or
+// genesis. head is the perceived chain head; 0 means unknown, and every
+// numbered block then counts as archival, as before.
+func isArchivalRequest(method string, params json.RawMessage, head uint64) bool {
 	if !methodsWithBlockParam[method] {
 		return false
 	}
@@ -129,9 +142,12 @@ func isArchivalRequest(method string, params json.RawMessage) bool {
 		return true
 	}
 
-	// If it's a hex number, it refers to a specific block — archival.
-	_, err := parseHexUint64(blockParam)
-	return err == nil
+	// A hex number names a specific block: archival unless it is near the head.
+	n, err := parseHexUint64(blockParam)
+	if err != nil {
+		return false
+	}
+	return head == 0 || n+nearHeadBlocks < head
 }
 
 // archivalOutcome is what a response to an archival request reveals about the
