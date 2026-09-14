@@ -254,6 +254,9 @@ func validate(cfg *Config) error {
 	if err := validateRPCTypeFallbacks(cfg.Gateway.AllServices()); err != nil {
 		return err
 	}
+	if err := validateAllStaticRoutes(cfg.Gateway); err != nil {
+		return err
+	}
 	return nil
 }
 

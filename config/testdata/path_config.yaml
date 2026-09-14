@@ -215,6 +215,16 @@ gateway_config:
       max_latency: 3s
     timeout_config:
       relay_timeout: 15s
+    static_routes:
+      - path: /identity
+        body: "0xfixturepayoutaddress"
+      - path: /info
+        methods: ["GET"]
+        status_code: 200
+        content_type: "application/json"
+        body: '{"gateway":"fixture"}'
+        headers:
+          Cache-Control: "max-age=60"
     reputation_config:
       enabled: true
       storage_type: "memory"
@@ -251,6 +261,9 @@ gateway_config:
         - pokt1blockedsupplierexample
       rpc_type_fallbacks:
         comet_bft: json_rpc
+      static_routes:
+        - path: /identity
+          body: "0xfixtureethpayout"
       type: evm
       rpc_types: ["json_rpc", "websocket"]
       sync_allowance: 25
