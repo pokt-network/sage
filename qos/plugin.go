@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 )
 
 // ErrWrongChain is returned by DataExtractor.ExtractData when an endpoint
@@ -157,6 +158,18 @@ type ExternalFloorSetter interface {
 // every eth_ method will get the same answer. Nil means no inference.
 type MethodFamilyLister interface {
 	MethodFamily(method string) []string
+}
+
+// VerdictRefiner is implemented by a plugin that can re-attribute a heuristic
+// verdict from the request's shape: the analyzer sees a status and a body,
+// the plugin knows which routes a node answers with that status by design.
+// The cosmos plugin answers for the REST paths a gRPC-gateway node turns a
+// query failure into a 5xx on (a cosmwasm smart query against the wrong
+// contract, a transaction lookup at a height the node does not hold): the
+// answer is the chain's, delivered to the client, nobody scored. The
+// refined verdict replaces the analyzer's; ok false leaves it as it was.
+type VerdictRefiner interface {
+	RefineVerdict(payload domain.Payload, result heuristic.AnalysisResult) (refined heuristic.AnalysisResult, ok bool)
 }
 
 // SyncAllowanceTuner is implemented by plugins whose block-height filter has

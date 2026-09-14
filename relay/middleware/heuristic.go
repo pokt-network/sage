@@ -33,6 +33,15 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middle
 				// The flag gate below is deliberately not applied: grading a
 				// transport error is attribution, not response analysis.
 				result := heuristic.AnalyzeTransportError(err, ctx.Ctx.Err())
+				// The plugin may know the route better than the analyzer
+				// (qos.VerdictRefiner): a verdict refined to "deliver" must
+				// also stop Retry, which keys on the error's own flag.
+				if refineVerdict(registry, ctx, &result) && !result.ShouldRetry && domain.IsRetryable(err) {
+					if re, ok := err.(*domain.RelayError); ok {
+						err = domain.NewRelayError(re.Kind, re.Message, re.Cause, false)
+						ctx.Err = err
+					}
+				}
 				ctx.HeuristicResult = &result
 				return err
 			}
@@ -76,6 +85,11 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middle
 				result.ShouldRetry = true
 			}
 
+			// The plugin's word on the route: a 5xx the node answers by
+			// design to a query it cannot serve is the chain's answer, not
+			// the host's failure (qos.VerdictRefiner).
+			refineVerdict(registry, ctx, &result)
+
 			ctx.HeuristicResult = &result
 
 			if result.ShouldRetry {
@@ -92,6 +106,28 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middle
 			return nil
 		})
 	}
+}
+
+// refineVerdict lets the service's plugin re-attribute the verdict from the
+// request's shape (qos.VerdictRefiner); reports whether it did.
+func refineVerdict(registry *qos.Registry, ctx *relay.Context, result *heuristic.AnalysisResult) bool {
+	if len(ctx.Payloads) == 0 {
+		return false
+	}
+	plugin := ctx.Plugin
+	if plugin == nil && registry != nil {
+		plugin = registry.Get(ctx.ServiceID)
+	}
+	refiner, ok := plugin.(qos.VerdictRefiner)
+	if !ok {
+		return false
+	}
+	refined, ok := refiner.RefineVerdict(ctx.Payloads[0], *result)
+	if !ok {
+		return false
+	}
+	*result = refined
+	return true
 }
 
 // namedMethod reports whether the request's method is one the service's

@@ -38,6 +38,8 @@ Callers type-assert and skip the feature when it is absent.
 | `CoalescenceClassifier` | mark methods safe to deduplicate in flight |
 | `CachePolicy` | per-method response cache TTLs |
 | `MethodNormalizer` | name a payload's method from a bounded catalogue, for method-aware state and metric labels |
+| `MethodFamilyLister` | say which other catalogued methods a host refusing one will refuse too, so one `-32601` marks the family (the cosmos plugin: the EVM catalogue on a chain's EVM face) |
+| `VerdictRefiner` | re-attribute a heuristic verdict from the request's shape: the routes a node answers 5xx to by design when the query cannot be served (the cosmos plugin: cosmwasm smart queries, transactions by block) become the chain's answer, delivered, not retried, nobody scored |
 | `RPCTypeClassifier` | decide which declared RPC type a request is relayed as when the chain fronts several surfaces on one service; consulted by `parse` after generic detection, overridden by the client's `RPC-Type` header. The cosmos plugin uses it for CometBFT's two faces (JSON-RPC POST and HTTP GET), which Pocket suppliers stake as `json_rpc` and `rest` without a `comet_bft` stake |
 | `ExternalFloorSetter` | take a trusted outside height (`services[].external_block_sources`) as a floor under the perceived head |
 | `EndpointHeightLister` | list the latest height each endpoint reported, for `GET /admin/chain-state/{service}` |
