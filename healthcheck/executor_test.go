@@ -1426,6 +1426,26 @@ func TestSeedCoverage_IgnoresUnconfiguredServices(t *testing.T) {
 	}
 }
 
+// The probe stream is shared too: a replica with another config publishes
+// results for services this pod does not serve, and those must not warm it.
+func TestApplyResult_StreamResultForUnconfiguredServiceDoesNotWarm(t *testing.T) {
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{
+		"eth": {}, "poly": {}, "kava": {}, "sei": {},
+	}}
+	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{}, sessions,
+		probeableRegistry(t, "eth", "poly", "kava", "sei"), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
+
+	for _, svc := range []domain.ServiceID{"eth", "poly", "avax", "moonriver"} {
+		exec.applyResult(context.Background(), ProbeResult{
+			ServiceID: svc, Endpoint: "pokt1x-https://a.example", Check: "c",
+			TransportError: "dial", Source: ResultSourceStream,
+		})
+	}
+	if exec.Warm() {
+		t.Error("stream results for services not in this config must not count towards coverage")
+	}
+}
+
 // --- warm-up progress logging ---
 
 // logWarmProgress is the only explanation a 503 readiness gate ever gives, so

@@ -1052,15 +1052,9 @@ func (e *Executor) ensureWarmThresholdLocked() {
 // result does. Without this a pod can load every score it needs and still sit
 // 503 for minutes waiting to observe them again.
 //
-// Only configured services count. Storage is shared across a fleet and outlives
-// any one config, so a service this pod does not serve must not inflate the
-// coverage its readiness is measured against.
+// Only configured services count; markCovered enforces that.
 func (e *Executor) SeedCoverage(services []domain.ServiceID) {
-	configured := e.sessions.ConfiguredServices()
 	for _, svc := range services {
-		if _, ok := configured[svc]; !ok {
-			continue
-		}
 		e.markCovered(svc)
 	}
 }
@@ -1155,8 +1149,16 @@ func (e *Executor) logWarmProgress() {
 
 // markCovered records that a result has been applied for a service and latches
 // warm once the threshold is met.
+//
+// Only configured services count. Reputation storage and the probe stream are
+// shared across a fleet and outlive any one config, so a service this pod
+// does not serve — seeded from storage, or probed by a replica with another
+// config — must not inflate the coverage its readiness is measured against.
 func (e *Executor) markCovered(svc domain.ServiceID) {
 	if e.warm.Load() {
+		return
+	}
+	if _, ok := e.sessions.ConfiguredServices()[svc]; !ok {
 		return
 	}
 	e.warmMu.Lock()
