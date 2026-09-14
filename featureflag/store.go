@@ -23,7 +23,10 @@ type FlagStore interface {
 	// GetAll returns all flag states (global + per-service overrides).
 	GetAll(ctx context.Context) (map[string]FlagState, error)
 
-	// Delete removes a flag globally, or a per-service override if serviceID is non-empty.
+	// Delete removes the global value an operator set (serviceID empty),
+	// leaving per-service overrides in place, or removes one per-service
+	// override (serviceID set). The flag then follows the next layer down:
+	// the config file's value, else DefaultFlags.
 	Delete(ctx context.Context, flag string, serviceID domain.ServiceID) error
 
 	// DeleteGlobal removes only the global value of a flag, leaving every

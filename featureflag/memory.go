@@ -111,8 +111,8 @@ func (s *MemoryStore) GetAll(_ context.Context) (map[string]FlagState, error) {
 
 // Delete clears a setting so the flag falls back to the next level down. With
 // a serviceID it removes only that service's override; with an empty serviceID
-// it removes the global setting and every service override, returning the flag
-// to its compiled default.
+// it removes the global setting, returning the flag to its compiled default
+// for every service without an override of its own.
 func (s *MemoryStore) Delete(_ context.Context, flag string, serviceID domain.ServiceID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -127,8 +127,11 @@ func (s *MemoryStore) Delete(_ context.Context, flag string, serviceID domain.Se
 		return nil
 	}
 
+	// Global only: the per-service overrides were set by their own route and
+	// are removed by their own route, as in RedisStore. Until 2026-09-14 this
+	// store dropped them too, so the two stores disagreed on what a global
+	// DELETE meant.
 	delete(s.global, flag)
-	delete(s.serviceOverrides, flag)
 	return nil
 }
 

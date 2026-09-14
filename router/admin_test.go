@@ -23,10 +23,13 @@ import (
 // mockFlagStore implements featureflag.FlagStore in memory.
 type mockFlagStore struct {
 	flags map[string]featureflag.FlagState
+	// globalDeleted records a global DELETE per flag: the mock keeps the
+	// entry so its per-service overrides survive, as the real stores do.
+	globalDeleted map[string]bool
 }
 
 func newMockFlagStore() *mockFlagStore {
-	return &mockFlagStore{flags: make(map[string]featureflag.FlagState)}
+	return &mockFlagStore{flags: make(map[string]featureflag.FlagState), globalDeleted: make(map[string]bool)}
 }
 
 func (m *mockFlagStore) IsEnabled(_ context.Context, flag string, _ domain.ServiceID) bool {
@@ -68,7 +71,14 @@ func (m *mockFlagStore) DeleteGlobal(ctx context.Context, flag string) error {
 
 func (m *mockFlagStore) Delete(_ context.Context, flag string, serviceID domain.ServiceID) error {
 	if serviceID == "" {
-		delete(m.flags, flag)
+		m.globalDeleted[flag] = true
+		s := m.flags[flag]
+		if len(s.ServiceOverrides) == 0 {
+			delete(m.flags, flag)
+			return nil
+		}
+		s.Enabled = false
+		m.flags[flag] = s
 		return nil
 	}
 	s := m.flags[flag]
@@ -282,6 +292,39 @@ func TestAdminDeleteFlagForService(t *testing.T) {
 	}
 	if _, ok := store.flags["retry"].ServiceOverrides["eth"]; ok {
 		t.Fatal("override still in force after DELETE; the service must follow the global value again")
+	}
+}
+
+// The global DELETE removes the value the global PUT set and leaves the
+// per-service overrides alone; the flag follows its default again.
+func TestAdminDeleteFlagGlobal(t *testing.T) {
+	api, srv := newAdminServer(t)
+	store := api.flags.(*mockFlagStore)
+	ctx := context.Background()
+	if err := store.Set(ctx, "retry", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetForService(ctx, "retry", "eth", true); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/admin/flags/retry", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !store.globalDeleted["retry"] {
+		t.Fatal("global value still in force after DELETE; the flag must follow its default again")
+	}
+	if _, ok := store.flags["retry"].ServiceOverrides["eth"]; !ok {
+		t.Fatal("the global DELETE removed a per-service override; those have their own route")
 	}
 }
 

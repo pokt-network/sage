@@ -95,6 +95,7 @@ failureThreshold) here.
 |---|---|---|
 | `GET` | `/admin/flags` | Returns the effective state of every known feature flag. |
 | `PUT` | `/admin/flags/{flag}` | Toggles a feature flag globally. |
+| `DELETE` | `/admin/flags/{flag}` | Removes the global value PUT /admin/flags/{flag} set, so the flag follows the config file's value or the compiled default again. |
 | `PUT` | `/admin/flags/{flag}/{serviceID}` | Toggles a feature flag for one service only. |
 | `DELETE` | `/admin/flags/{flag}/{serviceID}` | Removes a per-service override, so the service follows the global value again. |
 | `GET` | `/admin/reputation/{serviceID}` | Returns every reputation state for a service. |
@@ -155,6 +156,17 @@ without Redis it applies to this instance only.
 
 A per-service override still wins over the global value — clear it with
 DELETE semantics via the flag store, not by setting the global.
+
+### `DELETE /admin/flags/{flag}`
+
+Removes the global value PUT /admin/flags/{flag} set, so
+the flag follows the config file's value or the compiled default again.
+Per-service overrides are left in place; they have their own DELETE.
+
+The inverse of the global PUT was missing until 2026-09-14: an operator
+who had switched a flag on could only switch it back by writing the
+default's value by hand, and the listing then showed an override rather
+than a default.
 
 ### `PUT /admin/flags/{flag}/{serviceID}`
 

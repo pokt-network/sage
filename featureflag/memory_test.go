@@ -107,14 +107,24 @@ func TestMemoryStore_Delete_Global(t *testing.T) {
 	_ = store.Set(ctx, "retry", false)
 	_ = store.SetForService(ctx, "retry", "eth", true)
 
-	// Delete global + all overrides.
+	// Delete the global value only.
 	if err := store.Delete(ctx, "retry", ""); err != nil {
 		t.Fatal(err)
 	}
 
-	// Should fall back to compiled default (true).
-	if !store.IsEnabled(ctx, "retry", "eth") {
+	// Other services fall back to the compiled default (true); eth keeps
+	// the override its own route set.
+	if !store.IsEnabled(ctx, "retry", "polygon") {
 		t.Error("expected retry enabled from compiled default after global delete")
+	}
+	if !store.IsEnabled(ctx, "retry", "eth") {
+		t.Error("expected eth's per-service override to survive a global delete")
+	}
+	if err := store.SetForService(ctx, "retry", "eth", false); err != nil {
+		t.Fatal(err)
+	}
+	if store.IsEnabled(ctx, "retry", "eth") {
+		t.Error("the surviving override must still be the one in force")
 	}
 }
 

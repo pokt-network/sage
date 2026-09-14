@@ -100,6 +100,7 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Feature flags
 	mux.HandleFunc("GET /admin/flags", a.handleListFlags)
 	mux.HandleFunc("PUT /admin/flags/{flag}", a.handleSetFlag)
+	mux.HandleFunc("DELETE /admin/flags/{flag}", a.handleDeleteFlag)
 	mux.HandleFunc("PUT /admin/flags/{flag}/{serviceID}", a.handleSetFlagForService)
 	mux.HandleFunc("DELETE /admin/flags/{flag}/{serviceID}", a.handleDeleteFlagForService)
 
@@ -215,6 +216,31 @@ func (a *AdminAPI) handleSetFlag(w http.ResponseWriter, req *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"flag": flag, "enabled": body.Enabled})
+}
+
+// handleDeleteFlag removes the global value PUT /admin/flags/{flag} set, so
+// the flag follows the config file's value or the compiled default again.
+// Per-service overrides are left in place; they have their own DELETE.
+//
+// The inverse of the global PUT was missing until 2026-09-14: an operator
+// who had switched a flag on could only switch it back by writing the
+// default's value by hand, and the listing then showed an override rather
+// than a default.
+func (a *AdminAPI) handleDeleteFlag(w http.ResponseWriter, req *http.Request) {
+	flag := req.PathValue("flag")
+	if flag == "" {
+		writeJSONError(w, http.StatusBadRequest, "flag name is required")
+		return
+	}
+	if err := a.flags.Delete(req.Context(), flag, ""); err != nil {
+		a.logger.Error("admin: delete flag", "flag", flag, "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to delete flag")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"flag":    flag,
+		"deleted": true,
+	})
 }
 
 // handleSetFlagForService toggles a feature flag for one service only.
