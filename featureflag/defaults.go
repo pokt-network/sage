@@ -61,6 +61,13 @@ const (
 	// measuring at whatever share it runs at rather than assuming the canary's
 	// numbers hold. Only ever skips once the pod is warm.
 	FlagTrafficInformedProbing = "traffic_informed_probing"
+	// FlagPeerProbeSkip gates skipping a health check that another SAGE
+	// instance ran recently (active_health_checks.peer_probe_stream). On by
+	// default, because the config key is the decision to read a peer at all;
+	// this is the live off switch, globally or for one service. Off, this
+	// instance probes that service itself again from the next cycle while it
+	// keeps applying the peer's results.
+	FlagPeerProbeSkip = "peer_probe_skip"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -95,6 +102,7 @@ var DefaultFlags = map[string]bool{
 	FlagScoringV2:              true,
 
 	FlagTrafficInformedProbing: false,
+	FlagPeerProbeSkip:          true,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

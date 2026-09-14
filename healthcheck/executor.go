@@ -72,7 +72,7 @@ type Executor struct {
 	// SetPeerSource. peerSeen is when each check was last covered by it,
 	// written by the feed's goroutine and read by runOnce's, hence peerMu.
 	peerSource ProbeSource
-	peerMaxAge time.Duration
+	peerMaxAge func(domain.ServiceID) time.Duration
 	peerMu     sync.Mutex
 	peerSeen   map[probeKey]time.Time
 
@@ -555,7 +555,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 					// After due, for the reason the traffic skip below is: a
 					// check the other instance ran recently is covered, not
 					// overdue.
-					if e.coveredByPeer(probeKey{serviceID, group.key, check.Name}, interval, now) {
+					if e.coveredByPeer(ctx, probeKey{serviceID, group.key, check.Name}, interval, now) {
 						continue
 					}
 					// After due, not before: the skip decision needs this

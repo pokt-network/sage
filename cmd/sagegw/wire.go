@@ -751,7 +751,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 				ReadTimeout:  cfg.Redis.ReadTimeout,
 				WriteTimeout: cfg.Redis.WriteTimeout,
 			})
-			healthExe.SetPeerSource(healthcheck.NewRedisProbeStream(peerClient, "", 2*healthCheckInterval), peer.MaxAge)
+			// max_age is live through PUT /admin/tuning/health_checks.peer_max_age,
+			// and the skipping itself through the peer_probe_skip flag.
+			peerMaxAge := peer.MaxAge
+			healthExe.SetPeerSource(healthcheck.NewRedisProbeStream(peerClient, "", 2*healthCheckInterval),
+				func(svc domain.ServiceID) time.Duration {
+					return tuningStore.Duration(tuning.KnobPeerProbeMaxAge, svc, peerMaxAge)
+				})
 			logger.Info("health checks: reading a peer instance's probe stream", "db", peer.DB, "max_age", peer.MaxAge)
 		}
 	}
@@ -999,6 +1005,7 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobRelayTimeout, cfg.Gateway.Defaults.Timeout.RelayTimeout.String())
 	store.SetBase(tuning.KnobHealthCheckInterval, effectiveHealthCheckInterval(cfg).String())
 	store.SetBase(tuning.KnobHealthCheckWorkers, strconv.Itoa(cfg.Gateway.HealthChecks.MaxWorkers))
+	store.SetBase(tuning.KnobPeerProbeMaxAge, cfg.Gateway.HealthChecks.PeerProbeStream.MaxAge.String())
 	store.SetBase(tuning.KnobMethodBlockTTL, cfg.Gateway.MethodBlocks.EffectiveTTL().String())
 	store.SetBase(tuning.KnobMethodBlockClientTTL, cfg.Gateway.MethodBlocks.EffectiveClientTTL().String())
 	store.SetBase(tuning.KnobMethodBlockEscalation, strconv.Itoa(cfg.Gateway.MethodBlocks.EffectiveEscalation()))

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 )
 
 // Reading another SAGE instance's probe results, read-only
@@ -19,11 +20,13 @@ import (
 // this instance still probes itself. There is nothing to switch over: the
 // fallback is the freshness window.
 
-// SetPeerSource installs a read-only feed of another instance's probe results
-// and how long one of them stands in for this instance's own check; zero
-// means the check's own interval. Wire time only; Start runs it on every
-// replica, and the leader's schedule consults what it delivered.
-func (e *Executor) SetPeerSource(s ProbeSource, maxAge time.Duration) {
+// SetPeerSource installs a read-only feed of another instance's probe results,
+// and maxAge, resolved per service at read time so the tuning knob takes
+// effect on the next cycle: how long one result stands in for this
+// instance's own check, zero meaning the check's own interval. A nil maxAge
+// is always zero. Wire time only; Start runs the feed on every replica, and
+// the leader's schedule consults what it delivered.
+func (e *Executor) SetPeerSource(s ProbeSource, maxAge func(domain.ServiceID) time.Duration) {
 	e.peerSource = s
 	e.peerMaxAge = maxAge
 	e.peerSeen = make(map[probeKey]time.Time)
@@ -102,11 +105,18 @@ func (e *Executor) applyPeerResult(ctx context.Context, r ProbeResult) {
 
 // coveredByPeer reports whether the other instance ran this check against
 // this backend recently enough to stand in for this instance's own probe.
-func (e *Executor) coveredByPeer(key probeKey, interval time.Duration, now time.Time) bool {
+// The peer_probe_skip flag, per service, is the live off switch.
+func (e *Executor) coveredByPeer(ctx context.Context, key probeKey, interval time.Duration, now time.Time) bool {
 	if e.peerSource == nil {
 		return false
 	}
-	window := e.peerMaxAge
+	if e.flags != nil && !e.flags.IsEnabled(ctx, featureflag.FlagPeerProbeSkip, key.service) {
+		return false
+	}
+	var window time.Duration
+	if e.peerMaxAge != nil {
+		window = e.peerMaxAge(key.service)
+	}
 	if window <= 0 {
 		window = interval
 	}

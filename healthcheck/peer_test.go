@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 )
 
 // idleSource is a peer feed that delivers nothing; tests hand results to
@@ -42,7 +43,7 @@ func peerExecutor(t *testing.T) (*Executor, *stubRelayer, *stubRepService) {
 	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}}}
 	rep := &stubRepService{}
 	exec := newTestExecutor(relayer, eps, sessions, probeableRegistry(t, "eth"), rep)
-	exec.SetPeerSource(idleSource{}, 0)
+	exec.SetPeerSource(idleSource{}, nil)
 	return exec, relayer, rep
 }
 
@@ -130,17 +131,57 @@ func TestPeer_StaleOrForeignResultsDoNotCover(t *testing.T) {
 	}
 }
 
+// The live controls. peer_probe_skip off for a service puts its probes back on
+// the next cycle while the peer's results keep being applied; the max-age
+// resolver is read per service at decision time, so a tuning override takes
+// effect without a restart.
+func TestPeer_LiveControls(t *testing.T) {
+	ctx := context.Background()
+
+	exec, relayer, rep := peerExecutor(t)
+	flags := featureflag.NewMemoryStore(map[string]bool{featureflag.FlagHealthChecks: true, featureflag.FlagPeerProbeSkip: true})
+	if err := flags.SetForService(ctx, featureflag.FlagPeerProbeSkip, "eth", false); err != nil {
+		t.Fatal(err)
+	}
+	exec.SetFlags(flags)
+	exec.applyPeerResult(ctx, peerResult(peerOnNode1, exec.now()))
+	rep.mu.Lock()
+	applied := len(rep.signals)
+	rep.mu.Unlock()
+	if applied == 0 {
+		t.Fatal("with skipping off, the peer's result must still be applied")
+	}
+	exec.runOnce(ctx)
+	exec.wg.Wait()
+	if got := relayedTo(relayer); len(got) != 2 {
+		t.Fatalf("peer_probe_skip off for eth: probed %v, want both backends", got)
+	}
+
+	exec, _, _ = peerExecutor(t)
+	age := 5 * time.Second
+	exec.SetPeerSource(idleSource{}, func(domain.ServiceID) time.Duration { return age })
+	exec.applyPeerResult(ctx, peerResult(peerOnNode1, exec.now().Add(-10*time.Second)))
+	key := probeKey{service: "eth", backend: "https://node1.example.com", check: "block_number"}
+	if exec.coveredByPeer(ctx, key, defaultInterval, exec.now()) {
+		t.Fatal("a 10s-old result must not cover with max age 5s")
+	}
+	age = time.Minute
+	if !exec.coveredByPeer(ctx, key, defaultInterval, exec.now()) {
+		t.Fatal("the same result must cover once max age is raised to 1m, without re-wiring")
+	}
+}
+
 // Start runs the peer feed on every replica, and what it delivers is recorded
 // as coverage the leader's schedule reads.
 func TestPeer_StartRunsTheFeed(t *testing.T) {
 	exec, _, _ := peerExecutor(t)
-	exec.SetPeerSource(oneShotSource{r: peerResult(peerOnNode1, time.Now())}, 0)
+	exec.SetPeerSource(oneShotSource{r: peerResult(peerOnNode1, time.Now())}, nil)
 	exec.Start(context.Background())
 	defer exec.Stop()
 
 	key := probeKey{service: "eth", backend: "https://node1.example.com", check: "block_number"}
 	deadline := time.Now().Add(2 * time.Second)
-	for !exec.coveredByPeer(key, defaultInterval, time.Now()) {
+	for !exec.coveredByPeer(context.Background(), key, defaultInterval, time.Now()) {
 		if time.Now().After(deadline) {
 			t.Fatal("the peer feed's result never counted as coverage")
 		}

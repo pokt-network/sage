@@ -51,6 +51,8 @@ const (
 	KnobHealthCheckInterval = "health_checks.interval"
 	// KnobHealthCheckWorkers overrides active_health_checks.max_workers.
 	KnobHealthCheckWorkers = "health_checks.max_workers"
+	// KnobPeerProbeMaxAge overrides active_health_checks.peer_probe_stream.max_age.
+	KnobPeerProbeMaxAge = "health_checks.peer_max_age"
 	// KnobMethodBlockTTL overrides method_blocks.ttl.
 	KnobMethodBlockTTL = "method_blocks.ttl"
 	// KnobMethodBlockClientTTL overrides method_blocks.client_ttl.
@@ -140,6 +142,14 @@ var Knobs = []Knob{
 		Min:         1,
 		Max:         512, // healthcheck.MaxProbeWorkers; one ceiling, both paths
 		Unit:        "workers",
+	},
+	{
+		Name:        KnobPeerProbeMaxAge,
+		Kind:        KindDuration,
+		Description: "How long another instance's health-check result (active_health_checks.peer_probe_stream) stands in for this instance's own probe of the same backend. Longer saves more probe relays and trusts older news; 0 means the check's own interval. Only read when a peer stream is configured; the peer_probe_skip flag turns the skipping off entirely.",
+		Min:         0,
+		Max:         3_600_000,
+		Unit:        "ms",
 	},
 	{
 		Name:        KnobMethodBlockTTL,
