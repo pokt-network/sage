@@ -200,6 +200,14 @@ func StartBridge(
 		b.observer.Opened()
 	}
 
+	// The read loops start here, before StartBridge returns, not in run. A
+	// caller may ReplaceEndpoint the moment this returns (a session rollover,
+	// a stall), and a loop started later by run would Load() the replacement
+	// and read it alongside the rebind's own loop: two readers on one socket.
+	// CI caught it under -race on 2026-09-14, when run was scheduled after the
+	// test's first ReplaceEndpoint.
+	safego.Go(b.logger, "websocket.read.client", func() { b.readLoop(b.clientConn) })
+	b.startEndpointReadLoop(b.endpointConn.Load())
 	safego.Go(b.logger, "websocket.bridge", b.run)
 	return b, nil
 }
@@ -278,11 +286,10 @@ func (b *Bridge) Shutdown(err error) {
 // ---------- Internal ----------
 
 // run is the main loop. It reads from msgChan, processes the message, and
-// writes it to the other side. It also starts the two readLoop goroutines.
+// writes it to the other side. The read loops feeding msgChan are started by
+// StartBridge; see there for why not here.
 func (b *Bridge) run() {
 	b.logger.Info("websocket: bridge started")
-	safego.Go(b.logger, "websocket.read.client", func() { b.readLoop(b.clientConn) })
-	b.startEndpointReadLoop(b.endpointConn.Load())
 	if b.pongWait > 0 && b.pingPeriod > 0 {
 		safego.Go(b.logger, "websocket.ping", b.pingLoop)
 	}
