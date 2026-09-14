@@ -39,8 +39,9 @@ const (
 //     reputation (a recorded score at or above the probation threshold) — a
 //     block must never divert a method onto hosts reputation hasn't actually
 //     measured, including a host that is merely unscored (e.g. right after
-//     boot, before the first health check). On bypass the relay is marked
-//     degraded and the unfiltered list is used.
+//     boot, before the first health check). It also fires when the filter
+//     keeps fewer than half of the pool's vouched endpoints (keepsVouchedCapacity).
+//     On bypass the relay is marked degraded and the unfiltered list is used.
 //  2. Post-relay: if the attempt's verdict is MethodBlocking (a timeout after
 //     connect, or the endpoint saying it does not serve the method), marks
 //     the attempt's host for that method. The mark counts toward a host-wide
@@ -101,7 +102,8 @@ func MethodBlocks(
 			if len(ctx.Endpoints) > 0 {
 				filtered := filterEndpoints(ctx.Endpoints, open)
 				bypass := len(filtered) == 0 ||
-					(len(filtered) < len(ctx.Endpoints) && !anyVouched(repSvc, ctx, filtered))
+					(len(filtered) < len(ctx.Endpoints) &&
+						(!anyVouched(repSvc, ctx, filtered) || !keepsVouchedCapacity(repSvc, ctx, filtered, ctx.Endpoints)))
 				if bypass {
 					ctx.Degraded = true
 					if events != nil {
@@ -178,6 +180,36 @@ func anyVouched(repSvc reputation.Service, ctx *relay.Context, eps domain.Endpoi
 		}
 	}
 	return false
+}
+
+// keepsVouchedCapacity reports whether narrowing full to narrowed keeps
+// enough of full's vouched endpoints to carry the method: all of them when
+// there are one or two, otherwise at least half.
+//
+// One vouched survivor is not enough. Method marks come from timeouts, and
+// timeouts come from load: on mainnet sei (2026-09-14) marks on three hosts
+// piled eth_call and eth_getLogs onto the one vouched host left per pod, it
+// timed out and fell below probation, and with nothing vouched the whole
+// service went to the pool-collapse fallback (12 → 294 per 9 min). A block
+// that sheds more than half the healthy capacity feeds itself; bypassing it
+// costs a slow answer from the blocked host instead.
+func keepsVouchedCapacity(repSvc reputation.Service, ctx *relay.Context, narrowed, full domain.EndpointAddrList) bool {
+	if repSvc == nil {
+		return true
+	}
+	have := countVouched(repSvc, ctx, full)
+	return countVouched(repSvc, ctx, narrowed) >= min(have, max(2, (have+1)/2))
+}
+
+// countVouched counts the endpoints in eps reputation vouches for.
+func countVouched(repSvc reputation.Service, ctx *relay.Context, eps domain.EndpointAddrList) int {
+	n := 0
+	for _, ep := range eps {
+		if repSvc.Vouched(ctx.Ctx, ctx.ServiceID, ep, ctx.RPCType) {
+			n++
+		}
+	}
+	return n
 }
 
 // normalizedMethod asks the service's plugin to name the request's method.
