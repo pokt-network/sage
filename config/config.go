@@ -208,9 +208,20 @@ type RouterConfig struct {
 // LoggerConfig controls logging.
 type LoggerConfig struct {
 	// Level is the minimum level logged: "debug", "info", "warn" or "error".
-	// Default: "info".
+	// Default: "info". EnvLogLevel overrides it, so the level can be raised
+	// on a deployment whose config file is a sealed secret without editing
+	// the secret; the override is reported as a startup warning.
 	Level string `yaml:"level"`
 }
+
+// EnvLogLevel overrides logger_config.level when set. It exists for the
+// deployment whose config file lives in a secret store the operator cannot
+// reach quickly: the level then changes with one environment edit and a
+// restart, and changes back the same way. The override is announced in
+// Config.Warnings so a file that says "error" while the pods log at debug is
+// explained at boot rather than discovered. An unrecognised value is ignored
+// with a warning; the file's level stands.
+const EnvLogLevel = "SAGE_LOG_LEVEL"
 
 // MetricsConfig controls the Prometheus and pprof listeners.
 type MetricsConfig struct {

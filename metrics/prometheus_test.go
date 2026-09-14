@@ -3,6 +3,7 @@ package metrics
 import (
 	"errors"
 	"fmt"
+	dto "github.com/prometheus/client_model/go"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -50,6 +51,14 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "retry_total"},
 			[]string{"service_id", "reason"},
 		),
+		rpcTypeTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "rpc_type_total"},
+			[]string{"service_id", "rpc_type", "source"},
+		),
+		rpcTypeMismatchTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "rpc_type_mismatch_total"},
+			[]string{"service_id", "rpc_type", "actual", "reason"},
+		),
 		hedgeTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "hedge_total"},
 			[]string{"service_id", "result"},
@@ -94,11 +103,29 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "reputation_attempts_total"},
 			[]string{"service_id", "rpc_type", "signal", "probe"},
 		),
+		heuristicVerdicts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "heuristic_verdicts_total"},
+			[]string{"service_id", "rpc_type", "reason", "attribution"},
+		),
+		externalSourceFails: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "external_block_source_failures_total"},
+			[]string{"service_id"},
+		),
+		clientLatency: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{Namespace: "sage_test", Name: "client_latency_seconds", Buckets: relayLatencyBuckets},
+			[]string{"service_id", "status"},
+		),
+		stageSeconds: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "stage_seconds_total"},
+			[]string{"service_id", "stage"},
+		),
 	}
 	reg.MustRegister(
 		r.relayTotal,
 		r.relayLatency,
 		r.retryTotal,
+		r.rpcTypeTotal,
+		r.rpcTypeMismatchTotal,
 		r.hedgeTotal,
 		r.cacheHits,
 		r.cacheMisses,
@@ -622,5 +649,118 @@ func TestRecorder_HealthCheckLastCycleExistsBeforeAnyCycle(t *testing.T) {
 		if v != 0 {
 			t.Errorf("%s = %v before any cycle ran, want 0", labels, v)
 		}
+	}
+}
+
+func TestRecordRPCType_LabelsSourceAndMismatchReason(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordRPCType("eth", domain.RPCTypeJSONRPC, "detected")
+	r.RecordRPCType("eth", domain.RPCTypeJSONRPC, "detected")
+	r.RecordRPCType("eth", domain.RPCTypeREST, "header")
+	r.RecordRPCTypeMismatch("eth", domain.RPCTypeJSONRPC, domain.RPCTypeCometBFT, "plugin")
+
+	c, err := r.rpcTypeTotal.GetMetricWithLabelValues("eth", "json_rpc", "detected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 2 {
+		t.Errorf("rpc_type_total{json_rpc,detected} = %v, want 2", got)
+	}
+	c, err = r.rpcTypeTotal.GetMetricWithLabelValues("eth", "rest", "header")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 1 {
+		t.Errorf("rpc_type_total{rest,header} = %v, want 1", got)
+	}
+	m, err := r.rpcTypeMismatchTotal.GetMetricWithLabelValues("eth", "json_rpc", "comet_bft", "plugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, m); got != 1 {
+		t.Errorf("rpc_type_mismatch_total{json_rpc,comet_bft,plugin} = %v, want 1", got)
+	}
+	// An unconfigured service collapses to the unknown label, as everywhere.
+	r.RecordRPCType("nope", domain.RPCTypeREST, "detected")
+	if _, err := r.rpcTypeTotal.GetMetricWithLabelValues(unknownLabel, "rest", "detected"); err != nil {
+		t.Errorf("unknown service not collapsed: %v", err)
+	}
+}
+
+func TestRecordVerdict_LabelsReasonAndAttribution(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordVerdict("eth", domain.RPCTypeCometBFT, "internal_error", "blockchain")
+	r.RecordVerdict("eth", domain.RPCTypeCometBFT, "internal_error", "blockchain")
+	r.RecordVerdict("eth", domain.RPCTypeJSONRPC, "success", "unknown")
+
+	c, err := r.heuristicVerdicts.GetMetricWithLabelValues("eth", "comet_bft", "internal_error", "blockchain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 2 {
+		t.Errorf("heuristic_verdicts_total{comet_bft,internal_error,blockchain} = %v, want 2", got)
+	}
+	c, err = r.heuristicVerdicts.GetMetricWithLabelValues("eth", "json_rpc", "success", "unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 1 {
+		t.Errorf("heuristic_verdicts_total{json_rpc,success,unknown} = %v, want 1", got)
+	}
+	// An unconfigured service collapses to the unknown label, as everywhere.
+	r.RecordVerdict("nope", domain.RPCTypeREST, "success", "unknown")
+	if _, err := r.heuristicVerdicts.GetMetricWithLabelValues(unknownLabel, "rest", "success", "unknown"); err != nil {
+		t.Fatalf("unknown service should be recorded under %q: %v", unknownLabel, err)
+	}
+}
+
+func TestRecordExternalSourceFailure_CountsPerService(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordExternalSourceFailure("eth")
+	r.RecordExternalSourceFailure("eth")
+	c, err := r.externalSourceFails.GetMetricWithLabelValues("eth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 2 {
+		t.Errorf("external_block_source_failures_total{eth} = %v, want 2", got)
+	}
+}
+
+func TestRecordClientLatency_ObservesByStatus(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordClientLatency("eth", 200, 150*time.Millisecond)
+	r.RecordClientLatency("eth", 499, 9*time.Second)
+	for _, status := range []string{"200", "499"} {
+		h, err := r.clientLatency.GetMetricWithLabelValues("eth", status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := histogramCount(t, h); got != 1 {
+			t.Errorf("client_latency_seconds{eth,%s} count = %d, want 1", status, got)
+		}
+	}
+}
+
+func histogramCount(t *testing.T, h prometheus.Observer) uint64 {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := h.(prometheus.Metric).Write(m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetHistogram().GetSampleCount()
+}
+
+func TestRecordStageTime_SumsPerStage(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordStageTime("eth", "parse", 2*time.Millisecond)
+	r.RecordStageTime("eth", "parse", 3*time.Millisecond)
+	r.RecordStageTime("eth", "router_write", 0) // nothing to add
+	c, err := r.stageSeconds.GetMetricWithLabelValues("eth", "parse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got < 0.0049 || got > 0.0051 {
+		t.Errorf("stage_seconds_total{eth,parse} = %v, want 0.005", got)
 	}
 }

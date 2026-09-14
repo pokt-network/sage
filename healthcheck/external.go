@@ -35,7 +35,56 @@ type ExternalBlockFetcher struct {
 	sources   []config.ExternalBlockSource
 	logger    *slog.Logger
 	client    *http.Client
+	failures  ExternalSourceFailureRecorder
+
+	// stateMu guards the poll state below, written by the poll goroutine and
+	// read by the admin API through Status.
+	stateMu sync.Mutex
+	// failing is whether the last poll produced no height. It exists so the
+	// log says when the sources stop answering and when they start again,
+	// rather than once per tick in between. On the 2026-09-13 canary
+	// thirteen services with one dead source each wrote 37 warnings a
+	// minute, most of the log at info level, and said nothing a dashboard
+	// could count.
+	failing     bool
+	lastErr     string
+	lastHeight  uint64
+	lastSuccess time.Time
+	lastPoll    time.Time
 }
+
+// ExternalSourceStatus is what the last polls of a service's sources said,
+// for the admin API.
+type ExternalSourceStatus struct {
+	Running     bool      `json:"running"`
+	Failing     bool      `json:"failing"`
+	LastError   string    `json:"last_error,omitempty"`
+	LastHeight  uint64    `json:"last_height,omitempty"`
+	LastSuccess time.Time `json:"last_success,omitempty"`
+	LastPoll    time.Time `json:"last_poll,omitempty"`
+}
+
+// Status reports the fetcher's poll state.
+func (f *ExternalBlockFetcher) Status() ExternalSourceStatus {
+	f.stateMu.Lock()
+	defer f.stateMu.Unlock()
+	return ExternalSourceStatus{
+		Failing:     f.failing,
+		LastError:   f.lastErr,
+		LastHeight:  f.lastHeight,
+		LastSuccess: f.lastSuccess,
+		LastPoll:    f.lastPoll,
+	}
+}
+
+// ExternalSourceFailureRecorder counts polls that produced no height for a
+// service. Optional; see SetFailureRecorder.
+type ExternalSourceFailureRecorder interface {
+	RecordExternalSourceFailure(serviceID domain.ServiceID)
+}
+
+// SetFailureRecorder installs the counter for failed polls. Call before Start.
+func (f *ExternalBlockFetcher) SetFailureRecorder(r ExternalSourceFailureRecorder) { f.failures = r }
 
 // NewExternalBlockFetcher constructs a fetcher for the given service's sources.
 func NewExternalBlockFetcher(
@@ -86,12 +135,42 @@ func (f *ExternalBlockFetcher) Start(ctx context.Context) <-chan ExternalBlockHe
 // emit runs fetchMax and sends the result on ch (non-blocking drop on full).
 func (f *ExternalBlockFetcher) emit(ctx context.Context, ch chan<- ExternalBlockHeight) {
 	height, err := f.fetchMax(ctx)
+	now := time.Now()
+	f.stateMu.Lock()
+	f.lastPoll = now
 	if err != nil {
-		f.logger.Warn("external block fetcher: fetchMax failed",
-			"service_id", f.serviceID,
-			"error", err,
-		)
+		wasFailing := f.failing
+		f.failing = true
+		f.lastErr = err.Error()
+		f.stateMu.Unlock()
+		if f.failures != nil {
+			f.failures.RecordExternalSourceFailure(f.serviceID)
+		}
+		if !wasFailing {
+			f.logger.Warn("external block sources failing: no height until they answer again; the service's external floor is not lifted meanwhile",
+				"service_id", f.serviceID,
+				"sources", len(f.sources),
+				"error", err,
+			)
+		} else {
+			f.logger.Debug("external block fetcher: fetchMax failed",
+				"service_id", f.serviceID,
+				"error", err,
+			)
+		}
 		return
+	}
+	wasFailing := f.failing
+	f.failing = false
+	f.lastErr = ""
+	f.lastHeight = height
+	f.lastSuccess = now
+	f.stateMu.Unlock()
+	if wasFailing {
+		f.logger.Info("external block sources recovered",
+			"service_id", f.serviceID,
+			"height", height,
+		)
 	}
 	ebh := ExternalBlockHeight{ServiceID: f.serviceID, Height: height}
 	select {
@@ -160,6 +239,14 @@ func (f *ExternalBlockFetcher) fetchOne(ctx context.Context, src config.External
 	switch strings.ToLower(src.Type) {
 	case "json_rpc", "jsonrpc", "":
 		return f.fetchJSONRPC(ctx, src)
+	case "comet_bft", "cometbft":
+		// CometBFT's JSON-RPC face; `status` carries sync_info.latest_block_height,
+		// which the parser reads. The type was documented and not handled
+		// until 2026-09-13.
+		if src.Method == "" {
+			src.Method = "status"
+		}
+		return f.fetchJSONRPC(ctx, src)
 	case "rest":
 		return f.fetchREST(ctx, src)
 	default:
@@ -196,6 +283,9 @@ func (f *ExternalBlockFetcher) fetchJSONRPC(ctx context.Context, src config.Exte
 	if err != nil {
 		return 0, fmt.Errorf("fetchJSONRPC: read body: %w", err)
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("fetchJSONRPC: HTTP %d: %s", resp.StatusCode, truncate(respBody, 120))
+	}
 	return parseHeightFromBytes(respBody)
 }
 
@@ -219,6 +309,12 @@ func (f *ExternalBlockFetcher) fetchREST(ctx context.Context, src config.Externa
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, fmt.Errorf("fetchREST: read body: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Named by status rather than parsed: an HTML 405 or 401 page read
+		// as "cannot find block height in JSON: <!DOCTYPE html>…" says what
+		// happened only to someone who already knows.
+		return 0, fmt.Errorf("fetchREST: HTTP %d: %s", resp.StatusCode, truncate(respBody, 120))
 	}
 	return parseHeightFromBytes(respBody)
 }
@@ -278,8 +374,10 @@ func parseHeightFromResult(result gjson.Result) (uint64, error) {
 		}
 		return uint64(f), nil
 	case gjson.JSON:
-		// Nested object — try common sub-paths.
-		for _, path := range []string{"sync_info.latest_block_height", "height"} {
+		// Nested object — try common sub-paths. blockHeight is Solana's
+		// getEpochInfo, the field the solana plugin itself reads (absoluteSlot
+		// is deliberately not accepted there either).
+		for _, path := range []string{"sync_info.latest_block_height", "height", "blockHeight"} {
 			v := gjson.Get(result.Raw, path)
 			if v.Exists() {
 				if h, err := parseHeightValue(v); err == nil {

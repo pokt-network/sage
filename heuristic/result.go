@@ -78,6 +78,12 @@ type AnalysisResult struct {
 // check. Callers ask IsSuccess rather than comparing against it.
 const ReasonSuccess = "success"
 
+// ReasonMethodNotFound is the Reason for a JSON-RPC -32601: the host does not
+// serve the method. The analyzer does not retry it (a bogus method name must
+// not bounce across the pool); the heuristic middleware does, once the
+// method is known to be a real one (see relay/middleware.Heuristic).
+const ReasonMethodNotFound = "method_not_found"
+
 // IsSuccess reports whether the verdict is the analyzer passing the response.
 //
 // It exists because a caller cannot key on attribution alone to tell an

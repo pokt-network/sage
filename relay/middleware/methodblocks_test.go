@@ -3,6 +3,8 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -552,5 +554,131 @@ func TestMethodBlocks_OtherBucketIsNeverMarkedOrFiltered(t *testing.T) {
 	}
 	if store.Blocked("eth", eps[1].Domain(), qos.MethodOther) {
 		t.Fatal("a MethodBlocking verdict on an uncatalogued method must not mark the _other bucket")
+	}
+}
+
+// familyPlugin is normPlugin plus a family: any eth_ method belongs with the
+// other two, the way the cosmos plugin answers for the EVM face of kava.
+type familyPlugin struct{ normPlugin }
+
+func (familyPlugin) MethodFamily(method string) []string {
+	if strings.HasPrefix(method, "eth_") {
+		return []string{"eth_blockNumber", "eth_call", "eth_getLogs"}
+	}
+	return nil
+}
+
+// A -32601 on a catalogued method marks the host for the whole family the
+// plugin names, so the pool stops paying one failed relay per host and
+// method to learn what one answer already said. A supplier-attributed
+// verdict on the same method marks that method alone, and the family marks
+// never escalate to a host-wide block.
+func TestMethodBlocks_MethodNotFoundMarksTheFamily(t *testing.T) {
+	reg := qos.NewRegistry()
+	if err := reg.Register("kava", familyPlugin{}); err != nil {
+		t.Fatal(err)
+	}
+	store := methodblock.New()
+	events := &spyEvents{}
+	eps := testEndpoints(1)
+	host := eps[0].Domain()
+
+	notFound := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = eps[0]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{
+			MethodBlocking: true, Attribution: heuristic.AttrClient, Reason: heuristic.ReasonMethodNotFound,
+		}
+		return retryableErr("method not found")
+	})
+	ctx := methodCtx("eth_blockNumber", eps)
+	ctx.ServiceID = "kava"
+	_ = MethodBlocks(store, reg, nil, newFlags("method_blocks"), nil, events)(notFound).HandleRelay(ctx)
+
+	for _, m := range []string{"eth_blockNumber", "eth_call", "eth_getLogs"} {
+		if !store.Blocked("kava", host, m) {
+			t.Fatalf("%s should be blocked on the host after one -32601 on eth_blockNumber", m)
+		}
+	}
+	if store.Blocked("kava", host, "status") {
+		t.Fatal("a CometBFT method is not in the EVM family and must stay open")
+	}
+	events.mu.Lock()
+	got := append([]string(nil), events.events...)
+	events.mu.Unlock()
+	if !slices.Contains(got, "mark:eth_blockNumber") || !slices.Contains(got, "family:eth_blockNumber") {
+		t.Fatalf("events = %v, want a mark and one family event", got)
+	}
+
+	// Supplier-attributed on another host: that method only.
+	timeout := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = testEndpoints(2)[1]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{
+			MethodBlocking: true, Attribution: heuristic.AttrSupplier, Reason: "transport_timeout",
+		}
+		return retryableErr("timeout")
+	})
+	ctx = methodCtx("eth_call", testEndpoints(2))
+	ctx.ServiceID = "kava"
+	_ = MethodBlocks(store, reg, nil, newFlags("method_blocks"), nil, events)(timeout).HandleRelay(ctx)
+	other := testEndpoints(2)[1].Domain()
+	if !store.Blocked("kava", other, "eth_call") || store.Blocked("kava", other, "eth_getLogs") {
+		t.Fatal("a timeout marks the one method, never the family")
+	}
+}
+
+// resolvingProvider is an endpoint provider that also says which host a face
+// is dialed from: the REST face of eps[0] lives on another host than the
+// address names.
+type resolvingProvider struct{ eps domain.EndpointAddrList }
+
+func (r resolvingProvider) AvailableEndpoints(context.Context, domain.ServiceID, domain.RPCType) (domain.EndpointAddrList, error) {
+	return r.eps, nil
+}
+
+func (r resolvingProvider) EndpointURLFor(ep domain.EndpointAddr, rt domain.RPCType) (string, bool) {
+	if ep == r.eps[0] && rt == domain.RPCTypeREST {
+		return "https://rest.other.example:8443/v1", true
+	}
+	return "", false
+}
+
+// A mark is kept against the host the face is dialed from, and the pre-relay
+// filter looks it up the same way, so a REST refusal on a split-host
+// operator blocks the REST host and leaves the address's JSON-RPC host alone.
+func TestMethodBlocks_HostFollowsTheDialedURL(t *testing.T) {
+	store := methodblock.New()
+	eps := testEndpoints(2)
+	provider := resolvingProvider{eps: eps}
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = eps[0]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true, Attribution: heuristic.AttrSupplier}
+		return retryableErr("timeout")
+	})
+	ctx := methodCtx("/cosmos/bank/v1beta1/supply", eps)
+	ctx.RPCType = domain.RPCTypeREST
+	_ = MethodBlocks(store, registryWith(t), provider, newFlags("method_blocks"), nil, nil)(inner).HandleRelay(ctx)
+
+	if !store.Blocked("eth", "rest.other.example", "/cosmos/bank/v1beta1/supply") {
+		t.Fatal("the mark must be kept against the dialed REST host")
+	}
+	if store.Blocked("eth", eps[0].Domain(), "/cosmos/bank/v1beta1/supply") {
+		t.Fatal("the address's own host must not carry a REST mark")
+	}
+
+	// The filter resolves the same way: eps[0] is now excluded for that
+	// method on the REST face, and stays in for json_rpc.
+	ctx = methodCtx("/cosmos/bank/v1beta1/supply", eps)
+	ctx.RPCType = domain.RPCTypeREST
+	var seen domain.EndpointAddrList
+	probe := relay.HandlerFunc(func(ctx *relay.Context) error { seen = ctx.Endpoints; return nil })
+	_ = MethodBlocks(store, registryWith(t), provider, newFlags("method_blocks"), nil, nil)(probe).HandleRelay(ctx)
+	if len(seen) != 1 || seen[0] != eps[1] {
+		t.Fatalf("REST candidates = %v, want only %v", seen, eps[1])
+	}
+	ctx = methodCtx("/cosmos/bank/v1beta1/supply", eps)
+	ctx.RPCType = domain.RPCTypeJSONRPC
+	_ = MethodBlocks(store, registryWith(t), provider, newFlags("method_blocks"), nil, nil)(probe).HandleRelay(ctx)
+	if len(seen) != 2 {
+		t.Fatalf("json_rpc candidates = %v, want both", seen)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -47,12 +48,14 @@ type cosmosEndpoint struct {
 //   - qos.SubscriptionClassifier
 type Plugin struct {
 	logger            *slog.Logger
-	syncAllowance     uint64
+	syncAllowance     atomic.Uint64
 	supportedRPCTypes []domain.RPCType
 	expectedChainID   string
 
 	store     *qos.EndpointStore[cosmosEndpoint]
 	consensus *qos.BlockConsensus
+	// pruned remembers, per host, the lowest height the node holds; see pruned.go.
+	pruned *prunedMemory
 }
 
 // Config carries the per-service settings a Cosmos plugin needs.
@@ -107,6 +110,7 @@ var (
 	_ qos.ChainViewer        = (*Plugin)(nil)
 	_ qos.HeightObserver     = (*Plugin)(nil)
 	_ qos.StateResetter      = (*Plugin)(nil)
+	_ qos.RPCTypeClassifier  = (*Plugin)(nil)
 )
 
 // NewPlugin creates a Cosmos QoS plugin for a single service.
@@ -122,14 +126,16 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 			domain.RPCTypeJSONRPC,
 		}
 	}
-	return &Plugin{
+	p := &Plugin{
 		logger:            logger,
-		syncAllowance:     cfg.SyncAllowance,
 		supportedRPCTypes: supportedRPCTypes,
 		expectedChainID:   cfg.ExpectedChainID,
 		store:             qos.NewEndpointStore[cosmosEndpoint](logger),
 		consensus:         qos.NewBlockConsensus(logger, cfg.SyncAllowance),
+		pruned:            newPrunedMemory(),
 	}
+	p.syncAllowance.Store(cfg.SyncAllowance)
+	return p
 }
 
 // --- qos.Plugin --- //
@@ -137,7 +143,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 // ParseRequest inspects the request and returns a single-element Payload slice.
 // The RPC type is auto-detected from the request path and body.
 func (p *Plugin) ParseRequest(_ context.Context, req *http.Request, body []byte, rpcType domain.RPCType) ([]domain.Payload, error) {
-	payload, err := parseRequest(req, body, rpcType)
+	payload, err := parseRequest(req, body, rpcType, p.supportedRPCTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +158,13 @@ func (p *Plugin) ParseRequest(_ context.Context, req *http.Request, body []byte,
 	}
 
 	return []domain.Payload{payload}, nil
+}
+
+// ClassifyRPCType implements qos.RPCTypeClassifier: the type a request is
+// relayed as, decided by which CometBFT face it addresses and which types the
+// service declares. See classifyRPCType.
+func (p *Plugin) ClassifyRPCType(req *http.Request, body []byte, detected domain.RPCType) domain.RPCType {
+	return classifyRPCType(req, body, detected, p.supportedRPCTypes)
 }
 
 // SelectEndpoints filters the supplied endpoint list by:
@@ -199,8 +212,8 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		}
 	}
 
-	baseFilters := []qos.FilterFunc{makeBlockFilter(p.syncAllowance)}
-	relaxedFilters := []qos.FilterFunc{makeBlockFilter(p.syncAllowance * 2)}
+	baseFilters := []qos.FilterFunc{makeBlockFilter(p.syncAllowance.Load())}
+	relaxedFilters := []qos.FilterFunc{makeBlockFilter(p.syncAllowance.Load() * 2)}
 	nonBlockFilters := []qos.FilterFunc{}
 	if rpcTypeFilter != nil {
 		baseFilters = append(baseFilters, rpcTypeFilter)
@@ -208,14 +221,51 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		nonBlockFilters = append(nonBlockFilters, rpcTypeFilter)
 	}
 
+	// Height-aware routing (pruned.go): a request that names a specific
+	// height skips hosts known to have pruned below it. Applied in every
+	// tier, like the EVM plugin's archival filter: a pruned host is no better
+	// a choice when the pool is degraded. If it empties every tier the
+	// selector falls back to the full list and the query is sent once, so
+	// the client gets the node's answer and nothing is retried.
+	heightFiltered := false
+	if len(payloads) > 0 {
+		if height, ok := requestedHeight(payloads[0]); ok {
+			heightFiltered = true
+			heightFilter := func(addr domain.EndpointAddr) error {
+				lowest, known := p.pruned.lowest(addr.Domain())
+				if !known || lowest <= height {
+					return nil
+				}
+				return &domain.RelayError{
+					Kind:      domain.ErrCapability,
+					Message:   fmt.Sprintf("cosmos: host pruned below height %d (lowest %d)", height, lowest),
+					Retryable: true,
+				}
+			}
+			baseFilters = append(baseFilters, heightFilter)
+			relaxedFilters = append(relaxedFilters, heightFilter)
+			nonBlockFilters = append(nonBlockFilters, heightFilter)
+		}
+	}
+
 	ranker := qos.LeastStaleFallback(getHeight, perceived)
 	result := qos.SelectWithKnownHeights(endpoints, getHeight, baseFilters, relaxedFilters, nonBlockFilters, ranker)
 
 	if result.Degraded {
-		p.logger.Warn("cosmos: endpoint selection degraded",
-			"tier", result.Tier,
-			"endpoint_count", len(result.Endpoints),
-		)
+		// A pool with nothing that holds the requested height is the
+		// ordinary outcome of an archival query on a pruned face, once per
+		// such query; it is not the pool being unhealthy. Debug for that
+		// case, Warn for the rest.
+		if heightFiltered && result.Tier == 3 {
+			p.logger.Debug("cosmos: no endpoint holds the requested height; sending once for the node's answer",
+				"endpoint_count", len(result.Endpoints),
+			)
+		} else {
+			p.logger.Warn("cosmos: endpoint selection degraded",
+				"tier", result.Tier,
+				"endpoint_count", len(result.Endpoints),
+			)
+		}
 	}
 
 	return result.Endpoints, nil
@@ -323,6 +373,14 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, _, response []byte) (
 	// the wrong chain reports heights that are real for that chain, so feeding
 	// them to consensus would let it skew the very number the height filters
 	// compare against.
+	// A pruned node's answer names the lowest height it holds; remember it
+	// per host so SelectEndpoints stops sending old heights there. The
+	// request is a client's, so the probe is free.
+	if lowest, ok := prunedLowestHeight(response); ok {
+		p.pruned.set(endpoint.Domain(), lowest)
+		p.logger.Debug("cosmos: host reports pruned history", "endpoint", endpoint, "lowest_height", lowest)
+	}
+
 	chainID, hasChainID := parseChainID(response)
 	if hasChainID {
 		p.store.Update(endpoint, func(ep *cosmosEndpoint) {
@@ -409,4 +467,12 @@ func (p *Plugin) OnEndpointEvicted(_ domain.ServiceID, endpoint domain.EndpointA
 func (p *Plugin) ResetState() {
 	p.consensus.Reset()
 	p.store.Clear()
+	p.pruned.reset()
 }
+
+// SyncAllowance implements qos.SyncAllowanceTuner.
+func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
+
+// SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
+// qos.sync_allowance, per service, without a restart.
+func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }

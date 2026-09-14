@@ -67,7 +67,7 @@ Controls logging.
 
 | Key | Type | Description |
 |---|---|---|
-| `level` | string | The minimum level logged: "debug", "info", "warn" or "error". Default: "info". |
+| `level` | string | The minimum level logged: "debug", "info", "warn" or "error". Default: "info". EnvLogLevel overrides it, so the level can be raised on a deployment whose config file is a sealed secret without editing the secret; the override is reported as a startup warning. |
 
 ## `metrics_config`
 
@@ -296,6 +296,7 @@ everything else. See MethodBlocksConfig.
 |---|---|---|
 | `ttl` | duration | How long one mark keeps a method away from a host. Zero means 5m; negative disables marking entirely (the middleware still runs and passes everything through). Short on purpose — a mark is one timeout of evidence and a host re-proves itself with one relay when it lapses. |
 | `escalation_threshold` | integer | How many distinct methods must be marked on one host inside one TTL before the host is blocked for every method. Zero means 3; negative never escalates. |
+| `client_ttl` | duration | How long a client-attributed mark lasts: a host that answered -32601 (method not found) to a catalogued method. Zero means 30m; negative means the same lifetime as TTL. Longer than TTL on purpose — a host that does not serve a method does not grow it in five minutes, and at the short TTL the pool paid one failed relay per host and method every five minutes to re-learn it. |
 
 ### `gateway_config.active_health_checks`
 

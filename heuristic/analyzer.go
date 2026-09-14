@@ -66,16 +66,24 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 // analyzeTier0 checks HTTP status codes.
 func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (AnalysisResult, bool) {
 	switch {
+	// A node's 5xx, relayed inside a signed response. Retried and scored
+	// major, no breaker vote: one 5xx is a weak statement about a host. On
+	// the 2026-09-14 canary osmosis's REST 5xx stream was mostly queries a
+	// node answers 500 to by design (a cosmwasm smart query against the
+	// wrong contract), and at critical with a breaker vote per event the
+	// host paid for the client's query. A real 5xx stream still moves the
+	// rate term at major; the breaker keeps its votes for the verdicts that
+	// say the host itself is gone (connect failed, HTML error page, empty
+	// body). The miner's own 5xx (upstream_5xx, transport.go) is minor.
 	case statusCode >= 500:
 		return AnalysisResult{
-			ShouldRetry:        true,
-			ShouldCircuitBreak: true,
-			ShouldPenalize:     true,
-			PenaltySeverity:    SeverityCritical,
-			Attribution:        AttrSupplier,
-			Confidence:         0.90,
-			Reason:             "http_5xx",
-			Details:            fmt.Sprintf("HTTP %d server error", statusCode),
+			ShouldRetry:     true,
+			ShouldPenalize:  true,
+			PenaltySeverity: SeverityMajor,
+			Attribution:     AttrSupplier,
+			Confidence:      0.85,
+			Reason:          "http_5xx",
+			Details:         fmt.Sprintf("HTTP %d server error", statusCode),
 		}, true
 
 	case statusCode == 429:
@@ -289,7 +297,7 @@ func analyzeTier2(body []byte, rpcType domain.RPCType) (AnalysisResult, bool) {
 
 	// Error-only response (or result:null + error, which is a valid error-only pattern).
 	if analysis.hasError {
-		result := classifyJSONRPCError(analysis.errorCode, analysis.errorMessage)
+		result := classifyJSONRPCError(analysis.errorCode, analysis.errorText())
 		return result, true
 	}
 

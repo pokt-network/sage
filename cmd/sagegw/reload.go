@@ -10,6 +10,7 @@ import (
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/healthcheck"
+	"github.com/pokt-network/sage/override"
 	"github.com/pokt-network/sage/reload"
 )
 
@@ -63,16 +64,129 @@ func (a *App) Reload(ctx context.Context) (reload.Result, error) {
 	if a.ConfigPath == "" {
 		return res, reload.ErrNoConfigFile
 	}
+	// An uploaded config in force is not undone by re-reading the file;
+	// DELETE /admin/config is how that ends.
+	if a.Overrides != nil {
+		if _, ok, _ := a.Overrides.Get(ctx, configOverrideKey); ok {
+			return res, reload.ErrConfigOverridden
+		}
+	}
 
-	a.reloadMu.Lock()
-	defer a.reloadMu.Unlock()
-
-	// The only two hard failures. Both happen before anything has been
-	// written, so "refused, nothing changed" is the literal truth.
+	// The first hard failure; before anything has been written, so "refused,
+	// nothing changed" is the literal truth.
 	next, err := config.LoadFromFile(a.ConfigPath)
 	if err != nil {
 		return res, err
 	}
+	return a.apply(ctx, next)
+}
+
+// configOverrideKey is where an uploaded config lives in the override store.
+const configOverrideKey = "config"
+
+// ApplyConfig applies a config document handed in through the admin API,
+// exactly as Reload applies the file, and persists it in the override store
+// so every replica applies it and a restarted process re-applies it at boot.
+// The file is not touched: it is the fallback DELETE /admin/config returns
+// to. Exists because the file may be a sealed secret.
+func (a *App) ApplyConfig(ctx context.Context, data []byte) (reload.Result, error) {
+	next, err := config.LoadFromBytes(data)
+	if err != nil {
+		return reload.NewResult(), err
+	}
+	res, err := a.apply(ctx, next)
+	if err != nil {
+		return res, err
+	}
+	raw := string(data)
+	a.overrideMu.Lock()
+	a.overrideRaw = raw
+	a.overrideMu.Unlock()
+	if a.Overrides != nil {
+		if err := a.Overrides.Set(ctx, configOverrideKey, raw); err != nil {
+			res.Warnings = append(res.Warnings, "config applied on this replica but NOT persisted: "+err.Error())
+		}
+	}
+	return res, nil
+}
+
+// ClearConfigOverride forgets the uploaded config and re-applies the file.
+func (a *App) ClearConfigOverride(ctx context.Context) (reload.Result, error) {
+	if a.Overrides != nil {
+		if err := a.Overrides.Delete(ctx, configOverrideKey); err != nil {
+			return reload.NewResult(), fmt.Errorf("config override not removed: %w", err)
+		}
+	}
+	a.overrideMu.Lock()
+	a.overrideRaw = ""
+	a.overrideMu.Unlock()
+	if a.ConfigPath == "" {
+		return reload.NewResult(), reload.ErrNoConfigFile
+	}
+	next, err := config.LoadFromFile(a.ConfigPath)
+	if err != nil {
+		return reload.NewResult(), err
+	}
+	return a.apply(ctx, next)
+}
+
+// WatchConfigOverride follows the uploaded config in the override store: a
+// replica that did not take the PUT applies it within the watch interval, a
+// restarted process applies it at boot, and a DELETE elsewhere returns this
+// replica to the file.
+func (a *App) WatchConfigOverride(ctx context.Context) {
+	if a.Overrides == nil {
+		return
+	}
+	override.Watch(ctx, a.Logger, a.Overrides, configOverrideKey, 0, func(m map[string]string) {
+		raw, ok := m[configOverrideKey]
+		a.overrideMu.Lock()
+		current := a.overrideRaw
+		a.overrideMu.Unlock()
+		switch {
+		case ok && raw != current:
+			next, err := config.LoadFromBytes([]byte(raw))
+			if err != nil {
+				a.Logger.Warn("config override in the store does not load; ignoring it", "error", err)
+				return
+			}
+			res, err := a.apply(ctx, next)
+			if err != nil {
+				a.Logger.Warn("config override in the store did not apply", "error", err)
+				return
+			}
+			a.overrideMu.Lock()
+			a.overrideRaw = raw
+			a.overrideMu.Unlock()
+			a.Logger.Warn("config applied from the override store", "applied", res.Applied, "needs_restart", res.NeedsRestart, "warnings", len(res.Warnings))
+		case !ok && current != "":
+			a.overrideMu.Lock()
+			a.overrideRaw = ""
+			a.overrideMu.Unlock()
+			if a.ConfigPath == "" {
+				return
+			}
+			next, err := config.LoadFromFile(a.ConfigPath)
+			if err != nil {
+				a.Logger.Warn("config override cleared elsewhere but the file does not load", "error", err)
+				return
+			}
+			if _, err := a.apply(ctx, next); err != nil {
+				a.Logger.Warn("config override cleared elsewhere but the file did not apply", "error", err)
+				return
+			}
+			a.Logger.Warn("config override cleared from the store; the file's config is applied again")
+		}
+	})
+}
+
+// apply validates next and swaps in what the running process can take.
+// Serialised by reloadMu: two applies racing would interleave their steps,
+// and the losing one would still report success.
+func (a *App) apply(ctx context.Context, next *config.Config) (reload.Result, error) {
+	res := reload.NewResult()
+	a.reloadMu.Lock()
+	defer a.reloadMu.Unlock()
 	if err := validateConfig(next); err != nil {
 		return res, err
 	}
@@ -139,6 +253,7 @@ func (a *App) Reload(ctx context.Context) (reload.Result, error) {
 			res.Warnings = append(res.Warnings, unavailable(keyMethodBlocks, "no method-block store is wired"))
 		} else {
 			a.MethodBlocks.SetTTL(next.Gateway.MethodBlocks.EffectiveTTL())
+			a.MethodBlocks.SetClientTTL(next.Gateway.MethodBlocks.EffectiveClientTTL())
 			a.MethodBlocks.SetEscalation(next.Gateway.MethodBlocks.EffectiveEscalation())
 			res.Applied = append(res.Applied, keyMethodBlocks)
 		}

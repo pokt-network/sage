@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 )
 
 // ErrWrongChain is returned by DataExtractor.ExtractData when an endpoint
@@ -50,6 +51,27 @@ type BlockHeightTracker interface {
 // inside SelectEndpoints; nothing outside the plugin asks.
 type ArchivalDetector interface {
 	IsArchivalRequest(payloads []domain.Payload) bool
+}
+
+// RPCTypeClassifier is implemented by a plugin whose chain fronts several
+// protocols on one service and can say which one a request addresses better
+// than the generic detector in relay/middleware/parse.go can. Parse consults
+// it after generic detection and before the client's RPC-Type header, which
+// wins over both.
+//
+// It exists because a surface is not always its own RPC type. CometBFT is
+// one node answering JSON-RPC POSTs and HTTP GETs on one port, and on Pocket
+// a supplier commonly stakes json_rpc for the first face and rest for the
+// second, with no comet_bft stake at all. Which type a CometBFT request
+// should be relayed as therefore depends on what the service declares, and
+// that knowledge belongs to the chain's plugin, not to config or to the
+// generic detector.
+type RPCTypeClassifier interface {
+	// ClassifyRPCType returns the type the request should be validated,
+	// pooled, scored and sent as, given what generic detection said. It is
+	// the one type the request carries end to end: the plugin's ParseRequest
+	// is handed the result and must type its payloads the same way.
+	ClassifyRPCType(req *http.Request, body []byte, detected domain.RPCType) domain.RPCType
 }
 
 // HealthChecker is implemented by plugins that provide health check payloads.
@@ -127,6 +149,35 @@ func (d *ExtractedData) Empty() bool {
 // among many and a fake endpoint in the chain view.
 type ExternalFloorSetter interface {
 	SetExternalFloor(height uint64)
+}
+
+// MethodFamilyLister is implemented by a plugin that can say which other
+// catalogued methods a host refusing one method will refuse too. The cosmos
+// plugin answers for the EVM face of a chain like kava: a json_rpc host that
+// says -32601 to eth_blockNumber is a CometBFT node with no EVM at all, and
+// every eth_ method will get the same answer. Nil means no inference.
+type MethodFamilyLister interface {
+	MethodFamily(method string) []string
+}
+
+// VerdictRefiner is implemented by a plugin that can re-attribute a heuristic
+// verdict from the request's shape: the analyzer sees a status and a body,
+// the plugin knows which routes a node answers with that status by design.
+// The cosmos plugin answers for the REST paths a gRPC-gateway node turns a
+// query failure into a 5xx on (a cosmwasm smart query against the wrong
+// contract, a transaction lookup at a height the node does not hold): the
+// answer is the chain's, delivered to the client, nobody scored. The
+// refined verdict replaces the analyzer's; ok false leaves it as it was.
+type VerdictRefiner interface {
+	RefineVerdict(payload domain.Payload, result heuristic.AnalysisResult) (refined heuristic.AnalysisResult, ok bool)
+}
+
+// SyncAllowanceTuner is implemented by plugins whose block-height filter has
+// a sync allowance that the tuning knob qos.sync_allowance may move at
+// runtime, per service. SyncAllowance reports the value in force.
+type SyncAllowanceTuner interface {
+	SyncAllowance() uint64
+	SetSyncAllowance(blocks uint64)
 }
 
 // MethodOther is the bucket NormalizeMethod returns for a method the plugin

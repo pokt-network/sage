@@ -663,3 +663,49 @@ func TestDiffConfig_ReputationTuningNeedsRestart(t *testing.T) {
 		t.Error("the diff claims the reputation block was applied; the service is built once")
 	}
 }
+
+// An uploaded config applies like the file, is persisted as the override,
+// blocks a file reload until cleared, and clearing re-applies the file.
+func TestApplyConfig_AppliesPersistsAndClears(t *testing.T) {
+	app, _ := buildReloadApp(t, reloadTestYAML)
+	retryFn := newRetryFn(app.Config.Load, tuning.NewStore())
+	if got := retryFn("eth").HedgeDelay; got != 500*time.Millisecond {
+		t.Fatalf("hedge delay before = %s", got)
+	}
+
+	uploaded := strings.Replace(reloadTestYAML, "hedge_delay: 500ms", "hedge_delay: 25ms", 1)
+	res, err := app.ApplyConfig(t.Context(), []byte(uploaded))
+	if err != nil {
+		t.Fatalf("ApplyConfig: %v", err)
+	}
+	if !slices.Contains(res.Applied, "gateway_config.defaults.retry_config") {
+		t.Errorf("applied = %v", res.Applied)
+	}
+	if got := retryFn("eth").HedgeDelay; got != 25*time.Millisecond {
+		t.Fatalf("hedge delay after upload = %s, want 25ms", got)
+	}
+	if v, ok, _ := app.Overrides.Get(t.Context(), configOverrideKey); !ok || v != uploaded {
+		t.Fatalf("override store = %v,%v; want the uploaded document", ok, v == uploaded)
+	}
+
+	if _, err := app.Reload(t.Context()); !errors.Is(err, reload.ErrConfigOverridden) {
+		t.Fatalf("Reload while overridden: err = %v, want ErrConfigOverridden", err)
+	}
+
+	if _, err := app.ApplyConfig(t.Context(), []byte("nope: [")); err == nil {
+		t.Fatal("a document that does not parse must be refused")
+	}
+	if got := retryFn("eth").HedgeDelay; got != 25*time.Millisecond {
+		t.Fatalf("a refused upload must change nothing, got %s", got)
+	}
+
+	if _, err := app.ClearConfigOverride(t.Context()); err != nil {
+		t.Fatalf("ClearConfigOverride: %v", err)
+	}
+	if got := retryFn("eth").HedgeDelay; got != 500*time.Millisecond {
+		t.Fatalf("hedge delay after clear = %s, want the file's 500ms", got)
+	}
+	if _, ok, _ := app.Overrides.Get(t.Context(), configOverrideKey); ok {
+		t.Fatal("clear must remove the stored override")
+	}
+}

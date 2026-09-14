@@ -200,7 +200,7 @@ behavior rather than giving up the attempt.
 
 | Tier | What | Examples |
 |---|---|---|
-| 0. HTTP Status | Status code | 5xx → retry + circuit break, 429 → retry only |
+| 0. HTTP Status | Status code | 5xx → retry + major penalty (no breaker vote), 429 → retry + minor |
 | 1. Structural | Response shape | Empty body, HTML error page, XML |
 | 2. Protocol | JSON-RPC parsing (gjson) | Error codes, `result:null + error`, fabricated responses |
 | 3. Indicators | Content patterns | "missing trie node", "connection refused" |
@@ -246,6 +246,7 @@ re-break as a repeat offender.
 | hedge | on | Parallel race (primary + delayed secondary) |
 | circuit_breaker | on | Domain-wide broken tracking |
 | method_blocks | on | Per-host, per-method memory: a host that timed out on a method stops receiving it for a TTL |
+| latency_tiebreak | on | Inside tier 1 of selection, a faster host is asked more often than a slower equal, by the per-key latency EWMA; scores stay latency-blind |
 | singleflight | on | Coalesce identical concurrent requests |
 | cache | on | LRU response cache for finalized data |
 | cross_validation | on | Cross-endpoint response digest comparison. Report-only: an outlier is logged, and nothing feeds reputation or the blocks — deciding which of three disagreeing endpoints is wrong needs its own design (`docs/next-steps.md`) |
@@ -256,7 +257,7 @@ re-break as a repeat offender.
 | supplier_affinity | on | Sticky supplier after write operations |
 | websocket_relays | on | WebSocket relay path (bidirectional bridge) |
 | operator_aware_selection | on | Per-operator concentration cap; operator-aware retry/hedge |
-| debug_log | off | Full request/response body logging |
+| debug_log | off | Per-attempt request/response logging at debug level: verb, path, method, the URL dialed for the RPC type, bodies, status, error |
 | shadow_mode | off | Process traffic but don't serve responses |
 | request_sampler | on | Per-service request-shape sampling for diversity metrics and the admin request-sample routes |
 | scoring_v2 | on | Per-attempt reputation scoring: the score middleware records each attempt against its own endpoint; batch collapses to one signal per endpoint; Observe records nothing. Off restores once-per-request scoring in Observe |

@@ -92,7 +92,7 @@ func TestService_AsyncWriteToStorage(t *testing.T) {
 	// Stop flushes pending writes.
 	svc.Stop()
 
-	key := scoreKey(svcID, svc.key(ep, domain.RPCTypeJSONRPC))
+	key := scoreKey(svcID, svc.keyOf(ep, domain.RPCTypeJSONRPC))
 	st, err := store.GetState(ctx, key)
 	if err != nil {
 		t.Fatalf("expected state in storage after Stop, got error: %v", err)
@@ -251,6 +251,82 @@ func TestService_ResetScore(t *testing.T) {
 	}
 }
 
+// A reset reaches only what is recorded, and by every spelling an operator
+// has to hand: the listing's key, the URL, the host, the endpoint address.
+// A target that matches nothing creates nothing and says so.
+func TestService_ResetMatching(t *testing.T) {
+	svc, _ := newTestServiceStore()
+	defer svc.Stop()
+	ctx := context.Background()
+	svcID := domain.ServiceID("osmosis")
+	ep := domain.EndpointAddr("pokt1abc-https://rm02.kalorius.tech")
+	other := domain.EndpointAddr("pokt1def-https://rm01.kalorius.tech")
+	for _, rt := range []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeREST} {
+		require.NoError(t, svc.RecordSignal(ctx, svcID, ep, rt, NewCriticalErrorSignal("bad", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, svcID, other, rt, NewCriticalErrorSignal("bad", 0)))
+	}
+	restKey := svc.keyOf(ep, domain.RPCTypeREST)
+	jsonKey := svc.keyOf(ep, domain.RPCTypeJSONRPC)
+
+	// The listing's key resets that face only.
+	keys, err := svc.ResetMatching(ctx, svcID, restKey)
+	require.NoError(t, err)
+	assert.Equal(t, []string{restKey}, keys)
+	score, _ := svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
+	assert.NotEqual(t, 100.0, score, "the other face must keep its penalty")
+
+	// Host, URL and endpoint address reset every face of that host and
+	// nothing of the other host.
+	for _, target := range []string{"rm02.kalorius.tech", "https://rm02.kalorius.tech", string(ep)} {
+		for _, rt := range []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeREST} {
+			require.NoError(t, svc.RecordSignal(ctx, svcID, ep, rt, NewCriticalErrorSignal("bad", 0)))
+		}
+		keys, err := svc.ResetMatching(ctx, svcID, target)
+		require.NoError(t, err, target)
+		assert.Equal(t, []string{jsonKey, restKey}, keys, target)
+		score, _ = svc.GetScore(ctx, svcID, other, domain.RPCTypeREST)
+		assert.NotEqual(t, 100.0, score, "%s must not reach rm01", target)
+	}
+
+	// Nothing matched: nothing created.
+	before, _ := svc.GetScores(ctx, svcID)
+	_, err = svc.ResetMatching(ctx, svcID, "https://rm02.kalorius.tech|rest|json_rpc")
+	require.ErrorIs(t, err, ErrNoScore)
+	_, err = svc.ResetMatching(ctx, svcID, "rm03.kalorius.tech")
+	require.ErrorIs(t, err, ErrNoScore)
+	require.ErrorIs(t, svc.ResetScore(ctx, svcID, "pokt1zzz-https://rm03.kalorius.tech"), ErrNoScore)
+	after, _ := svc.GetScores(ctx, svcID)
+	assert.Equal(t, len(before), len(after), "an unmatched reset must not create keys")
+}
+
+func TestResetTargets(t *testing.T) {
+	key := "https://rm02.kalorius.tech|rest"
+	for _, target := range []string{
+		key, "https://rm02.kalorius.tech", "rm02.kalorius.tech", "rm02.kalorius.tech:443",
+		"pokt1abc-https://rm02.kalorius.tech", "pokt1abc-https://rm02.kalorius.tech:443/v1",
+	} {
+		assert.True(t, resetTargets(key, target), target)
+	}
+	for _, target := range []string{
+		"", "https://rm02.kalorius.tech|json_rpc", "https://rm02.kalorius.tech|rest|json_rpc",
+		"rm01.kalorius.tech", "https://rm01.kalorius.tech", "kalorius.tech", "pokt1abc-https://rm01.kalorius.tech",
+		"https://rm02.kalorius.tech/v1",
+	} {
+		assert.False(t, resetTargets(key, target), target)
+	}
+	// Coarser granularities: the identity is a host or a supplier.
+	assert.True(t, resetTargets("rm02.kalorius.tech|rest", "pokt1abc-https://rm02.kalorius.tech"))
+	assert.True(t, resetTargets("pokt1abc|rest", "pokt1abc-https://rm02.kalorius.tech"))
+	assert.True(t, resetTargets("pokt1abc|rest", "pokt1abc"))
+	assert.False(t, resetTargets("pokt1abc|rest", "pokt1abcd"))
+	// Per-endpoint: the identity is the whole address.
+	assert.True(t, resetTargets("pokt1abc-https://rm02.kalorius.tech|rest", "rm02.kalorius.tech"))
+	assert.True(t, resetTargets("pokt1abc-https://rm02.kalorius.tech|rest", "pokt1abc-https://rm02.kalorius.tech"))
+	// A URL whose host carries a dash is not an endpoint address.
+	assert.True(t, resetTargets("https://eu-s-01.example.com|rest", "https://eu-s-01.example.com"))
+	assert.False(t, resetTargets("https://s-01.example.com|rest", "https://eu-s-01.example.com"))
+}
+
 // TestService_Vouched exercises the beta-observed cold-start hole: right
 // after boot, before any signal, an endpoint has no recorded score, and
 // scoreForSelector would substitute InitialScore — enough to clear the
@@ -388,7 +464,7 @@ func TestService_RateTermLowersEffectiveScore(t *testing.T) {
 	assert.InDelta(t, 60, score, 5, "1% chronic failure: additive 100, penalty about -40")
 	views, err := svc.GetStates(ctx, "svc")
 	require.NoError(t, err)
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.InDelta(t, 100, v.Additive, 0.01)
 	assert.InDelta(t, wantPenalty, v.Penalty, 1)
 	assert.InDelta(t, wantRate, v.Rate, 0.0005)
@@ -440,7 +516,7 @@ func TestService_ProbeSignalsCountButDoNotFeedLatency(t *testing.T) {
 	probe.Probe = true
 	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, probe))
 	views, _ := svc.GetStates(ctx, "svc")
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.Equal(t, uint64(1), v.Attempts)
 	assert.Equal(t, uint64(0), v.TrafficAttempts)
 	assert.True(t, v.ProbeOnly)
@@ -448,7 +524,7 @@ func TestService_ProbeSignalsCountButDoNotFeedLatency(t *testing.T) {
 
 	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 100*time.Millisecond)))
 	views, _ = svc.GetStates(ctx, "svc")
-	v = views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v = views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.False(t, v.ProbeOnly)
 	assert.InDelta(t, 100, v.LatencyMS, 0.01, "first traffic sample seeds the EWMA")
 }
@@ -486,7 +562,7 @@ func TestService_VouchedUsesEffectiveScore(t *testing.T) {
 	}
 	views, err := svc.GetStates(ctx, "svc")
 	require.NoError(t, err)
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.InDelta(t, 70, v.Additive, 0.01)
 	assert.InDelta(t, -70, v.Penalty, 0.01, "the rate penalty is at its cap")
 	assert.False(t, svc.Vouched(ctx, "svc", ep, domain.RPCTypeJSONRPC),
@@ -519,7 +595,7 @@ func TestService_ResetClearsRate(t *testing.T) {
 	}
 	require.NoError(t, svc.ResetScore(ctx, "svc", ep))
 	views, _ := svc.GetStates(ctx, "svc")
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.Equal(t, 0.0, v.Rate)
 	assert.Equal(t, 100.0, v.Score)
 	assert.Equal(t, uint64(0), v.Attempts)
@@ -572,8 +648,8 @@ func TestRecordSignal_PruningKeepsPenalisedRate(t *testing.T) {
 		require.NoError(t, svc.RecordSignal(ctx, "eth", latent, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0)))
 	}
 
-	chronicKey := svc.key(chronic, domain.RPCTypeJSONRPC)
-	latentKey := svc.key(latent, domain.RPCTypeJSONRPC)
+	chronicKey := svc.keyOf(chronic, domain.RPCTypeJSONRPC)
+	latentKey := svc.keyOf(latent, domain.RPCTypeJSONRPC)
 	before, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
 	require.Equal(t, 100.0, before[chronicKey].Additive, "setup: chronic additive is back at the ceiling")
@@ -615,7 +691,7 @@ func TestRecordSignalOnce_PerURLSiblingsAreOneAttempt(t *testing.T) {
 	views, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
 	require.Len(t, views, 1, "three registrations in front of one backend are one key")
-	v := views[svc.key(siblings[0], domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(siblings[0], domain.RPCTypeJSONRPC)]
 	assert.Equal(t, uint64(1), v.Attempts, "one probe, one attempt")
 	assert.Equal(t, 75.0, v.Additive, "one critical moved the additive term once, not three times")
 }
@@ -639,7 +715,7 @@ func TestRecordSignalOnce_PerEndpointScoresEveryRegistration(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, views, 3, "per-endpoint: one key per registration")
 	for _, ep := range siblings {
-		v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+		v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 		assert.Equal(t, uint64(1), v.Attempts, "%s", ep)
 		assert.Equal(t, 75.0, v.Additive, "%s", ep)
 	}
@@ -661,7 +737,7 @@ func TestRecordSignalOnce_MixedBackendsScoreEachKeyOnce(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, views, 2, "two backends, two keys")
 	for _, ep := range eps {
-		assert.Equal(t, uint64(1), views[svc.key(ep, domain.RPCTypeJSONRPC)].Attempts, "%s", ep)
+		assert.Equal(t, uint64(1), views[svc.keyOf(ep, domain.RPCTypeJSONRPC)].Attempts, "%s", ep)
 	}
 }
 
@@ -680,7 +756,7 @@ func TestRecordSignalOnce_EmptyAndSingle(t *testing.T) {
 	views, err = svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
 	require.Len(t, views, 1)
-	assert.Equal(t, uint64(1), views[svc.key(ep, domain.RPCTypeJSONRPC)].Attempts)
+	assert.Equal(t, uint64(1), views[svc.keyOf(ep, domain.RPCTypeJSONRPC)].Attempts)
 }
 
 // An endpoint the additive term has already floored is in an outage, not
@@ -717,7 +793,7 @@ func TestRecordSignal_FlooredScoreDoesNotAccrueRate(t *testing.T) {
 
 	views, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.Equal(t, 0.0, v.Penalty, "an outage left no chronic penalty behind")
 	assert.Equal(t, uint64(5_780), v.Attempts, "every signal is still an attempt, and still on the timeline")
 }
@@ -741,8 +817,28 @@ func TestRecordSignal_ChronicViolatorIsUnaffectedByTheFlooredGate(t *testing.T) 
 
 	views, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
-	v := views[svc.key(ep, domain.RPCTypeJSONRPC)]
+	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	require.Equal(t, 100.0, v.Additive, "a 1-in-500 failure rate never floors the additive term")
 	assert.InDelta(t, -23.5, v.Penalty, 3, "docs/scoring.md §7.3: spacebelt at 0.216% is about -23")
 	assert.InDelta(t, 76.5, v.Score, 3, "tier 2, as §7.3 says")
+}
+
+// The latency EWMA moves on successes only: a host that fails fast must not
+// read as a fast host to the selection tie-break.
+func TestRecordSignal_LatencyEWMAIgnoresErrors(t *testing.T) {
+	svc := NewService(NewMemoryStorage(), NewTimeline(10), DefaultServiceConfig())
+	ctx := context.Background()
+	ep := domain.EndpointAddr("s-https://h.example")
+	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewMajorErrorSignal("upstream_5xx", 5*time.Millisecond))
+	if ms, ok := svc.latencyForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC); ok {
+		t.Fatalf("an error's latency must not seed the EWMA, got %v", ms)
+	}
+	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewSuccessSignal("relay_ok", 300*time.Millisecond))
+	if ms, ok := svc.latencyForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC); !ok || ms != 300 {
+		t.Fatalf("success latency = %v,%v want 300,true", ms, ok)
+	}
+	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewMajorErrorSignal("upstream_5xx", 5*time.Millisecond))
+	if ms, _ := svc.latencyForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC); ms != 300 {
+		t.Fatalf("a fast failure moved the EWMA to %v", ms)
+	}
 }

@@ -287,3 +287,113 @@ func TestTieredSelector_Tier2TrickleOffAndInapplicable(t *testing.T) {
 		t.Fatalf("no tier-2 endpoint, expected [top], got %v", r)
 	}
 }
+
+func fixedLatencyFn(ms map[domain.EndpointAddr]float64) LatencyFn {
+	return func(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType) (float64, bool) {
+		v, ok := ms[ep]
+		return v, ok
+	}
+}
+
+func alwaysOn(context.Context, domain.ServiceID) bool { return true }
+
+// Within tier 1 the tie-break asks faster hosts more often, proportionally
+// to 1/latency, never exclusively; an unmeasured host is treated as average
+// so it still gets measured; tiers and scores are untouched.
+func TestTieredSelector_LatencyTieBreakWithinTier1(t *testing.T) {
+	scores := map[domain.EndpointAddr]float64{"fast": 95, "mid": 92, "slow": 90, "new": 91, "tier2": 60}
+	latencies := map[domain.EndpointAddr]float64{"fast": 50, "mid": 200, "slow": 800} // "new" unmeasured
+	cfg := DefaultSelectorConfig()
+	cfg.ProbationPct, cfg.Tier2Pct = 0, 0
+	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
+	sel.SetLatencyTieBreak(fixedLatencyFn(latencies), alwaysOn)
+	endpoints := domain.EndpointAddrList{"fast", "mid", "slow", "new", "tier2"}
+
+	picks := map[domain.EndpointAddr]int{}
+	const n = 6000
+	for i := 0; i < n; i++ {
+		got := sel.Select(context.Background(), "eth", endpoints, domain.RPCTypeJSONRPC)
+		if len(got) != 1 {
+			t.Fatalf("got %v", got)
+		}
+		picks[got[0]]++
+	}
+	if picks["tier2"] != 0 {
+		t.Fatalf("tier 2 must not be picked while tier 1 has members: %v", picks)
+	}
+	// Expected shares from weights 1/50 : 1/200 : 1/800 : 1/(2*mean(350)),
+	// a total of 0.02768: fast 0.723, mid 0.181, new 0.052, slow 0.045.
+	share := func(ep domain.EndpointAddr) float64 { return float64(picks[ep]) / n }
+	if s := share("fast"); s < 0.66 || s > 0.78 {
+		t.Errorf("fast share = %.3f, want about 0.723: %v", s, picks)
+	}
+	if s := share("slow"); s < 0.02 || s > 0.07 {
+		t.Errorf("slow share = %.3f, want about 0.045 and never zero: %v", s, picks)
+	}
+	if s := share("new"); s < 0.03 || s > 0.08 {
+		t.Errorf("unmeasured share = %.3f, want about half the mean's, 0.052: %v", s, picks)
+	}
+
+	// Gate off: uniform within tier 1 again.
+	sel.SetLatencyTieBreak(fixedLatencyFn(latencies), func(context.Context, domain.ServiceID) bool { return false })
+	picks = map[domain.EndpointAddr]int{}
+	for i := 0; i < n; i++ {
+		picks[sel.Select(context.Background(), "eth", endpoints, domain.RPCTypeJSONRPC)[0]]++
+	}
+	if s := share("slow"); s < 0.18 || s > 0.32 {
+		t.Errorf("with the gate off slow share = %.3f, want about 0.25: %v", s, picks)
+	}
+}
+
+// With no measured latency in the tier the tie-break stands aside; a single
+// tier-1 candidate needs no tie-break.
+func TestTieredSelector_LatencyTieBreakStandsAsideWithoutData(t *testing.T) {
+	scores := map[domain.EndpointAddr]float64{"a": 95, "b": 92}
+	cfg := DefaultSelectorConfig()
+	cfg.ProbationPct, cfg.Tier2Pct = 0, 0
+	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
+	sel.SetLatencyTieBreak(fixedLatencyFn(nil), alwaysOn)
+	picks := map[domain.EndpointAddr]int{}
+	for i := 0; i < 2000; i++ {
+		picks[sel.Select(context.Background(), "eth", domain.EndpointAddrList{"a", "b"}, domain.RPCTypeJSONRPC)[0]]++
+	}
+	if picks["a"] < 800 || picks["b"] < 800 {
+		t.Fatalf("no latency data should mean a uniform pick: %v", picks)
+	}
+}
+
+// With the operator cap on, latency moves share across operators: a single
+// fast address earns more than its one-in-four count share, up to the cap,
+// instead of the cap fixing shares by endpoint count before latency looks.
+func TestTieredSelector_LatencyTieBreakMovesShareAcrossOperators(t *testing.T) {
+	scores := map[domain.EndpointAddr]float64{
+		"a1-https://slow.op-a.net": 95, "a2-https://slow.op-a.net": 95, "a3-https://slow.op-a.net": 95,
+		"b1-https://fast.op-b.net": 95,
+	}
+	latencies := map[domain.EndpointAddr]float64{
+		"a1-https://slow.op-a.net": 400, "a2-https://slow.op-a.net": 400, "a3-https://slow.op-a.net": 400,
+		"b1-https://fast.op-b.net": 40,
+	}
+	cfg := DefaultSelectorConfig()
+	cfg.ProbationPct, cfg.Tier2Pct = 0, 0
+	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
+	sel.SetLatencyTieBreak(fixedLatencyFn(latencies), alwaysOn)
+	sel.SetOperatorCap(OperatorCapConfig{MaxShare: 0.6}, alwaysOn)
+	endpoints := domain.EndpointAddrList{"a1-https://slow.op-a.net", "a2-https://slow.op-a.net", "a3-https://slow.op-a.net", "b1-https://fast.op-b.net"}
+
+	picks := map[domain.EndpointAddr]int{}
+	const n = 6000
+	for i := 0; i < n; i++ {
+		picks[sel.Select(context.Background(), "eth", endpoints, domain.RPCTypeJSONRPC)[0]]++
+	}
+	// By weight op-b is 1/40 of 3/400+1/40 = 77% of the mass; the two-operator
+	// cap holds it to its ceiling, so expect well above the 25% count share and
+	// at or below the cap's two-operator share.
+	fast := float64(picks["b1-https://fast.op-b.net"]) / n
+	if fast < 0.45 {
+		t.Fatalf("fast operator share = %.3f, want well above its 25%% count share: %v", fast, picks)
+	}
+	if fast > 0.80 {
+		t.Fatalf("fast operator share = %.3f, want held by the cap: %v", fast, picks)
+	}
+}

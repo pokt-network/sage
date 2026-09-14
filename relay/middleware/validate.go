@@ -54,8 +54,23 @@ func Validate(services []config.ServiceConfig) relay.Middleware {
 					declared = append(declared, string(rt))
 				}
 				sort.Strings(declared)
+				// The metric says how often; this says which request. A
+				// detected type the service does not declare is the one
+				// misclassification that is visible before a relay is sent,
+				// and the path and verb are what a detection rule is written
+				// against.
+				if ctx.Logger != nil && ctx.HTTPRequest != nil {
+					ctx.Logger.Info("validate: rpc type not declared by service",
+						"service", ctx.ServiceID,
+						"rpc_type", ctx.RPCType,
+						"source", ctx.RPCTypeSource,
+						"method", ctx.HTTPRequest.Method,
+						"path", ctx.HTTPRequest.URL.Path,
+						"allowed_rpc_types", declared,
+					)
+				}
 				return rejectRequest(ctx, nil, http.StatusBadRequest, domain.ErrValidation,
-					fmt.Sprintf("RPC type %q not supported for service %q", ctx.RPCType, ctx.ServiceID), nil,
+					fmt.Sprintf("RPC type %q not supported for service %q", ctx.RPCType, ctx.ServiceID), domain.ErrRPCTypeUnsupported,
 					map[string]any{
 						"service_id":        string(ctx.ServiceID),
 						"detected_type":     string(ctx.RPCType),

@@ -220,3 +220,35 @@ func TestAnalyzeTransportError_ConnectErrorIsDeadHost(t *testing.T) {
 		t.Fatalf("connect error graded as %+v", r)
 	}
 }
+
+// A relay miner answering with a status instead of a relay is graded by that
+// status: 5xx and 429 are the supplier's layer, retried and scored minor
+// (the rate term accumulates a steady stream); 413 is the client's payload,
+// neither retried nor scored. Before 2026-09-13 all of them were
+// transport_error with attribution unknown.
+func TestAnalyzeTransportError_UpstreamStatusIsGradedByStatus(t *testing.T) {
+	cases := []struct {
+		status      int
+		wantReason  string
+		wantAttr    ErrorAttribution
+		wantRetry   bool
+		wantPenalty bool
+	}{
+		{502, "upstream_5xx", AttrSupplier, true, true},
+		{503, "upstream_5xx", AttrSupplier, true, true},
+		{429, "upstream_429", AttrSupplier, true, true},
+		{413, "upstream_413", AttrClient, false, false},
+		{404, "upstream_4xx", AttrSupplier, true, true},
+	}
+	for _, tc := range cases {
+		err := domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable", &domain.UpstreamStatusError{Status: tc.status}, true)
+		r := AnalyzeTransportError(err, nil)
+		if r.Reason != tc.wantReason || r.Attribution != tc.wantAttr || r.ShouldRetry != tc.wantRetry || r.ShouldPenalize != tc.wantPenalty {
+			t.Errorf("status %d: got reason %q attr %v retry %v penalize %v; want %q %v %v %v",
+				tc.status, r.Reason, r.Attribution, r.ShouldRetry, r.ShouldPenalize, tc.wantReason, tc.wantAttr, tc.wantRetry, tc.wantPenalty)
+		}
+		if r.ShouldCircuitBreak {
+			t.Errorf("status %d: a miner status must not open the breaker", tc.status)
+		}
+	}
+}

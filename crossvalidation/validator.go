@@ -168,7 +168,12 @@ func (v *Validator) sweep() {
 	for _, key := range keys {
 		outliers := v.CheckConsensus(key.ServiceID, key.Method)
 		for _, o := range outliers {
-			v.logger.Warn("cross_validation outlier detected",
+			// Debug, not Warn: the sweep re-reports the same outliers every
+			// interval for as long as the window holds them, digests of
+			// height-dependent answers differ legitimately, and nothing acts
+			// on the result. At Warn it was 33 lines a second on the canary,
+			// most of the log at info level.
+			v.logger.Debug("cross_validation outlier detected",
 				slog.String("service_id", string(key.ServiceID)),
 				slog.String("method", key.Method),
 				slog.String("endpoint", string(o.Endpoint)),

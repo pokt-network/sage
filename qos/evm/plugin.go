@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -16,15 +17,11 @@ import (
 
 // evmEndpoint holds per-endpoint state observed from health checks and relays.
 //
-// IsArchival is meaningful only while ArchivalExpiry is in the future. A zero
-// or elapsed expiry means "never observed / no longer known", which is a third
-// state and not the same as a negative: an endpoint nothing has asked for
-// historical state must not be treated as having refused it.
+// Archival retention lives in archivalMemory, per host, not here: see
+// archival.go.
 type evmEndpoint struct {
-	BlockNumber    uint64
-	ChainID        string
-	IsArchival     bool
-	ArchivalExpiry time.Time
+	BlockNumber uint64
+	ChainID     string
 }
 
 // archivalTTL is how long one archival observation is trusted.
@@ -77,8 +74,10 @@ type Plugin struct {
 	logger          *slog.Logger
 	store           *qos.EndpointStore[evmEndpoint]
 	consensus       *qos.BlockConsensus
-	syncAllowance   uint64
+	syncAllowance   atomic.Uint64
 	expectedChainID string
+	// archival remembers, per host, who served or refused historical state.
+	archival *archivalMemory
 }
 
 // Config carries the per-service settings an EVM plugin needs.
@@ -125,13 +124,15 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Plugin{
+	p := &Plugin{
 		logger:          logger,
 		store:           qos.NewEndpointStore[evmEndpoint](logger),
 		consensus:       qos.NewBlockConsensus(logger, cfg.SyncAllowance),
-		syncAllowance:   cfg.SyncAllowance,
 		expectedChainID: cfg.ExpectedChainID,
+		archival:        newArchivalMemory(),
 	}
+	p.syncAllowance.Store(cfg.SyncAllowance)
+	return p
 }
 
 // --- qos.Plugin ---
@@ -161,21 +162,17 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		if !needsArchival {
 			return nil
 		}
-		ep, ok := p.store.Get(addr)
-		if !ok {
-			// Unknown — let through for eventual consistency.
-			return nil
-		}
 		// Only a fresh negative observation excludes an endpoint. Archival
 		// status is inferred from traffic that happened to name a historical
-		// block, so most endpoints carry no observation at all — and requiring
+		// block, so most hosts carry no observation at all — and requiring
 		// proof of archival before serving an archival request would exclude
 		// every one of them, exhausting all three tiers on every such request
 		// and handing back the unfiltered list anyway.
-		if !archivalKnown(ep) {
+		archival, known := p.archival.get(hostKey(addr))
+		if !known {
 			return nil
 		}
-		if !ep.IsArchival {
+		if !archival {
 			return &domain.RelayError{
 				Kind:      domain.ErrCapability,
 				Message:   "endpoint does not retain historical state",
@@ -185,8 +182,8 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		return nil
 	}
 
-	minHeight := qos.MinAllowedHeight(perceived, p.syncAllowance)
-	relaxedMin := qos.MinAllowedHeight(perceived, p.syncAllowance*2)
+	minHeight := qos.MinAllowedHeight(perceived, p.syncAllowance.Load())
+	relaxedMin := qos.MinAllowedHeight(perceived, p.syncAllowance.Load()*2)
 
 	blockFilter := qos.BlockHeightFilter(getHeight, minHeight)
 	relaxedBlockFilter := qos.BlockHeightFilter(getHeight, relaxedMin)
@@ -262,17 +259,8 @@ func (p *Plugin) IsArchivalRequest(payloads []domain.Payload) bool {
 // false: this asks what is known, not what is allowed. Selection uses the
 // weaker question — see the archival filter in SelectEndpoints.
 func (p *Plugin) IsArchivalEndpoint(endpoint domain.EndpointAddr) bool {
-	ep, ok := p.store.Get(endpoint)
-	if !ok {
-		return false
-	}
-	return archivalKnown(ep) && ep.IsArchival
-}
-
-// archivalKnown reports whether the endpoint carries an archival observation
-// that has not aged out.
-func archivalKnown(ep evmEndpoint) bool {
-	return !ep.ArchivalExpiry.IsZero() && time.Now().Before(ep.ArchivalExpiry)
+	archival, known := p.archival.get(hostKey(endpoint))
+	return known && archival
 }
 
 // observeArchival records what a relay says about an endpoint's history
@@ -294,17 +282,11 @@ func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, re
 
 	switch classifyArchivalResponse(response) {
 	case archivalServed:
-		p.store.Update(endpoint, func(ep *evmEndpoint) {
-			ep.IsArchival = true
-			ep.ArchivalExpiry = time.Now().Add(archivalTTL)
-		})
+		p.archival.set(hostKey(endpoint), true)
 		return true, true
 
 	case archivalMissing:
-		p.store.Update(endpoint, func(ep *evmEndpoint) {
-			ep.IsArchival = false
-			ep.ArchivalExpiry = time.Now().Add(archivalTTL)
-		})
+		p.archival.set(hostKey(endpoint), false)
 		return false, true
 
 	default:
@@ -549,4 +531,12 @@ func (p *Plugin) OnEndpointEvicted(serviceID domain.ServiceID, endpoint domain.E
 func (p *Plugin) ResetState() {
 	p.consensus.Reset()
 	p.store.Clear()
+	p.archival.reset()
 }
+
+// SyncAllowance implements qos.SyncAllowanceTuner.
+func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
+
+// SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
+// qos.sync_allowance, per service, without a restart.
+func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }

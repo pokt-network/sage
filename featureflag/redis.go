@@ -2,7 +2,10 @@ package featureflag
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/pokt-network/sage/internal/safego"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,6 +52,18 @@ type RedisStore struct {
 
 	mu    sync.RWMutex
 	cache map[string]cacheEntry
+
+	// snapshot is every flag key in Redis, refreshed in the background by
+	// Start. While it is set the hot path never touches Redis: IsEnabled is
+	// two map lookups. Before Start, or without a client, the per-key cache
+	// below stands in.
+	//
+	// The per-key cache alone was the relay path's largest fixed cost on the
+	// 2026-09-14 canary: its 5-second TTL expired between requests on every
+	// service below 0.2 req/s, so a dozen flag-gated middlewares each paid a
+	// Redis round trip per relay — a flat ~1 ms per stage, ~13 ms per
+	// request, the same on a no-op stage as on a real one.
+	snapshot atomic.Pointer[map[string]bool]
 }
 
 // RedisStoreOption configures a RedisStore.
@@ -235,6 +250,7 @@ func (s *RedisStore) Delete(ctx context.Context, flag string, serviceID domain.S
 	s.mu.Lock()
 	delete(s.cache, key)
 	s.mu.Unlock()
+	s.updateSnapshot(key, nil)
 
 	if s.client == nil {
 		return nil
@@ -271,6 +287,7 @@ func (s *RedisStore) DeleteGlobal(ctx context.Context, flag string) error {
 	s.mu.Lock()
 	delete(s.cache, key)
 	s.mu.Unlock()
+	s.updateSnapshot(key, nil)
 
 	if s.client == nil {
 		return nil
@@ -280,6 +297,12 @@ func (s *RedisStore) DeleteGlobal(ctx context.Context, flag string) error {
 
 // get reads from cache first, then Redis. Returns (value, found).
 func (s *RedisStore) get(ctx context.Context, key string) (bool, bool) {
+	// The polled snapshot answers without Redis once Start has run.
+	if snap := s.snapshot.Load(); snap != nil {
+		v, ok := (*snap)[key]
+		return v, ok
+	}
+
 	// Check cache.
 	s.mu.RLock()
 	if entry, ok := s.cache[key]; ok && time.Now().Before(entry.expiresAt) {
@@ -324,11 +347,79 @@ func (s *RedisStore) set(ctx context.Context, key string, enabled bool) error {
 	s.mu.Lock()
 	s.cache[key] = cacheEntry{value: enabled, found: true, expiresAt: time.Now().Add(s.cacheTTL)}
 	s.mu.Unlock()
+	s.updateSnapshot(key, &enabled)
 
 	if s.client == nil {
 		return nil
 	}
 	return s.client.Set(ctx, key, val, 0).Err()
+}
+
+// updateSnapshot applies a local write to the snapshot at once (copy on
+// write), so this replica sees its own change before the next refresh. A nil
+// value removes the key.
+func (s *RedisStore) updateSnapshot(key string, value *bool) {
+	for {
+		cur := s.snapshot.Load()
+		if cur == nil {
+			return
+		}
+		next := make(map[string]bool, len(*cur)+1)
+		for k, v := range *cur {
+			next[k] = v
+		}
+		if value == nil {
+			delete(next, key)
+		} else {
+			next[key] = *value
+		}
+		if s.snapshot.CompareAndSwap(cur, &next) {
+			return
+		}
+	}
+}
+
+// Start refreshes the snapshot from Redis now and then every cache TTL until
+// ctx is cancelled. Without a client there is nothing to poll. A refresh
+// that fails keeps the previous snapshot, so a Redis outage freezes the
+// flags at their last known state rather than stalling relays.
+func (s *RedisStore) Start(ctx context.Context) {
+	if s.client == nil {
+		return
+	}
+	s.refresh(ctx)
+	safego.Go(slog.Default(), "featureflag.refresh", func() {
+		t := time.NewTicker(s.cacheTTL)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.refresh(ctx)
+			}
+		}
+	})
+}
+
+// refresh loads every flag key into a fresh snapshot.
+func (s *RedisStore) refresh(ctx context.Context) {
+	keys, err := s.scanKeys(ctx)
+	if err != nil {
+		return
+	}
+	next := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		val, err := s.client.Get(ctx, key).Result()
+		if errors.Is(err, redis.Nil) {
+			continue
+		}
+		if err != nil {
+			return // keep the previous snapshot whole
+		}
+		next[key] = val == "1"
+	}
+	s.snapshot.Store(&next)
 }
 
 func globalKey(flag string) string {

@@ -59,6 +59,7 @@ const maxMethodsPerHost = 128
 // Store holds method blocks for every service in the process.
 type Store struct {
 	ttl           time.Duration
+	clientTTL     time.Duration
 	escalation    int
 	logger        *slog.Logger
 	sweepInterval time.Duration
@@ -72,6 +73,17 @@ type Option func(*Store)
 
 // WithTTL sets how long a mark lasts. Zero or negative disables marking.
 func WithTTL(d time.Duration) Option { return func(s *Store) { s.ttl = d } }
+
+// WithClientTTL sets how long a client-attributed (non-escalating) mark
+// lasts: a host that answered -32601 to a catalogued method. Zero or
+// negative, the store's default, means the same as the ordinary TTL; the
+// config layer supplies the longer value (method_blocks.client_ttl, 30m by
+// default) because the evidence is different in kind — a host that does not
+// serve a method does not grow it in five minutes, while a timeout is one
+// bad moment. On the 2026-09-13 canary two thirds of kava's json_rpc hosts
+// refused every eth_ method, and at one 5m lifetime the pool re-learned each
+// host and method every five minutes, one paid failed relay each.
+func WithClientTTL(d time.Duration) Option { return func(s *Store) { s.clientTTL = d } }
 
 // WithEscalation sets how many distinct methods must be marked on one host
 // inside one TTL before the host is blocked for every method. Zero or
@@ -105,6 +117,15 @@ func (s *Store) SetTTL(d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ttl = d
+}
+
+// SetClientTTL changes how long a client-attributed mark lasts, effective
+// for every Mark from this point on; zero or negative falls back to the
+// ordinary TTL. The reload path uses it beside SetTTL.
+func (s *Store) SetClientTTL(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clientTTL = d
 }
 
 // SetEscalation changes how many distinct supplier-attributed methods must be
@@ -164,7 +185,14 @@ func (s *Store) Mark(service, host, method string, escalates bool) (escalated bo
 	if s.ttl <= 0 {
 		return false
 	}
-	expiry := now.Add(s.ttl)
+	// A mark's lifetime follows its evidence: a client-attributed mark (the
+	// host does not serve the method) outlives a supplier-attributed one (the
+	// host failed the method once).
+	ttl := s.ttl
+	if !escalates && s.clientTTL > 0 {
+		ttl = s.clientTTL
+	}
+	expiry := now.Add(ttl)
 
 	hosts := s.byService[service]
 	if hosts == nil {

@@ -95,10 +95,11 @@ failureThreshold) here.
 |---|---|---|
 | `GET` | `/admin/flags` | Returns the effective state of every known feature flag. |
 | `PUT` | `/admin/flags/{flag}` | Toggles a feature flag globally. |
+| `DELETE` | `/admin/flags/{flag}` | Removes the global value PUT /admin/flags/{flag} set, so the flag follows the config file's value or the compiled default again. |
 | `PUT` | `/admin/flags/{flag}/{serviceID}` | Toggles a feature flag for one service only. |
 | `DELETE` | `/admin/flags/{flag}/{serviceID}` | Removes a per-service override, so the service follows the global value again. |
 | `GET` | `/admin/reputation/{serviceID}` | Returns every reputation state for a service. |
-| `POST` | `/admin/reputation/reset/{serviceID}/{endpoint...}` | Returns one endpoint to the initial score. |
+| `POST` | `/admin/reputation/reset/{serviceID}/{endpoint...}` | Returns one endpoint's recorded scores to the initial score. |
 | `GET` | `/admin/chain-state/{serviceID}` | Reads what a service's plugin believes about its chain: the perceived head, and the latest height each endpoint reported. |
 | `POST` | `/admin/chain-state/clear/{serviceID}` | Discards the QoS state a service's plugin has learned: block consensus (perceived height, external floor) and its per-endpoint QoS store (block heights, chain-id observations, archival marks — see qos.StateResetter). |
 | `GET` | `/admin/timeline/{serviceID}` | Returns the recent reputation events for every endpoint of a service, newest last. |
@@ -121,6 +122,15 @@ failureThreshold) here.
 | `DELETE` | `/admin/tuning/{knob}/{serviceID}` | Removes one service's override, leaving the global one (or the config value) in effect for it. |
 | `GET` | `/admin/config` | Returns the gateway's effective runtime configuration: resolved feature flags, registered services and their QoS plugins. |
 | `POST` | `/admin/reload` | Re-reads the config file the gateway started with (`-config`), validates it exactly as startup does, and applies the sections that have a runtime seam: the retry/hedge/timeout knobs, `feature_flags`, `active_health_checks`, `blocked_domains` and the `method_blocks` knobs. |
+| `PUT` | `/admin/config` | Applies a config document sent in the request body, as POST /admin/reload applies the file, and stores it as the config override. |
+| `DELETE` | `/admin/config` | Forgets the uploaded config and re-applies the file, on every replica through the override store. |
+| `GET` | `/admin/log-level` | Returns the level the process is logging at right now. |
+| `PUT` | `/admin/log-level` | Changes the log level without a restart. |
+| `DELETE` | `/admin/log-level` | Removes the admin override and returns the process to the config's level (or SAGE_LOG_LEVEL's). |
+| `GET` | `/admin/external-sources` | Lists every service's external block sources with their poll status. |
+| `GET` | `/admin/external-sources/{serviceID}` | Returns one service's external block sources and poll status. |
+| `PUT` | `/admin/external-sources/{serviceID}` | Replaces a service's external block sources and restarts its polling. |
+| `DELETE` | `/admin/external-sources/{serviceID}` | Clears a service's admin override: polling returns to the file's `external_block_sources`, or stops if the file has none. |
 | `POST` | `/admin/websocket/rebind/{serviceID}` | Replaces the supplier under every live WebSocket connection of a service, without closing any client. |
 | `GET` | `/admin/request-sample` | Returns every service the request-shape sampler has observed, each with its most recently completed traffic summary. |
 | `GET` | `/admin/request-sample/{serviceID}` | Returns one service's request-shape summary plus its top fingerprints for a single window. |
@@ -146,6 +156,17 @@ without Redis it applies to this instance only.
 
 A per-service override still wins over the global value — clear it with
 DELETE semantics via the flag store, not by setting the global.
+
+### `DELETE /admin/flags/{flag}`
+
+Removes the global value PUT /admin/flags/{flag} set, so
+the flag follows the config file's value or the compiled default again.
+Per-service overrides are left in place; they have their own DELETE.
+
+The inverse of the global PUT was missing until 2026-09-14: an operator
+who had switched a flag on could only switch it back by writing the
+default's value by hand, and the listing then showed an override rather
+than a default.
 
 ### `PUT /admin/flags/{flag}/{serviceID}`
 
@@ -180,11 +201,15 @@ keys to numeric scores.
 
 ### `POST /admin/reputation/reset/{serviceID}/{endpoint...}`
 
-Returns one endpoint to the initial score.
+Returns one endpoint's recorded scores to the initial
+score.
 
 The reset spans every RPC type: scores are kept per (identity, RPC type), but
 an operator resetting an endpoint means the endpoint, not whichever protocol
-they happened to name.
+they happened to name. The target may be a host, a URL, an endpoint address,
+or a key as GET /admin/reputation/{serviceID} lists it — the last form
+resets that one face. Only keys that exist are touched; a target matching
+none is a 404, so a typo cannot create a key.
 
 Reach for this when an endpoint was penalised for something since fixed and
 you do not want to wait for probation traffic to rehabilitate it.
@@ -414,6 +439,101 @@ global values only, and a deleted line in a file must not revoke a decision
 it never made.
 
 `SIGHUP` does the same thing.
+
+### `PUT /admin/config`
+
+Applies a config document sent in the request body, as
+POST /admin/reload applies the file, and stores it as the config override.
+
+Body: the YAML the config file would hold, whole. It is validated exactly
+as at startup; a document that would not boot is refused with 400 and
+changes nothing. What applies is what a reload applies: the retry, hedge
+and timeout knobs, feature flags, health checks, blocked domains and the
+method-block knobs; a changed service block is reported under
+`needs_restart`. The document is persisted in the override store, so every
+replica applies it within the watch interval and a restarted process
+applies it at boot; the file is untouched and DELETE /admin/config returns
+to it. While an override is stored, POST /admin/reload answers 409.
+
+### `DELETE /admin/config`
+
+Forgets the uploaded config and re-applies the
+file, on every replica through the override store.
+
+409 when the gateway was booted from GATEWAY_CONFIG and has no file to
+return to.
+
+### `GET /admin/log-level`
+
+Returns the level the process is logging at right now.
+
+`level` is the live value; `base` is what the config or SAGE_LOG_LEVEL
+asked for; `override` is the persisted admin setting, if any, and
+`persisted` whether such settings reach other replicas and survive a
+restart (Redis) or live on this replica only.
+
+### `PUT /admin/log-level`
+
+Changes the log level without a restart.
+
+Body: `{"level": "debug"}`, one of debug, info, warn, error. Applied to this
+process at once and written to the override store, from which every
+replica picks it up within the watch interval and a restarted process
+starts at it; with no Redis the store is this process only. DELETE
+/admin/log-level returns to the config's level. The `debug_log` feature
+flag, which logs request and response bodies per service, only produces
+output while this level is debug.
+
+### `DELETE /admin/log-level`
+
+Removes the admin override and returns the process to
+the config's level (or SAGE_LOG_LEVEL's).
+
+Every replica follows through the override store; the body says whether
+there was an override to remove.
+
+### `GET /admin/external-sources`
+
+Lists every service's external block sources with
+their poll status.
+
+Each entry carries `origin` (config, admin, admin-disabled or none), the
+sources polled now and the file's (`configured`, what DELETE returns to),
+durations as strings, and `status`: whether a fetcher is running, whether
+its last poll failed and with what error, the last height seen and when.
+`persisted` says whether admin changes reach other replicas and survive a
+restart (Redis) or live on this replica only.
+
+### `GET /admin/external-sources/{serviceID}`
+
+Returns one service's external block sources and
+poll status.
+
+### `PUT /admin/external-sources/{serviceID}`
+
+Replaces a service's external block sources and
+restarts its polling.
+
+Body: `{"sources": [{"url": "https://…", "type": "json_rpc|rest|comet_bft",
+"method": "…", "path": "…", "interval": "15s", "timeout": "5s"}]}`; `url` is
+required, the rest optional with the config file's defaults. An empty
+`sources` stops polling the service. The change is written to the override
+store first: every replica applies it within the watch interval and a
+restarted process starts with it; with no Redis it is this replica only.
+The file's sources stay known underneath; DELETE returns to them. It exists
+because the file may be a sealed secret and a retired source polls every
+fifteen seconds until someone can edit it. 400 for an invalid source, 409
+when the service's plugin tracks no block height (nothing to lift).
+
+### `DELETE /admin/external-sources/{serviceID}`
+
+Clears a service's admin override: polling
+returns to the file's `external_block_sources`, or stops if the file has
+none.
+
+Every replica follows through the override store. To stop polling a service
+that the file configures, PUT an empty `sources` list instead. The body
+says whether there was an override to clear.
 
 ### `POST /admin/websocket/rebind/{serviceID}`
 

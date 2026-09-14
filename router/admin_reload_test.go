@@ -21,11 +21,26 @@ type stubReloader struct {
 	result reload.Result
 	err    error
 	calls  int
+
+	applied []byte
+	cleared int
 }
 
 // Reload records the call and returns the canned answer.
 func (s *stubReloader) Reload(_ context.Context) (reload.Result, error) {
 	s.calls++
+	return s.result, s.err
+}
+
+// ApplyConfig records the document and returns the canned answer.
+func (s *stubReloader) ApplyConfig(_ context.Context, data []byte) (reload.Result, error) {
+	s.applied = append([]byte(nil), data...)
+	return s.result, s.err
+}
+
+// ClearConfigOverride records the call and returns the canned answer.
+func (s *stubReloader) ClearConfigOverride(_ context.Context) (reload.Result, error) {
+	s.cleared++
 	return s.result, s.err
 }
 
@@ -141,5 +156,57 @@ func TestHandleReload_MethodIsPOST(t *testing.T) {
 
 	if rec.Code == http.StatusOK {
 		t.Fatal("GET /admin/reload succeeded; the route must be POST-only")
+	}
+}
+
+// PUT /admin/config hands the body to the reloader whole and reports what it
+// applied; an empty body is refused before the reloader sees it; DELETE
+// clears through the reloader.
+func TestHandleApplyConfig_ForwardsBodyAndClears(t *testing.T) {
+	stub := &stubReloader{result: reload.Result{Applied: []string{"gateway_config.defaults.retry_config"}}}
+	mux := newReloadAdmin(t, stub)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	yaml := "gateway_config:\n  defaults:\n    retry_config:\n      hedge_delay: 25ms\n"
+	status, body := doTuning(t, srv.URL, http.MethodPut, "/admin/config", yaml)
+	if status != http.StatusOK {
+		t.Fatalf("PUT: status %d body %v", status, body)
+	}
+	if string(stub.applied) != yaml {
+		t.Fatalf("reloader received %q, want the body verbatim", stub.applied)
+	}
+	if applied, _ := body["applied"].([]any); len(applied) != 1 {
+		t.Fatalf("response = %v, want the reload result", body)
+	}
+
+	if status, _ := doTuning(t, srv.URL, http.MethodPut, "/admin/config", "   \n"); status != http.StatusBadRequest {
+		t.Fatalf("empty body: status %d, want 400", status)
+	}
+
+	stub.err = errors.New("validate config: full_node_config.rpc_url is required")
+	if status, _ := doTuning(t, srv.URL, http.MethodPut, "/admin/config", "nope: 1\n"); status != http.StatusBadRequest {
+		t.Fatalf("refused document: status %d, want 400", status)
+	}
+	stub.err = nil
+
+	if status, _ := doTuning(t, srv.URL, http.MethodDelete, "/admin/config", ""); status != http.StatusOK || stub.cleared != 1 {
+		t.Fatalf("DELETE: status %d cleared %d", status, stub.cleared)
+	}
+	stub.err = reload.ErrNoConfigFile
+	if status, _ := doTuning(t, srv.URL, http.MethodDelete, "/admin/config", ""); status != http.StatusConflict {
+		t.Fatalf("DELETE without a file: status %d, want 409", status)
+	}
+}
+
+// While an uploaded config is in force, re-reading the file is refused so it
+// cannot silently undo the upload.
+func TestHandleReload_RefusedWhileOverridden(t *testing.T) {
+	stub := &stubReloader{result: reload.NewResult(), err: reload.ErrConfigOverridden}
+	mux := newReloadAdmin(t, stub)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	if status, _ := doTuning(t, srv.URL, http.MethodPost, "/admin/reload", ""); status != http.StatusConflict {
+		t.Fatalf("reload while overridden: status %d, want 409", status)
 	}
 }

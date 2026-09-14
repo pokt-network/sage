@@ -34,7 +34,7 @@ var _ TrafficCounter = (*serviceImpl)(nil)
 // TrafficSignals implements TrafficCounter. It reads the same shard cache the
 // selector reads, under the same read lock, and allocates nothing.
 func (s *serviceImpl) TrafficSignals(serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (uint64, bool) {
-	key := s.key(ep, rpcType)
+	key := s.keyOf(ep, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
 	st, ok := sh.cache[serviceID][key]

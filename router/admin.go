@@ -2,6 +2,8 @@ package router
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/pokt-network/sage/drain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/methodblock"
+	"github.com/pokt-network/sage/override"
 	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/reputation"
@@ -20,21 +23,31 @@ import (
 
 // AdminAPI provides HTTP endpoints for runtime inspection and control.
 type AdminAPI struct {
-	flags       featureflag.FlagStore
-	repService  reputation.Service
-	timeline    *reputation.Timeline
-	breaker     *circuitbreaker.Breaker
-	blocks      *methodblock.Store
-	drains      drain.Store
-	endpoints   protocol.EndpointProvider
-	maxDrain    time.Duration
-	qosRegistry *qos.Registry
-	tuning      *tuning.Store
-	reloader    Reloader
-	sampler     *traffic.Sampler
-	wsRebinder  WSRebinder
-	blocklist   Blocklist
-	logger      *slog.Logger
+	flags        featureflag.FlagStore
+	repService   reputation.Service
+	timeline     *reputation.Timeline
+	breaker      *circuitbreaker.Breaker
+	blocks       *methodblock.Store
+	drains       drain.Store
+	endpoints    protocol.EndpointProvider
+	maxDrain     time.Duration
+	qosRegistry  *qos.Registry
+	tuning       *tuning.Store
+	reloader     Reloader
+	sampler      *traffic.Sampler
+	wsRebinder   WSRebinder
+	blocklist    Blocklist
+	logger       *slog.Logger
+	logLevel     *slog.LevelVar
+	logLevelBase slog.Level
+
+	externalSources ExternalSourceAdmin
+	overrides       override.Store
+	// resetsApplied and resetWatchInterval belong to the reputation-reset
+	// fan-out (admin_reset.go); the interval is zero (the default) outside
+	// tests.
+	resetsApplied      resetsApplied
+	resetWatchInterval time.Duration
 }
 
 // WSRebinder replaces the supplier under every live WebSocket connection of
@@ -94,6 +107,7 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Feature flags
 	mux.HandleFunc("GET /admin/flags", a.handleListFlags)
 	mux.HandleFunc("PUT /admin/flags/{flag}", a.handleSetFlag)
+	mux.HandleFunc("DELETE /admin/flags/{flag}", a.handleDeleteFlag)
 	mux.HandleFunc("PUT /admin/flags/{flag}/{serviceID}", a.handleSetFlagForService)
 	mux.HandleFunc("DELETE /admin/flags/{flag}/{serviceID}", a.handleDeleteFlagForService)
 
@@ -136,9 +150,22 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /admin/tuning/{knob}", a.handleClearTuning)
 	mux.HandleFunc("DELETE /admin/tuning/{knob}/{serviceID}", a.handleClearTuningForService)
 
-	// Config dump and reload
+	// Config dump, reload, and upload
 	mux.HandleFunc("GET /admin/config", a.handleGetConfig)
 	mux.HandleFunc("POST /admin/reload", a.handleReload)
+	mux.HandleFunc("PUT /admin/config", a.handleApplyConfig)
+	mux.HandleFunc("DELETE /admin/config", a.handleClearConfigOverride)
+
+	// Log level, live
+	mux.HandleFunc("GET /admin/log-level", a.handleGetLogLevel)
+	mux.HandleFunc("PUT /admin/log-level", a.handleSetLogLevel)
+	mux.HandleFunc("DELETE /admin/log-level", a.handleClearLogLevel)
+
+	// External block sources, live
+	mux.HandleFunc("GET /admin/external-sources", a.handleListExternalSources)
+	mux.HandleFunc("GET /admin/external-sources/{serviceID}", a.handleGetExternalSources)
+	mux.HandleFunc("PUT /admin/external-sources/{serviceID}", a.handleSetExternalSources)
+	mux.HandleFunc("DELETE /admin/external-sources/{serviceID}", a.handleDeleteExternalSources)
 
 	// WebSocket
 	mux.HandleFunc("POST /admin/websocket/rebind/{serviceID}", a.handleWebSocketRebind)
@@ -196,6 +223,31 @@ func (a *AdminAPI) handleSetFlag(w http.ResponseWriter, req *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"flag": flag, "enabled": body.Enabled})
+}
+
+// handleDeleteFlag removes the global value PUT /admin/flags/{flag} set, so
+// the flag follows the config file's value or the compiled default again.
+// Per-service overrides are left in place; they have their own DELETE.
+//
+// The inverse of the global PUT was missing until 2026-09-14: an operator
+// who had switched a flag on could only switch it back by writing the
+// default's value by hand, and the listing then showed an override rather
+// than a default.
+func (a *AdminAPI) handleDeleteFlag(w http.ResponseWriter, req *http.Request) {
+	flag := req.PathValue("flag")
+	if flag == "" {
+		writeJSONError(w, http.StatusBadRequest, "flag name is required")
+		return
+	}
+	if err := a.flags.Delete(req.Context(), flag, ""); err != nil {
+		a.logger.Error("admin: delete flag", "flag", flag, "error", err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to delete flag")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"flag":    flag,
+		"deleted": true,
+	})
 }
 
 // handleSetFlagForService toggles a feature flag for one service only.
@@ -300,11 +352,15 @@ func (a *AdminAPI) handleGetReputation(w http.ResponseWriter, req *http.Request)
 	writeJSON(w, http.StatusOK, scores)
 }
 
-// handleResetReputation returns one endpoint to the initial score.
+// handleResetReputation returns one endpoint's recorded scores to the initial
+// score.
 //
 // The reset spans every RPC type: scores are kept per (identity, RPC type), but
 // an operator resetting an endpoint means the endpoint, not whichever protocol
-// they happened to name.
+// they happened to name. The target may be a host, a URL, an endpoint address,
+// or a key as GET /admin/reputation/{serviceID} lists it — the last form
+// resets that one face. Only keys that exist are touched; a target matching
+// none is a 404, so a typo cannot create a key.
 //
 // Reach for this when an endpoint was penalised for something since fixed and
 // you do not want to wait for probation traffic to rehabilitate it.
@@ -316,17 +372,48 @@ func (a *AdminAPI) handleResetReputation(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	if err := a.repService.ResetScore(req.Context(), serviceID, endpoint); err != nil {
+	// Only recorded keys are reset (reputation.ResetMatching): a target that
+	// matches nothing is a 404 and creates nothing. The response names the
+	// keys touched when the service can say.
+	var keys []string
+	var err error
+	if kr, ok := a.repService.(reputation.KeyResetter); ok {
+		keys, err = kr.ResetMatching(req.Context(), serviceID, string(endpoint))
+	} else {
+		err = a.repService.ResetScore(req.Context(), serviceID, endpoint)
+	}
+	if errors.Is(err, reputation.ErrNoScore) {
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("no recorded score on %s matches %q; GET /admin/reputation/%s lists the keys, and a host, a URL, an endpoint address or a listed key all name one", serviceID, endpoint, serviceID))
+		return
+	}
+	if err != nil {
 		a.logger.Error("admin: reset reputation", "service", serviceID, "endpoint", endpoint, "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "failed to reset score")
 		return
 	}
+	if keys == nil {
+		keys = []string{}
+	}
+	// Reputation state is per replica: announce the reset so the other pods
+	// repeat it (WatchReputationResets), through the same matching.
+	persisted := a.publishReputationReset(req.Context(), serviceID, string(endpoint))
+	a.logger.Warn("admin: reputation reset", "service", serviceID, "target", endpoint, "keys", keys, "persisted", persisted)
 
-	writeJSON(w, http.StatusOK, map[string]string{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"service_id": string(serviceID),
 		"endpoint":   string(endpoint),
 		"status":     "reset",
+		"keys":       keys,
+		"persisted":  persisted,
+		"note":       resetPersistenceNote(persisted),
 	})
+}
+
+func resetPersistenceNote(persisted bool) string {
+	if persisted {
+		return "applied on this replica and announced in Redis: every other replica applies the same reset within its watch interval"
+	}
+	return "applied on this replica only: without Redis a reset does not reach other replicas"
 }
 
 // --- Timeline handlers ---

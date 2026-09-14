@@ -1,6 +1,8 @@
 package evm
 
 import (
+	"sort"
+
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
 )
@@ -34,6 +36,22 @@ var knownMethods = map[string]bool{
 	"trace_block": true, "trace_transaction": true, "trace_call": true, "trace_filter": true,
 	"trace_replayTransaction": true, "trace_replayBlockTransactions": true,
 }
+
+// KnownMethods returns the EVM catalogue, sorted. The cosmos plugin marks
+// all of it on a host that refused one of them.
+func KnownMethods() []string {
+	out := make([]string, 0, len(knownMethods))
+	for m := range knownMethods {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// KnownMethod reports whether name is in the EVM catalogue. The cosmos plugin
+// asks for the EVM face of a chain like kava or sei, so the same catalogue
+// names a method wherever it is served.
+func KnownMethod(name string) bool { return knownMethods[name] }
 
 // NormalizeMethod implements qos.MethodNormalizer.
 func (p *Plugin) NormalizeMethod(payload domain.Payload) string {

@@ -2,8 +2,12 @@ package reputation
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -33,9 +37,10 @@ type Service interface {
 	// load (e.g., open WS bridges). Used when many concurrent connections
 	// must be distributed to prevent supplier concentration.
 	SelectSpread(ctx context.Context, serviceID domain.ServiceID, endpoints domain.EndpointAddrList, rpcType domain.RPCType, activeLoad map[domain.EndpointAddr]int) domain.EndpointAddr
-	// ResetScore resets an endpoint's score to the initial value across every
-	// RPC type. An operator resetting an endpoint means the endpoint, not one
-	// of the protocols it happens to serve.
+	// ResetScore resets an endpoint's recorded scores to the initial value
+	// across every RPC type. An operator resetting an endpoint means the
+	// endpoint, not one of the protocols it happens to serve. Only keys that
+	// exist are touched; ErrNoScore says none matched.
 	ResetScore(ctx context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) error
 	// Vouched reports whether an endpoint has a recorded score for this RPC
 	// type, and that score clears the selector's probation threshold. An
@@ -89,6 +94,10 @@ type ServiceConfig struct {
 	// StateSweepInterval is how often the write-behind goroutine runs the
 	// sweep. Zero means defaultStateSweepInterval.
 	StateSweepInterval time.Duration
+	// URLResolver, when set, keys per-URL scores on the host a face is
+	// actually dialed from rather than the address's public URL. Wire sets
+	// it from the protocol after construction (SetURLResolver).
+	URLResolver URLResolverFn
 }
 
 // defaultStateSweepInterval paces the storage sweep. The sweep is one HSCAN
@@ -155,7 +164,7 @@ type serviceImpl struct {
 	timeline *Timeline
 	selector *TieredSelector
 	// key maps an endpoint address to the identity its score lives under.
-	key KeyFn
+	key atomic.Pointer[KeyFn]
 	// impacts and rate are the two halves of the score: the additive delta per
 	// signal, and the chronic-failure penalty. Both normalized at construction.
 	impacts SignalImpacts
@@ -205,7 +214,7 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 		s.shards[i].cache = make(map[domain.ServiceID]map[string]State)
 	}
 	s.lambda = s.rate.Lambda()
-	s.key = memoize(keyFnFor(cfg.KeyGranularity))
+	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, cfg.URLResolver)))
 	selCfg := cfg.Selector
 	if selCfg == (SelectorConfig{}) {
 		selCfg = DefaultSelectorConfig()
@@ -240,7 +249,7 @@ func (s *serviceImpl) shard(key string) *scoreShard {
 // returned as the configured initial score so new endpoints are not filtered
 // out on the first request. Zero allocations — runs per endpoint per relay.
 func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (float64, bool) {
-	key := s.key(ep, rpcType)
+	key := s.keyOf(ep, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
 	st, ok := sh.cache[serviceID][key]
@@ -249,6 +258,26 @@ func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.Servi
 		return s.cfg.InitialScore, true
 	}
 	return s.effective(st), true
+}
+
+// latencyForSelector is the LatencyFn the selector's tie-break reads: the
+// per-key traffic latency EWMA, in milliseconds, when one exists.
+func (s *serviceImpl) latencyForSelector(_ context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (float64, bool) {
+	key := s.keyOf(ep, rpcType)
+	sh := s.shard(key)
+	sh.mu.RLock()
+	st, ok := sh.cache[serviceID][key]
+	sh.mu.RUnlock()
+	if !ok || st.LatencyMS <= 0 {
+		return 0, false
+	}
+	return st.LatencyMS, true
+}
+
+// SetLatencyTieBreak enables the selector's latency tie-break inside the
+// winning tier, gated per relay. Call at wire time.
+func (s *serviceImpl) SetLatencyTieBreak(gate func(context.Context, domain.ServiceID) bool) {
+	s.selector.SetLatencyTieBreak(s.latencyForSelector, gate)
 }
 
 // SetCollapseHook registers a callback fired whenever the selector's
@@ -318,7 +347,7 @@ func (s *serviceImpl) pruneUninformative(svcStates map[string]State) {
 func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType, signal Signal) error {
 	impact := s.impacts.Impact(signal.Type)
 
-	repKey := s.key(endpoint, rpcType)
+	repKey := s.keyOf(endpoint, rpcType)
 	sh := s.shard(repKey)
 	sh.mu.Lock()
 	svcStates := sh.cache[serviceID]
@@ -349,7 +378,11 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	st.Attempts++
 	if !signal.Probe {
 		st.TrafficAttempts++
-		if signal.Latency > 0 {
+		// Successes only: the EWMA now steers selection (latency tie-break),
+		// and a host that fails fast must not read as a fast host. On the
+		// 2026-09-14 canary the first hour of the tie-break fed every
+		// signal in and raised 500s on robinhood, solana and poly.
+		if signal.Type == SignalSuccess && signal.Latency > 0 {
 			ms := float64(signal.Latency) / float64(time.Millisecond)
 			if st.LatencyMS == 0 {
 				st.LatencyMS = ms
@@ -419,10 +452,10 @@ func (s *serviceImpl) RecordSignalOnce(ctx context.Context, serviceID domain.Ser
 	// a single key: compare the keys directly rather than building a set for
 	// what is nearly always one entry. Keys are memoized, so this is a map
 	// lookup and a string compare per sibling.
-	first := s.key(endpoints[0], rpcType)
+	first := s.keyOf(endpoints[0], rpcType)
 	oneKey := true
 	for _, ep := range endpoints[1:] {
-		if s.key(ep, rpcType) != first {
+		if s.keyOf(ep, rpcType) != first {
 			oneKey = false
 			break
 		}
@@ -434,7 +467,7 @@ func (s *serviceImpl) RecordSignalOnce(ctx context.Context, serviceID domain.Ser
 	seen := make(map[string]struct{}, len(endpoints))
 	var firstErr error
 	for _, ep := range endpoints {
-		k := s.key(ep, rpcType)
+		k := s.keyOf(ep, rpcType)
 		if _, dup := seen[k]; dup {
 			continue
 		}
@@ -449,7 +482,7 @@ func (s *serviceImpl) RecordSignalOnce(ctx context.Context, serviceID domain.Ser
 // GetScore returns the cached score for the endpoint. If the endpoint has not
 // been seen, the initial score is returned.
 func (s *serviceImpl) GetScore(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) (float64, error) {
-	key := s.key(endpoint, rpcType)
+	key := s.keyOf(endpoint, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
 	st, ok := sh.cache[serviceID][key]
@@ -574,33 +607,124 @@ func (s *serviceImpl) SelectSpread(ctx context.Context, serviceID domain.Service
 	return pickWeightedByInverseLoad(candidates, activeLoad)
 }
 
-// ResetScore resets the score the endpoint maps to. At a coarser granularity
-// than per-endpoint this necessarily resets every endpoint sharing that key —
-// resetting one supplier on a shared backend cannot mean anything else, since
-// the shared backend is the thing being scored.
-func (s *serviceImpl) ResetScore(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) error {
-	for _, rpcType := range domain.AllRPCTypes() {
-		repKey := s.key(endpoint, rpcType)
-		sh := s.shard(repKey)
-		sh.mu.Lock()
-		svcStates := sh.cache[serviceID]
-		if svcStates == nil {
-			svcStates = make(map[string]State)
-			sh.cache[serviceID] = svcStates
-		}
-		fresh := State{Score: s.cfg.InitialScore}
-		svcStates[repKey] = fresh
-		sh.mu.Unlock()
+// ErrNoScore is returned by a reset that matched no recorded score. Nothing
+// is created for an unmatched target: until 2026-09-14 a reset named by the
+// key string an operator had copied from the listing ("https://host|rest")
+// was pushed through the key function once per RPC type and left four
+// phantom keys ("https://host|rest|json_rpc", …) at the initial score.
+var ErrNoScore = errors.New("no recorded score matches the target")
 
-		select {
-		case s.writeCh <- writeOp{key: scoreKey(serviceID, repKey), state: fresh, force: true}:
-		default:
-			// Said, not swallowed: the local cache is reset either way, but
-			// the other replicas learn of it through storage.
-			return fmt.Errorf("reset of %s applied locally, but the storage write was dropped (write queue full); other replicas keep the old score", endpoint)
+// KeyResetter is the optional half of Service the admin reset route prefers:
+// the same reset as ResetScore, reporting which keys it touched.
+type KeyResetter interface {
+	ResetMatching(ctx context.Context, serviceID domain.ServiceID, target string) ([]string, error)
+}
+
+// ResetScore resets every recorded score the endpoint reaches (see
+// resetTargets). At a coarser granularity than per-endpoint this necessarily
+// resets every endpoint sharing that key — resetting one supplier on a shared
+// backend cannot mean anything else, since the shared backend is the thing
+// being scored.
+func (s *serviceImpl) ResetScore(ctx context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) error {
+	_, err := s.ResetMatching(ctx, serviceID, string(endpoint))
+	return err
+}
+
+// ResetMatching implements KeyResetter: every recorded key of the service
+// that resetTargets says target names goes back to the initial score, in
+// the cache and, forced past the leader gate, in storage. The keys are
+// returned sorted; ErrNoScore when there were none.
+func (s *serviceImpl) ResetMatching(_ context.Context, serviceID domain.ServiceID, target string) ([]string, error) {
+	var reset []string
+	dropped := false
+	fresh := State{Score: s.cfg.InitialScore}
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		for key := range sh.cache[serviceID] {
+			if !resetTargets(key, target) {
+				continue
+			}
+			sh.cache[serviceID][key] = fresh
+			reset = append(reset, key)
+			select {
+			case s.writeCh <- writeOp{key: scoreKey(serviceID, key), state: fresh, force: true}:
+			default:
+				dropped = true
+			}
+		}
+		sh.mu.Unlock()
+	}
+	if len(reset) == 0 {
+		return nil, fmt.Errorf("%w: %q on %s", ErrNoScore, target, serviceID)
+	}
+	sort.Strings(reset)
+	if dropped {
+		// Said, not swallowed: the local cache is reset either way, but the
+		// other replicas learn of it through storage.
+		return reset, fmt.Errorf("reset of %s applied locally, but a storage write was dropped (write queue full); other replicas may keep the old score", target)
+	}
+	return reset, nil
+}
+
+// resetTargets reports whether a reset naming target reaches key. A key is
+// "<identity>|<rpc type>", the identity being the dialed URL at the default
+// granularity, a host or a supplier address at the coarser ones, or the
+// whole endpoint address at per-endpoint. target may be:
+//   - the key itself, as the listing shows it;
+//   - the identity ("https://rm02.kalorius.tech");
+//   - the identity's host ("rm02.kalorius.tech"), with or without a port;
+//   - an endpoint address ("pokt1abc-https://rm02.kalorius.tech"), matched
+//     by its URL, its host, or its supplier.
+//
+// An RPC type in the target ("…|rest") is honoured through the exact form
+// only, so a listing key resets one face and a URL resets all of them.
+func resetTargets(key, target string) bool {
+	if target == "" {
+		return false
+	}
+	if key == target {
+		return true
+	}
+	ident := key
+	if i := strings.LastIndexByte(key, '|'); i >= 0 {
+		ident = key[:i]
+	}
+	if ident == target {
+		return true
+	}
+	host := hostOf(ident)
+	if host != "" && host == hostOf(target) && !strings.ContainsAny(target, "/|") {
+		return true
+	}
+	// An endpoint address: "<supplier>-<url>". A bare URL also contains a
+	// dash on occasion (eu-s-01…), so only treat the target as an address
+	// when the dash sits before the scheme, or there is no scheme at all.
+	scheme := strings.Index(target, "://")
+	if scheme >= 0 && !strings.Contains(target[:scheme], "-") {
+		return false
+	}
+	ep := domain.EndpointAddr(target)
+	if url, err := ep.URL(); err == nil {
+		if url == ident || (host != "" && hostOf(url) == host) {
+			return true
 		}
 	}
-	return nil
+	return ep.Supplier() == ident
+}
+
+// hostOf is the host of a URL or a bare host, scheme, path and port removed.
+func hostOf(s string) string {
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndexByte(s, ':'); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }
 
 // Vouched reports whether an endpoint has a recorded score for the given RPC
@@ -611,7 +735,7 @@ func (s *serviceImpl) ResetScore(_ context.Context, serviceID domain.ServiceID, 
 // still carries the initial score, and a method block diverting traffic must
 // not treat that as a vouch.
 func (s *serviceImpl) Vouched(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool {
-	key := s.key(endpoint, rpcType)
+	key := s.keyOf(endpoint, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
 	st, ok := sh.cache[serviceID][key]
@@ -684,4 +808,21 @@ func (s *serviceImpl) write(op writeOp) {
 // gate. LeaderOnlyStorage is the one.
 type forcedWriter interface {
 	ForceSetState(ctx context.Context, key string, st State) error
+}
+
+func (s *serviceImpl) setKeyFn(fn KeyFn) { s.key.Store(&fn) }
+
+// keyOf is the reputation key for an endpoint's face, memoized.
+func (s *serviceImpl) keyOf(ep domain.EndpointAddr, rpcType domain.RPCType) string {
+	return (*s.key.Load())(ep, rpcType)
+}
+
+// SetURLResolver installs the resolver per-URL keys use and drops the key
+// memo, so keys computed before it (none in normal wiring: Build installs
+// it before the server listens) are recomputed. Existing scores stored under
+// the old spelling of a split-host operator's key are not migrated; they
+// age out, and the host that actually served the face starts at the
+// initial score.
+func (s *serviceImpl) SetURLResolver(fn URLResolverFn) {
+	s.setKeyFn(memoize(keyFnFor(s.cfg.KeyGranularity, fn)))
 }

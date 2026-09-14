@@ -51,6 +51,17 @@ const (
 	KnobHealthCheckInterval = "health_checks.interval"
 	// KnobHealthCheckWorkers overrides active_health_checks.max_workers.
 	KnobHealthCheckWorkers = "health_checks.max_workers"
+	// KnobMethodBlockTTL overrides method_blocks.ttl.
+	KnobMethodBlockTTL = "method_blocks.ttl"
+	// KnobMethodBlockClientTTL overrides method_blocks.client_ttl.
+	KnobMethodBlockClientTTL = "method_blocks.client_ttl"
+	// KnobMethodBlockEscalation overrides method_blocks.escalation_threshold.
+	KnobMethodBlockEscalation = "method_blocks.escalation_threshold"
+	// KnobObservationSampleRate overrides observation_pipeline.sample_rate.
+	KnobObservationSampleRate = "observation_pipeline.sample_rate"
+	// KnobSyncAllowance overrides a service's sync_allowance; meaningful per
+	// service, since the right value is the chain's block cadence.
+	KnobSyncAllowance = "qos.sync_allowance"
 )
 
 // Knob describes one overridable setting.
@@ -129,6 +140,46 @@ var Knobs = []Knob{
 		Min:         1,
 		Max:         512, // healthcheck.MaxProbeWorkers; one ceiling, both paths
 		Unit:        "workers",
+	},
+	{
+		Name:        KnobMethodBlockTTL,
+		Kind:        KindDuration,
+		Description: "How long a supplier-attributed method mark (a timeout on one method) keeps that method away from a host. 0 disables marking.",
+		Min:         0,
+		Max:         86_400_000,
+		Unit:        "ms",
+	},
+	{
+		Name:        KnobMethodBlockClientTTL,
+		Kind:        KindDuration,
+		Description: "How long a client-attributed method mark (a -32601 on a catalogued method) lasts; a host that does not serve a method does not grow it in minutes. 0 means the same as method_blocks.ttl.",
+		Min:         0,
+		Max:         86_400_000,
+		Unit:        "ms",
+	},
+	{
+		Name:        KnobMethodBlockEscalation,
+		Kind:        KindInt,
+		Description: "Distinct supplier-attributed method marks on one host inside one TTL before the host is blocked for every method. 0 never escalates.",
+		Min:         0,
+		Max:         100,
+		Unit:        "methods",
+	},
+	{
+		Name:        KnobObservationSampleRate,
+		Kind:        KindFloat,
+		Description: "Fraction of client relays handed to the observation pipeline (ExtractData: heights, chain ids, pruned floors). Health-check probes are always observed. 1 observes everything; lower it if the pipeline's queue drops.",
+		Min:         0,
+		Max:         1,
+		Unit:        "ratio",
+	},
+	{
+		Name:        KnobSyncAllowance,
+		Kind:        KindInt,
+		Description: "How many blocks behind the perceived head an endpoint may be and still be selected in tier 1 (tier 2 allows twice this). Set per service: the right number is that chain's block cadence. 0 keeps the plugin's own default.",
+		Min:         0,
+		Max:         10_000_000,
+		Unit:        "blocks",
 	},
 }
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -25,7 +26,7 @@ type solanaEndpoint struct {
 // Plugin is the Solana QoS plugin.
 type Plugin struct {
 	logger        *slog.Logger
-	syncAllowance uint64
+	syncAllowance atomic.Uint64
 
 	store     *qos.EndpointStore[solanaEndpoint]
 	consensus *qos.BlockConsensus
@@ -65,12 +66,13 @@ func NewPlugin(logger *slog.Logger, syncAllowance uint64) *Plugin {
 	if syncAllowance == 0 {
 		syncAllowance = defaultSyncAllowance
 	}
-	return &Plugin{
-		logger:        logger,
-		syncAllowance: syncAllowance,
-		store:         qos.NewEndpointStore[solanaEndpoint](logger),
-		consensus:     qos.NewBlockConsensus(logger, syncAllowance),
+	p := &Plugin{
+		logger:    logger,
+		store:     qos.NewEndpointStore[solanaEndpoint](logger),
+		consensus: qos.NewBlockConsensus(logger, syncAllowance),
 	}
+	p.syncAllowance.Store(syncAllowance)
+	return p
 }
 
 // --- qos.Plugin --- //
@@ -94,9 +96,9 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 
 	getHeight := qos.HeightGetter(p.store, func(ep solanaEndpoint) uint64 { return ep.BlockHeight })
 
-	blockFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance))
+	blockFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance.Load()))
 	// Relaxed tier: twice the allowance.
-	relaxedFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance*2))
+	relaxedFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance.Load()*2))
 
 	result := qos.SelectWithKnownHeights(
 		endpoints,
@@ -191,7 +193,7 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		return &qos.ExtractedData{}, nil
 	}
 
-	_, err = qos.ValidateBlockHeight(height, p.consensus.PerceivedBlock(), p.syncAllowance)
+	_, err = qos.ValidateBlockHeight(height, p.consensus.PerceivedBlock(), p.syncAllowance.Load())
 	if err != nil {
 		return nil, fmt.Errorf("solana: invalid block height from endpoint %s: %w", endpoint, err)
 	}
@@ -270,3 +272,10 @@ var (
 	_ qos.CoalescenceClassifier = (*Plugin)(nil)
 	_ qos.StateResetter         = (*Plugin)(nil)
 )
+
+// SyncAllowance implements qos.SyncAllowanceTuner.
+func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
+
+// SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
+// qos.sync_allowance, per service, without a restart.
+func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }

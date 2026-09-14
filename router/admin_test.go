@@ -23,10 +23,13 @@ import (
 // mockFlagStore implements featureflag.FlagStore in memory.
 type mockFlagStore struct {
 	flags map[string]featureflag.FlagState
+	// globalDeleted records a global DELETE per flag: the mock keeps the
+	// entry so its per-service overrides survive, as the real stores do.
+	globalDeleted map[string]bool
 }
 
 func newMockFlagStore() *mockFlagStore {
-	return &mockFlagStore{flags: make(map[string]featureflag.FlagState)}
+	return &mockFlagStore{flags: make(map[string]featureflag.FlagState), globalDeleted: make(map[string]bool)}
 }
 
 func (m *mockFlagStore) IsEnabled(_ context.Context, flag string, _ domain.ServiceID) bool {
@@ -68,7 +71,14 @@ func (m *mockFlagStore) DeleteGlobal(ctx context.Context, flag string) error {
 
 func (m *mockFlagStore) Delete(_ context.Context, flag string, serviceID domain.ServiceID) error {
 	if serviceID == "" {
-		delete(m.flags, flag)
+		m.globalDeleted[flag] = true
+		s := m.flags[flag]
+		if len(s.ServiceOverrides) == 0 {
+			delete(m.flags, flag)
+			return nil
+		}
+		s.Enabled = false
+		m.flags[flag] = s
 		return nil
 	}
 	s := m.flags[flag]
@@ -122,6 +132,9 @@ func (m *mockRepService) SelectSpread(_ context.Context, _ domain.ServiceID, end
 
 func (m *mockRepService) ResetScore(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr) error {
 	key := string(serviceID) + ":" + string(endpoint)
+	if _, ok := m.scores[key]; !ok {
+		return reputation.ErrNoScore
+	}
 	m.scores[key] = 100
 	return nil
 }
@@ -282,6 +295,39 @@ func TestAdminDeleteFlagForService(t *testing.T) {
 	}
 	if _, ok := store.flags["retry"].ServiceOverrides["eth"]; ok {
 		t.Fatal("override still in force after DELETE; the service must follow the global value again")
+	}
+}
+
+// The global DELETE removes the value the global PUT set and leaves the
+// per-service overrides alone; the flag follows its default again.
+func TestAdminDeleteFlagGlobal(t *testing.T) {
+	api, srv := newAdminServer(t)
+	store := api.flags.(*mockFlagStore)
+	ctx := context.Background()
+	if err := store.Set(ctx, "retry", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetForService(ctx, "retry", "eth", true); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/admin/flags/retry", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !store.globalDeleted["retry"] {
+		t.Fatal("global value still in force after DELETE; the flag must follow its default again")
+	}
+	if _, ok := store.flags["retry"].ServiceOverrides["eth"]; !ok {
+		t.Fatal("the global DELETE removed a per-service override; those have their own route")
 	}
 }
 
@@ -457,12 +503,35 @@ func TestAdminResetReputation(t *testing.T) {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
 
-	var out map[string]string
+	var out map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
 	if out["status"] != "reset" {
 		t.Errorf("status = %q, want reset", out["status"])
+	}
+}
+
+// A target no recorded score matches is a 404 and creates nothing: the
+// ops-observed phantom keys came from a reset named by a listing key.
+func TestAdminResetReputation_UnknownTargetIs404(t *testing.T) {
+	api, srv := newAdminServer(t)
+	before := len(api.repService.(*mockRepService).scores)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/admin/reputation/reset/eth/https://nobody.example|rest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	if got := len(api.repService.(*mockRepService).scores); got != before {
+		t.Fatalf("an unmatched reset created %d key(s)", got-before)
 	}
 }
 

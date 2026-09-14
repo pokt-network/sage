@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,19 @@ type ClientMetrics interface {
 	// stage of selection settled for less than it wanted. tier is the
 	// sage_degraded_total label; the router records "response".
 	RecordDegraded(serviceID domain.ServiceID, tier string)
+	// RecordRPCType counts one client request by the RPC type Parse settled
+	// on and how (header|detected); sage_rpc_type_total.
+	RecordRPCType(serviceID domain.ServiceID, rpcType domain.RPCType, source string)
+	// RecordRPCTypeMismatch counts a client request whose classification was
+	// contradicted — rpcType is what detection produced, actual what a better
+	// informed party said, reason which party; sage_rpc_type_mismatch_total.
+	RecordRPCTypeMismatch(serviceID domain.ServiceID, rpcType, actual domain.RPCType, reason string)
+	// RecordClientLatency observes one client request's wall time, by the
+	// status the client saw; sage_client_latency_seconds.
+	RecordClientLatency(serviceID domain.ServiceID, status int, latency time.Duration)
+	// RecordStageTime adds one request's exclusive time in a middleware
+	// stage (or the router's own write); sage_stage_seconds_total.
+	RecordStageTime(serviceID domain.ServiceID, stage string, d time.Duration)
 }
 
 // Warmup reports whether the gateway can steer endpoint selection yet — i.e.
@@ -288,8 +302,25 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 
 	// Record the client-facing status once, whichever path answers — this is
 	// what an edge dashboard sees, unlike sage_relay_total's per-attempt view.
+	// The latency beside it is the caller's wait, retries and hedges
+	// included; relay_latency_seconds never says that.
 	if r.clientMetrics != nil {
-		defer func() { r.clientMetrics.RecordClientRequest(ctx.ServiceID, rw.Status()) }()
+		start := time.Now()
+		defer func() {
+			r.clientMetrics.RecordClientRequest(ctx.ServiceID, rw.Status())
+			r.clientMetrics.RecordClientLatency(ctx.ServiceID, rw.Status(), time.Since(start))
+			r.recordRPCType(ctx)
+			// Where the wall time went, stage by stage. The sum over stages
+			// plus the upstream call is the client latency above; the gap
+			// between the two on the canary was the question this answers.
+			stages := ctx.Stages.Exclusive()
+			for stage, d := range stages {
+				r.clientMetrics.RecordStageTime(ctx.ServiceID, stage, d)
+			}
+			if r.logger.Enabled(ctx.Ctx, slog.LevelDebug) {
+				r.logger.Debug("relay stages", "service", ctx.ServiceID, "total_ms", time.Since(start).Milliseconds(), "stages", stageSummary(stages))
+			}
+		}()
 	}
 
 	if err := r.chain.HandleRelay(ctx); err != nil {
@@ -340,10 +371,36 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 		}
 
 		rw.SetStatusCode(status)
+		writeStart := time.Now()
 		if writeErr := rw.Write(body); writeErr != nil {
 			r.logger.Error("failed to write relay response", "error", writeErr)
 		}
+		ctx.Stages.Add("router_write", time.Since(writeStart))
 	}
+}
+
+// stageSummary renders stage times as "name=ms" pairs for the debug line,
+// largest first.
+func stageSummary(stages map[string]time.Duration) string {
+	type kv struct {
+		name string
+		d    time.Duration
+	}
+	items := make([]kv, 0, len(stages))
+	for name, d := range stages {
+		if d > 0 {
+			items = append(items, kv{name, d})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].d > items[j].d })
+	var b strings.Builder
+	for i, it := range items {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%s=%.2fms", it.name, float64(it.d.Microseconds())/1000)
+	}
+	return b.String()
 }
 
 // responseContentType names the body's media type. JSON-RPC and CometBFT are
@@ -435,6 +492,45 @@ func (r *Router) writeRelayError(rw relay.ResponseWriter, ctx *relay.Context, er
 	renderJSONError(rw, status, message)
 }
 
+// recordRPCType records how one request's RPC type was settled and whether
+// anything better informed disagreed. It reads only what the chain left on
+// ctx, so it runs after the chain whichever way the request ended.
+//
+// Three parties can contradict detection, and each is a different fix:
+//   - the client, via RPC-Type: detection is graded against the header, the
+//     only ground truth it ever meets (reason "header");
+//   - the service's QoS plugin, which parses the payload and may type it
+//     differently from Parse — the request was then validated and pooled as
+//     one surface and sent as another (reason "plugin");
+//   - the service's rpc_types, which do not include what detection produced,
+//     so Validate refused the request (reason "unsupported").
+func (r *Router) recordRPCType(ctx *relay.Context) {
+	if ctx.RPCTypeSource == "" {
+		return // refused before classification; nothing was decided
+	}
+	r.clientMetrics.RecordRPCType(ctx.ServiceID, ctx.RPCType, string(ctx.RPCTypeSource))
+	if errors.Is(ctx.Err, domain.ErrRPCTypeUnsupported) {
+		r.clientMetrics.RecordRPCTypeMismatch(ctx.ServiceID, ctx.RPCType, rpcTypeNone, "unsupported")
+	}
+	if ctx.RPCTypeSource == relay.RPCTypeSourceHeader && ctx.RPCTypeDetected != ctx.RPCType {
+		r.clientMetrics.RecordRPCTypeMismatch(ctx.ServiceID, ctx.RPCTypeDetected, ctx.RPCType, "header")
+	}
+	if len(ctx.Payloads) > 0 {
+		if pt := ctx.Payloads[0].RPCType(); pt != "" && pt != domain.RPCTypeUnknown && pt != ctx.RPCType {
+			r.clientMetrics.RecordRPCTypeMismatch(ctx.ServiceID, ctx.RPCType, pt, "plugin")
+		}
+	}
+}
+
+// rpcTypeNone is the `actual` label when a request was refused rather than
+// retyped: the service serves no surface the request could be counted under.
+const rpcTypeNone domain.RPCType = "none"
+
+// statusClientClosedRequest is nginx's 499: the client closed the connection
+// before the gateway answered. Not in net/http; used only so the metric and
+// the access log can tell a client leaving from the gateway failing.
+const statusClientClosedRequest = 499
+
 // statusForError maps a gateway-made failure to the HTTP status a client
 // sees. The body carries the JSON-RPC code either way; the status is what a
 // load balancer, a dashboard and a client's retry policy branch on, and a
@@ -444,6 +540,13 @@ func (r *Router) writeRelayError(rw relay.ResponseWriter, ctx *relay.Context, er
 func statusForError(err error) int {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return http.StatusGatewayTimeout
+	}
+	// The client hung up before an answer. Nothing is written to a closed
+	// connection, but the status is what sage_client_requests_total counts,
+	// and as a 500 it read as SAGE failing: on the 2026-09-13 canary most of
+	// osmosis's residual "500s" were clients leaving mid-retry.
+	if errors.Is(err, context.Canceled) {
+		return statusClientClosedRequest
 	}
 	var re *domain.RelayError
 	if errors.As(err, &re) {

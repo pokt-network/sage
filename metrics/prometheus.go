@@ -42,6 +42,8 @@ type Recorder struct {
 
 	relayTotal            *prometheus.CounterVec
 	clientRequestsTotal   *prometheus.CounterVec
+	rpcTypeTotal          *prometheus.CounterVec
+	rpcTypeMismatchTotal  *prometheus.CounterVec
 	relayLatency          *prometheus.HistogramVec
 	retryTotal            *prometheus.CounterVec
 	retryResolutionTotal  *prometheus.CounterVec
@@ -56,6 +58,10 @@ type Recorder struct {
 	relayMinerErrors      *prometheus.CounterVec
 	methodBlockEvents     *prometheus.CounterVec
 	reputationAttempts    *prometheus.CounterVec
+	heuristicVerdicts     *prometheus.CounterVec
+	externalSourceFails   *prometheus.CounterVec
+	clientLatency         *prometheus.HistogramVec
+	stageSeconds          *prometheus.CounterVec
 	healthCheckResults    *prometheus.CounterVec
 	healthCheckSkipped    *prometheus.CounterVec
 	healthCheckCycle      prometheus.Histogram
@@ -92,6 +98,22 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Help:      "Client-facing relay requests by service and the HTTP status returned to the client. Unlike relay_total (per relay attempt), this is one count per client request and matches what an edge or client sees — a JSON-RPC error is an HTTP 200 here.",
 			},
 			[]string{"service_id", "status"},
+		),
+		rpcTypeTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "rpc_type_total",
+				Help:      "Client requests by the RPC type SAGE settled on and how: source=\"header\" when the client declared it with RPC-Type, \"detected\" when Parse inferred it from the verb, path and body. One count per request that reached classification; a request refused before that (no Target-Service-Id, oversized body, unparseable RPC-Type value) is absent. The source=\"detected\" share is the traffic whose routing rests on detection alone.",
+			},
+			[]string{"service_id", "rpc_type", "source"},
+		),
+		rpcTypeMismatchTotal: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "rpc_type_mismatch_total",
+				Help:      "Client requests whose RPC type classification was contradicted by a better informed party, by reason. header: the client sent RPC-Type=actual and detection would have said rpc_type — the one place detection is graded against ground truth. plugin: the service's QoS plugin parsed the payload as actual, not the rpc_type Parse settled on, so the request was validated and pooled as one surface and sent as another (a JSON-RPC body carrying a CometBFT method on a cosmos service, for one). unsupported: the service does not declare rpc_type, so Validate refused the request with 400 (actual=\"none\"). Non-zero is a detection rule, a plugin table or a service's rpc_types to fix; the log line \"rpc type not declared by service\" names the path for the last case.",
+			},
+			[]string{"service_id", "rpc_type", "actual", "reason"},
 		),
 		relayLatency: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -204,7 +226,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "method_block_events_total",
-				Help:      "Method-block events by service and method. event is mark (a host was blocked for a method), escalate (a host was blocked for every method), or bypass (every host was blocked for the method, or no surviving host was vouched for by reputation — a recorded score at or above the probation threshold — so the unfiltered pool was used). mark also counts an attempt that landed no block (empty host, or marking disabled by TTL <= 0) — it counts the middleware's attempt to mark, not that a mark landed.",
+				Help:      "Method-block events by service and method. event is mark (a host was blocked for a method), family (a -32601 on a catalogued method blocked the host for the whole family the plugin named, e.g. every EVM method on the EVM face of a Cosmos chain), escalate (a host was blocked for every method), or bypass (every host was blocked for the method, or no surviving host was vouched for by reputation — a recorded score at or above the probation threshold — so the unfiltered pool was used). mark also counts an attempt that landed no block (empty host, or marking disabled by TTL <= 0) — it counts the middleware's attempt to mark, not that a mark landed.",
 			},
 			[]string{"service_id", "method", "event"},
 		),
@@ -218,6 +240,44 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Help:      "Reputation signals recorded, by service, RPC type, signal type and whether the signal came from a health-check probe (probe=true) or client traffic (probe=false). One signal is one relay attempt, or one batch collapsed to its worst outcome per endpoint; client-attributed outcomes are not recorded and so are not counted.",
 			},
 			[]string{"service_id", "rpc_type", "signal", "probe"},
+		),
+		// reason and attribution are closed sets fixed in the heuristic
+		// package; rpc_type likewise. Client attempts only: probes do not
+		// run through the middleware chain (see RecordProbeRelay).
+		heuristicVerdicts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "heuristic_verdicts_total",
+				Help:      "Heuristic verdicts on upstream answers to client relay attempts, by service, RPC type, the reason the verdict settled on (success, internal_error, http_408, transport_timeout, ...) and the side it attributed the outcome to (supplier, blockchain, client, unknown; none on success). One verdict per attempt, so a retried request counts once per attempt. This is the complete account of what the gateway concluded about every answer; reputation_attempts_total counts only what scoring kept and retry_total only what retried.",
+			},
+			[]string{"service_id", "rpc_type", "reason", "attribution"},
+		),
+		externalSourceFails: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "external_block_source_failures_total",
+				Help:      "Polls of a service's external_block_sources that produced no height (every configured source failed that tick), by service. While this rises the service's external floor under the perceived head is not lifted; relays are unaffected. A steady rate on one service is a dead or misconfigured source.",
+			},
+			[]string{"service_id"},
+		),
+		clientLatency: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "client_latency_seconds",
+				Help:      "Client-facing latency in seconds: from the request reaching the router to the response written (or the client leaving), one observation per client request, by service and the status the client saw. This is what the caller waits, retries and hedges included; relay_latency_seconds is per upstream attempt. Same buckets, to 60s.",
+				Buckets:   relayLatencyBuckets,
+			},
+			[]string{"service_id", "status"},
+		),
+		// stage is the registered middleware name (relay/chain_order.go) or
+		// router_write: a closed set.
+		stageSeconds: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "stage_seconds_total",
+				Help:      "Seconds spent in each middleware stage, exclusive of the stages nested inside it, summed over client requests, by service and stage (the registered middleware name, or router_write for the response write). Divide by sage_client_requests_total for the mean per request. send_relay is the upstream call and send_relay.prepare / .sign / .http / .verify are its breakdown (not additions); everything else is SAGE's own time — the split the per-attempt relay latency cannot show.",
+			},
+			[]string{"service_id", "stage"},
 		),
 	}
 
@@ -273,6 +333,8 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.healthCheckOverruns,
 		r.relayTotal,
 		r.clientRequestsTotal,
+		r.rpcTypeTotal,
+		r.rpcTypeMismatchTotal,
 		r.relayLatency,
 		r.retryTotal,
 		r.retryResolutionTotal,
@@ -287,6 +349,10 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.relayMinerErrors,
 		r.methodBlockEvents,
 		r.reputationAttempts,
+		r.heuristicVerdicts,
+		r.externalSourceFails,
+		r.clientLatency,
+		r.stageSeconds,
 	)
 
 	r.initHealthCheckSkipped(knownServices)
@@ -357,6 +423,21 @@ func (r *Recorder) recordRelayAttempt(
 // 4xx/5xx. Distinct from RecordRelay, which counts each relay ATTEMPT.
 func (r *Recorder) RecordClientRequest(serviceID domain.ServiceID, status int) {
 	r.clientRequestsTotal.WithLabelValues(r.services.serviceValue(serviceID), strconv.Itoa(status)).Inc()
+}
+
+// RecordRPCType counts one client request by the RPC type it was classified
+// as and whether the client declared it or SAGE detected it. Satisfies
+// router.ClientMetrics.
+func (r *Recorder) RecordRPCType(serviceID domain.ServiceID, rpcType domain.RPCType, source string) {
+	r.rpcTypeTotal.WithLabelValues(r.services.serviceValue(serviceID), string(rpcType), source).Inc()
+}
+
+// RecordRPCTypeMismatch counts a client request whose classification was
+// contradicted: rpcType is what detection produced, actual what the
+// contradicting party said, reason which party (header, plugin,
+// unsupported). Satisfies router.ClientMetrics.
+func (r *Recorder) RecordRPCTypeMismatch(serviceID domain.ServiceID, rpcType, actual domain.RPCType, reason string) {
+	r.rpcTypeMismatchTotal.WithLabelValues(r.services.serviceValue(serviceID), string(rpcType), string(actual), reason).Inc()
 }
 
 // RecordRetry increments the retry counter for a service with a given reason.
@@ -530,6 +611,39 @@ func (r *Recorder) RecordReputationAttempt(serviceID domain.ServiceID, rpcType, 
 		signal,
 		strconv.FormatBool(probe),
 	).Inc()
+}
+
+// RecordVerdict satisfies relay/middleware.MetricsRecorder: one heuristic
+// verdict on one client relay attempt. reason and attribution come from
+// heuristic.AnalysisResult, both closed sets, so neither is bounded here.
+func (r *Recorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCType, reason, attribution string) {
+	r.heuristicVerdicts.WithLabelValues(
+		r.services.serviceValue(serviceID),
+		string(rpcType),
+		reason,
+		attribution,
+	).Inc()
+}
+
+// RecordClientLatency satisfies router.ClientMetrics: one client request's
+// wall time, by the status the client saw.
+func (r *Recorder) RecordClientLatency(serviceID domain.ServiceID, status int, latency time.Duration) {
+	r.clientLatency.WithLabelValues(r.services.serviceValue(serviceID), strconv.Itoa(status)).Observe(latency.Seconds())
+}
+
+// RecordStageTime satisfies router.ClientMetrics: one request's exclusive
+// time in one stage.
+func (r *Recorder) RecordStageTime(serviceID domain.ServiceID, stage string, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	r.stageSeconds.WithLabelValues(r.services.serviceValue(serviceID), stage).Add(d.Seconds())
+}
+
+// RecordExternalSourceFailure satisfies healthcheck.ExternalSourceFailureRecorder:
+// one poll of a service's external block sources that produced no height.
+func (r *Recorder) RecordExternalSourceFailure(serviceID domain.ServiceID) {
+	r.externalSourceFails.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // ServeHTTP returns a standard Prometheus HTTP handler suitable for mounting

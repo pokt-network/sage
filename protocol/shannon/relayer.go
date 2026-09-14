@@ -268,6 +268,8 @@ func (p *Protocol) SendRelay(
 		return nil, domain.NewRelayError(domain.ErrProtocol, "failed to fetch app for signing", err, true)
 	}
 
+	tSign := time.Now()
+	prepareDur := tSign.Sub(start)
 	signedReq, err := p.signer.signRelayRequest(ctx, unsignedReq, app)
 	if err != nil {
 		p.logger.Error("SendRelay: failed to sign relay request",
@@ -284,6 +286,8 @@ func (p *Protocol) SendRelay(
 	if err != nil {
 		return nil, domain.NewRelayError(domain.ErrProtocol, "failed to marshal relay request", err, false)
 	}
+	tHTTP := time.Now()
+	signDur := tHTTP.Sub(tSign)
 
 	// Send the relay. gRPC does not go over the miner's HTTP path: that one
 	// rebuilds the request as HTTP/1.1, which a gRPC backend refuses. Only the
@@ -341,9 +345,13 @@ func (p *Protocol) SendRelay(
 				"endpoint_addr", endpointAddr,
 				"http_status", httpStatus,
 			)
-			return nil, domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable", nil, true)
+			return nil, domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable",
+				&domain.UpstreamStatusError{Status: httpStatus}, true)
 		}
 	}
+
+	tVerify := time.Now()
+	httpDur := tVerify.Sub(tHTTP)
 
 	// Verify the supplier's signature over the response. See
 	// FullNode.ValidateRelayResponse: the key is the one belonging to the
@@ -383,6 +391,12 @@ func (p *Protocol) SendRelay(
 		Latency:        latency,
 		EndpointAddr:   endpointAddr,
 		Headers:        grpcResponseHeaders(payload.RPCType(), poktHTTPResp),
+		Phases: domain.RelayPhases{
+			Prepare: prepareDur,
+			Sign:    signDur,
+			HTTP:    httpDur,
+			Verify:  time.Since(tVerify),
+		},
 	}, nil
 }
 
@@ -565,4 +579,20 @@ func (p *Protocol) UnblacklistSupplier(serviceID domain.ServiceID, addr string) 
 // IsBlacklisted returns true if the supplier is currently blacklisted for the service.
 func (p *Protocol) IsBlacklisted(serviceID domain.ServiceID, addr string) bool {
 	return p.bl.IsBlacklisted(serviceID, addr)
+}
+
+// EndpointURLFor implements protocol.URLResolver: the URL a relay of rpcType
+// to endpoint dials, from the supplier's stake in a current session. No
+// fallback: an endpoint that does not stake the type answers false, and the
+// caller falls back to the address's own host.
+func (p *Protocol) EndpointURLFor(endpoint domain.EndpointAddr, rpcType domain.RPCType) (string, bool) {
+	ep, ok := p.sessions.lookupEndpoint(endpoint)
+	if !ok {
+		return "", false
+	}
+	url, err := ep.GetURL(rpcType)
+	if err != nil || url == "" {
+		return "", false
+	}
+	return url, true
 }

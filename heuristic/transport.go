@@ -89,6 +89,57 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 		}
 	}
 
+	// The relay miner's HTTP layer answered with a status instead of a
+	// relay. Until 2026-09-13 this fell through to transport_error with
+	// attribution unknown, so a host answering 502 nine times in a hundred
+	// on the osmosis REST face was indistinguishable from a flaky network
+	// in every counter. The status is the fact: a 5xx or 429 is the
+	// supplier's layer (minor each; the score's rate term turns a steady
+	// stream into a real penalty and tiering moves traffic off it), a 413 is
+	// the client's payload and is not retried.
+	var upstream *domain.UpstreamStatusError
+	if errors.As(err, &upstream) {
+		switch {
+		case upstream.Status == 413:
+			return AnalysisResult{
+				Attribution: AttrClient,
+				Confidence:  0.90,
+				Reason:      "upstream_413",
+				Details:     "relay miner refused the payload as too large",
+			}
+		case upstream.Status == 429:
+			return AnalysisResult{
+				ShouldRetry:     true,
+				ShouldPenalize:  true,
+				PenaltySeverity: SeverityMinor,
+				Attribution:     AttrSupplier,
+				Confidence:      0.90,
+				Reason:          "upstream_429",
+				Details:         "relay miner rate-limited the relay",
+			}
+		case upstream.Status >= 500:
+			return AnalysisResult{
+				ShouldRetry:     true,
+				ShouldPenalize:  true,
+				PenaltySeverity: SeverityMinor,
+				Attribution:     AttrSupplier,
+				Confidence:      0.85,
+				Reason:          "upstream_5xx",
+				Details:         err.Error(),
+			}
+		default:
+			return AnalysisResult{
+				ShouldRetry:     true,
+				ShouldPenalize:  true,
+				PenaltySeverity: SeverityMinor,
+				Attribution:     AttrSupplier,
+				Confidence:      0.70,
+				Reason:          "upstream_4xx",
+				Details:         err.Error(),
+			}
+		}
+	}
+
 	return AnalysisResult{
 		ShouldRetry:     domain.IsRetryable(err),
 		ShouldPenalize:  true,

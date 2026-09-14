@@ -25,6 +25,12 @@ const (
 	// reaching a different operator than the attempt that just failed. Off
 	// restores per-endpoint-only behavior.
 	FlagOperatorAwareSelection = "operator_aware_selection"
+	// FlagLatencyTieBreak gates the latency tie-break inside the winning
+	// score tier: with it on, a faster host is picked more often than a
+	// slower one of the same tier, weighted by the per-key traffic latency
+	// EWMA; off restores a uniform pick within the tier. Latency never
+	// moves a score either way (docs/scoring.md §7.2).
+	FlagLatencyTieBreak = "latency_tiebreak"
 	// FlagMethodBlocks gates the method_blocks middleware: per-host,
 	// per-method memory that stops sending a method to a host that recently
 	// timed out on it or said it does not serve it, without affecting any
@@ -83,6 +89,7 @@ var DefaultFlags = map[string]bool{
 	FlagWebsocketRelays:     true,
 
 	FlagOperatorAwareSelection: true,
+	FlagLatencyTieBreak:        true,
 	FlagMethodBlocks:           true,
 	FlagRequestSampler:         true,
 	FlagScoringV2:              true,

@@ -3,6 +3,7 @@ package reputation
 import (
 	"context"
 	"math/rand/v2"
+	"sync"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -63,12 +64,21 @@ const (
 	numTiers
 )
 
+// LatencyFn reports an endpoint's traffic latency EWMA in milliseconds for a
+// service and RPC type; ok is false when nothing has measured it.
+type LatencyFn func(ctx context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (float64, bool)
+
 // TieredSelector selects endpoints by cascading through reputation tiers.
 // Tier 1 (best) is tried first; if empty, tier 2; then tier 3. Within each
 // tier a random endpoint is chosen. Probation endpoints may be prepended.
 type TieredSelector struct {
 	cfg    SelectorConfig
 	scores ScoreFn
+
+	// latency and latencyGate drive the tie-break inside the winning tier;
+	// see SetLatencyTieBreak.
+	latency     LatencyFn
+	latencyGate func(context.Context, domain.ServiceID) bool
 
 	// onCollapse, when set, is invoked once per selection in which every
 	// endpoint scored below MinThreshold and the pool-collapse guard had to
@@ -106,6 +116,33 @@ func (s *TieredSelector) SetCollapseHook(fn func(domain.ServiceID)) {
 func (s *TieredSelector) SetOperatorCap(cfg OperatorCapConfig, gate func(context.Context, domain.ServiceID) bool) {
 	s.operatorCap = cfg
 	s.capGate = gate
+}
+
+// SetLatencyTieBreak installs the latency source for the tie-break inside
+// the winning tier, gated per relay. Within tier 1 (and only there) an
+// endpoint is picked with probability proportional to 1/latency, floored
+// at latencyFloorMS so a fast host does not monopolise the tier; an
+// endpoint nothing has measured is given the tier's mean, so a newcomer
+// still gets traffic and is measured. The operator cap, when active, still
+// chooses the operator; the tie-break then chooses within that operator.
+//
+// This is the one place latency touches selection. On the 2026-09-14
+// canary SAGE's upstream p50 on osmosis was 0.074 s against PATH's 0.044 s
+// for the same suppliers, because SAGE picked uniformly inside a tier while
+// PATH's selection bands excluded slow hosts. Scores stay latency-blind
+// (docs/scoring.md §7.2): a slow correct host keeps its score and its tier,
+// it is just asked less often than a fast one.
+func (s *TieredSelector) SetLatencyTieBreak(fn LatencyFn, gate func(context.Context, domain.ServiceID) bool) {
+	s.latency = fn
+	s.latencyGate = gate
+}
+
+// latencyFloorMS bounds the weight of a very fast host: below this, hosts
+// are treated as equally fast.
+const latencyFloorMS = 20
+
+func (s *TieredSelector) tieBreakActive(ctx context.Context, serviceID domain.ServiceID) bool {
+	return s.latency != nil && s.latencyGate != nil && s.latencyGate(ctx, serviceID)
 }
 
 // capActive reports whether the concentration cap should shape this selection.
@@ -162,7 +199,8 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 	// it twice per relay doubles the cost of selection on the hot path.
 	var tiers []int8
 	capOn := s.capActive(ctx, serviceID)
-	if capOn {
+	tieBreak := s.tieBreakActive(ctx, serviceID)
+	if capOn || tieBreak {
 		buf := getTierBuf(len(endpoints))
 		defer putTierBuf(buf)
 		tiers = *buf
@@ -177,7 +215,7 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 	var fallbackTies int
 	for i, ep := range endpoints {
 		t, score := s.classify(ctx, serviceID, ep, rpcType)
-		if capOn {
+		if tiers != nil {
 			tiers[i] = int8(t)
 		}
 		if t < 0 {
@@ -225,11 +263,35 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 	// takes more than its capped share of selections. Only meaningful with more
 	// than one candidate in the tier, and the pick is left alone when the cap
 	// cannot apply (one operator holds everything, cap disabled).
+	// Latency tie-break, tier 1 only: the winning tier is the set of hosts
+	// reputation calls equally good; within it, ask the faster ones more.
+	// The weights feed the operator cap too, so a fast operator earns share
+	// across operators up to the cap, and the cap's within-operator pick is
+	// drawn by the same weights.
+	var weights []float64
+	if tieBreak && best == tier1Idx && count[tier1Idx] > 1 {
+		bufp := weightBufPool.Get().(*[]float64)
+		defer weightBufPool.Put(bufp)
+		if w, ok := s.tier1Weights(ctx, serviceID, endpoints, tiers, rpcType, bufp); ok {
+			weights = w
+		}
+	}
+
 	if capOn && count[best] > 1 {
-		if _, capped, ok := cappedPick(s.operatorCap, endpoints, func(i int) bool {
+		var weightFn func(i int) float64
+		if weights != nil {
+			weightFn = func(i int) float64 { return weights[i] }
+		}
+		if _, capped, ok := cappedPickWeighted(s.operatorCap, endpoints, func(i int) bool {
 			return int(tiers[i]) == best
-		}); ok {
+		}, weightFn); ok {
 			selected = capped
+			weights = nil // the cap's pick already honoured the weights
+		}
+	}
+	if weights != nil {
+		if ep, ok := weightedPick(endpoints, weights); ok {
+			selected = ep
 		}
 	}
 
@@ -302,4 +364,90 @@ func (s *TieredSelector) TopTierCandidates(ctx context.Context, serviceID domain
 		}
 	}
 	return out
+}
+
+var weightBufPool = sync.Pool{New: func() any { return new([]float64) }}
+
+// tier1Weights fills buf with 1/latency for every tier-1 endpoint (zero for
+// the rest): latency from the EWMA, floored at latencyFloorMS; an unmeasured
+// endpoint is weighed as twice the mean of the measured ones, so it draws
+// half a typical host's share. That is enough traffic to measure it within
+// a minute at canary volume, and not so much that a host whose only
+// attempts failed — the EWMA reads success only, so it stays unmeasured —
+// keeps a full share while it fails. ok is false when fewer than two
+// endpoints are in tier 1 or none is measured, and the uniform pick stands.
+func (s *TieredSelector) tier1Weights(
+	ctx context.Context,
+	serviceID domain.ServiceID,
+	endpoints domain.EndpointAddrList,
+	tiers []int8,
+	rpcType domain.RPCType,
+	buf *[]float64,
+) ([]float64, bool) {
+	if cap(*buf) < len(endpoints) {
+		*buf = make([]float64, len(endpoints))
+	}
+	weights := (*buf)[:len(endpoints)]
+
+	var sum float64
+	known, candidates := 0, 0
+	for i, ep := range endpoints {
+		weights[i] = 0
+		if int(tiers[i]) != tier1Idx {
+			continue
+		}
+		candidates++
+		if ms, ok := s.latency(ctx, serviceID, ep, rpcType); ok && ms > 0 {
+			weights[i] = ms
+			sum += ms
+			known++
+		} else {
+			weights[i] = -1 // unmeasured, filled below
+		}
+	}
+	if candidates < 2 || known == 0 {
+		return nil, false
+	}
+	mean := sum / float64(known)
+	for i := range weights {
+		switch {
+		case weights[i] == 0:
+			continue
+		case weights[i] < 0:
+			weights[i] = 2 * mean
+		}
+		if weights[i] < latencyFloorMS {
+			weights[i] = latencyFloorMS
+		}
+		weights[i] = 1 / weights[i]
+	}
+	return weights, true
+}
+
+// weightedPick draws one endpoint with probability proportional to its
+// weight; zero-weight endpoints are not candidates.
+func weightedPick(endpoints domain.EndpointAddrList, weights []float64) (domain.EndpointAddr, bool) {
+	var total float64
+	for _, w := range weights {
+		total += w
+	}
+	if total <= 0 {
+		return "", false
+	}
+	r := rand.Float64() * total
+	for i, ep := range endpoints {
+		if weights[i] == 0 {
+			continue
+		}
+		r -= weights[i]
+		if r <= 0 {
+			return ep, true
+		}
+	}
+	for i := len(endpoints) - 1; i >= 0; i-- {
+		if weights[i] != 0 {
+			return endpoints[i], true
+		}
+	}
+	return "", false
 }

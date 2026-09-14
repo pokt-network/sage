@@ -1,11 +1,14 @@
 package healthcheck
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -213,5 +216,100 @@ func TestExternalBlockFetcher_ChannelClosedOnContextCancel(t *testing.T) {
 		}
 	case <-timer.C:
 		t.Error("channel not closed after context cancel")
+	}
+}
+
+// Solana's getEpochInfo answers {"result":{"absoluteSlot":…,"blockHeight":…}};
+// the plugin reads blockHeight and so must the fetcher. On the 2026-09-13
+// canary a valid reply was logged as "cannot find block height in JSON".
+func TestParseHeightFromBytes_SolanaEpochInfo(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","result":{"absoluteSlot":370000000,"blockHeight":358000000,"epoch":1034,"slotIndex":12,"slotsInEpoch":432000},"id":1}`)
+	h, err := parseHeightFromBytes(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h != 358000000 {
+		t.Fatalf("height = %d, want blockHeight 358000000", h)
+	}
+}
+
+// A non-2xx answer is reported by its status, not by what the parser could
+// not make of the body: trongrid's HTML "405 Not Allowed" page read as
+// "cannot find block height in JSON: <html>…" until 2026-09-13.
+func TestExternalBlockFetcher_NonSuccessStatusIsNamed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_, _ = w.Write([]byte("<html><body><h1>405 Not Allowed</h1></body></html>"))
+	}))
+	defer server.Close()
+
+	for _, typ := range []string{"json_rpc", "rest"} {
+		f := NewExternalBlockFetcher("tron", []config.ExternalBlockSource{{URL: server.URL, Type: typ}}, slog.Default())
+		_, err := f.fetchOne(context.Background(), f.sources[0])
+		if err == nil || !strings.Contains(err.Error(), "HTTP 405") {
+			t.Fatalf("%s: err = %v, want the status named", typ, err)
+		}
+	}
+}
+
+type countingFailures struct{ n int }
+
+func (c *countingFailures) RecordExternalSourceFailure(domain.ServiceID) { c.n++ }
+
+// A failing source is counted on every poll and logged on the change of
+// state only: once when the sources stop answering, once when they answer
+// again. Between those, nothing at warn.
+func TestExternalBlockFetcher_FailureCountedAndStateChangeLogged(t *testing.T) {
+	var ok atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if !ok.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("error code: 502"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x64"}`))
+	}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	f := NewExternalBlockFetcher("bitway", []config.ExternalBlockSource{{URL: server.URL, Type: "json_rpc"}}, logger)
+	counter := &countingFailures{}
+	f.SetFailureRecorder(counter)
+	ch := make(chan ExternalBlockHeight, 8)
+
+	f.emit(context.Background(), ch)
+	f.emit(context.Background(), ch)
+	f.emit(context.Background(), ch)
+	if counter.n != 3 {
+		t.Fatalf("failures counted = %d, want 3, one per poll", counter.n)
+	}
+	if got := strings.Count(logs.String(), "external block sources failing"); got != 1 {
+		t.Fatalf("failing warned %d times over three failed polls, want once:\n%s", got, logs.String())
+	}
+	if !f.failing {
+		t.Fatal("fetcher should be in the failing state")
+	}
+
+	ok.Store(true)
+	f.emit(context.Background(), ch)
+	select {
+	case h := <-ch:
+		if h.Height != 100 {
+			t.Fatalf("height = %d, want 100 after recovery", h.Height)
+		}
+	default:
+		t.Fatal("no height emitted after the source recovered")
+	}
+	if got := strings.Count(logs.String(), "external block sources recovered"); got != 1 {
+		t.Fatalf("recovered logged %d times, want once:\n%s", got, logs.String())
+	}
+	if f.failing {
+		t.Fatal("fetcher should have left the failing state")
+	}
+	if counter.n != 3 {
+		t.Fatalf("a successful poll must not count as a failure, got %d", counter.n)
 	}
 }

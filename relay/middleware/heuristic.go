@@ -4,6 +4,7 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
+	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -20,7 +21,7 @@ import (
 // "heuristic" feature flag — grading a transport error is attribution, not
 // response analysis, and the circuit breaker, the method blocks and
 // reputation all key on it. The flag gates body analysis only.
-func Heuristic(flags featureflag.FlagStore) relay.Middleware {
+func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			// Run the inner chain first.
@@ -32,6 +33,15 @@ func Heuristic(flags featureflag.FlagStore) relay.Middleware {
 				// The flag gate below is deliberately not applied: grading a
 				// transport error is attribution, not response analysis.
 				result := heuristic.AnalyzeTransportError(err, ctx.Ctx.Err())
+				// The plugin may know the route better than the analyzer
+				// (qos.VerdictRefiner): a verdict refined to "deliver" must
+				// also stop Retry, which keys on the error's own flag.
+				if refineVerdict(registry, ctx, &result) && !result.ShouldRetry && domain.IsRetryable(err) {
+					if re, ok := err.(*domain.RelayError); ok {
+						err = domain.NewRelayError(re.Kind, re.Message, re.Cause, false)
+						ctx.Err = err
+					}
+				}
 				ctx.HeuristicResult = &result
 				return err
 			}
@@ -62,6 +72,24 @@ func Heuristic(flags featureflag.FlagStore) relay.Middleware {
 				)
 			}
 
+			// A -32601 on a method the plugin catalogues is retried on another
+			// operator. The analyzer leaves it unretried because it cannot tell
+			// a real method from a bogus name, and a bogus name must not bounce
+			// across the pool; here the catalogue tells them apart. On the
+			// 2026-09-13 canary two thirds of kava's json_rpc stakes fronted a
+			// CometBFT node and answered eth_blockNumber with -32601; the
+			// method block that verdict sets steers the NEXT request, this
+			// retry serves the one in hand. PATH passes the -32601 to the
+			// client. Attribution stays client so nothing is scored.
+			if result.Reason == heuristic.ReasonMethodNotFound && !result.ShouldRetry && namedMethod(registry, ctx) {
+				result.ShouldRetry = true
+			}
+
+			// The plugin's word on the route: a 5xx the node answers by
+			// design to a query it cannot serve is the chain's answer, not
+			// the host's failure (qos.VerdictRefiner).
+			refineVerdict(registry, ctx, &result)
+
 			ctx.HeuristicResult = &result
 
 			if result.ShouldRetry {
@@ -78,4 +106,33 @@ func Heuristic(flags featureflag.FlagStore) relay.Middleware {
 			return nil
 		})
 	}
+}
+
+// refineVerdict lets the service's plugin re-attribute the verdict from the
+// request's shape (qos.VerdictRefiner); reports whether it did.
+func refineVerdict(registry *qos.Registry, ctx *relay.Context, result *heuristic.AnalysisResult) bool {
+	if len(ctx.Payloads) == 0 {
+		return false
+	}
+	plugin := ctx.Plugin
+	if plugin == nil && registry != nil {
+		plugin = registry.Get(ctx.ServiceID)
+	}
+	refiner, ok := plugin.(qos.VerdictRefiner)
+	if !ok {
+		return false
+	}
+	refined, ok := refiner.RefineVerdict(ctx.Payloads[0], *result)
+	if !ok {
+		return false
+	}
+	*result = refined
+	return true
+}
+
+// namedMethod reports whether the request's method is one the service's
+// plugin catalogues: not empty, not the MethodOther bucket.
+func namedMethod(registry *qos.Registry, ctx *relay.Context) bool {
+	m := normalizedMethod(registry, ctx)
+	return m != "" && m != qos.MethodOther
 }

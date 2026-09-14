@@ -5,6 +5,7 @@ import (
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
+	"github.com/pokt-network/sage/qos/evm"
 )
 
 // knownRESTTemplates is the catalogued set of gRPC-gateway paths, with every
@@ -115,6 +116,15 @@ func (p *Plugin) NormalizeMethod(payload domain.Payload) string {
 		if cometBFTMethods[m] {
 			return m
 		}
+		// The EVM face of a Cosmos chain (kava, sei): the EVM catalogue names
+		// the method, so per-host method blocks work there. Without this every
+		// eth_ call collapsed to MethodOther, which the block store skips, and
+		// on the 2026-09-13 canary a CometBFT-only node staked at kava's
+		// json_rpc URL answered eth_blockNumber with -32601 on every visit
+		// with nothing learning to route around it.
+		if evm.KnownMethod(m) {
+			return m
+		}
 		return qos.MethodOther
 	}
 	path := payload.Path()
@@ -129,4 +139,18 @@ func (p *Plugin) NormalizeMethod(payload domain.Payload) string {
 		return cometBFTPath // GET /status is the same method as {"method":"status"}
 	}
 	return qos.MethodOther
+}
+
+// MethodFamily implements qos.MethodFamilyLister: an EVM-catalogued method
+// belongs to the EVM face, and a json_rpc host that refuses one of them is a
+// CometBFT node with no EVM, so the whole catalogue is the family. On the
+// 2026-09-13 canary two thirds of kava's json_rpc hosts were such nodes and
+// the method blocks learned them one method at a time, one paid failed
+// relay per host and method. CometBFT and REST methods have no family: a
+// node missing one CometBFT method says nothing about the others.
+func (p *Plugin) MethodFamily(method string) []string {
+	if evm.KnownMethod(method) {
+		return evm.KnownMethods()
+	}
+	return nil
 }

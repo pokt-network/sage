@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
@@ -859,8 +860,28 @@ func TestHandleReady_SessionNotReady(t *testing.T) {
 }
 
 type recordingClientRec struct {
-	statuses []int
-	degraded []string
+	statuses   []int
+	degraded   []string
+	rpcTypes   []rpcTypeRecord
+	mismatches []rpcTypeMismatch
+	latencies  []clientLatencyRecord
+	stages     map[string]time.Duration
+}
+
+type clientLatencyRecord struct {
+	status  int
+	latency time.Duration
+}
+
+func (r *recordingClientRec) RecordClientLatency(_ domain.ServiceID, status int, latency time.Duration) {
+	r.latencies = append(r.latencies, clientLatencyRecord{status, latency})
+}
+
+func (r *recordingClientRec) RecordStageTime(_ domain.ServiceID, stage string, d time.Duration) {
+	if r.stages == nil {
+		r.stages = map[string]time.Duration{}
+	}
+	r.stages[stage] += d
 }
 
 func (r *recordingClientRec) RecordClientRequest(_ domain.ServiceID, status int) {
@@ -869,6 +890,24 @@ func (r *recordingClientRec) RecordClientRequest(_ domain.ServiceID, status int)
 
 func (r *recordingClientRec) RecordDegraded(_ domain.ServiceID, tier string) {
 	r.degraded = append(r.degraded, tier)
+}
+
+type rpcTypeRecord struct {
+	rpcType domain.RPCType
+	source  string
+}
+
+type rpcTypeMismatch struct {
+	rpcType, actual domain.RPCType
+	reason          string
+}
+
+func (r *recordingClientRec) RecordRPCType(_ domain.ServiceID, rpcType domain.RPCType, source string) {
+	r.rpcTypes = append(r.rpcTypes, rpcTypeRecord{rpcType, source})
+}
+
+func (r *recordingClientRec) RecordRPCTypeMismatch(_ domain.ServiceID, rpcType, actual domain.RPCType, reason string) {
+	r.mismatches = append(r.mismatches, rpcTypeMismatch{rpcType, actual, reason})
 }
 
 // The client-facing HTTP status of each relay request is recorded — distinct
@@ -906,4 +945,102 @@ func TestHandleRelay_RecordsClientStatus(t *testing.T) {
 	if len(rec2.statuses) != 1 || rec2.statuses[0] != 500 {
 		t.Fatalf("a gateway-made failure records the client status 500, got %v", rec2.statuses)
 	}
+}
+
+// How a request's RPC type was settled, and whether anyone better informed
+// disagreed, is recorded once per client request from what the chain left
+// on ctx — after the chain, whichever way the request ended.
+func TestHandleRelay_RecordsRPCTypeClassification(t *testing.T) {
+	post := func(srv *httptest.Server) {
+		t.Helper()
+		resp, err := http.Post(srv.URL+"/v1", "application/json", strings.NewReader(`{"jsonrpc":"2.0","method":"status","id":1}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	run := func(t *testing.T, chain relay.Handler) *recordingClientRec {
+		t.Helper()
+		rec := &recordingClientRec{}
+		r := New(config.RouterConfig{Port: 0}, chain, &mockSessions{ready: true}, nil, discardLogger())
+		r.SetClientMetrics(rec)
+		srv := httptest.NewServer(r.mux)
+		defer srv.Close()
+		post(srv)
+		return rec
+	}
+	ok := &domain.Response{HTTPStatusCode: 200, Body: []byte(`{}`)}
+
+	t.Run("detected, nobody disagrees", func(t *testing.T) {
+		rec := run(t, relay.HandlerFunc(func(ctx *relay.Context) error {
+			ctx.RPCType, ctx.RPCTypeDetected, ctx.RPCTypeSource = domain.RPCTypeJSONRPC, domain.RPCTypeJSONRPC, relay.RPCTypeSourceDetected
+			ctx.Payloads = []domain.Payload{domain.NewPayload(nil, domain.RPCTypeJSONRPC, "eth_blockNumber")}
+			ctx.Response = ok
+			return nil
+		}))
+		if len(rec.rpcTypes) != 1 || rec.rpcTypes[0] != (rpcTypeRecord{domain.RPCTypeJSONRPC, "detected"}) {
+			t.Errorf("rpcTypes = %+v, want one json_rpc/detected", rec.rpcTypes)
+		}
+		if len(rec.mismatches) != 0 {
+			t.Errorf("mismatches = %+v, want none", rec.mismatches)
+		}
+	})
+
+	t.Run("header contradicts detection", func(t *testing.T) {
+		rec := run(t, relay.HandlerFunc(func(ctx *relay.Context) error {
+			ctx.RPCType, ctx.RPCTypeDetected, ctx.RPCTypeSource = domain.RPCTypeREST, domain.RPCTypeJSONRPC, relay.RPCTypeSourceHeader
+			ctx.Response = ok
+			return nil
+		}))
+		if len(rec.rpcTypes) != 1 || rec.rpcTypes[0] != (rpcTypeRecord{domain.RPCTypeREST, "header"}) {
+			t.Errorf("rpcTypes = %+v, want one rest/header", rec.rpcTypes)
+		}
+		want := rpcTypeMismatch{domain.RPCTypeJSONRPC, domain.RPCTypeREST, "header"}
+		if len(rec.mismatches) != 1 || rec.mismatches[0] != want {
+			t.Errorf("mismatches = %+v, want [%+v]", rec.mismatches, want)
+		}
+	})
+
+	t.Run("plugin retypes the payload", func(t *testing.T) {
+		// Parse said json_rpc (a JSON-RPC envelope); the cosmos plugin read
+		// the method and called it CometBFT. Pooled as one, sent as the other.
+		rec := run(t, relay.HandlerFunc(func(ctx *relay.Context) error {
+			ctx.RPCType, ctx.RPCTypeDetected, ctx.RPCTypeSource = domain.RPCTypeJSONRPC, domain.RPCTypeJSONRPC, relay.RPCTypeSourceDetected
+			ctx.Payloads = []domain.Payload{domain.NewPayload(nil, domain.RPCTypeCometBFT, "status")}
+			ctx.Response = ok
+			return nil
+		}))
+		want := rpcTypeMismatch{domain.RPCTypeJSONRPC, domain.RPCTypeCometBFT, "plugin"}
+		if len(rec.mismatches) != 1 || rec.mismatches[0] != want {
+			t.Errorf("mismatches = %+v, want [%+v]", rec.mismatches, want)
+		}
+	})
+
+	t.Run("service does not declare the type", func(t *testing.T) {
+		rec := run(t, relay.HandlerFunc(func(ctx *relay.Context) error {
+			ctx.RPCType, ctx.RPCTypeDetected, ctx.RPCTypeSource = domain.RPCTypeREST, domain.RPCTypeREST, relay.RPCTypeSourceDetected
+			ctx.Err = domain.NewRelayError(domain.ErrValidation, "RPC type not supported", domain.ErrRPCTypeUnsupported, false)
+			return ctx.Err
+		}))
+		if len(rec.rpcTypes) != 1 || rec.rpcTypes[0] != (rpcTypeRecord{domain.RPCTypeREST, "detected"}) {
+			t.Errorf("rpcTypes = %+v, want one rest/detected", rec.rpcTypes)
+		}
+		want := rpcTypeMismatch{domain.RPCTypeREST, rpcTypeNone, "unsupported"}
+		if len(rec.mismatches) != 1 || rec.mismatches[0] != want {
+			t.Errorf("mismatches = %+v, want [%+v]", rec.mismatches, want)
+		}
+	})
+
+	t.Run("refused before classification records nothing", func(t *testing.T) {
+		rec := run(t, relay.HandlerFunc(func(ctx *relay.Context) error {
+			ctx.Err = domain.NewRelayError(domain.ErrValidation, "missing Target-Service-Id header", nil, false)
+			return ctx.Err
+		}))
+		if len(rec.rpcTypes) != 0 || len(rec.mismatches) != 0 {
+			t.Errorf("recorded %+v / %+v for an unclassified request, want nothing", rec.rpcTypes, rec.mismatches)
+		}
+		if len(rec.statuses) != 1 {
+			t.Errorf("client status still recorded once, got %v", rec.statuses)
+		}
+	})
 }

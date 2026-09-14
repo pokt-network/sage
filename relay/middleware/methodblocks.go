@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"net/url"
+
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
@@ -22,6 +24,9 @@ const (
 	MethodBlockEventMark     = "mark"
 	MethodBlockEventEscalate = "escalate"
 	MethodBlockEventBypass   = "bypass"
+	// MethodBlockEventFamily: a -32601 on a catalogued method marked the
+	// host for the whole family the plugin named (qos.MethodFamilyLister).
+	MethodBlockEventFamily = "family"
 )
 
 // MethodBlocks returns a middleware that keeps a method away from a host that
@@ -91,7 +96,7 @@ func MethodBlocks(
 
 			if len(ctx.Endpoints) > 0 {
 				filtered := filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool {
-					return !store.Blocked(serviceID, ep.Domain(), method)
+					return !store.Blocked(serviceID, blockHost(endpointProvider, ep, ctx.RPCType), method)
 				})
 				bypass := len(filtered) == 0 ||
 					(len(filtered) < len(ctx.Endpoints) && !anyVouched(repSvc, ctx, filtered))
@@ -115,11 +120,28 @@ func MethodBlocks(
 				// would remove the node from everything.
 				escalates := ctx.HeuristicResult.Attribution == heuristic.AttrSupplier
 				event := MethodBlockEventMark
-				if store.Mark(serviceID, ctx.Endpoint.Domain(), method, escalates) {
+				host := blockHost(endpointProvider, ctx.Endpoint, ctx.RPCType)
+				if store.Mark(serviceID, host, method, escalates) {
 					event = MethodBlockEventEscalate
 				}
 				if events != nil {
 					events.RecordMethodBlockEvent(ctx.ServiceID, method, event)
+				}
+				// A host that does not serve this method may not serve its
+				// family either; the plugin says which methods those are. The
+				// family marks are client-attributed like the one they came
+				// from, so they never add up to a host-wide block.
+				if ctx.HeuristicResult.Reason == heuristic.ReasonMethodNotFound {
+					if family := methodFamily(registry, ctx, method); len(family) > 0 {
+						for _, m := range family {
+							if m != method {
+								store.Mark(serviceID, host, m, false)
+							}
+						}
+						if events != nil {
+							events.RecordMethodBlockEvent(ctx.ServiceID, method, MethodBlockEventFamily)
+						}
+					}
 				}
 			}
 			return err
@@ -160,4 +182,33 @@ func normalizedMethod(registry *qos.Registry, ctx *relay.Context) string {
 		return ""
 	}
 	return normalizer.NormalizeMethod(ctx.Payloads[0])
+}
+
+// methodFamily asks the service's plugin which catalogued methods a host
+// that refused method will refuse too; nil when the plugin cannot say.
+func methodFamily(registry *qos.Registry, ctx *relay.Context, method string) []string {
+	plugin := ctx.Plugin
+	if plugin == nil && registry != nil {
+		plugin = registry.Get(ctx.ServiceID)
+	}
+	lister, ok := plugin.(qos.MethodFamilyLister)
+	if !ok {
+		return nil
+	}
+	return lister.MethodFamily(method)
+}
+
+// blockHost is the host a mark is kept against: the host the face is
+// actually dialed from when the provider can say (protocol.URLResolver), else
+// the address's own. An operator staking one host per type would otherwise
+// have a REST refusal marked against its JSON-RPC host.
+func blockHost(provider protocol.EndpointProvider, ep domain.EndpointAddr, rpcType domain.RPCType) string {
+	if r, ok := provider.(protocol.URLResolver); ok {
+		if rawURL, ok := r.EndpointURLFor(ep, rpcType); ok {
+			if u, err := url.Parse(rawURL); err == nil && u.Hostname() != "" {
+				return u.Hostname()
+			}
+		}
+	}
+	return ep.Domain()
 }

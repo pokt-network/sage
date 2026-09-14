@@ -1,6 +1,7 @@
 package middleware_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/pokt-network/sage/config"
@@ -65,6 +66,10 @@ func TestValidate_UnsupportedType_Blocked(t *testing.T) {
 	}
 	if re.Kind != domain.ErrValidation {
 		t.Errorf("expected ErrValidation, got %v", re.Kind)
+	}
+	// The router counts this in sage_rpc_type_mismatch_total by the cause.
+	if !errors.Is(err, domain.ErrRPCTypeUnsupported) {
+		t.Errorf("err = %v, want it to wrap domain.ErrRPCTypeUnsupported", err)
 	}
 }
 

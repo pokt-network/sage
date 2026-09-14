@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -16,6 +17,11 @@ type MetricsRecorder interface {
 	// latency is the total time from the start of the relay to response receipt.
 	// err is non-nil if the relay failed.
 	RecordRelay(serviceID domain.ServiceID, endpoint domain.EndpointAddr, statusCode int, latency time.Duration, err error)
+	// RecordVerdict records the heuristic's reading of a single relay attempt:
+	// the reason it settled on and which side it attributed the outcome to.
+	// Called once per attempt that produced a verdict, so a retried request
+	// records one verdict per attempt.
+	RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCType, reason, attribution string)
 }
 
 // Metrics returns a middleware that records one upstream attempt via recorder
@@ -44,7 +50,33 @@ func Metrics(recorder MetricsRecorder) relay.Middleware {
 
 			recorder.RecordRelay(ctx.ServiceID, ctx.Endpoint, statusCode, latency, err)
 
+			// The heuristic runs inside this middleware, so its verdict for
+			// this attempt is on the context by now. Retry clears the field
+			// before each attempt, so a verdict is never carried over from
+			// the previous one. This is the only place the verdict itself is
+			// counted: reputation_attempts_total sees only what scoring kept
+			// (client-attributed outcomes are dropped before it), and
+			// retry_total sees only what retried. What the gateway concluded
+			// about every answer — passed through, penalised, retried — was
+			// otherwise invisible.
+			if v := ctx.HeuristicResult; v != nil {
+				recorder.RecordVerdict(ctx.ServiceID, ctx.RPCType, v.Reason, verdictAttribution(v))
+			}
+
 			return err
 		})
 	}
 }
+
+// verdictAttribution is the attribution label for a verdict. A success carries
+// heuristic.AttrClient internally, meaning "no action needed", which exported
+// as "client" reads as a client error beside the real ones; it is exported as
+// "none" so the label answers only "whose fault" and success has no answer.
+func verdictAttribution(v *heuristic.AnalysisResult) string {
+	if v.Reason == heuristic.ReasonSuccess {
+		return verdictAttributionNone
+	}
+	return v.Attribution.String()
+}
+
+const verdictAttributionNone = "none"
