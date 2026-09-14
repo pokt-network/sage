@@ -50,6 +50,7 @@ func parse(data []byte) (*Config, error) {
 	cfg.Warnings = append(cfg.Warnings, applyRetryDisabled(&cfg, tree)...)
 	cfg.Warnings = append(cfg.Warnings, applyHealthChecksDisabled(&cfg, tree)...)
 	cfg.Warnings = append(cfg.Warnings, gatewayModeWarnings(cfg.Gateway.GatewayMode)...)
+	cfg.Warnings = append(cfg.Warnings, ownedAppKeyWarnings(cfg.Gateway)...)
 	cfg.Warnings = append(cfg.Warnings, applyLogLevelEnv(&cfg, os.Getenv(EnvLogLevel))...)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
@@ -127,7 +128,20 @@ func gatewayModeWarnings(mode string) []string {
 		return nil
 	}
 	return []string{fmt.Sprintf(
-		"gateway_config.gateway_mode is %q, but SAGE signs every relay with its configured owned_apps_private_keys_hex and ignores the App-Address header; a per-request delegated app is not supported", mode)}
+		"gateway_config.gateway_mode is %q, but SAGE relays only for its configured owned apps, signing with the gateway key, and ignores the App-Address header; a per-request delegated app is not supported", mode)}
+}
+
+// ownedAppKeyWarnings says that application private keys in the config are
+// held for nothing: SAGE derives an address from each and never signs with
+// it. An app key controls the app's stake, so the file is a bigger secret
+// than it needs to be.
+func ownedAppKeyWarnings(g GatewayConfig) []string {
+	if len(g.OwnedAppsPrivateKeys) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"gateway_config.owned_apps_private_keys_hex holds %d application private key(s) SAGE never signs with: it only derives each app's address. List the addresses under owned_apps_addresses and remove the keys; an app key controls the app's stake",
+		len(g.OwnedAppsPrivateKeys))}
 }
 
 func applyDefaults(cfg *Config) {

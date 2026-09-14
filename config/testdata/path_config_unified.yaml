@@ -14,6 +14,8 @@ full_node_config:
 
 gateway_config:
   gateway_mode: "centralized"
+  owned_apps_addresses:
+    - "pokt1e3scnf3tfs9t44pawlvpemm6r0ggy3un4avmdk"
 
   method_blocks:
     ttl: 5m

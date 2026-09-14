@@ -98,7 +98,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 		return nil, fmt.Errorf("shannon.New: failed to create full node: %w", err)
 	}
 
-	ownedApps, err := buildOwnedApps(fullNode, cfg.Gateway.OwnedAppsPrivateKeys, logger)
+	ownedApps, err := buildOwnedApps(fullNode, cfg.Gateway.OwnedAppsPrivateKeys, cfg.Gateway.OwnedAppsAddresses, logger)
 	if err != nil {
 		return nil, fmt.Errorf("shannon.New: failed to build owned apps map: %w", err)
 	}
