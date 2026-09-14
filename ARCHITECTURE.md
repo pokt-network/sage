@@ -257,7 +257,7 @@ re-break as a repeat offender.
 | supplier_affinity | on | Sticky supplier after write operations |
 | websocket_relays | on | WebSocket relay path (bidirectional bridge) |
 | operator_aware_selection | on | Per-operator concentration cap; operator-aware retry/hedge |
-| debug_log | off | Full request/response body logging |
+| debug_log | off | Per-attempt request/response logging at debug level: verb, path, method, the URL dialed for the RPC type, bodies, status, error |
 | shadow_mode | off | Process traffic but don't serve responses |
 | request_sampler | on | Per-service request-shape sampling for diversity metrics and the admin request-sample routes |
 | scoring_v2 | on | Per-attempt reputation scoring: the score middleware records each attempt against its own endpoint; batch collapses to one signal per endpoint; Observe records nothing. Off restores once-per-request scoring in Observe |
