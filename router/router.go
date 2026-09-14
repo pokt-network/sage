@@ -79,7 +79,16 @@ type Router struct {
 	// WebSocket path, which bypasses the middleware chain and so the Validate
 	// gate. Nil means ungated. Set via SetServiceRPCTypes at wire time.
 	serviceRPCTypes func(domain.ServiceID) (rpcTypes []string, configured bool)
-	logger          *slog.Logger
+	// staticRoute resolves a configured fixed response for a service, path
+	// and method. Nil serves none. Set via SetStaticRoutes at wire time.
+	staticRoute func(serviceID domain.ServiceID, path, method string) (config.StaticRoute, bool)
+	logger      *slog.Logger
+}
+
+// SetStaticRoutes installs the static_routes lookup. Wire time only; nil
+// serves no static routes.
+func (r *Router) SetStaticRoutes(fn func(serviceID domain.ServiceID, path, method string) (config.StaticRoute, bool)) {
+	r.staticRoute = fn
 }
 
 // EndpointLister is the optional capability behind per-service readiness:
@@ -203,7 +212,38 @@ func (r *Router) handleV1(w http.ResponseWriter, req *http.Request) {
 		r.handleWebSocket(w, req)
 		return
 	}
+	if r.serveStaticRoute(w, req) {
+		return
+	}
 	r.handleRelay(w, req)
+}
+
+// serveStaticRoute answers a request a configured static route matches, on
+// the path the service would see, and reports whether it did. PATH serves
+// these ahead of its relay pipeline too; the answer is counted as a client
+// request like any other.
+func (r *Router) serveStaticRoute(w http.ResponseWriter, req *http.Request) bool {
+	if r.staticRoute == nil {
+		return false
+	}
+	serviceID := domain.ServiceID(req.Header.Get("Target-Service-Id"))
+	rt, ok := r.staticRoute(serviceID, stripMountPrefix(req).URL.Path, req.Method)
+	if !ok {
+		return false
+	}
+	for k, v := range rt.Headers {
+		w.Header().Set(k, v)
+	}
+	w.Header().Set("Content-Type", rt.EffectiveContentType())
+	status := rt.EffectiveStatusCode()
+	w.WriteHeader(status)
+	if _, err := w.Write([]byte(rt.Body)); err != nil {
+		r.logger.Debug("static route: write failed", "service", serviceID, "path", rt.Path, "error", err)
+	}
+	if r.clientMetrics != nil {
+		r.clientMetrics.RecordClientRequest(serviceID, status)
+	}
+	return true
 }
 
 // Start binds the HTTP server and blocks until it stops.

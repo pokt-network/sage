@@ -897,6 +897,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		}
 		return sc.RPCTypes, true
 	})
+	// Read from the live snapshot so a config upload or reload changes the
+	// routes on the next request.
+	app.Router.SetStaticRoutes(func(svcID domain.ServiceID, path, method string) (config.StaticRoute, bool) {
+		return app.Config.Load().Gateway.StaticRouteFor(string(svcID), path, method)
+	})
 	// Gate /ready on reputation warm-up so a fresh or rolled pod is not put
 	// into the Service until it can steer selection. Only when health checks
 	// are enabled — otherwise nothing warms and readiness must not stall.

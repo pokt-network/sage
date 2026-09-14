@@ -248,6 +248,20 @@ blocks of propagation are not a pool that is behind.
 | `timeout` | duration | Bounds a single poll. |
 | `grace_period` | duration | **⚠️ Parsed, not implemented:** block-consensus tolerance covers the same window. Parsed and not implemented. |
 
+#### `gateway_config.services[].static_routes[]`
+
+StaticRoutes are fixed responses this service answers itself, ahead of
+the defaults' routes. See StaticRoute.
+
+| Key | Type | Description |
+|---|---|---|
+| `path` | string | The exact request path served, after the /v1 mount point is stripped ("/identity"). Must begin with "/" and must not be "/", which would shadow all of a service's relay traffic. |
+| `methods` | list of string | Restricts the route to these HTTP methods, case-insensitively. Empty matches every method. |
+| `status_code` | integer | The HTTP status returned. Zero means 200. |
+| `content_type` | string | The Content-Type returned. Empty means "text/plain; charset=utf-8". |
+| `body` | string | Returned verbatim. |
+| `headers` | map of string → string | Are extra response headers. Content-Type is always the one ContentType resolves to, whatever this map says. |
+
 ### `gateway_config.unified_services`
 
 UnifiedServices supports the newer format (gateway_config.unified_services{})
@@ -392,6 +406,7 @@ Provides default values for services.
 | `retry_config` | RetryConfig | Same keys as [`gateway_config.retry_config`](#gateway-config-retry-config). |
 | `timeout_config` | TimeoutConfig | Same keys as [`gateway_config.services[].timeout_config`](#gateway-config-services-timeout-config). |
 | `reputation_config` | ReputationConfig | **⚠️ Parsed, not implemented:** reputation is configured from gateway_config.reputation_config only; the selector and the scorer are global, so a copy under defaults is read by nothing. Same keys as [`gateway_config.reputation_config`](#gateway-config-reputation-config). |
+| `static_routes` | list of StaticRoute | Same keys as [`gateway_config.services[].static_routes[]`](#gateway-config-services-static-routes). |
 
 ### `gateway_config.endpoint_policy`
 

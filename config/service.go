@@ -372,6 +372,9 @@ type ServiceConfig struct {
 	// fallback's own fallback is not consulted. Both sides must name a known
 	// RPC type and differ; that is validated at load.
 	RPCTypeFallbacks map[string]string `yaml:"rpc_type_fallbacks"`
+	// StaticRoutes are fixed responses this service answers itself, ahead of
+	// the defaults' routes. See StaticRoute.
+	StaticRoutes []StaticRoute `yaml:"static_routes"`
 }
 
 // ServiceDefaults provides default values for services.
@@ -385,6 +388,10 @@ type ServiceDefaults struct {
 	// global, so a copy under defaults is read by nothing. The whole block is
 	// reported at startup rather than each key inside it.
 	Reputation ReputationConfig `yaml:"reputation_config"`
+	// StaticRoutes are fixed responses served for every configured service;
+	// a service's own static_routes entry for the same path and method wins.
+	// See StaticRoute.
+	StaticRoutes []StaticRoute `yaml:"static_routes"`
 }
 
 // TimeoutConfig controls relay timeouts.
