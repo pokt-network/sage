@@ -226,7 +226,7 @@ Controls relay timeouts.
 
 | Key | Type | Description |
 |---|---|---|
-| `relay_timeout` | duration | Bounds a single relay attempt to one endpoint — not the whole client request, which may span several attempts under retry and hedge. |
+| `relay_timeout` | duration | Bounds a single relay attempt to one endpoint — not the whole client request, which may span several attempts under retry and hedge and so gets relay_timeout × (max_retries + 1). Until 2026-09-14 the implementation applied it to the whole request and split it across attempts, which halved each attempt against PATH's reading of the key. |
 
 #### `gateway_config.services[].external_block_sources[]`
 

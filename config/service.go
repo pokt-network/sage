@@ -398,7 +398,9 @@ type ServiceDefaults struct {
 type TimeoutConfig struct {
 	// RelayTimeout bounds a single relay attempt to one endpoint — not the
 	// whole client request, which may span several attempts under retry and
-	// hedge.
+	// hedge and so gets relay_timeout × (max_retries + 1). Until 2026-09-14
+	// the implementation applied it to the whole request and split it across
+	// attempts, which halved each attempt against PATH's reading of the key.
 	RelayTimeout time.Duration `yaml:"relay_timeout"`
 }
 
