@@ -330,6 +330,8 @@ func TestParse_RPCTypeDetection_NativeREST(t *testing.T) {
 			return []string{"json_rpc", "rest", "comet_bft"}
 		case "eth":
 			return []string{"json_rpc"}
+		case "charts":
+			return []string{"rest"}
 		}
 		return nil
 	}
@@ -370,6 +372,34 @@ func TestParse_RPCTypeDetection_NativeREST(t *testing.T) {
 			r.Header.Set("Target-Service-Id", "eth")
 			return r
 		}, domain.RPCTypeJSONRPC},
+		// A REST-only service (pretty-charts, 2026-09-14): the JSON-RPC entry
+		// points and the CometBFT paths are its own REST routes. Before, GET /
+		// and GET /health were refused 400 for types it does not declare.
+		{"REST-only service: GET / is REST", func() *http.Request {
+			r := newGETRequest("/")
+			r.Header.Set("Target-Service-Id", "charts")
+			return r
+		}, domain.RPCTypeREST},
+		{"REST-only service: bare POST at root is REST", func() *http.Request {
+			r := newPOSTRequest("/", `{}`)
+			r.Header.Set("Target-Service-Id", "charts")
+			return r
+		}, domain.RPCTypeREST},
+		{"REST-only service: GET /health is REST, not CometBFT", func() *http.Request {
+			r := newGETRequest("/health")
+			r.Header.Set("Target-Service-Id", "charts")
+			return r
+		}, domain.RPCTypeREST},
+		{"REST service without comet_bft: /status is REST", func() *http.Request {
+			r := newGETRequest("/status")
+			r.Header.Set("Target-Service-Id", "tron")
+			return r
+		}, domain.RPCTypeREST},
+		{"REST service declaring comet_bft: /status stays CometBFT", func() *http.Request {
+			r := newGETRequest("/status")
+			r.Header.Set("Target-Service-Id", "pocket")
+			return r
+		}, domain.RPCTypeCometBFT},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

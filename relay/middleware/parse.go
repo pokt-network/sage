@@ -115,7 +115,7 @@ func ParseWithOptions(registry *qos.Registry, opts ParseOptions) relay.Middlewar
 			// that says what it is sending is the only ground truth the
 			// detector is ever graded against, and the comparison is what
 			// sage_rpc_type_mismatch_total{reason="header"} counts.
-			ctx.RPCTypeDetected = detectRPCType(ctx.HTTPRequest, body, serviceDeclaresREST(rpcTypes, ctx.ServiceID))
+			ctx.RPCTypeDetected = detectRPCType(ctx.HTTPRequest, body, declaredRPCTypes(rpcTypes, ctx.ServiceID))
 			// A plugin that knows its chain's surfaces refines the generic
 			// answer: the cosmos plugin decides which declared type a
 			// CometBFT request travels as. Its answer is what ParseRequest
@@ -177,15 +177,21 @@ func ParseWithOptions(registry *qos.Registry, opts ParseOptions) relay.Middlewar
 var jsonRPCEntryPaths = map[string]bool{"/": true, "": true, "/jsonrpc": true}
 
 // detectRPCType determines the RPC type from an HTTP request and its
-// already-read body. serviceDeclaresREST is whether the target service lists
-// "rest" among its RPC types; when it does, a path-addressed request that is
-// not a JSON-RPC entry point is that chain's native REST surface.
+// already-read body. declared is the set of RPC types the target service
+// lists, nil when unknown. When it lists "rest", a path-addressed request is
+// that chain's native REST surface unless the path belongs to a surface the
+// service also declares: a JSON-RPC entry point with json_rpc declared, a
+// CometBFT path with comet_bft declared.
 //
 // The default for an unrecognised request used to be JSON-RPC unconditionally,
 // which is an EVM assumption: it misrouted every chain-native REST namespace
 // (TRON /wallet, Pocket /poktroll) to JSON-RPC suppliers. See
-// docs/design/specs/2026-08-31-rpc-type-classification-design.md.
-func detectRPCType(req *http.Request, body []byte, serviceDeclaresREST bool) domain.RPCType {
+// docs/design/specs/2026-08-31-rpc-type-classification-design.md. The path
+// tables themselves made the same assumption on a REST-only service: GET / and
+// GET /health on pretty-charts (2026-09-14) were called json_rpc and
+// comet_bft, types it does not declare, and refused 400 before the relay.
+func detectRPCType(req *http.Request, body []byte, declared map[string]bool) domain.RPCType {
+	serviceDeclaresREST := declared["rest"]
 	// WebSocket upgrade.
 	if isWebSocketUpgrade(req) {
 		return domain.RPCTypeWebSocket
@@ -218,16 +224,21 @@ func detectRPCType(req *http.Request, body []byte, serviceDeclaresREST bool) dom
 
 	// CometBFT paths — a distinct surface with well-known paths, checked
 	// before the REST default so a Cosmos chain's /status is not called REST.
-	for _, p := range cometBFTPaths {
-		if path == p || strings.HasPrefix(path, p+"/") {
-			return domain.RPCTypeCometBFT
+	// Not on a REST service that does not declare comet_bft: its /health is
+	// its own REST route.
+	if !serviceDeclaresREST || declared["comet_bft"] {
+		for _, p := range cometBFTPaths {
+			if path == p || strings.HasPrefix(path, p+"/") {
+				return domain.RPCTypeCometBFT
+			}
 		}
 	}
 
 	// A REST-capable service, addressed by a path that is not a JSON-RPC entry
 	// point, is that chain's REST surface — /cosmos/, /ibc/, /wallet/,
-	// /poktroll/, and anything else, without a per-chain table.
-	if serviceDeclaresREST && !jsonRPCEntryPaths[path] {
+	// /poktroll/, and anything else, without a per-chain table. The entry
+	// points too, when the service does not declare json_rpc.
+	if serviceDeclaresREST && (!jsonRPCEntryPaths[path] || !declared["json_rpc"]) {
 		return domain.RPCTypeREST
 	}
 
@@ -243,18 +254,23 @@ func detectRPCType(req *http.Request, body []byte, serviceDeclaresREST bool) dom
 	return domain.RPCTypeJSONRPC
 }
 
-// serviceDeclaresREST reports whether the service lists "rest" among its RPC
-// types. A nil resolver reports false, which keeps the JSON-RPC default.
-func serviceDeclaresREST(rpcTypes func(domain.ServiceID) []string, svc domain.ServiceID) bool {
+// declaredRPCTypes is the set of RPC types the service lists. A nil resolver
+// or an unconfigured service yields nil, which keeps the JSON-RPC default.
+// ponytail: a map per request; precompute per service if Parse shows up in
+// sage_stage_seconds_total.
+func declaredRPCTypes(rpcTypes func(domain.ServiceID) []string, svc domain.ServiceID) map[string]bool {
 	if rpcTypes == nil {
-		return false
+		return nil
 	}
-	for _, t := range rpcTypes(svc) {
-		if t == "rest" {
-			return true
-		}
+	types := rpcTypes(svc)
+	if len(types) == 0 {
+		return nil
 	}
-	return false
+	set := make(map[string]bool, len(types))
+	for _, t := range types {
+		set[t] = true
+	}
+	return set
 }
 
 // isGRPCContentType reports whether a media type is gRPC in any framing:
