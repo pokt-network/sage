@@ -57,6 +57,25 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			var lastErr error
 			maxAttempts := cfg.MaxRetries + 1
 
+			// The last upstream answer that came with a retry verdict: a node's
+			// own JSON-RPC error, a chain's "block not found". Each retry clears
+			// ctx.Response for the next attempt, so when the retries then end
+			// with no answer at all — a relay miner's 408, a timeout — the
+			// router had nothing to deliver and wrote a 500 over an answer a
+			// healthy node had given. On mainnet celo (2026-09-14) that was
+			// 17,720 "block not found" answers from kleomedes, retried onto
+			// rpcgate's 408s, turned into 13,599 client 500s while PATH handed
+			// the same answers through as 200. The last real answer stands
+			// unless a later attempt produced one of its own.
+			var keptResp = ctx.Response
+			keptEndpoint, keptVerdict, keptErr := ctx.Endpoint, ctx.HeuristicResult, error(nil)
+			defer func() {
+				if retErr != nil && ctx.Response == nil && keptResp != nil {
+					ctx.Response, ctx.Endpoint, ctx.HeuristicResult = keptResp, keptEndpoint, keptVerdict
+					ctx.Err, retErr = keptErr, keptErr
+				}
+			}()
+
 			// Whether retrying THIS failure is worth anything is not readable
 			// from a status share: on a low-volume service the share moves by
 			// tens of points on window placement alone, and on a busy one the
@@ -127,6 +146,10 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					// exclusion bookkeeping below clears it before the next
 					// attempt runs.
 					pendingCause = retryCause(ctx, lastErr)
+					// Before either branch below clears it: see keptResp.
+					if ctx.Response != nil && errors.Is(lastErr, domain.ErrRetryVerdict) {
+						keptResp, keptEndpoint, keptVerdict, keptErr = ctx.Response, ctx.Endpoint, ctx.HeuristicResult, lastErr
+					}
 					if rec != nil {
 						rec.RecordRetry(ctx.ServiceID, retryReason(lastErr))
 					}
