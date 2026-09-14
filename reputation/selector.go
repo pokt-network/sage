@@ -64,13 +64,13 @@ const (
 	numTiers
 )
 
-// TieredSelector selects endpoints by cascading through reputation tiers.
-// Tier 1 (best) is tried first; if empty, tier 2; then tier 3. Within each
-// tier a random endpoint is chosen. Probation endpoints may be prepended.
 // LatencyFn reports an endpoint's traffic latency EWMA in milliseconds for a
 // service and RPC type; ok is false when nothing has measured it.
 type LatencyFn func(ctx context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (float64, bool)
 
+// TieredSelector selects endpoints by cascading through reputation tiers.
+// Tier 1 (best) is tried first; if empty, tier 2; then tier 3. Within each
+// tier a random endpoint is chosen. Probation endpoints may be prepended.
 type TieredSelector struct {
 	cfg    SelectorConfig
 	scores ScoreFn
@@ -118,7 +118,6 @@ func (s *TieredSelector) SetOperatorCap(cfg OperatorCapConfig, gate func(context
 	s.capGate = gate
 }
 
-// capActive reports whether the concentration cap should shape this selection.
 // SetLatencyTieBreak installs the latency source for the tie-break inside
 // the winning tier, gated per relay. Within tier 1 (and only there) an
 // endpoint is picked with probability proportional to 1/latency, floored
@@ -146,6 +145,7 @@ func (s *TieredSelector) tieBreakActive(ctx context.Context, serviceID domain.Se
 	return s.latency != nil && s.latencyGate != nil && s.latencyGate(ctx, serviceID)
 }
 
+// capActive reports whether the concentration cap should shape this selection.
 func (s *TieredSelector) capActive(ctx context.Context, serviceID domain.ServiceID) bool {
 	return s.capGate != nil && s.capGate(ctx, serviceID)
 }

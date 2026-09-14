@@ -48,14 +48,14 @@ const (
 // of every supplier fronting the URL.
 type KeyFn func(domain.EndpointAddr, domain.RPCType) string
 
-// keyFnFor returns the KeyFn for a granularity name. An empty or unrecognized
-// name yields the default (per-URL) — a misspelling in config must not silently
-// change how scores are grouped, so callers should validate the name separately
-// (see ValidKeyGranularity) rather than relying on this fallback.
 // URLResolverFn answers the URL a relay of rpcType to an endpoint dials;
 // protocol.URLResolver's method fits. Nil means the address's own URL.
 type URLResolverFn func(domain.EndpointAddr, domain.RPCType) (string, bool)
 
+// keyFnFor returns the KeyFn for a granularity name. An empty or unrecognized
+// name yields the default (per-URL) — a misspelling in config must not silently
+// change how scores are grouped, so callers should validate the name separately
+// (see ValidKeyGranularity) rather than relying on this fallback.
 func keyFnFor(granularity string, resolve URLResolverFn) KeyFn {
 	var base func(domain.EndpointAddr) string
 	switch granularity {

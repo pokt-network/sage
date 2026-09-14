@@ -130,7 +130,6 @@ type Context struct {
 	Writer ResponseWriter
 }
 
-// NewContext creates a new relay context from an HTTP request.
 // RPCTypeSource says where a request's RPCType came from. It is a metric
 // label (sage_rpc_type_total), so the values are a closed set.
 type RPCTypeSource string
@@ -142,6 +141,7 @@ const (
 	RPCTypeSourceDetected RPCTypeSource = "detected"
 )
 
+// NewContext creates a new relay context from an HTTP request.
 func NewContext(ctx context.Context, req *http.Request, logger *slog.Logger, writer ResponseWriter) *Context {
 	return &Context{
 		Ctx:         ctx,

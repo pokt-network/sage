@@ -119,9 +119,6 @@ func (s *Store) SetTTL(d time.Duration) {
 	s.ttl = d
 }
 
-// SetEscalation changes how many distinct supplier-attributed methods must be
-// marked on one host, within one TTL, before the host is blocked for every
-// method. Zero or negative never escalates, the same as WithEscalation(0).
 // SetClientTTL changes how long a client-attributed mark lasts, effective
 // for every Mark from this point on; zero or negative falls back to the
 // ordinary TTL. The reload path uses it beside SetTTL.
@@ -131,6 +128,9 @@ func (s *Store) SetClientTTL(d time.Duration) {
 	s.clientTTL = d
 }
 
+// SetEscalation changes how many distinct supplier-attributed methods must be
+// marked on one host, within one TTL, before the host is blocked for every
+// method. Zero or negative never escalates, the same as WithEscalation(0).
 func (s *Store) SetEscalation(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

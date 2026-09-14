@@ -274,7 +274,9 @@ func (c *classifyingPlugin) ClassifyRPCType(_ *http.Request, _ []byte, detected 
 func TestParse_PluginClassifierRefinesDetection(t *testing.T) {
 	registry := qos.NewRegistry()
 	plugin := &classifyingPlugin{answer: domain.RPCTypeCometBFT}
-	registry.Register("atomone", plugin)
+	if err := registry.Register("atomone", plugin); err != nil {
+		t.Fatal(err)
+	}
 	mw := middleware.Parse(registry)
 
 	// Generic detection says json_rpc (a JSON-RPC envelope); the plugin
@@ -303,7 +305,9 @@ func TestParse_PluginClassifierRefinesDetection(t *testing.T) {
 func TestParse_RPCTypeHeader_WinsOverPluginClassifier(t *testing.T) {
 	registry := qos.NewRegistry()
 	plugin := &classifyingPlugin{answer: domain.RPCTypeCometBFT}
-	registry.Register("atomone", plugin)
+	if err := registry.Register("atomone", plugin); err != nil {
+		t.Fatal(err)
+	}
 	mw := middleware.Parse(registry)
 
 	req := newPOSTRequest("/", `{"jsonrpc":"2.0","method":"status","id":1}`)
