@@ -374,7 +374,11 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	st.Attempts++
 	if !signal.Probe {
 		st.TrafficAttempts++
-		if signal.Latency > 0 {
+		// Successes only: the EWMA now steers selection (latency tie-break),
+		// and a host that fails fast must not read as a fast host. On the
+		// 2026-09-14 canary the first hour of the tie-break fed every
+		// signal in and raised 500s on robinhood, solana and poly.
+		if signal.Type == SignalSuccess && signal.Latency > 0 {
 			ms := float64(signal.Latency) / float64(time.Millisecond)
 			if st.LatencyMS == 0 {
 				st.LatencyMS = ms

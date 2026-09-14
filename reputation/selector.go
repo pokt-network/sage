@@ -263,21 +263,34 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 	// takes more than its capped share of selections. Only meaningful with more
 	// than one candidate in the tier, and the pick is left alone when the cap
 	// cannot apply (one operator holds everything, cap disabled).
-	cappedOperator := ""
-	if capOn && count[best] > 1 {
-		if op, capped, ok := cappedPick(s.operatorCap, endpoints, func(i int) bool {
-			return int(tiers[i]) == best
-		}); ok {
-			selected = capped
-			cappedOperator = op
+	// Latency tie-break, tier 1 only: the winning tier is the set of hosts
+	// reputation calls equally good; within it, ask the faster ones more.
+	// The weights feed the operator cap too, so a fast operator earns share
+	// across operators up to the cap, and the cap's within-operator pick is
+	// drawn by the same weights.
+	var weights []float64
+	if tieBreak && best == tier1Idx && count[tier1Idx] > 1 {
+		bufp := weightBufPool.Get().(*[]float64)
+		defer weightBufPool.Put(bufp)
+		if w, ok := s.tier1Weights(ctx, serviceID, endpoints, tiers, rpcType, bufp); ok {
+			weights = w
 		}
 	}
 
-	// Latency tie-break, tier 1 only: the winning tier is the set of hosts
-	// reputation calls equally good; within it, ask the faster ones more.
-	// When the cap chose an operator, choose within that operator.
-	if tieBreak && best == tier1Idx && count[tier1Idx] > 1 {
-		if ep, ok := s.latencyPick(ctx, serviceID, endpoints, tiers, rpcType, cappedOperator); ok {
+	if capOn && count[best] > 1 {
+		var weightFn func(i int) float64
+		if weights != nil {
+			weightFn = func(i int) float64 { return weights[i] }
+		}
+		if _, capped, ok := cappedPickWeighted(s.operatorCap, endpoints, func(i int) bool {
+			return int(tiers[i]) == best
+		}, weightFn); ok {
+			selected = capped
+			weights = nil // the cap's pick already honoured the weights
+		}
+	}
+	if weights != nil {
+		if ep, ok := weightedPick(endpoints, weights); ok {
 			selected = ep
 		}
 	}
@@ -355,31 +368,29 @@ func (s *TieredSelector) TopTierCandidates(ctx context.Context, serviceID domain
 
 var weightBufPool = sync.Pool{New: func() any { return new([]float64) }}
 
-// latencyPick chooses among the tier-1 endpoints (restricted to operator
-// when non-empty) with probability proportional to 1/latency. ok is false
-// when fewer than two candidates qualify or none has a measured latency,
-// and the uniform pick stands.
-func (s *TieredSelector) latencyPick(
+// tier1Weights fills buf with 1/latency for every tier-1 endpoint (zero for
+// the rest): latency from the EWMA, floored at latencyFloorMS; an unmeasured
+// endpoint takes the mean of the measured ones. ok is false when fewer than
+// two endpoints are in tier 1 or none is measured, and the uniform pick
+// stands.
+func (s *TieredSelector) tier1Weights(
 	ctx context.Context,
 	serviceID domain.ServiceID,
 	endpoints domain.EndpointAddrList,
 	tiers []int8,
 	rpcType domain.RPCType,
-	operator string,
-) (domain.EndpointAddr, bool) {
-	bufp := weightBufPool.Get().(*[]float64)
-	defer weightBufPool.Put(bufp)
-	if cap(*bufp) < len(endpoints) {
-		*bufp = make([]float64, len(endpoints))
+	buf *[]float64,
+) ([]float64, bool) {
+	if cap(*buf) < len(endpoints) {
+		*buf = make([]float64, len(endpoints))
 	}
-	weights := (*bufp)[:len(endpoints)]
+	weights := (*buf)[:len(endpoints)]
 
-	// First pass: measured latencies and their mean, for the unmeasured.
 	var sum float64
 	known, candidates := 0, 0
 	for i, ep := range endpoints {
 		weights[i] = 0
-		if int(tiers[i]) != tier1Idx || (operator != "" && ep.Operator() != operator) {
+		if int(tiers[i]) != tier1Idx {
 			continue
 		}
 		candidates++
@@ -392,13 +403,10 @@ func (s *TieredSelector) latencyPick(
 		}
 	}
 	if candidates < 2 || known == 0 {
-		return "", false
+		return nil, false
 	}
 	mean := sum / float64(known)
-
-	// Second pass: weight = 1/max(latency, floor); draw proportionally.
-	var total float64
-	for i := range endpoints {
+	for i := range weights {
 		switch {
 		case weights[i] == 0:
 			continue
@@ -409,7 +417,19 @@ func (s *TieredSelector) latencyPick(
 			weights[i] = latencyFloorMS
 		}
 		weights[i] = 1 / weights[i]
-		total += weights[i]
+	}
+	return weights, true
+}
+
+// weightedPick draws one endpoint with probability proportional to its
+// weight; zero-weight endpoints are not candidates.
+func weightedPick(endpoints domain.EndpointAddrList, weights []float64) (domain.EndpointAddr, bool) {
+	var total float64
+	for _, w := range weights {
+		total += w
+	}
+	if total <= 0 {
+		return "", false
 	}
 	r := rand.Float64() * total
 	for i, ep := range endpoints {
@@ -421,7 +441,6 @@ func (s *TieredSelector) latencyPick(
 			return ep, true
 		}
 	}
-	// Floating-point remainder: the last candidate.
 	for i := len(endpoints) - 1; i >= 0; i-- {
 		if weights[i] != 0 {
 			return endpoints[i], true

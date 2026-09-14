@@ -92,6 +92,10 @@ func (c OperatorCapConfig) resolve() (maxShare, twoOpShare, ceiling float64, ena
 type opGroup struct {
 	operator string
 	count    int
+	// mass is the operator's summed member weight (endpoint count when
+	// unweighted, 1/latency under the tie-break); entitlement is mass over
+	// the total.
+	mass float64
 	// pick is a uniformly-sampled member of this operator's endpoints,
 	// reservoir-sampled while grouping so no second pass over the candidates is
 	// needed once an operator is chosen.
@@ -147,6 +151,21 @@ func cappedPick(
 	candidates domain.EndpointAddrList,
 	keep func(i int) bool,
 ) (operator string, pick domain.EndpointAddr, ok bool) {
+	return cappedPickWeighted(cfg, candidates, keep, nil)
+}
+
+// cappedPickWeighted is cappedPick with a per-candidate weight: an
+// operator's entitlement is its members' summed weight over the total, and
+// the member picked within the operator is drawn by weight. nil weight is
+// one per member, which is cappedPick. The latency tie-break passes
+// 1/latency, so a fast operator earns share across operators up to the same
+// cap, instead of the cap fixing shares by endpoint count first.
+func cappedPickWeighted(
+	cfg OperatorCapConfig,
+	candidates domain.EndpointAddrList,
+	keep func(i int) bool,
+	weight func(i int) float64,
+) (operator string, pick domain.EndpointAddr, ok bool) {
 	maxShare, twoOpShare, ceiling, enabled := cfg.resolve()
 	if !enabled || len(candidates) < 2 {
 		return "", "", false
@@ -162,12 +181,19 @@ func cappedPick(
 	// search over the groups is deliberate: a service pool holds tens of
 	// endpoints across a handful of operators, and a linear scan over a slice
 	// beats a map at that size without allocating.
-	kept := 0
+	var totalMass float64
 	for i, ep := range candidates {
 		if keep != nil && !keep(i) {
 			continue
 		}
-		kept++
+		w := 1.0
+		if weight != nil {
+			w = weight(i)
+			if w <= 0 {
+				continue
+			}
+		}
+		totalMass += w
 		op := ep.Operator()
 		idx := -1
 		for i := range buf.groups {
@@ -177,18 +203,21 @@ func cappedPick(
 			}
 		}
 		if idx < 0 {
-			buf.groups = append(buf.groups, opGroup{operator: op, count: 1, pick: ep})
+			buf.groups = append(buf.groups, opGroup{operator: op, count: 1, mass: w, pick: ep})
 			continue
 		}
 		g := &buf.groups[idx]
 		g.count++
-		if rand.IntN(g.count) == 0 {
+		g.mass += w
+		// Weighted reservoir: this member replaces the pick with probability
+		// its weight over the mass so far; uniform when unweighted.
+		if rand.Float64() < w/g.mass {
 			g.pick = ep
 		}
 	}
 
 	m := len(buf.groups)
-	if m < 2 {
+	if m < 2 || totalMass <= 0 {
 		// One operator holds the whole pool. There is nothing to redistribute
 		// to; capping here would just mean serving nobody.
 		return "", "", false
@@ -199,10 +228,9 @@ func cappedPick(
 		capShare = twoOpShare
 	}
 
-	total := float64(kept)
 	for i := range buf.groups {
 		g := &buf.groups[i]
-		g.entitlement = float64(g.count) / total
+		g.entitlement = g.mass / totalMass
 		g.weight = g.entitlement
 	}
 

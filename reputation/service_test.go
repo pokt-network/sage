@@ -746,3 +746,23 @@ func TestRecordSignal_ChronicViolatorIsUnaffectedByTheFlooredGate(t *testing.T) 
 	assert.InDelta(t, -23.5, v.Penalty, 3, "docs/scoring.md §7.3: spacebelt at 0.216% is about -23")
 	assert.InDelta(t, 76.5, v.Score, 3, "tier 2, as §7.3 says")
 }
+
+// The latency EWMA moves on successes only: a host that fails fast must not
+// read as a fast host to the selection tie-break.
+func TestRecordSignal_LatencyEWMAIgnoresErrors(t *testing.T) {
+	svc := NewService(NewMemoryStorage(), NewTimeline(10), DefaultServiceConfig())
+	ctx := context.Background()
+	ep := domain.EndpointAddr("s-https://h.example")
+	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewMajorErrorSignal("upstream_5xx", 5*time.Millisecond))
+	if ms, ok := svc.latencyForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC); ok {
+		t.Fatalf("an error's latency must not seed the EWMA, got %v", ms)
+	}
+	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewSuccessSignal("relay_ok", 300*time.Millisecond))
+	if ms, ok := svc.latencyForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC); !ok || ms != 300 {
+		t.Fatalf("success latency = %v,%v want 300,true", ms, ok)
+	}
+	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewMajorErrorSignal("upstream_5xx", 5*time.Millisecond))
+	if ms, _ := svc.latencyForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC); ms != 300 {
+		t.Fatalf("a fast failure moved the EWMA to %v", ms)
+	}
+}
