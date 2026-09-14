@@ -23,10 +23,21 @@ type GatewayConfig struct {
 	// with. **A secret** — it is why pprof defaults to off, since a heap dump
 	// contains it.
 	GatewayPrivateKeyHex string `yaml:"gateway_private_key_hex"`
-	// OwnedAppsPrivateKeys are hex-encoded application keys the gateway relays
-	// on behalf of. Each staked application funds the relays sent under it.
-	// **Secrets**, same as above.
+	// OwnedAppsPrivateKeys are hex-encoded application keys, PATH's way of
+	// naming the apps the gateway relays for. SAGE never signs with them: it
+	// derives each app's address and nothing else, since relays are signed
+	// with the gateway key and ring public keys come from the chain. An app
+	// key controls the app's stake, so holding one buys nothing and risks the
+	// stake; prefer owned_apps_addresses. Parsed so a PATH config loads, and
+	// warned about at startup. **Secrets.**
 	OwnedAppsPrivateKeys []string `yaml:"owned_apps_private_keys_hex"`
+	// OwnedAppsAddresses are the bech32 addresses ("pokt1…") of the staked
+	// applications the gateway relays for, each delegated onchain to
+	// gateway_address. Each app funds the relays sent under it. Public, so a
+	// config carrying only these holds one secret, the gateway key. May be
+	// combined with owned_apps_private_keys_hex; an app named by both counts
+	// once. A SAGE key; PATH has only the private-key form.
+	OwnedAppsAddresses []string `yaml:"owned_apps_addresses"`
 
 	Reputation ReputationConfig `yaml:"reputation_config"`
 

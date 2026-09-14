@@ -56,14 +56,58 @@ func (p *Protocol) pickApp(serviceID domain.ServiceID) (string, error) {
 // secp256k1KeyLen is the exact byte length of a secp256k1 private key.
 const secp256k1KeyLen = 32
 
-// buildOwnedApps derives the app address for each private key and fetches the staked
-// service ID from the full node to populate the owned apps map.
-func buildOwnedApps(fn *FullNode, privateKeysHex []string, logger *slog.Logger) (map[domain.ServiceID][]string, error) {
+// buildOwnedApps resolves the configured apps to addresses and fetches each
+// one's staked service ID from the full node to populate the owned apps map.
+func buildOwnedApps(fn *FullNode, privateKeysHex, addresses []string, logger *slog.Logger) (map[domain.ServiceID][]string, error) {
+	appAddrs, err := ownedAppAddresses(privateKeysHex, addresses)
+	if err != nil {
+		return nil, err
+	}
+	// With no app there is nothing to relay for, and every service would
+	// answer "no owned apps" per request instead of once, here.
+	if len(appAddrs) == 0 {
+		return nil, fmt.Errorf("buildOwnedApps: no owned apps: set gateway_config.owned_apps_addresses (or PATH's owned_apps_private_keys_hex)")
+	}
 	result := make(map[domain.ServiceID][]string)
+	for _, appAddr := range appAddrs {
+		app, err := fn.GetApp(context.Background(), appAddr)
+		if err != nil {
+			logger.Warn("buildOwnedApps: failed to get app", "app", appAddr, "error", err)
+			return nil, fmt.Errorf("buildOwnedApps: failed to get app %s: %w", appAddr, err)
+		}
+
+		svcConfigs := app.GetServiceConfigs()
+		if len(svcConfigs) != 1 {
+			return nil, fmt.Errorf("buildOwnedApps: app %s must be staked for exactly one service, got %d", appAddr, len(svcConfigs))
+		}
+
+		svcID := domain.ServiceID(svcConfigs[0].GetServiceId())
+		if svcID == "" {
+			return nil, fmt.Errorf("buildOwnedApps: app %s has empty service ID", appAddr)
+		}
+
+		result[svcID] = append(result[svcID], appAddr)
+	}
+	return result, nil
+}
+
+// ownedAppAddresses is every configured app as an address, in config order:
+// those derived from owned_apps_private_keys_hex first, then
+// owned_apps_addresses, each app once. The private keys are only ever used
+// here, to derive an address.
+func ownedAppAddresses(privateKeysHex, addresses []string) ([]string, error) {
+	var out []string
+	seen := make(map[string]bool, len(privateKeysHex)+len(addresses))
+	add := func(addr string) {
+		if !seen[addr] {
+			seen[addr] = true
+			out = append(out, addr)
+		}
+	}
 	for i, privKeyHex := range privateKeysHex {
 		privKeyBz, err := hex.DecodeString(privKeyHex)
 		if err != nil {
-			return nil, fmt.Errorf("buildOwnedApps: invalid hex key: %w", err)
+			return nil, fmt.Errorf("buildOwnedApps: private key at index %d is not hex (key redacted)", i)
 		}
 		// secp256k1 keys are exactly 32 bytes, and nothing downstream checks.
 		// A wrong-length key still derives a valid-looking pokt1… address, so
@@ -85,24 +129,16 @@ func buildOwnedApps(fn *FullNode, privateKeysHex []string, logger *slog.Logger) 
 		if err != nil {
 			return nil, fmt.Errorf("buildOwnedApps: failed to encode address: %w", err)
 		}
-
-		app, err := fn.GetApp(context.Background(), appAddr)
-		if err != nil {
-			logger.Warn("buildOwnedApps: failed to get app (private key redacted)", "error", err)
-			return nil, fmt.Errorf("buildOwnedApps: failed to get app %s: %w", appAddr, err)
-		}
-
-		svcConfigs := app.GetServiceConfigs()
-		if len(svcConfigs) != 1 {
-			return nil, fmt.Errorf("buildOwnedApps: app %s must be staked for exactly one service, got %d", appAddr, len(svcConfigs))
-		}
-
-		svcID := domain.ServiceID(svcConfigs[0].GetServiceId())
-		if svcID == "" {
-			return nil, fmt.Errorf("buildOwnedApps: app %s has empty service ID", appAddr)
-		}
-
-		result[svcID] = append(result[svcID], appAddr)
+		add(appAddr)
 	}
-	return result, nil
+	for i, addr := range addresses {
+		// Checked here rather than left to the full node: a typo would
+		// otherwise surface as "app not found", which reads as a staking
+		// problem rather than a config one.
+		if prefix, _, err := bech32.DecodeAndConvert(addr); err != nil || prefix != "pokt" {
+			return nil, fmt.Errorf("buildOwnedApps: owned_apps_addresses[%d] %q is not a pokt1… address", i, addr)
+		}
+		add(addr)
+	}
+	return out, nil
 }
