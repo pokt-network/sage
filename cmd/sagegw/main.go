@@ -106,6 +106,11 @@ func main() {
 	// starts at it rather than at the file's level. The first poll applies at
 	// once. Absent key means the file's (or SAGE_LOG_LEVEL's) level.
 	app.WatchConfigOverride(ctx)
+	if app.Admin != nil {
+		// A reputation reset taken on another pod's admin port is repeated
+		// here (reputation state is per replica).
+		app.Admin.WatchReputationResets(ctx)
+	}
 	baseLevel := parseLogLevel(cfg.Logger.Level)
 	override.Watch(ctx, logger, app.Overrides, router.LogLevelOverrideKey, 0, func(m map[string]string) {
 		want := baseLevel

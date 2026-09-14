@@ -43,6 +43,11 @@ type AdminAPI struct {
 
 	externalSources ExternalSourceAdmin
 	overrides       override.Store
+	// resetsApplied and resetWatchInterval belong to the reputation-reset
+	// fan-out (admin_reset.go); the interval is zero (the default) outside
+	// tests.
+	resetsApplied      resetsApplied
+	resetWatchInterval time.Duration
 }
 
 // WSRebinder replaces the supplier under every live WebSocket connection of
@@ -389,13 +394,26 @@ func (a *AdminAPI) handleResetReputation(w http.ResponseWriter, req *http.Reques
 	if keys == nil {
 		keys = []string{}
 	}
+	// Reputation state is per replica: announce the reset so the other pods
+	// repeat it (WatchReputationResets), through the same matching.
+	persisted := a.publishReputationReset(req.Context(), serviceID, string(endpoint))
+	a.logger.Warn("admin: reputation reset", "service", serviceID, "target", endpoint, "keys", keys, "persisted", persisted)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service_id": string(serviceID),
 		"endpoint":   string(endpoint),
 		"status":     "reset",
 		"keys":       keys,
+		"persisted":  persisted,
+		"note":       resetPersistenceNote(persisted),
 	})
+}
+
+func resetPersistenceNote(persisted bool) string {
+	if persisted {
+		return "applied on this replica and announced in Redis: every other replica applies the same reset within its watch interval"
+	}
+	return "applied on this replica only: without Redis a reset does not reach other replicas"
 }
 
 // --- Timeline handlers ---
