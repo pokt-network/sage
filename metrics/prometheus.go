@@ -285,7 +285,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		prometheus.CounterOpts{
 			Namespace: "sage",
 			Name:      "health_check_results_total",
-			Help:      "Health-check probe results applied on this replica, by service and source: probe (this replica sent the relay — the leader) or stream (another replica sent it and published the result). On a healthy fleet only the leader shows probe; the stream count is the relay saving made visible.",
+			Help:      "Health-check probe results applied on this replica, by service and source: probe (this replica sent the relay — the leader), stream (another replica sent it and published the result) or peer (another SAGE instance sent it, read through active_health_checks.peer_probe_stream). On a healthy fleet only the leader shows probe; stream and peer are the relay saving made visible.",
 		},
 		[]string{"service_id", "source"},
 	)

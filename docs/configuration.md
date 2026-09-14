@@ -336,6 +336,19 @@ If remote rules are wanted later, add them as a live feature then.
 | `probe_timeout` | duration | Bounds one health check. Zero means 5s. It is deliberately separate from defaults.timeout.relay_timeout, which a probe would otherwise inherit: a hung backend then holds one of the few health-check workers for the whole relay timeout, and the sweep that is supposed to run every `interval` takes minutes instead. A backend that has not answered a health check in a few seconds is unhealthy, and waiting longer does not change that verdict. Raise it rather than lower it if probes start reporting timeouts against backends that are merely loaded: a probe cut off early is graded a minor error, so too short a value manufactures the failure it reports. |
 | `min_traffic_signals` | integer | How many client-traffic reputation signals a backend must record within one cycle before traffic-informed probing skips its check. Only consulted when the traffic_informed_probing feature flag is on for the service; zero derives it from the observation pipeline's sample_rate, which is the number that decides how much traffic it takes to replace a probe's observation. Raise it to probe more and trust traffic less. There is deliberately no value meaning "skip on any traffic": a probe is the only observation source that bypasses sampling, so one relay does not stand in for one probe. |
 
+#### `gateway_config.active_health_checks.peer_probe_stream`
+
+PeerProbeStream reads another SAGE instance's health-check results,
+read-only, so this instance does not probe again what the other has
+just probed. See PeerProbeStreamConfig. A SAGE key; PATH has no
+equivalent.
+
+| Key | Type | Description |
+|---|---|---|
+| `enabled` | boolean | Turns the feed on. Off by default: trusting another instance's verdicts is a decision, not a default. |
+| `db` | integer | The Redis logical database the other instance publishes in (its redis_config.db), on this instance's redis_config server. It must differ from this instance's own db: reading its own stream as a peer would make the leader skip its own probes. |
+| `max_age` | duration | How long one of the other's results stands in for this instance's own check. Zero means the check's own interval, which is the age at which this instance would have probed anyway. |
+
 #### `gateway_config.active_health_checks.local[]`
 
 Local defines per-service health checks in the config file. They are

@@ -734,6 +734,27 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		healthExe.SetProbeSink(probeStream)
 		healthExe.SetProbeSource(probeStream)
 	}
+	// Another instance's probe results, read-only, on the same Redis server:
+	// what it probed recently this instance does not probe again. An empty
+	// producer id, because every entry there is someone else's.
+	if peer := cfg.Gateway.HealthChecks.PeerProbeStream; peer.Enabled {
+		if redisClient == nil {
+			app.StartupWarnings = append(app.StartupWarnings,
+				"active_health_checks.peer_probe_stream is enabled but Redis is not available: this instance probes everything itself")
+		} else {
+			peerClient := redis.NewClient(&redis.Options{
+				Addr:         cfg.Redis.Address,
+				Password:     cfg.Redis.Password,
+				DB:           peer.DB,
+				PoolSize:     2,
+				DialTimeout:  cfg.Redis.DialTimeout,
+				ReadTimeout:  cfg.Redis.ReadTimeout,
+				WriteTimeout: cfg.Redis.WriteTimeout,
+			})
+			healthExe.SetPeerSource(healthcheck.NewRedisProbeStream(peerClient, "", 2*healthCheckInterval), peer.MaxAge)
+			logger.Info("health checks: reading a peer instance's probe stream", "db", peer.DB, "max_age", peer.MaxAge)
+		}
+	}
 
 	// Warm the session cache before this pod can be marked ready. A hydrated
 	// pod goes ready in seconds, well before the first probe cycle, and

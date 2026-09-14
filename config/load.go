@@ -257,6 +257,9 @@ func validate(cfg *Config) error {
 	if err := validateAllStaticRoutes(cfg.Gateway); err != nil {
 		return err
 	}
+	if peer := cfg.Gateway.HealthChecks.PeerProbeStream; peer.Enabled && peer.DB == cfg.Redis.DB {
+		return fmt.Errorf("active_health_checks.peer_probe_stream.db (%d) is this instance's own redis_config.db: the leader would skip its own probes", peer.DB)
+	}
 	return nil
 }
 
