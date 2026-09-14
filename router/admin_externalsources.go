@@ -27,6 +27,13 @@ type ExternalSourceAdmin interface {
 // external-source routes answer 503.
 func (a *AdminAPI) SetExternalSources(m ExternalSourceAdmin) { a.externalSources = m }
 
+// externalSourceReply is one service's view with `persisted` beside it, the
+// field the list and every other override route already carry.
+type externalSourceReply struct {
+	healthcheck.ExternalSourceView
+	Persisted bool `json:"persisted"`
+}
+
 // handleListExternalSources lists every service's external block sources with
 // their poll status.
 //
@@ -49,7 +56,7 @@ func (a *AdminAPI) handleListExternalSources(w http.ResponseWriter, _ *http.Requ
 }
 
 // handleGetExternalSources returns one service's external block sources and
-// poll status.
+// poll status, with `persisted` as in the list.
 func (a *AdminAPI) handleGetExternalSources(w http.ResponseWriter, req *http.Request) {
 	if a.externalSources == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "external block sources are not adjustable on this instance")
@@ -61,7 +68,7 @@ func (a *AdminAPI) handleGetExternalSources(w http.ResponseWriter, req *http.Req
 		writeJSONError(w, http.StatusNotFound, "service has no external block sources")
 		return
 	}
-	writeJSON(w, http.StatusOK, v)
+	writeJSON(w, http.StatusOK, externalSourceReply{v, a.externalSources.Persistent()})
 }
 
 // handleSetExternalSources replaces a service's external block sources and
@@ -75,8 +82,9 @@ func (a *AdminAPI) handleGetExternalSources(w http.ResponseWriter, req *http.Req
 // restarted process starts with it; with no Redis it is this replica only.
 // The file's sources stay known underneath; DELETE returns to them. It exists
 // because the file may be a sealed secret and a retired source polls every
-// fifteen seconds until someone can edit it. 400 for an invalid source, 409
-// when the service's plugin tracks no block height (nothing to lift).
+// fifteen seconds until someone can edit it. The body is the service's new
+// view with `persisted`. 400 for an invalid source, 409 when the service's
+// plugin tracks no block height (nothing to lift).
 func (a *AdminAPI) handleSetExternalSources(w http.ResponseWriter, req *http.Request) {
 	if a.externalSources == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "external block sources are not adjustable on this instance")
@@ -103,7 +111,7 @@ func (a *AdminAPI) handleSetExternalSources(w http.ResponseWriter, req *http.Req
 	switch {
 	case err == nil:
 		a.logger.Warn("admin: external block sources replaced", "service_id", serviceID, "sources", len(sources))
-		writeJSON(w, http.StatusOK, v)
+		writeJSON(w, http.StatusOK, externalSourceReply{v, a.externalSources.Persistent()})
 	case errors.Is(err, healthcheck.ErrInvalidSources):
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, healthcheck.ErrUnknownService):
@@ -122,7 +130,7 @@ func (a *AdminAPI) handleSetExternalSources(w http.ResponseWriter, req *http.Req
 //
 // Every replica follows through the override store. To stop polling a service
 // that the file configures, PUT an empty `sources` list instead. The body
-// says whether there was an override to clear.
+// says whether there was an override to clear, and `persisted`.
 func (a *AdminAPI) handleDeleteExternalSources(w http.ResponseWriter, req *http.Request) {
 	if a.externalSources == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "external block sources are not adjustable on this instance")
@@ -133,5 +141,5 @@ func (a *AdminAPI) handleDeleteExternalSources(w http.ResponseWriter, req *http.
 	if removed {
 		a.logger.Warn("admin: external block sources override cleared", "service_id", serviceID)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"service_id": serviceID, "removed": removed})
+	writeJSON(w, http.StatusOK, map[string]any{"service_id": serviceID, "removed": removed, "persisted": a.externalSources.Persistent()})
 }

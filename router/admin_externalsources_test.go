@@ -80,8 +80,11 @@ func TestAdminExternalSources_SetGetDelete(t *testing.T) {
 	if len(got) != 1 || got[0].URL != "https://fullnode.example/sui" || got[0].Method != "sui_getLatestCheckpointSequenceNumber" || got[0].Interval.String() != "15s" || got[0].Timeout.String() != "5s" {
 		t.Fatalf("manager received %+v", got)
 	}
-	if resp["origin"] != healthcheck.SourceOriginAdmin {
-		t.Fatalf("response = %v, want the view with origin admin", resp)
+	if resp["origin"] != healthcheck.SourceOriginAdmin || resp["persisted"] != false {
+		t.Fatalf("response = %v, want the view with origin admin and persisted false", resp)
+	}
+	if status, resp = doTuning(t, srv.URL, http.MethodGet, "/admin/external-sources/sui", ""); status != http.StatusOK || resp["origin"] != healthcheck.SourceOriginAdmin || resp["persisted"] != false {
+		t.Fatalf("GET one: status %d body %v, want the view with persisted false", status, resp)
 	}
 
 	status, resp = doTuning(t, srv.URL, http.MethodGet, "/admin/external-sources", "")
@@ -93,8 +96,8 @@ func TestAdminExternalSources_SetGetDelete(t *testing.T) {
 	}
 
 	status, resp = doTuning(t, srv.URL, http.MethodDelete, "/admin/external-sources/sui", "")
-	if status != http.StatusOK || resp["removed"] != true {
-		t.Fatalf("DELETE: status %d body %v, want removed true", status, resp)
+	if status != http.StatusOK || resp["removed"] != true || resp["persisted"] != false {
+		t.Fatalf("DELETE: status %d body %v, want removed true and persisted false", status, resp)
 	}
 	if _, still := fake.set["sui"]; still {
 		t.Fatal("DELETE must reach the manager")

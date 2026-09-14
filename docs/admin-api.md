@@ -128,7 +128,7 @@ failureThreshold) here.
 | `PUT` | `/admin/log-level` | Changes the log level without a restart. |
 | `DELETE` | `/admin/log-level` | Removes the admin override and returns the process to the config's level (or SAGE_LOG_LEVEL's). |
 | `GET` | `/admin/external-sources` | Lists every service's external block sources with their poll status. |
-| `GET` | `/admin/external-sources/{serviceID}` | Returns one service's external block sources and poll status. |
+| `GET` | `/admin/external-sources/{serviceID}` | Returns one service's external block sources and poll status, with `persisted` as in the list. |
 | `PUT` | `/admin/external-sources/{serviceID}` | Replaces a service's external block sources and restarts its polling. |
 | `DELETE` | `/admin/external-sources/{serviceID}` | Clears a service's admin override: polling returns to the file's `external_block_sources`, or stops if the file has none. |
 | `POST` | `/admin/websocket/rebind/{serviceID}` | Replaces the supplier under every live WebSocket connection of a service, without closing any client. |
@@ -507,7 +507,7 @@ restart (Redis) or live on this replica only.
 ### `GET /admin/external-sources/{serviceID}`
 
 Returns one service's external block sources and
-poll status.
+poll status, with `persisted` as in the list.
 
 ### `PUT /admin/external-sources/{serviceID}`
 
@@ -522,8 +522,9 @@ store first: every replica applies it within the watch interval and a
 restarted process starts with it; with no Redis it is this replica only.
 The file's sources stay known underneath; DELETE returns to them. It exists
 because the file may be a sealed secret and a retired source polls every
-fifteen seconds until someone can edit it. 400 for an invalid source, 409
-when the service's plugin tracks no block height (nothing to lift).
+fifteen seconds until someone can edit it. The body is the service's new
+view with `persisted`. 400 for an invalid source, 409 when the service's
+plugin tracks no block height (nothing to lift).
 
 ### `DELETE /admin/external-sources/{serviceID}`
 
@@ -533,7 +534,7 @@ none.
 
 Every replica follows through the override store. To stop polling a service
 that the file configures, PUT an empty `sources` list instead. The body
-says whether there was an override to clear.
+says whether there was an override to clear, and `persisted`.
 
 ### `POST /admin/websocket/rebind/{serviceID}`
 
