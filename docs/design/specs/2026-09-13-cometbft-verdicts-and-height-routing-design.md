@@ -308,3 +308,50 @@ Left as measured: the phase counters are recorded on successful attempts
 only, so their sum trails `send_relay` by the failed attempts' time
 (osmosis 70 ms/req, arb-one 6 ms); the gap is itself the cost of failed
 attempts and is readable as such.
+
+## Addendum 2026-09-14, afternoon: eight from the ops reading
+
+What the ops session found reading the canary after the tie-break image
+(`363820a`), each fixed in its own commit, one image:
+
+- Unmeasured hosts drew a full tier-mean share in the tie-break while their
+  every attempt failed (the EWMA reads successes only, so they never became
+  measured). Now half a share (`2 × mean` in the 1/latency weight): enough
+  to measure a new host within a minute at canary volume.
+- `DELETE /admin/flags/{flag}` existed only per service; the global PUT had
+  no inverse. Added; per-service overrides survive it, and the memory store
+  now agrees with the Redis store on that.
+- The reputation reset pushed its target through the key function once per
+  RPC type, so a target copied from the listing (`https://host|rest`) left
+  four phantom keys at the initial score on pod 75mk4. The reset now matches
+  recorded keys only: a listing key resets that face, a URL, a host or an
+  endpoint address resets every face of that host; no match is a 404 and
+  creates nothing. The response names the keys touched.
+- Reputation state is per pod, so a reset had to be repeated on each pod's
+  admin port. A reset is now announced in the override store
+  (`reputation_reset/<service>/<target>`) and every replica applies
+  announcements newer than its own start; older ones are what storage
+  already hydrated.
+- A node's 5xx (`http_5xx`) was critical with a breaker vote per event. Now
+  major, no vote: one 5xx is a weak statement about a host. The breaker
+  keeps its votes for connect failures, HTML error pages and empty bodies.
+- The osmosis REST 5xx stream, on both gateways, was mostly
+  `/cosmwasm/wasm/v1/contract/{addr}/smart/{query}` and
+  `/cosmos/tx/v1beta1/txs/block/{height}`: routes a gRPC-gateway node
+  answers 500 to by design when the query cannot be served. Each one was
+  retried and scored against the host that had answered correctly.
+  `qos.VerdictRefiner` lets the plugin re-attribute a verdict from the
+  route; the cosmos plugin turns a node or miner 5xx there into
+  `query_5xx`, the chain's answer, delivered, nobody scored. The rule is
+  the route, not the chain — every Cosmos chain runs the same gateway.
+- `relay_request` named the endpoint's primary host on REST attempts and
+  carried no verb or path; `relay_response` carried no error. Both now
+  name the URL dialed for the RPC type, and the request line carries
+  `rpc_type`, `http_method`, `path`, `normalized_method`; the response
+  line carries `error`. A debug capture is now comparable with PATH's.
+
+Watch on the next image: `sage_heuristic_verdicts_total{reason="query_5xx"}`
+should take what `http_5xx` and `upstream_5xx` on osmosis carried; osmosis
+attempts per request should fall with it; the reset route answers with
+`keys` and `persisted: true` and the other pod logs "reputation reset
+applied from another replica".
