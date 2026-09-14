@@ -338,9 +338,11 @@ is the reason.
 The per-key traffic EWMA kept for the listing now also drives a tie-break
 inside tier 1 of selection (`latency_tiebreak` flag, on by default): among
 the hosts reputation calls equally good, one is picked with probability
-proportional to 1/latency, floored at 20 ms, an unmeasured host taking the
-tier's mean so it still gets traffic. The EWMA moves on successes only, so a
-host that fails fast does not read as fast. Tiers and scores are untouched;
+proportional to 1/latency, floored at 20 ms, an unmeasured host weighed at
+twice the tier's mean so it draws half a typical host's share: enough to be
+measured within a minute, not a full share while its only attempts fail. The
+EWMA moves on successes only, so a host that fails fast does not read as
+fast, and a host that has only failed stays unmeasured. Tiers and scores are untouched;
 the operator cap keeps its ceiling per operator but weighs operators by their
 members' 1/latency rather than their count, so a fast operator earns share
 across operators up to the cap. The evidence: on the 2026-09-14 canary SAGE's upstream p50 on osmosis was

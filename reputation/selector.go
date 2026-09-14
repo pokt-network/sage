@@ -370,9 +370,12 @@ var weightBufPool = sync.Pool{New: func() any { return new([]float64) }}
 
 // tier1Weights fills buf with 1/latency for every tier-1 endpoint (zero for
 // the rest): latency from the EWMA, floored at latencyFloorMS; an unmeasured
-// endpoint takes the mean of the measured ones. ok is false when fewer than
-// two endpoints are in tier 1 or none is measured, and the uniform pick
-// stands.
+// endpoint is weighed as twice the mean of the measured ones, so it draws
+// half a typical host's share. That is enough traffic to measure it within
+// a minute at canary volume, and not so much that a host whose only
+// attempts failed — the EWMA reads success only, so it stays unmeasured —
+// keeps a full share while it fails. ok is false when fewer than two
+// endpoints are in tier 1 or none is measured, and the uniform pick stands.
 func (s *TieredSelector) tier1Weights(
 	ctx context.Context,
 	serviceID domain.ServiceID,
@@ -411,7 +414,7 @@ func (s *TieredSelector) tier1Weights(
 		case weights[i] == 0:
 			continue
 		case weights[i] < 0:
-			weights[i] = mean
+			weights[i] = 2 * mean
 		}
 		if weights[i] < latencyFloorMS {
 			weights[i] = latencyFloorMS

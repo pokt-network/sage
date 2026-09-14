@@ -321,17 +321,17 @@ func TestTieredSelector_LatencyTieBreakWithinTier1(t *testing.T) {
 	if picks["tier2"] != 0 {
 		t.Fatalf("tier 2 must not be picked while tier 1 has members: %v", picks)
 	}
-	// Expected shares from weights 1/50 : 1/200 : 1/800 : 1/mean(350), a
-	// total of 0.02911: fast 0.687, mid 0.172, new 0.098, slow 0.043.
+	// Expected shares from weights 1/50 : 1/200 : 1/800 : 1/(2*mean(350)),
+	// a total of 0.02768: fast 0.723, mid 0.181, new 0.052, slow 0.045.
 	share := func(ep domain.EndpointAddr) float64 { return float64(picks[ep]) / n }
-	if s := share("fast"); s < 0.62 || s > 0.75 {
-		t.Errorf("fast share = %.3f, want about 0.687: %v", s, picks)
+	if s := share("fast"); s < 0.66 || s > 0.78 {
+		t.Errorf("fast share = %.3f, want about 0.723: %v", s, picks)
 	}
 	if s := share("slow"); s < 0.02 || s > 0.07 {
-		t.Errorf("slow share = %.3f, want about 0.043 and never zero: %v", s, picks)
+		t.Errorf("slow share = %.3f, want about 0.045 and never zero: %v", s, picks)
 	}
-	if s := share("new"); s < 0.06 || s > 0.14 {
-		t.Errorf("unmeasured share = %.3f, want about the mean's 0.098: %v", s, picks)
+	if s := share("new"); s < 0.03 || s > 0.08 {
+		t.Errorf("unmeasured share = %.3f, want about half the mean's, 0.052: %v", s, picks)
 	}
 
 	// Gate off: uniform within tier 1 again.
