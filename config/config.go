@@ -184,6 +184,12 @@ type RouterConfig struct {
 	// with 413 before anything is parsed. Default: 75 MiB, PATH's, so a batch
 	// PATH accepts is accepted here. Same key as PATH's.
 	MaxRequestBodyBytes int64 `yaml:"max_request_body_bytes"`
+	// MaxResponseBodyBytes caps a supplier's relay response; a larger one is
+	// abandoned unread past the cap and the client gets a 502. A signed relay
+	// must be held whole to be verified, at about three times its size, so
+	// this is what bounds one request's memory. Default: 256 MiB. Overridable
+	// per service at runtime with the relay.max_response_mb knob. SAGE only.
+	MaxResponseBodyBytes int64 `yaml:"max_response_body_bytes"`
 	// MaxRequestHeaderBytes caps the request header block, per net/http.
 	// Default: 2 MB, PATH's. Same key as PATH's.
 	MaxRequestHeaderBytes int `yaml:"max_request_header_bytes"`

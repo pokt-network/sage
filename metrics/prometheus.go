@@ -56,6 +56,7 @@ type Recorder struct {
 	circuitBreakerOutcome *prometheus.CounterVec
 	supplierBlacklists    *prometheus.CounterVec
 	relayMinerErrors      *prometheus.CounterVec
+	oversizedResponses    *prometheus.CounterVec
 	methodBlockEvents     *prometheus.CounterVec
 	reputationAttempts    *prometheus.CounterVec
 	heuristicVerdicts     *prometheus.CounterVec
@@ -217,6 +218,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "codespace"},
 		),
+		oversizedResponses: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "oversized_responses_total",
+				Help:      "Total supplier responses abandoned for exceeding the response ceiling (router.max_response_body_bytes, knob relay.max_response_mb), by service.",
+			},
+			[]string{"service_id"},
+		),
 		codespaces: cappedLabel(maxCodespaceLabels),
 		// No domain label on purpose: the gauge above names the host, and a
 		// counter keyed on host is the series growth PATH's cardinality
@@ -347,6 +356,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.circuitBreakerOutcome,
 		r.supplierBlacklists,
 		r.relayMinerErrors,
+		r.oversizedResponses,
 		r.methodBlockEvents,
 		r.reputationAttempts,
 		r.heuristicVerdicts,
@@ -514,6 +524,12 @@ func (r *Recorder) RecordSupplierBlacklist(serviceID domain.ServiceID, reason st
 // codespace is written by that miner, so it is bounded here — see boundedLabel.
 func (r *Recorder) RecordRelayMinerError(serviceID domain.ServiceID, codespace string) {
 	r.relayMinerErrors.WithLabelValues(r.services.serviceValue(serviceID), r.codespaces.value(codespace)).Inc()
+}
+
+// RecordOversizedResponse increments the counter of supplier responses
+// abandoned for exceeding the response ceiling.
+func (r *Recorder) RecordOversizedResponse(serviceID domain.ServiceID) {
+	r.oversizedResponses.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // RecordHealthCheckResult counts one applied probe result. source is the
