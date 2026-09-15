@@ -12,6 +12,19 @@ Last updated: 2026-09-10 (PATH pass 7: signer races ported as the shannon-sdk
 PATH `origin/main` at `4606957a`, 2026-08-25; new work is on
 `feat/ws-heavy-conn-rebalance`).
 
+## Open (2026-09-15)
+
+- **A peer probe stream that points at the instance's own Redis db should be
+  ignored, not fatal.** Today `config/load.go` refuses to start when
+  `active_health_checks.peer_probe_stream.db` equals `redis_config.db` ("the
+  leader would skip its own probes"). On 2026-09-15 a canary block copied into
+  the mainnet config crash-looped the new pods for five minutes; the old pods
+  served throughout, but any restart of them would have taken mainnet down.
+  The case has one safe reading — no peer — so: a loud startup warning
+  (`Config.Warnings`), the block treated as disabled (probe everything,
+  run the auto-drain engine rather than follow a peer's drains). Keep the
+  other peer errors fatal. About 15 minutes with tests.
+
 ## After the audit roll (2026-09-04, image c838f4c at 1%)
 
 The six audit commits plus two same-day fixes are live and verified by ops:
