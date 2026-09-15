@@ -293,6 +293,86 @@ const (
 	baselineRefresh = 30 * time.Second
 )
 
+// RebaseAfterDrain restarts the keys of endpoints whose drain just ended at
+// the bottom of probation (MinThreshold), when they sat above it. A drained
+// endpoint receives neither traffic nor probes, so its score is frozen at what
+// it was when benched — 100 for an operator benched for answering 408 — and at
+// the drain's end it went straight back into tier 1 (mainnet sei, 2026-09-15
+// 18:57Z). From probation it earns tier 1 again on traffic. It returns the
+// number of keys lowered.
+func (s *serviceImpl) RebaseAfterDrain(serviceID domain.ServiceID, endpoints domain.EndpointAddrList, rpcType domain.RPCType) int {
+	floor := s.selector.cfg.MinThreshold
+	seen := make(map[string]bool, len(endpoints))
+	n := 0
+	for _, ep := range endpoints {
+		key := s.keyOf(ep, rpcType)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		sh := s.shard(key)
+		sh.mu.Lock()
+		states := sh.cache[serviceID]
+		if states == nil {
+			states = make(map[string]State)
+			sh.cache[serviceID] = states
+		}
+		st, ok := states[key]
+		if !ok {
+			st = State{Score: s.cfg.InitialScore}
+		}
+		if st.Score > floor {
+			st.Score = floor
+			states[key] = st
+			n++
+			select {
+			case s.writeCh <- writeOp{key: scoreKey(serviceID, key), state: st}:
+			default:
+			}
+		}
+		sh.mu.Unlock()
+	}
+	return n
+}
+
+// Noter is the optional half of the reputation service that records a
+// timeline-only event: an attempt deliberately not scored.
+type Noter interface {
+	RecordNote(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType, reason, detail string)
+}
+
+var _ Noter = (*serviceImpl)(nil)
+
+// RecordNote adds a timeline event for an attempt that is retried but not
+// scored — a node's own -32000 answer (server_error) — so which host said
+// what stays answerable after the verdict stopped leaving a signal. It
+// changes no score, rate or attempt count. Detail is capped at 200 bytes.
+func (s *serviceImpl) RecordNote(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType, reason, detail string) {
+	if s.timeline == nil {
+		return
+	}
+	key := s.keyOf(endpoint, rpcType)
+	sh := s.shard(key)
+	sh.mu.RLock()
+	st, ok := sh.cache[serviceID][key]
+	sh.mu.RUnlock()
+	score := s.cfg.InitialScore
+	if ok {
+		score = s.effectiveFor(serviceID, key, st)
+	}
+	if len(detail) > 200 {
+		detail = detail[:200]
+	}
+	s.timeline.Record(scoreKey(serviceID, key), TimelineEvent{
+		Timestamp: time.Now(),
+		Event:     "unscored",
+		Reason:    reason,
+		OldScore:  score,
+		Score:     score,
+		Detail:    "unscored: " + reason + ": " + detail,
+	})
+}
+
 // SetRelativeChronic turns on the pool-relative chronic penalty, per service,
 // behind gate. Call at wire time; the gate is read on each baseline refresh.
 func (s *serviceImpl) SetRelativeChronic(gate func(domain.ServiceID) bool) {

@@ -2,8 +2,10 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/relay"
@@ -44,6 +46,11 @@ func Score(flags featureflag.FlagStore, repSvc reputation.Service) relay.Middlew
 			}
 			sig := buildSignal(ctx, err, time.Since(start))
 			if sig.Type == "" {
+				// A retried-but-unscored verdict leaves no signal; the timeline
+				// still says which host answered what (reputation.Noter).
+				if n, ok := repSvc.(reputation.Noter); ok && err != nil && ctx.HeuristicResult != nil && !errors.Is(err, domain.ErrEndpointsStale) {
+					n.RecordNote(ctx.ServiceID, ctx.Endpoint, ctx.RPCType, ctx.HeuristicResult.Reason, ctx.HeuristicResult.Details)
+				}
 				return err
 			}
 			if ctx.ScoreSink != nil {

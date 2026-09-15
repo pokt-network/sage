@@ -810,6 +810,31 @@ func TestHandleRelay_RetryVerdictExhausted_SupplierPageIsNotDelivered(t *testing
 	}
 }
 
+// A supplier-attributed verdict with a JSON-RPC envelope (a node's "rate
+// limit exceeded") is still delivered as the answer: it is parseable, and
+// only a 408 or a non-JSON page is replaced by the gateway's error.
+func TestHandleRelay_RetryVerdictExhausted_SupplierJSONErrorIsDelivered(t *testing.T) {
+	upstream := `{"jsonrpc":"2.0","id":42,"error":{"code":-32000,"message":"rate limit exceeded"}}`
+	chain := &mockChain{
+		response: &domain.Response{HTTPStatusCode: 200, Body: []byte(upstream)},
+		err:      domain.NewRelayError(domain.ErrEndpoint, "heuristic analysis suggests retry: rate_limited", domain.ErrRetryVerdict, true),
+		verdict:  &heuristic.AnalysisResult{ShouldRetry: true, Attribution: heuristic.AttrSupplier, Reason: "rate_limited"},
+	}
+	r := New(config.RouterConfig{Port: 0}, chain, &mockSessions{ready: true}, nil, discardLogger())
+	srv := httptest.NewServer(r.mux)
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/v1", "application/json",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":42}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != upstream {
+		t.Fatalf("got %d %q, want 200 with the node's error envelope verbatim", resp.StatusCode, body)
+	}
+}
+
 // A failure that leaves no response to deliver is still an error to the
 // client — and one ERROR line, not two for the same relay.
 func TestHandleRelay_TransportError_LogsOnce(t *testing.T) {

@@ -115,6 +115,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// without a baseline band.
 			pendingCause := ""
 			retriedFor := ""
+			limited := false // stopped rather than retry into the same rate limiter
 			defer func() {
 				if retriedFor == "" || rec == nil {
 					return
@@ -122,6 +123,9 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 				outcome := "exhausted"
 				if retErr == nil {
 					outcome = "recovered"
+				}
+				if limited {
+					outcome = "limited"
 				}
 				rec.RecordRetryResolution(ctx.ServiceID, retriedFor, outcome)
 			}()
@@ -251,6 +255,28 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 							available = narrowed
 						}
 					}
+					// A rate limit is the operator's, not the host's: one
+					// operator's hosts sit behind one limiter, so a sibling
+					// answers the same "rate limit exceeded" and the retry only
+					// adds load to what is already full (mainnet sei, 2026-09-15:
+					// five hosts of one operator rate-limiting at once). After a
+					// rate-limit verdict the retry goes to another operator with
+					// a vouched endpoint, or does not happen: the node's own
+					// answer is delivered, or SAGE's 429 when it sent none.
+					if limiterVerdict(pendingCause) {
+						other := make(domain.EndpointAddrList, 0, len(available))
+						for _, ep := range available {
+							if !triedOperators[ep.Operator()] {
+								other = append(other, ep)
+							}
+						}
+						if len(other) == 0 || !anyVouched(o.repSvc, ctx, other) {
+							retriedFor, limited = pendingCause, true
+							return lastErr
+						}
+						available = other
+					}
+
 					ctx.Endpoints = available
 
 					// Clear selected endpoint to force re-selection by inner chain.
@@ -347,6 +373,16 @@ func retryCause(ctx *relay.Context, err error) string {
 		return ctx.HeuristicResult.Reason
 	}
 	return retryReason(err)
+}
+
+// limiterVerdict reports whether a retry cause is a rate limit, which belongs
+// to the operator rather than to the one host that answered it.
+func limiterVerdict(reason string) bool {
+	switch reason {
+	case "rate_limited", "http_429", "upstream_429":
+		return true
+	}
+	return false
 }
 
 // retryReason is the coarse label sage_retry_total carries. It stays low

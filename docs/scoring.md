@@ -401,6 +401,16 @@ Two more corrections followed the same day, both from mainnet sei:
   from there traffic decides. Without that bound the first version trapped
   mainnet solana's floored keys at 0 while they answered most of what they
   got.
+- **A drain's end is a restart, not a resume.** A drained endpoint gets no
+  traffic and no probes, so its score is frozen at what it was when benched;
+  when the drain ends, keys above `min_threshold` restart there (the bottom
+  of probation) and earn tier 1 again on traffic. The first sei drain to
+  expire put eight keys of the operator it had benched straight back into
+  tier 1 on scores of 100.
+- **An unscored attempt still leaves a trace.** A retried-but-unscored
+  verdict (a node's own -32000 answer) records a timeline-only `unscored`
+  event with the answer's text, so which host said what stays answerable
+  without moving the score.
 
 Simulated at steady state (100k attempts, 10 runs): operator C 0; operator B `-11`
 (tier 1, 89); operator A `-23` (tier 2, 77); 1% `-40` (tier 2, 60); 5% `-61`;

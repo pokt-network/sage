@@ -122,6 +122,8 @@ func TestContract_GatewayErrorStatusFollowsTheCause(t *testing.T) {
 		// cannot blame the gateway for a caller that left.
 		{"client hung up", domain.NewRelayError(domain.ErrTransport, "relay send failed", context.Canceled, true), statusClientClosedRequest},
 		{"transport", domain.NewRelayError(domain.ErrTransport, "dial failed", errors.New("x"), true), http.StatusInternalServerError},
+		// A supplier's 429 with no other operator to retry on.
+		{"supplier rate limit", domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable", &domain.UpstreamStatusError{Status: 429}, true), http.StatusTooManyRequests},
 		// A supplier answered past the response ceiling: a bad upstream answer.
 		{"response too large", domain.NewRelayError(domain.ErrEndpoint, "upstream response too large", domain.ErrResponseTooLarge, false), http.StatusBadGateway},
 		{"protocol", domain.NewRelayError(domain.ErrProtocol, "no endpoints", nil, false), http.StatusInternalServerError},

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -567,6 +568,33 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	repSvc.SetRelativeChronic(func(serviceID domain.ServiceID) bool {
 		return flags.IsEnabled(context.Background(), featureflag.FlagRelativeChronic, serviceID)
 	})
+
+	// When a drain ends, its endpoints restart at the bottom of probation
+	// rather than on the score the drain froze (reputation.RebaseAfterDrain).
+	if drainStore != nil && app.Protocol != nil {
+		drain.WatchEnds(ctx, logger, drainStore, serviceIDsFrom(cfg), 15*time.Second, func(e drain.Entry) {
+			types := []domain.RPCType{e.RPCType}
+			if e.RPCType == "" {
+				types = []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeREST, domain.RPCTypeCometBFT, domain.RPCTypeWebSocket, domain.RPCTypeGRPC}
+			}
+			for _, rt := range types {
+				eps, err := app.Protocol.RegisteredEndpoints(ctx, e.ServiceID, rt)
+				if err != nil {
+					continue
+				}
+				var matched domain.EndpointAddrList
+				for _, ep := range eps {
+					if strings.EqualFold(ep.Operator(), e.Operator) {
+						matched = append(matched, ep)
+					}
+				}
+				if n := repSvc.RebaseAfterDrain(e.ServiceID, matched, rt); n > 0 {
+					logger.Info("drain ended: its endpoints restart at the bottom of probation",
+						"service_id", e.ServiceID, "operator", e.Operator, "rpc_type", rt, "keys", n)
+				}
+			}
+		})
+	}
 
 	// Per-operator concentration cap. Gated per relay so an operator can turn
 	// it off at runtime — globally or for one service — without a deploy.
