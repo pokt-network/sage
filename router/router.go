@@ -19,6 +19,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/relay"
 )
@@ -369,6 +370,20 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 		// answer stands — the chain's `execution reverted`, the node's
 		// `block not found`. Replacing it with a gateway-made -32603 hid the
 		// real error from the client on ~1% of a canary's requests.
+		//
+		// Only a node's answer stands. A supplier-attributed verdict on the
+		// last attempt — a relay miner's 408, an HTML 4xx page for a backend
+		// that never saw the request — is the supplier's front door, not an
+		// answer, and delivering it handed clients those pages (mainnet
+		// 2026-09-15: ~2,400 client 408s in 10 minutes, poly and base most).
+		// It becomes the gateway's own error: 504 for a 408, a timeout, and
+		// the usual 500 for the rest.
+		if ctx.Response != nil && errors.Is(err, domain.ErrRetryVerdict) && supplierPage(ctx) {
+			if ctx.HeuristicResult.Reason == "http_408" {
+				err = domain.NewRelayError(domain.ErrTransport, "upstream timed out", context.DeadlineExceeded, true)
+			}
+			ctx.Response = nil
+		}
 		if ctx.Response != nil && errors.Is(err, domain.ErrRetryVerdict) {
 			r.logger.Info("relay: delivering the last upstream response after a retry verdict",
 				"service", ctx.ServiceID, "endpoint", ctx.Endpoint, "verdict", err)
@@ -570,6 +585,13 @@ const rpcTypeNone domain.RPCType = "none"
 // before the gateway answered. Not in net/http; used only so the metric and
 // the access log can tell a client leaving from the gateway failing.
 const statusClientClosedRequest = 499
+
+// supplierPage reports whether the response in hand came with a
+// supplier-attributed verdict: the supplier's HTTP layer speaking, not the
+// node answering the request.
+func supplierPage(ctx *relay.Context) bool {
+	return ctx.HeuristicResult != nil && ctx.HeuristicResult.Attribution == heuristic.AttrSupplier
+}
 
 // statusForError maps a gateway-made failure to the HTTP status a client
 // sees. The body carries the JSON-RPC code either way; the status is what a
