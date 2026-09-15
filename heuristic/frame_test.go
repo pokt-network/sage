@@ -59,6 +59,16 @@ func TestAnalyzeFrame_JSONRPCError(t *testing.T) {
 	}
 }
 
+// A -32000 in a wording that is neither a chain error, an infrastructure
+// failure nor a rate limit is the node's own answer: retried, not scored.
+func TestAnalyzeFrame_UnknownServerErrorIsNotScored(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"some node-specific failure"}}`)
+	res := AnalyzeFrame(body, domain.RPCTypeJSONRPC)
+	if res.Reason != "server_error" || res.ShouldPenalize || !res.ShouldRetry {
+		t.Errorf("got %+v, want server_error retried and not penalized", res)
+	}
+}
+
 func TestAnalyzeFrame_NoTier0Dependency(t *testing.T) {
 	// The same body analysed with Analyze(status=200) vs AnalyzeFrame should
 	// produce equivalent results on the body side, since AnalyzeFrame skips
