@@ -102,7 +102,12 @@ func TestTieredSelector_PoolCollapseServesLeastBad(t *testing.T) {
 	sel := NewTieredSelector(cfg, fixedScoreFn(scores))
 
 	var collapsed int
-	sel.SetCollapseHook(func(domain.ServiceID) { collapsed++ })
+	sel.SetCollapseHook(func(_ domain.ServiceID, _ domain.RPCType, served domain.EndpointAddrList) {
+		if len(served) != 1 || served[0] != "leastBad" {
+			t.Errorf("hook told %v, want the endpoint the guard served", served)
+		}
+		collapsed++
+	})
 
 	eps := domain.EndpointAddrList{"worst", "bad", "leastBad"}
 	for i := 0; i < 50; i++ {

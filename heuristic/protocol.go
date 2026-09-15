@@ -317,6 +317,22 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 		}
 	}
 
+	// The node's own rate limiter: the supplier's capacity, not the request.
+	// Scored like a relay miner's 429 (upstream_429), minor and retried.
+	for _, pattern := range []string{"rate limit", "too many requests"} {
+		if strings.Contains(lowerMsg, pattern) {
+			return AnalysisResult{
+				ShouldRetry:     true,
+				ShouldPenalize:  true,
+				PenaltySeverity: SeverityMinor,
+				Attribution:     AttrSupplier,
+				Confidence:      0.85,
+				Reason:          "rate_limited",
+				Details:         "supplier rate limit (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
+			}
+		}
+	}
+
 	// A method the node does not serve, in a wording that is not also a
 	// blockchain-error pattern (those were handled above). The node answered
 	// correctly about itself; it is not at fault, and it must not receive
@@ -334,15 +350,18 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 		}
 	}
 
-	// Default for server error range: retry but only minor penalty.
+	// Default for the server error range: the node answered the request with
+	// an error of its own, in a wording that is neither a known chain error
+	// nor an infrastructure failure (both handled above). Retry, since another
+	// node may answer, but do not score it: a node's own JSON-RPC answer is
+	// not the supplier failing. On mainnet sei (2026-09-15) this branch
+	// charged suppliers 8,400 minor errors an hour.
 	return AnalysisResult{
-		ShouldRetry:     true,
-		ShouldPenalize:  true,
-		PenaltySeverity: SeverityMinor,
-		Attribution:     AttrUnknown,
-		Confidence:      0.60,
-		Reason:          "server_error",
-		Details:         "server error (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
+		ShouldRetry: true,
+		Attribution: AttrUnknown,
+		Confidence:  0.60,
+		Reason:      "server_error",
+		Details:     "server error (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
 	}
 }
 

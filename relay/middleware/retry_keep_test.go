@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -40,6 +41,36 @@ func TestRetry_KeepsTheLastUpstreamAnswerWhenLaterAttemptsHaveNone(t *testing.T)
 	}
 	if ctx.Response != answer || ctx.Endpoint != eps[0] {
 		t.Fatalf("response = %v from %s, want the first attempt's answer from %s", ctx.Response, ctx.Endpoint, eps[0])
+	}
+}
+
+// A supplier's own page (an HTML 404 from a misrouted vhost) is not a node's
+// answer and is not kept: when the retries end with nothing, the client gets
+// the gateway's error, not the page. mainnet solana, 2026-09-15.
+func TestRetry_DoesNotKeepASuppliersOwnPage(t *testing.T) {
+	eps := testEndpoints(2)
+	page := &domain.Response{HTTPStatusCode: 404, Body: []byte(`<html>404 Not Found</html>`)}
+	attempt := 0
+	h := relay.HandlerFunc(func(ctx *relay.Context) error {
+		attempt++
+		ctx.Endpoint = eps[attempt-1]
+		if attempt == 1 {
+			ctx.Response = page
+			ctx.HeuristicResult = &heuristic.AnalysisResult{ShouldRetry: true, Attribution: heuristic.AttrSupplier, Reason: "http_4xx_page"}
+			ctx.Err = domain.NewRelayError(domain.ErrEndpoint, "heuristic analysis suggests retry: http_4xx_page", domain.ErrRetryVerdict, true)
+			return ctx.Err
+		}
+		return retryableErr("relay miner answered HTTP 408")
+	})
+
+	ctx := baseContext()
+	ctx.Endpoints = eps
+	err := Retry(newFlags("retry"), retryCfg(1, 0))(h).HandleRelay(ctx)
+	if err == nil || errors.Is(err, domain.ErrRetryVerdict) {
+		t.Fatalf("err = %v, want the last attempt's own error, not the page's retry verdict", err)
+	}
+	if ctx.Response != nil {
+		t.Fatalf("response = %q, want none: a supplier's page is not delivered", ctx.Response.Body)
 	}
 }
 

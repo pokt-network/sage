@@ -274,6 +274,13 @@ func cometBFTStatusPayload() domain.Payload {
 		WithHTTP("/status", http.MethodGet)
 }
 
+// restSyncingPayload is the Cosmos SDK gRPC-gateway liveness path: a small
+// JSON answer every SDK chain's REST face serves.
+func restSyncingPayload() domain.Payload {
+	return domain.NewPayload(nil, domain.RPCTypeREST, "").
+		WithHTTP("/cosmos/base/tendermint/v1beta1/syncing", http.MethodGet)
+}
+
 // isRPCTypeSupported returns true if rpcType is in the supported set.
 func isRPCTypeSupported(rpcType domain.RPCType, supported []domain.RPCType) bool {
 	for _, s := range supported {

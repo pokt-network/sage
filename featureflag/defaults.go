@@ -68,6 +68,14 @@ const (
 	// instance probes that service itself again from the next cycle while it
 	// keeps applying the peer's results.
 	FlagPeerProbeSkip = "peer_probe_skip"
+	// FlagAutoDrain lets the auto-drain engine (package autodrain) set drains.
+	// Off by default: until it is on for a service the engine only evaluates.
+	// docs/auto-drain.md.
+	FlagAutoDrain = "auto_drain"
+	// FlagAutoDrainShadow keeps the engine evaluating, recording and counting
+	// its decisions without setting a drain, even where auto_drain is on. On by
+	// default, so every instance collects shadow decisions from day one.
+	FlagAutoDrainShadow = "auto_drain_shadow"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -103,6 +111,8 @@ var DefaultFlags = map[string]bool{
 
 	FlagTrafficInformedProbing: false,
 	FlagPeerProbeSkip:          true,
+	FlagAutoDrain:              false,
+	FlagAutoDrainShadow:        true,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

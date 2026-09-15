@@ -18,6 +18,7 @@ means traffic is arriving for services this gateway does not serve.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
+| `sage_auto_drain_total` | counter | `service_id`, `rpc_type`, `outcome` | Auto-drain engine decisions, by service, RPC type and outcome: drained, shadow (would have drained), suppressed, rate_limited, capped, no_vouched_alternative, manual_drain. One per decision change, not per evaluation tick. The evidence behind each is in GET /admin/auto-drain/events. |
 | `sage_blocked_domains_admin` | gauge | — | Domains banned through the admin API (PUT /admin/blocked-domains), in force on this replica, not counting gateway_config.blocked_domains. Non-zero on a fresh replica is a ban inherited through Redis. |
 | `sage_cache_hits_total` | counter | `service_id` | Total response cache hits. |
 | `sage_cache_misses_total` | counter | `service_id` | Total response cache misses. |

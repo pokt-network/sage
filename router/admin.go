@@ -43,6 +43,7 @@ type AdminAPI struct {
 
 	externalSources ExternalSourceAdmin
 	overrides       override.Store
+	autoDrainEvents AutoDrainEvents
 	// resetsApplied and resetWatchInterval belong to the reputation-reset
 	// fan-out (admin_reset.go); the interval is zero (the default) outside
 	// tests.
@@ -134,6 +135,7 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Operator drain
 	mux.HandleFunc("POST /admin/reputation/drain/{serviceID}", a.handleSetDrain)
 	mux.HandleFunc("GET /admin/reputation/drain/{serviceID}", a.handleGetDrains)
+	mux.HandleFunc("GET /admin/auto-drain/events", a.handleAutoDrainEvents)
 	mux.HandleFunc("DELETE /admin/reputation/drain/{serviceID}/{domain}", a.handleReleaseDrain)
 
 	// Blocked domains: the permanent, global, fleet-wide ban (see package

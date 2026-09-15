@@ -81,6 +81,9 @@ type RedisStore struct {
 	client   RedisClient
 	cacheTTL time.Duration
 	logger   *slog.Logger
+	// follow, when set, makes this a read-only view of another instance's
+	// drains, keeping only entries whose reason starts with it. See FollowPeer.
+	follow string
 
 	// keys tracks what this instance is trying to make Redis say, for the few
 	// drains where that is not already settled. See keyState.
@@ -133,6 +136,15 @@ func WithCacheTTL(d time.Duration) RedisOption {
 // A nil logger falls back to slog.Default.
 func WithLogger(l *slog.Logger) RedisOption {
 	return func(s *RedisStore) { s.logger = l }
+}
+
+// FollowPeer makes the store a read-only view of another instance's drains
+// (its client points at the other instance's Redis database): it keeps only
+// the entries whose reason starts with prefix, and never writes — not even to
+// delete the other's expired fields, which is the other's own housekeeping.
+// Set and Release are not for it; wrap it with Merge.
+func FollowPeer(prefix string) RedisOption {
+	return func(s *RedisStore) { s.follow = prefix }
 }
 
 // NewRedisStore returns a Redis-backed drain store. A nil client is allowed and
@@ -417,13 +429,16 @@ func (s *RedisStore) refresh(ctx context.Context) {
 			expired = append(expired, field)
 			continue
 		}
+		if s.follow != "" && !strings.HasPrefix(p.Reason, s.follow) {
+			continue
+		}
 		next[k] = Entry{Key: k, Until: p.Until, Reason: p.Reason}
 	}
 
 	s.reconcilePending(ctx, next, now)
 	s.replaceAll(next, began)
 
-	if len(expired) > 0 {
+	if len(expired) > 0 && s.follow == "" {
 		if err := s.client.HDel(ctx, hashKey, expired...).Err(); err != nil {
 			s.log().Debug("drain refresh: could not delete expired fields", "count", len(expired), "error", err)
 		}

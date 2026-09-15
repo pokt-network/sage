@@ -9,6 +9,7 @@ import (
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/reputation"
 )
@@ -166,7 +167,14 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					// attempt runs.
 					pendingCause = retryCause(ctx, lastErr)
 					// Before either branch below clears it: see keptResp.
-					if ctx.Response != nil && errors.Is(lastErr, domain.ErrRetryVerdict) {
+					// Only a node's own answer is kept. A supplier-attributed
+					// verdict on a response is the relay miner's front door
+					// speaking for a backend that never saw the request — an
+					// HTML 404 page, an empty body — and delivering it passed a
+					// misrouted vhost's page to the client as its answer
+					// (mainnet solana, 2026-09-15: 2172 client 404s in 10 min).
+					if ctx.Response != nil && errors.Is(lastErr, domain.ErrRetryVerdict) &&
+						(ctx.HeuristicResult == nil || ctx.HeuristicResult.Attribution != heuristic.AttrSupplier) {
 						keptResp, keptEndpoint, keptVerdict, keptErr = ctx.Response, ctx.Endpoint, ctx.HeuristicResult, lastErr
 					}
 					if rec != nil {

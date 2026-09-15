@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/pokt-network/sage/autodrain"
 	"github.com/pokt-network/sage/blocklist"
 	"github.com/pokt-network/sage/circuitbreaker"
 	"github.com/pokt-network/sage/config"
@@ -451,6 +452,15 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			redisDrains := drain.NewRedisStore(redisClient, drain.WithLogger(logger))
 			redisDrains.Start(ctx)
 			drainStore = redisDrains
+			// Following a peer's probe stream means following its auto drains:
+			// the peer sees the traffic and runs the engine, this instance
+			// does not (docs/auto-drain.md §10). Read-only, auto: entries only.
+			if peer := cfg.Gateway.HealthChecks.PeerProbeStream; peer.Enabled {
+				peerDrains := drain.NewRedisStore(peerRedisClient(cfg, peer.DB),
+					drain.FollowPeer(autodrain.ReasonPrefix), drain.WithLogger(logger))
+				peerDrains.Start(ctx)
+				drainStore = drain.Merge(redisDrains, peerDrains)
+			}
 		} else {
 			drainStore = drain.NewMemoryStore()
 		}
@@ -485,6 +495,30 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	recorder := metrics.NewRecorder(serviceIDsFrom(cfg))
 	app.Metrics = recorder
 
+	// Auto-drain engine (docs/auto-drain.md). Needs a drain store, so not on
+	// the mock protocol. Not on an instance that follows a peer's probe
+	// stream either: that instance takes its drains from the peer, which sees
+	// the traffic, and runs its own engine only once it stops following.
+	var autoDrain *autodrain.Engine
+	var autoDrainEvents autodrain.EventLog
+	if following := cfg.Gateway.HealthChecks.PeerProbeStream.Enabled && redisClient != nil; drainStore != nil && !following {
+		autoDrainEvents = &autodrain.MemoryLog{}
+		if redisClient != nil {
+			autoDrainEvents = autodrain.RedisLog{Client: redisClient}
+		}
+		autoDrain = autodrain.New(autodrain.Deps{
+			Drains:    drainStore,
+			Endpoints: proto,
+			Vouch:     repSvc,
+			Flags:     flags,
+			Events:    autoDrainEvents,
+			Recorder:  recorder,
+			IsLeader:  func() bool { return leader == nil || leader.IsLeader() },
+			MaxDrain:  cfg.Admin.EffectiveMaxDrain(),
+			Logger:    logger,
+		})
+	}
+
 	// The breaker's failure-rate gate keys on hostname; every relay counter
 	// keys on service. Exposing the gate's own inputs is the only way to tell
 	// one bad host behind an operator from an operator that is bad everywhere.
@@ -503,15 +537,21 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// no endpoint clears the floor. That keeps the service up, which is the
 	// point — but it must not be silent, or a pool that has degraded to
 	// "everything is bad" looks identical to a healthy one.
-	repSvc.SetCollapseHook(func(serviceID domain.ServiceID) {
+	repSvc.SetCollapseHook(func(serviceID domain.ServiceID, rpcType domain.RPCType, served domain.EndpointAddrList) {
 		recorder.RecordDegraded(serviceID, "reputation_pool_collapse")
+		if autoDrain != nil {
+			autoDrain.OnCollapse(serviceID, rpcType, served)
+		}
 	})
 
 	// Count what actually reached reputation. The gap between relays served and
 	// signals recorded is the thing scoring gets wrong quietly — an endpoint
 	// with 40000 attempts, all of them probes, scores like a well-tested one.
-	repSvc.SetSignalHook(func(serviceID domain.ServiceID, rpcType domain.RPCType, signal reputation.SignalType, probe bool) {
+	repSvc.SetSignalHook(func(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, signal reputation.SignalType, probe bool) {
 		recorder.RecordReputationAttempt(serviceID, string(rpcType), string(signal), probe)
+		if autoDrain != nil {
+			autoDrain.OnSignal(serviceID, rpcType, endpoint, signal, probe)
+		}
 	})
 
 	// Latency tie-break inside the winning tier: ask faster hosts more often
@@ -683,6 +723,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	leader = healthcheck.NewLeaderElector(redisClient, logger)
 	leader.Start(ctx)
 	app.Leader = leader
+	if autoDrain != nil {
+		autoDrain.Start(ctx)
+	}
 
 	healthCheckInterval := effectiveHealthCheckInterval(cfg)
 	healthExe := healthcheck.NewExecutor(
@@ -752,15 +795,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			app.StartupWarnings = append(app.StartupWarnings,
 				"active_health_checks.peer_probe_stream is enabled but Redis is not available: this instance probes everything itself")
 		} else {
-			peerClient := redis.NewClient(&redis.Options{
-				Addr:         cfg.Redis.Address,
-				Password:     cfg.Redis.Password,
-				DB:           peer.DB,
-				PoolSize:     2,
-				DialTimeout:  cfg.Redis.DialTimeout,
-				ReadTimeout:  cfg.Redis.ReadTimeout,
-				WriteTimeout: cfg.Redis.WriteTimeout,
-			})
+			peerClient := peerRedisClient(cfg, peer.DB)
 			// max_age is live through PUT /admin/tuning/health_checks.peer_max_age,
 			// and the skipping itself through the peer_probe_skip flag.
 			peerMaxAge := peer.MaxAge
@@ -915,6 +950,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// for the relay chain — the same value the middleware chain's
 	// SelectEndpoint and CircuitBreak use.
 	app.Admin = router.NewAdminAPI(flags, repSvc, timeline, cb, blocks, drainStore, proto, cfg.Admin.EffectiveMaxDrain(), qosReg, tuningStore, app, sampler, logger)
+	if autoDrainEvents != nil {
+		app.Admin.SetAutoDrainEvents(autoDrainEvents)
+	}
 	app.Admin.SetExternalSources(externalSources)
 	app.Admin.SetOverrides(overrides)
 	// The WS relayer also answers the admin rebind route. Type-asserted
@@ -1028,6 +1066,20 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 		rate = 1
 	}
 	store.SetBase(tuning.KnobObservationSampleRate, strconv.FormatFloat(rate, 'f', -1, 64))
+}
+
+// peerRedisClient opens a small read client on another instance's Redis
+// database, on this instance's Redis server (active_health_checks.peer_probe_stream).
+func peerRedisClient(cfg *config.Config, db int) *redis.Client {
+	return redis.NewClient(&redis.Options{
+		Addr:         cfg.Redis.Address,
+		Password:     cfg.Redis.Password,
+		DB:           db,
+		PoolSize:     2,
+		DialTimeout:  cfg.Redis.DialTimeout,
+		ReadTimeout:  cfg.Redis.ReadTimeout,
+		WriteTimeout: cfg.Redis.WriteTimeout,
+	})
 }
 
 // maxResponseMB is router.max_response_body_bytes in whole MiB, the knob's

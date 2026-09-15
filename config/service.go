@@ -896,6 +896,10 @@ type HealthCheckConfig struct {
 // because it stopped publishing — this instance still probes itself, so there
 // is no failover to operate. The other instance needs no change: it publishes
 // its stream anyway.
+//
+// Following a peer also means following its auto drains (docs/auto-drain.md):
+// this instance applies the other's `auto:` drains read-only and runs no
+// auto-drain engine of its own, since the other sees the traffic.
 type PeerProbeStreamConfig struct {
 	// Enabled turns the feed on. Off by default: trusting another instance's
 	// verdicts is a decision, not a default.
