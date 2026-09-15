@@ -83,7 +83,7 @@ type TieredSelector struct {
 	// onCollapse, when set, is invoked once per selection in which every
 	// endpoint scored below MinThreshold and the pool-collapse guard had to
 	// serve a sub-threshold endpoint. See Select.
-	onCollapse func(domain.ServiceID)
+	onCollapse CollapseHook
 
 	// operatorCap bounds any single operator's share of selections within the
 	// winning tier. See concentration.go.
@@ -103,10 +103,15 @@ func NewTieredSelector(cfg SelectorConfig, scoreFn ScoreFn) *TieredSelector {
 	}
 }
 
+// CollapseHook is told each time the pool-collapse guard serves sub-threshold
+// endpoints: the service, the RPC type, and what it served. The served list
+// is what lets a reader tell which operator the fallback is feeding.
+type CollapseHook func(serviceID domain.ServiceID, rpcType domain.RPCType, served domain.EndpointAddrList)
+
 // SetCollapseHook registers a callback invoked whenever the pool-collapse guard
 // fires. Nil clears it. Not safe to call concurrently with selection; call it
 // at wire time.
-func (s *TieredSelector) SetCollapseHook(fn func(domain.ServiceID)) {
+func (s *TieredSelector) SetCollapseHook(fn CollapseHook) {
 	s.onCollapse = fn
 }
 
@@ -251,10 +256,11 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 		return domain.EndpointAddrList{pick[probationIdx]}
 	case fallback != "":
 		// Pool collapse: every endpoint is below MinThreshold.
+		served := domain.EndpointAddrList{fallback}
 		if s.onCollapse != nil {
-			s.onCollapse(serviceID)
+			s.onCollapse(serviceID, rpcType, served)
 		}
-		return domain.EndpointAddrList{fallback}
+		return served
 	default:
 		return nil
 	}
@@ -347,13 +353,13 @@ func (s *TieredSelector) TopTierCandidates(ctx context.Context, serviceID domain
 			return nil
 		}
 		// Pool collapse: return every endpoint tied at the least-bad score.
-		if s.onCollapse != nil {
-			s.onCollapse(serviceID)
-		}
 		for _, ep := range endpoints {
 			if _, score := s.classify(ctx, serviceID, ep, rpcType); score == bestRejected {
 				out = append(out, ep)
 			}
+		}
+		if s.onCollapse != nil {
+			s.onCollapse(serviceID, rpcType, out)
 		}
 		return out
 	}

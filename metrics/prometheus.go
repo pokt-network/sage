@@ -57,6 +57,7 @@ type Recorder struct {
 	supplierBlacklists    *prometheus.CounterVec
 	relayMinerErrors      *prometheus.CounterVec
 	oversizedResponses    *prometheus.CounterVec
+	autoDrains            *prometheus.CounterVec
 	methodBlockEvents     *prometheus.CounterVec
 	reputationAttempts    *prometheus.CounterVec
 	heuristicVerdicts     *prometheus.CounterVec
@@ -218,6 +219,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "codespace"},
 		),
+		autoDrains: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "auto_drain_total",
+				Help:      "Auto-drain engine decisions, by service, RPC type and outcome: drained, shadow (would have drained), suppressed, rate_limited, capped, no_vouched_alternative, manual_drain. One per decision change, not per evaluation tick. The evidence behind each is in GET /admin/auto-drain/events.",
+			},
+			[]string{"service_id", "rpc_type", "outcome"},
+		),
 		oversizedResponses: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -357,6 +366,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.supplierBlacklists,
 		r.relayMinerErrors,
 		r.oversizedResponses,
+		r.autoDrains,
 		r.methodBlockEvents,
 		r.reputationAttempts,
 		r.heuristicVerdicts,
@@ -524,6 +534,11 @@ func (r *Recorder) RecordSupplierBlacklist(serviceID domain.ServiceID, reason st
 // codespace is written by that miner, so it is bounded here — see boundedLabel.
 func (r *Recorder) RecordRelayMinerError(serviceID domain.ServiceID, codespace string) {
 	r.relayMinerErrors.WithLabelValues(r.services.serviceValue(serviceID), r.codespaces.value(codespace)).Inc()
+}
+
+// RecordAutoDrain counts one auto-drain engine decision.
+func (r *Recorder) RecordAutoDrain(serviceID domain.ServiceID, rpcType, outcome string) {
+	r.autoDrains.WithLabelValues(r.services.serviceValue(serviceID), rpcType, outcome).Inc()
 }
 
 // RecordOversizedResponse increments the counter of supplier responses

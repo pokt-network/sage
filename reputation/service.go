@@ -172,7 +172,7 @@ type serviceImpl struct {
 	// lambda is rate.Lambda(), hoisted out of the per-signal path under lock.
 	lambda float64
 	// signalHook, when set, runs on every recorded signal. Wire time only.
-	signalHook func(domain.ServiceID, domain.RPCType, SignalType, bool)
+	signalHook SignalHook
 
 	// In-memory score cache, striped by key hash.
 	shards [scoreShards]scoreShard
@@ -244,9 +244,14 @@ func (s *serviceImpl) effective(st State) float64 {
 // latencyAlpha is the traffic-latency EWMA step. Reporting only.
 const latencyAlpha = 0.05
 
+// SignalHook is told about every recorded signal: which service, RPC type and
+// endpoint it was charged to, its type, and whether a probe produced it.
+type SignalHook func(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, signal SignalType, probe bool)
+
 // SetSignalHook registers a callback run on every recorded signal, after the
-// state is updated. Wire time only; used for the attempts counter.
-func (s *serviceImpl) SetSignalHook(fn func(domain.ServiceID, domain.RPCType, SignalType, bool)) {
+// state is updated. Wire time only; used for the attempts counter and the
+// auto-drain engine.
+func (s *serviceImpl) SetSignalHook(fn SignalHook) {
 	s.signalHook = fn
 }
 
@@ -295,7 +300,7 @@ func (s *serviceImpl) SetLatencyTieBreak(gate func(context.Context, domain.Servi
 // SetCollapseHook registers a callback fired whenever the selector's
 // pool-collapse guard has to serve an endpoint scoring below the minimum
 // threshold because no endpoint cleared it. Call at wire time.
-func (s *serviceImpl) SetCollapseHook(fn func(domain.ServiceID)) {
+func (s *serviceImpl) SetCollapseHook(fn CollapseHook) {
 	s.selector.SetCollapseHook(fn)
 }
 
@@ -430,7 +435,7 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	}
 
 	if s.signalHook != nil {
-		s.signalHook(serviceID, rpcType, signal.Type, signal.Probe)
+		s.signalHook(serviceID, rpcType, endpoint, signal.Type, signal.Probe)
 	}
 
 	return nil

@@ -110,6 +110,7 @@ failureThreshold) here.
 | `GET` | `/admin/method-blocks/{serviceID}` | Lists the hosts currently blocked from receiving a method for a service, with each block's expiry. |
 | `POST` | `/admin/reputation/drain/{serviceID}` | Applies or releases an operator drain for one service. |
 | `GET` | `/admin/reputation/drain/{serviceID}` | Lists the live drains for a service. |
+| `GET` | `/admin/auto-drain/events` | Lists the auto-drain engine's decisions, newest first: every drain it set and every one it would have set in shadow mode or chose not to, with the evidence (collapse picks, share, attempts, success rate, the vouched alternative). |
 | `DELETE` | `/admin/reputation/drain/{serviceID}/{domain}` | Releases every RPC-type-scoped drain on one operator for a service. |
 | `GET` | `/admin/blocked-domains` | Lists the blocked domains in force: the config base and the admin-set entries, separately, plus whether admin entries are shared across replicas. |
 | `PUT` | `/admin/blocked-domains/{domain}` | Bans a domain on every service, for every RPC type or only the listed ones, without a redeploy. |
@@ -306,6 +307,13 @@ regardless, and 500 would describe a local state that did not happen.
 
 Lists the live drains for a service. An empty result is an
 empty array, never null.
+
+### `GET /admin/auto-drain/events`
+
+Lists the auto-drain engine's decisions, newest first:
+every drain it set and every one it would have set in shadow mode or chose
+not to, with the evidence (collapse picks, share, attempts, success rate,
+the vouched alternative). ?service= filters, ?limit= caps (default 100).
 
 ### `DELETE /admin/reputation/drain/{serviceID}/{domain}`
 
