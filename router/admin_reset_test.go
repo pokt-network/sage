@@ -13,7 +13,7 @@ import (
 )
 
 func TestResetAnnouncementKey_RoundTrip(t *testing.T) {
-	for _, target := range []string{"rm02.kalorius.tech", "https://rm02.kalorius.tech|rest", "pokt1abc-https://rm02.kalorius.tech:443/v1"} {
+	for _, target := range []string{"rm02.opc.example", "https://rm02.opc.example|rest", "pokt1abc-https://rm02.opc.example:443/v1"} {
 		key := resetAnnouncementKey("osmosis", target)
 		svc, got, ok := parseResetAnnouncementKey(key)
 		if !ok || svc != "osmosis" || got != target {

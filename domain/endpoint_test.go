@@ -46,7 +46,7 @@ func TestEndpointAddr_Domain(t *testing.T) {
 	}{
 		{"pokt1abc-https://example.com", "example.com"},
 		{"pokt1abc-https://node.test:8080/path", "node.test"},
-		{"pokt1abc-http://relay01.spacebelt.xyz/", "relay01.spacebelt.xyz"},
+		{"pokt1abc-http://relay01.opf.example/", "relay01.opf.example"},
 		{"nohyphen", ""},
 	}
 	for _, tt := range tests {

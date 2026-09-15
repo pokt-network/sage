@@ -34,7 +34,7 @@ import (
 // of rotation.
 //
 // The memory is keyed by host, not by supplier address: many staked
-// addresses front one URL (rm02.kalorius.tech carried 229 on persistence),
+// addresses front one URL (one host carried 229 on persistence),
 // and pruning is a property of the node behind it. It expires, like the EVM
 // plugin's archival marks: an operator may switch a host to an archive node,
 // and a wrong mark must stay cheap.

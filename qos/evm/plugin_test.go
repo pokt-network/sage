@@ -960,8 +960,8 @@ func TestHealthChecks_ChainIDIsSlowCadence(t *testing.T) {
 // taught, the other already knows, on the RPC and admin paths alike.
 func TestArchivalMemory_SharedAcrossAddressesOfOneHost(t *testing.T) {
 	p := newTestPlugin(5)
-	a := domain.EndpointAddr("pokt1a-https://pkp-og.example.net")
-	b := domain.EndpointAddr("pokt1b-https://pkp-og.example.net")
+	a := domain.EndpointAddr("pokt1a-https://h1.opb.example")
+	b := domain.EndpointAddr("pokt1b-https://h1.opb.example")
 	other := domain.EndpointAddr("pokt1c-https://r001.example.xyz")
 	for _, ep := range []domain.EndpointAddr{a, b, other} {
 		p.UpdateBlockHeight(ep, 1000)

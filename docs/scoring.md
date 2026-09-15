@@ -284,8 +284,8 @@ of the question:
   resolve), so it yields a real healthy-endpoint latency distribution and
   probe-versus-traffic agreement, and nothing about bad-but-alive endpoints.
 - **PATH's mainnet evidence** (`EVIDENCE_EMPTY_RESPONSES_2026-08-19.md`) for the
-  violator side: per-domain empty-response rates over one day — spacebelt
-  0.216%, rpcgate 0.065%, nodefleet 0.00003%, kleomedes ~0%. Every one of the
+  violator side: per-domain empty-response rates over one day — operator A
+  0.216%, operator B 0.065%, operator C 0.00003%, operator D ~0%. Every one of the
   bad responses landed on a 3.0 s deadline (p50 3021 ms, min 2820, max 3080).
 - **Simulation** of the scoring rules against those rates, where the question
   is arithmetic rather than measurement.
@@ -357,7 +357,7 @@ The additive term with `+5 / -25` has a break-even failure rate of
 at 100 forever; one failing more often drifts to 0. Simulated over 20,000
 attempts, an endpoint at 15% critical is below tier 1 62% of the time, at 10%
 31%, at 5% 9.5%, at 2% 2.6%, at 0.2% 0.2%. Raising the ratio does not reach the
-mainnet violators: at `k = 20` (`-100` per critical) spacebelt at 0.216% is
+mainnet violators: at `k = 20` (`-100` per critical) operator A at 0.216% is
 below tier 1 2.3% of the time, and one transient error costs a perfect host 20
 relays of demotion. No ratio catches a 0.2% violator without punishing a 0.001%
 one.
@@ -382,11 +382,11 @@ operator of the pool shared one timeout tail (1.2–1.8%, penalty -43 to -48), s
 keys with a working additive of 30–50 read as 0 and the whole service ran on
 the pool-collapse fallback while the term ranked no operator above another.
 
-Simulated at steady state (100k attempts, 10 runs): nodefleet 0; rpcgate `-11`
-(tier 1, 89); spacebelt `-23` (tier 2, 77); 1% `-40` (tier 2, 60); 5% `-61`;
+Simulated at steady state (100k attempts, 10 runs): operator C 0; operator B `-11`
+(tier 1, 89); operator A `-23` (tier 2, 77); 1% `-40` (tier 2, 60); 5% `-61`;
 20% `-70` (probation). A burst of 3 criticals on a clean endpoint moves the
 rate term by 0.010% — penalty 0; a burst of 6 costs `-0.4` and clears in ~1,100
-clean attempts; 20 in a row cost `-13`. Detection of a spacebelt-rate violator
+clean attempts; 20 in a row cost `-13`. Detection of an operator-A-rate violator
 takes 12k–22k attempts, which at that supplier's mainnet volume (2M relays/day)
 is under fifteen minutes and at 1 relay/s is six hours: the term is for chronic
 behaviour and is allowed to be slow. (§7.7: in the running gateway the intake
@@ -485,9 +485,9 @@ every client response a 200.
 
 | endpoint | injected | attempts | rate (EWMA) | penalty | score at full additive |
 |---|---|---|---|---|---|
-| spacebelt | 0.216% | 28,817 | 0.1415% | -20.0 | 79.997 — tier 2 |
-| rpcgate | 0.065% | 132,125 | 0.081% | -14.3 | 85.7 — tier 1 |
-| nodefleet | 0.00003% | 266,601,952 | 0 | 0 | 100 |
+| operator A | 0.216% | 28,817 | 0.1415% | -20.0 | 79.997 — tier 2 |
+| operator B | 0.065% | 132,125 | 0.081% | -14.3 | 85.7 — tier 1 |
+| operator C | 0.00003% | 266,601,952 | 0 | 0 | 100 |
 
 The three verdicts the design was calibrated for hold. Two things the
 simulation did not show, both consequences of the tiers rather than of the
@@ -504,7 +504,7 @@ cycle, however much the pool is offered — 560/min early, 300/min once the
 penalty lengthened the recovery — and the first demotion by the rate term
 alone came at 28.7k attempts and 53 minutes. The "fifteen minutes at mainnet
 volume" above assumed the attempts keep flowing; they do not. The same
-mechanism gave rpcgate 0.05% of the pool's relays in a 3-endpoint pool at
+mechanism gave operator B 0.05% of the pool's relays in a 3-endpoint pool at
 59k/s: it burns its ~1,500 clean attempts in a second and then waits a minute
 for probes. At mainnet rates the bench is a smaller fraction of the cycle (at
 23 relays/s the burst is 67 s against a 60 s bench), but for any endpoint the
@@ -517,7 +517,7 @@ the parked state stick.
 receiving anything but probes. Probes are clean attempts, so they decay the
 rate — by 0.28% (relative) per 80 attempts, which at four a minute is a
 three-minute crawl back across the line, a ~460-relay visit to tier 1, one
-critical, and a re-park that the next clean burst has to undo. spacebelt sat
+critical, and a re-park that the next clean burst has to undo. Operator A sat
 at `rate 0.1415%, penalty -20.003, score 79.997` for the final 20 minutes. The
 `-23 / -40 / -70` steady states in §7.3 are what the term reports for a key
 whose attempts keep coming — a violator in a pool whose tier 1 has collapsed —
@@ -566,19 +566,19 @@ stable; 19.8k relays/s, every client response a 200):
 
 | endpoint | injected | attempts | share | rate (EWMA) | penalty | score at full additive |
 |---|---|---|---|---|---|---|
-| spacebelt | 0.216% | 339,682 | 0.26% | 0.233% | -25.1 | 74.9 — tier 2 |
-| rpcgate | 0.065% | 37,318,360 | 28.3% | 0.092% | -15.6 | 84.4 — tier 1 |
-| nodefleet | 0.00003% | 94,092,442 | 71.4% | 0 | 0 | 100 |
+| operator A | 0.216% | 339,682 | 0.26% | 0.233% | -25.1 | 74.9 — tier 2 |
+| operator B | 0.065% | 37,318,360 | 28.3% | 0.092% | -15.6 | 84.4 — tier 1 |
+| operator C | 0.00003% | 94,092,442 | 71.4% | 0 | 0 | 100 |
 
-Against the first soak: rpcgate went from 0.05% of relays to 28% — a tier-1
+Against the first soak: operator B went from 0.05% of relays to 28% — a tier-1
 share, its one-blip benches now ending in relays instead of a probe cycle —
-and spacebelt reached the table's steady state (`-23` predicted, `-24` to `-25`
+and operator A reached the table's steady state (`-23` predicted, `-24` to `-25`
 measured, EWMA reading 0.21–0.24% against 0.216% injected) in three minutes
 rather than parking at `-20.003` forever. The admin listing's rate is a
-measurement again. spacebelt spends most of its time below 50 (additive 75
+measurement again. Operator A spends most of its time below 50 (additive 75
 after each critical, `-25` on top), where neither share reaches it and probes
 lift it back to tier 2 — so it is demoted *and* kept measured, at 0.23% of
-relays. rpcgate's EWMA wandered 0.06–0.09% over the hour (`-11` to `-16`), which
+relays. operator B's EWMA wandered 0.06–0.09% over the hour (`-11` to `-16`), which
 at 37M attempts is the term's own noise at a 20k half-life, never near the
 tier line. The duty cycle for good hosts is gone as a first-order effect; the
 cheaper-critical-at-95 idea stays parked.

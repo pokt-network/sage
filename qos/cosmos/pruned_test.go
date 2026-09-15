@@ -118,9 +118,9 @@ func TestPrunedMemory_ExpiresAndBounds(t *testing.T) {
 // so the query is sent once and the node's answer is delivered.
 func TestSelectEndpoints_SkipsHostsPrunedBelowRequestedHeight(t *testing.T) {
 	p := NewPlugin(nil, Config{})
-	pruned := domain.EndpointAddr("pokt1a-https://rm02.kalorius.tech")
-	prunedTwin := domain.EndpointAddr("pokt1b-https://rm02.kalorius.tech") // same host, other supplier
-	archive := domain.EndpointAddr("pokt1c-https://r004.rpcgate.xyz")
+	pruned := domain.EndpointAddr("pokt1a-https://rm02.opc.example")
+	prunedTwin := domain.EndpointAddr("pokt1b-https://rm02.opc.example") // same host, other supplier
+	archive := domain.EndpointAddr("pokt1c-https://r004.opa.example")
 	all := domain.EndpointAddrList{pruned, prunedTwin, archive}
 
 	body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"height 27782 is not available, lowest height is 25052001"}}`)
@@ -134,7 +134,7 @@ func TestSelectEndpoints_SkipsHostsPrunedBelowRequestedHeight(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0] != archive {
-		t.Fatalf("old height: got %v, want only %v (both kalorius addresses share the pruned host)", got, archive)
+		t.Fatalf("old height: got %v, want only %v (both addresses share the pruned host)", got, archive)
 	}
 
 	restOld := domain.NewPayload(nil, domain.RPCTypeREST, "").WithHTTP("/cosmos/base/tendermint/v1beta1/blocks/40628", "GET")

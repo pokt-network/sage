@@ -33,8 +33,8 @@ func TestRateConfig_PenaltyCurve(t *testing.T) {
 	assert.InDelta(t, -70, c.Penalty(0.1), 1e-9, "-70 at 10x full")
 	assert.Equal(t, -70.0, c.Penalty(0.5), "capped at -70")
 	// The numbers docs/scoring.md §7.3 quotes.
-	assert.InDelta(t, -23.5, c.Penalty(0.002), 0.6, "spacebelt 0.2% lands tier 2")
-	assert.InDelta(t, -12, c.Penalty(0.00065), 1.0, "rpcgate 0.065% keeps tier 1")
+	assert.InDelta(t, -23.5, c.Penalty(0.002), 0.6, "a 0.2% violator lands tier 2")
+	assert.InDelta(t, -12, c.Penalty(0.00065), 1.0, "a 0.065% violator keeps tier 1")
 }
 
 func TestFailureWeight(t *testing.T) {

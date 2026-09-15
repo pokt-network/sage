@@ -58,15 +58,15 @@ func do(t *testing.T, method, url string, body any) (*http.Response, map[string]
 func TestAdminBlockedDomains_SetListRelease(t *testing.T) {
 	ap, srv := newBlocklistServer(t, []config.BlockedDomain{{Domain: "config.example"}})
 
-	resp, out := do(t, http.MethodPut, srv.URL+"/admin/blocked-domains/NodeFleet.net",
+	resp, out := do(t, http.MethodPut, srv.URL+"/admin/blocked-domains/Opb.example",
 		map[string]any{"rpc_types": []string{"websocket"}, "reason": "dead since July"})
 	require.Equal(t, http.StatusOK, resp.StatusCode, out)
 	assert.Equal(t, true, out["applied"])
-	assert.Equal(t, "nodefleet.net", out["domain"])
+	assert.Equal(t, "opb.example", out["domain"])
 	assert.Equal(t, false, out["shared"], "memory backend is this replica only")
 
 	require.Len(t, ap.last, 2, "protocol got config + admin")
-	assert.Equal(t, "nodefleet.net", ap.last[1].Domain)
+	assert.Equal(t, "opb.example", ap.last[1].Domain)
 	assert.Equal(t, []string{"websocket"}, ap.last[1].RPCTypes)
 
 	resp, out = do(t, http.MethodGet, srv.URL+"/admin/blocked-domains", nil)
@@ -77,7 +77,7 @@ func TestAdminBlockedDomains_SetListRelease(t *testing.T) {
 	assert.Equal(t, "dead since July", adminEntry["reason"])
 	assert.NotEmpty(t, adminEntry["since"])
 
-	resp, out = do(t, http.MethodDelete, srv.URL+"/admin/blocked-domains/nodefleet.net", nil)
+	resp, out = do(t, http.MethodDelete, srv.URL+"/admin/blocked-domains/opb.example", nil)
 	require.Equal(t, http.StatusOK, resp.StatusCode, out)
 	assert.Equal(t, true, out["released"])
 	require.Len(t, ap.last, 1)

@@ -1,9 +1,9 @@
 # Chronic-failure rate term soak (docs/scoring.md §7.3) against the in-process
 # mock backend. Three endpoints reproduce PATH's mainnet empty-response rates:
 #
-#   endpoint 0  spacebelt  0.216%    must land in tier 2 (penalty ≈ -23)
-#   endpoint 1  rpcgate    0.065%    must keep tier 1   (penalty ≈ -12)
-#   endpoint 2  nodefleet  0.00003%  untouched          (penalty 0)
+#   endpoint 0  operator A  0.216%    must land in tier 2 (penalty ≈ -23)
+#   endpoint 1  operator B  0.065%    must keep tier 1   (penalty ≈ -12)
+#   endpoint 2  operator C  0.00003%  untouched          (penalty 0)
 #
 #   ./bench/rate-term.sh [duration]
 #
