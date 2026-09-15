@@ -132,6 +132,10 @@ failureThreshold) here.
 | `GET` | `/admin/external-sources/{serviceID}` | Returns one service's external block sources and poll status, with `persisted` as in the list. |
 | `PUT` | `/admin/external-sources/{serviceID}` | Replaces a service's external block sources and restarts its polling. |
 | `DELETE` | `/admin/external-sources/{serviceID}` | Clears a service's admin override: polling returns to the file's `external_block_sources`, or stops if the file has none. |
+| `GET` | `/admin/health-checks` | Lists every service's configured health checks: the ones running (`effective`), where they come from (`origin`: config, admin or none) and the file's (`configured`, what DELETE returns to). |
+| `GET` | `/admin/health-checks/{serviceID}` | Returns one service's configured health checks. |
+| `PUT` | `/admin/health-checks/{serviceID}` | Replaces a service's configured health checks (its active_health_checks.local block) on the running gateway. |
+| `DELETE` | `/admin/health-checks/{serviceID}` | Clears a service's admin block; the file's block runs again. |
 | `POST` | `/admin/websocket/rebind/{serviceID}` | Replaces the supplier under every live WebSocket connection of a service, without closing any client. |
 | `GET` | `/admin/request-sample` | Returns every service the request-shape sampler has observed, each with its most recently completed traffic summary. |
 | `GET` | `/admin/request-sample/{serviceID}` | Returns one service's request-shape summary plus its top fingerprints for a single window. |
@@ -543,6 +547,37 @@ none.
 Every replica follows through the override store. To stop polling a service
 that the file configures, PUT an empty `sources` list instead. The body
 says whether there was an override to clear, and `persisted`.
+
+### `GET /admin/health-checks`
+
+Lists every service's configured health checks: the
+ones running (`effective`), where they come from (`origin`: config, admin
+or none) and the file's (`configured`, what DELETE returns to). The QoS
+plugin's own checks are not listed; they always run.
+
+### `GET /admin/health-checks/{serviceID}`
+
+Returns one service's configured health checks.
+
+### `PUT /admin/health-checks/{serviceID}`
+
+Replaces a service's configured health checks (its
+active_health_checks.local block) on the running gateway.
+
+Body: `{"check_interval": "60s", "checks": [{"name": "…", "type":
+"json_rpc|rest|comet_bft", "method": "…", "path": "…", "body": "…",
+"expected_status_code": 200, "reputation_signal": "minor_error",
+"timeout": "5s"}]}`; only `name` is required. It replaces the file's block
+for the service and is always enabled; an empty `checks` stops the
+service's configured checks. The QoS plugin's own checks run regardless.
+Written to the override store first, so every replica applies it and a
+restart keeps it; with no Redis it is this replica only. 400 for an invalid
+check, 404 for a service this gateway does not serve.
+
+### `DELETE /admin/health-checks/{serviceID}`
+
+Clears a service's admin block; the file's block
+runs again. The body says whether there was one to clear, and `persisted`.
 
 ### `POST /admin/websocket/rebind/{serviceID}`
 

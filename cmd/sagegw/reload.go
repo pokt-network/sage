@@ -225,11 +225,18 @@ func (a *App) apply(ctx context.Context, next *config.Config) (reload.Result, er
 		if a.HealthExe == nil {
 			res.Warnings = append(res.Warnings, unavailable(keyHealthChecks, "no health check executor is running"))
 		} else {
-			checks, warnings := healthcheck.BuildConfiguredChecks(next.Gateway.HealthChecks)
+			var warnings []string
+			if a.CheckOverrides != nil {
+				// The admin API's blocks stay on top of the reloaded file's.
+				warnings = a.CheckOverrides.SetBase(next.Gateway.HealthChecks)
+			} else {
+				var checks *healthcheck.ConfiguredChecks
+				checks, warnings = healthcheck.BuildConfiguredChecks(next.Gateway.HealthChecks)
+				a.HealthExe.SetConfiguredChecks(checks)
+			}
 			for _, warning := range warnings {
 				res.Warnings = append(res.Warnings, "health check config: "+warning)
 			}
-			a.HealthExe.SetConfiguredChecks(checks)
 			a.HealthExe.SetBackendURLDedup(!next.Gateway.HealthChecks.DisableBackendURLDedup)
 			res.Applied = append(res.Applied, keyHealthChecks)
 		}
