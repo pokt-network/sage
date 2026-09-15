@@ -382,6 +382,21 @@ operator of the pool shared one timeout tail (1.2–1.8%, penalty -43 to -48), s
 keys with a working additive of 30–50 read as 0 and the whole service ran on
 the pool-collapse fallback while the term ranked no operator above another.
 
+Two more corrections followed the same day, both from mainnet sei:
+
+- **The penalty is pool-relative** (flag `relative_chronic`, default on). A
+  key's rate is measured from its (service, RPC type) pool's baseline: the
+  lowest rate among the pool's keys with at least 1,000 attempts and a live
+  additive term, recomputed every 30 s, for pools with two such keys. A tail
+  every operator shares costs none of them; a key worse than the best pays
+  the difference, on the same curve.
+- **A probe cannot outvote traffic.** A probe success on a key that served
+  traffic in the last 10 minutes moves neither term. One operator passed
+  `eth_blockNumber` every cycle while answering 408 to real calls, and the
+  probes' +5 cancelled the 408s' -5 and held it at 100. Probes remain the
+  way a benched key, which gets no traffic, earns its way back; a probe
+  failure always counts.
+
 Simulated at steady state (100k attempts, 10 runs): operator C 0; operator B `-11`
 (tier 1, 89); operator A `-23` (tier 2, 77); 1% `-40` (tier 2, 60); 5% `-61`;
 20% `-70` (probation). A burst of 3 criticals on a clean endpoint moves the
