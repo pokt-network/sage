@@ -132,6 +132,17 @@ func buildSignal(ctx *relay.Context, relayErr error, latency time.Duration) repu
 		return penaltySignal(*ctx.HeuristicResult, latency)
 	}
 
+	// A verdict that says "retry, but do not score" — a node's own -32000
+	// answer (server_error), a 408 with penalize_408 off — is not the
+	// supplier failing, and records nothing. The retry turns it into a relay
+	// error, and without this it fell through to the status fallback below
+	// and was scored minor anyway: on mainnet sei (2026-09-15) the change that
+	// stopped scoring server_error moved nothing, 954 of them in 10 minutes
+	// still landing as minor errors.
+	if ctx.HeuristicResult != nil && relayErr != nil {
+		return reputation.Signal{}
+	}
+
 	// No heuristic result — fall back to simple success/error logic.
 	if relayErr != nil || !isSuccessStatus(ctx) {
 		reason := "relay_error"

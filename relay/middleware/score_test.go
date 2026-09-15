@@ -48,6 +48,37 @@ func TestScore_UsesHeuristicSeverity(t *testing.T) {
 	assert.Equal(t, "fabricated_response", got[0].Signal.Reason)
 }
 
+// A verdict that retries without scoring records nothing: a node's own
+// -32000 answer, and a 408 with penalize_408 off. A 408 with it on is major.
+func TestScore_RetriedButUnscoredVerdictIsNoSignal(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+		flags  []string
+		want   reputation.SignalType // "" means no signal
+	}{
+		"node's own -32000":   {200, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"some node-specific failure"}}`, []string{featureflag.FlagHeuristic}, ""},
+		"408, penalty off":    {408, `<html>408</html>`, []string{featureflag.FlagHeuristic}, ""},
+		"408, penalty on":     {408, `<html>408</html>`, []string{featureflag.FlagHeuristic, featureflag.FlagPenalize408}, reputation.SignalMajorError},
+		"rate limit is minor": {200, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"rate limit exceeded"}}`, []string{featureflag.FlagHeuristic}, reputation.SignalMinorError},
+	} {
+		rep := &recordingRepService{}
+		flags := newFlags(append(tc.flags, featureflag.FlagScoringV2)...)
+		inner := Heuristic(flags, nil)(relay.HandlerFunc(func(ctx *relay.Context) error {
+			ctx.Response = &domain.Response{Body: []byte(tc.body), HTTPStatusCode: tc.status}
+			return nil
+		}))
+		_ = Score(flags, rep)(inner).HandleRelay(scoreCtx("pokt1a-https://a"))
+		got := rep.all()
+		if tc.want == "" {
+			assert.Empty(t, got, name)
+			continue
+		}
+		require.Len(t, got, 1, name)
+		assert.Equal(t, tc.want, got[0].Signal.Type, name)
+	}
+}
+
 func TestScore_ClientAttributedErrorIsNoSignal(t *testing.T) {
 	rep := &recordingRepService{}
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
