@@ -503,7 +503,15 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// (2026-09-15) one operator passed eth_blockNumber every cycle while it
 	// answered 408 to real calls, and the probes' +5 cancelled the 408s' -5,
 	// holding it at 100 in tier 1. Probe failures still count.
+	//
+	// Only for a key that is selectable (additive at or above MinThreshold):
+	// a benched key still climbs back to probation on probes. Without that
+	// bound, the collapse fallback's occasional pick kept a floored key's
+	// traffic "recent" forever and its probes never counted — mainnet
+	// solana's floored keys sat at 0 answering most of what they were sent.
+	// Probes bring a key back into probation; traffic takes it from there.
 	deferred := signal.Probe && signal.Type == SignalSuccess &&
+		st.Score >= s.selector.cfg.MinThreshold &&
 		st.LastTraffic > 0 && ts.Unix()-st.LastTraffic < int64(probeDefer/time.Second)
 	prev := st
 	if !deferred {
