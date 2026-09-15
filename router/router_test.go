@@ -14,6 +14,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -25,6 +26,7 @@ type mockChain struct {
 	err      error
 	response *domain.Response
 	degraded bool
+	verdict  *heuristic.AnalysisResult
 }
 
 func (m *mockChain) HandleRelay(ctx *relay.Context) error {
@@ -32,6 +34,7 @@ func (m *mockChain) HandleRelay(ctx *relay.Context) error {
 	if m.response != nil {
 		ctx.Response = m.response
 	}
+	ctx.HeuristicResult = m.verdict
 	ctx.Degraded = m.degraded
 	return m.err
 }
@@ -771,6 +774,39 @@ func TestHandleRelay_RetryVerdictExhausted_DeliversUpstreamResponse(t *testing.T
 	}
 	if strings.Contains(logs.String(), "level=ERROR") {
 		t.Errorf("delivering the upstream's answer is not an error:\n%s", logs.String())
+	}
+}
+
+// A supplier's own page on the last attempt is not the answer: a relay
+// miner's 408 becomes the gateway's 504, any other supplier page its 500,
+// both with the JSON-RPC error envelope rather than the page.
+func TestHandleRelay_RetryVerdictExhausted_SupplierPageIsNotDelivered(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		reason string
+		want   int
+	}{
+		{408, "http_408", http.StatusGatewayTimeout},
+		{404, "http_4xx_page", http.StatusInternalServerError},
+	} {
+		chain := &mockChain{
+			response: &domain.Response{HTTPStatusCode: tc.status, Body: []byte(`<html>page</html>`)},
+			err:      domain.NewRelayError(domain.ErrEndpoint, "heuristic analysis suggests retry: "+tc.reason, domain.ErrRetryVerdict, true),
+			verdict:  &heuristic.AnalysisResult{ShouldRetry: true, Attribution: heuristic.AttrSupplier, Reason: tc.reason},
+		}
+		r := New(config.RouterConfig{Port: 0}, chain, &mockSessions{ready: true}, nil, discardLogger())
+		srv := httptest.NewServer(r.mux)
+		resp, err := http.Post(srv.URL+"/v1", "application/json",
+			strings.NewReader(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":42}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		srv.Close()
+		if resp.StatusCode != tc.want || strings.Contains(string(body), "<html>") || !strings.Contains(string(body), `"jsonrpc"`) {
+			t.Fatalf("%s: got %d %q, want %d with a JSON-RPC error, not the page", tc.reason, resp.StatusCode, body, tc.want)
+		}
 	}
 }
 
