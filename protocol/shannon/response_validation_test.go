@@ -20,6 +20,13 @@ type recordingMetrics struct {
 	mu         sync.Mutex
 	blacklists []string
 	minerErrs  []string
+	oversized  int
+}
+
+func (r *recordingMetrics) RecordOversizedResponse(domain.ServiceID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.oversized++
 }
 
 func (r *recordingMetrics) RecordSupplierBlacklist(_ domain.ServiceID, reason string) {

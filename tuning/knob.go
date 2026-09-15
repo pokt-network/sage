@@ -47,6 +47,8 @@ const (
 	KnobHedgeDelay = "retry.hedge_delay"
 	// KnobRelayTimeout overrides timeout_config.relay_timeout.
 	KnobRelayTimeout = "timeout.relay_timeout"
+	// KnobMaxResponseMB overrides router.max_response_body_bytes, in MiB.
+	KnobMaxResponseMB = "relay.max_response_mb"
 	// KnobHealthCheckInterval overrides active_health_checks.interval.
 	KnobHealthCheckInterval = "health_checks.interval"
 	// KnobHealthCheckWorkers overrides active_health_checks.max_workers.
@@ -121,6 +123,14 @@ var Knobs = []Knob{
 		Min:         100,
 		Max:         300_000,
 		Unit:        "ms",
+	},
+	{
+		Name:        KnobMaxResponseMB,
+		Kind:        KindInt,
+		Description: "Largest supplier response a relay will read; a larger one is abandoned and the client gets a 502 (sage_oversized_responses_total). Peak memory for one response is about three times this, twice that with a hedge racing, so raising it for a service that serves giants (a 1.4 GB block_results) needs the pod memory to match.",
+		Min:         1,
+		Max:         16_384,
+		Unit:        "MiB",
 	},
 	{
 		Name: KnobHealthCheckInterval,

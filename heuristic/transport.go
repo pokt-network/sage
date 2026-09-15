@@ -97,6 +97,17 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 	// supplier's layer (minor each; the score's rate term turns a steady
 	// stream into a real penalty and tiering moves traffic off it), a 413 is
 	// the client's payload and is not retried.
+	// Over the response ceiling: the size of what the client asked for, which
+	// every supplier would send alike. Not scored, not retried.
+	if errors.Is(err, domain.ErrResponseTooLarge) {
+		return AnalysisResult{
+			Attribution: AttrClient,
+			Confidence:  0.90,
+			Reason:      "response_too_large",
+			Details:     err.Error(),
+		}
+	}
+
 	var upstream *domain.UpstreamStatusError
 	if errors.As(err, &upstream) {
 		switch {

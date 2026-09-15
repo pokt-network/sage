@@ -1,6 +1,7 @@
 package shannon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -535,6 +536,55 @@ func TestAvailableEndpoints_ExcludesBlockedDomain(t *testing.T) {
 // blacklist the supplier for 15 minutes as "unmarshal_error", over a transient
 // miner error. It must instead be a retryable endpoint error, no blacklist,
 // and the client must not see internal detail.
+// A response past the ceiling is abandoned, with or without a declared
+// length: not retried (another supplier sends the same bytes), not
+// blacklisted, and counted.
+func TestSendRelay_ResponseOverCeilingIsAbandoned(t *testing.T) {
+	for _, chunked := range []bool{false, true} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(bytes.Repeat([]byte("x"), 1500))
+			if chunked {
+				w.(http.Flusher).Flush()
+			}
+			_, _ = w.Write(bytes.Repeat([]byte("x"), 500))
+		}))
+
+		supplierAddr := "pokt1giant"
+		session := buildRelayTestSession(supplierAddr, server.URL)
+		fnMock := &mockRelayFullNode{session: session, height: 200}
+		sm := newSessionManager(fnMock, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+		rec := &recordingMetrics{}
+		p := &Protocol{
+			fullNode:   fnMock,
+			sessions:   sm,
+			signer:     &mockSigner{},
+			bl:         newBlacklist(),
+			ownedApps:  map[domain.ServiceID][]string{"eth": {"pokt1app"}},
+			httpClient: server.Client(),
+			metrics:    rec,
+			logger:     newTestLogger(),
+		}
+		p.SetResponseLimit(func(domain.ServiceID) int64 { return 1024 })
+		var addr domain.EndpointAddr
+		for a := range sm.getOrCreateEndpoints(session) {
+			addr = a
+		}
+		payload := domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","id":1}`), domain.RPCTypeJSONRPC, "eth_getLogs")
+
+		_, err := p.SendRelay(context.Background(), "eth", addr, payload)
+		server.Close()
+		if !errors.Is(err, domain.ErrResponseTooLarge) {
+			t.Fatalf("chunked=%v: err = %v, want ErrResponseTooLarge", chunked, err)
+		}
+		if domain.IsRetryable(err) {
+			t.Errorf("chunked=%v: an oversized response must not be retried", chunked)
+		}
+		if p.bl.IsBlacklisted("eth", supplierAddr) || rec.oversized != 1 {
+			t.Errorf("chunked=%v: blacklisted=%v oversized=%d, want false and 1", chunked, p.bl.IsBlacklisted("eth", supplierAddr), rec.oversized)
+		}
+	}
+}
+
 func TestSendRelay_MinerHTTPError_NotBlacklisted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

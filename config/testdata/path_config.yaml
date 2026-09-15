@@ -26,6 +26,7 @@ router_config:
   write_timeout: 32s
   idle_timeout: 121s
   max_request_body_bytes: 78643200
+  max_response_body_bytes: 268435456
   max_request_header_bytes: 2000000
   websocket_message_buffer_size: 8192
   trusted_proxies:

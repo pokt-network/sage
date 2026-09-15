@@ -252,3 +252,13 @@ func TestAnalyzeTransportError_UpstreamStatusIsGradedByStatus(t *testing.T) {
 		}
 	}
 }
+
+// A response over the ceiling is the request's size: another supplier would
+// send the same bytes, so it is neither retried nor scored.
+func TestAnalyzeTransportError_ResponseTooLargeIsTheClients(t *testing.T) {
+	err := domain.NewRelayError(domain.ErrEndpoint, "upstream response too large", domain.ErrResponseTooLarge, false)
+	r := AnalyzeTransportError(err, nil)
+	if r.Reason != "response_too_large" || r.Attribution != AttrClient || r.ShouldRetry || r.ShouldPenalize || r.ShouldCircuitBreak {
+		t.Fatalf("got %+v", r)
+	}
+}

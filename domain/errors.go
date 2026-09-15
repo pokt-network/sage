@@ -38,6 +38,14 @@ var ErrRetryVerdict = errors.New("heuristic verdict: retry")
 // it to record no signal.
 var ErrEndpointsStale = errors.New("endpoints stale: session rolled over")
 
+// ErrResponseTooLarge is the cause carried when a supplier's response exceeds
+// the gateway's response ceiling. The response is not read past the ceiling:
+// a signed relay has to be held whole to be verified, so an unbounded one is
+// an unbounded allocation — one 1 GB answer OOM-killed a mainnet pod on
+// 2026-09-15. It is the request's size, not the supplier's fault, and another
+// supplier would send the same bytes, so it is neither scored nor retried.
+var ErrResponseTooLarge = errors.New("upstream response too large")
+
 // ErrRPCTypeUnsupported is the cause Validate attaches when a request's RPC
 // type is one the service does not declare. The router counts it in
 // sage_rpc_type_mismatch_total{reason="unsupported"}: a request that was

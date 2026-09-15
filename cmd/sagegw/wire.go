@@ -572,6 +572,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	})
 	tuningStore.Start(ctx)
 	retryFn := newRetryFn(app.Config.Load, tuningStore)
+	if app.Protocol != nil {
+		app.Protocol.SetResponseLimit(func(serviceID domain.ServiceID) int64 {
+			return int64(tuningStore.Int(tuning.KnobMaxResponseMB, serviceID, maxResponseMB(app.Config.Load()))) << 20
+		})
+	}
 	timeoutFn := newTimeoutFn(app.Config.Load, tuningStore)
 
 	// 12. Build middleware chain.
@@ -1011,6 +1016,7 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobRetryMaxLatency, retry.MaxLatency.String())
 	store.SetBase(tuning.KnobHedgeDelay, retry.HedgeDelay.String())
 	store.SetBase(tuning.KnobRelayTimeout, cfg.Gateway.Defaults.Timeout.RelayTimeout.String())
+	store.SetBase(tuning.KnobMaxResponseMB, strconv.Itoa(maxResponseMB(cfg)))
 	store.SetBase(tuning.KnobHealthCheckInterval, effectiveHealthCheckInterval(cfg).String())
 	store.SetBase(tuning.KnobHealthCheckWorkers, strconv.Itoa(cfg.Gateway.HealthChecks.MaxWorkers))
 	store.SetBase(tuning.KnobPeerProbeMaxAge, cfg.Gateway.HealthChecks.PeerProbeStream.MaxAge.String())
@@ -1022,6 +1028,16 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 		rate = 1
 	}
 	store.SetBase(tuning.KnobObservationSampleRate, strconv.FormatFloat(rate, 'f', -1, 64))
+}
+
+// maxResponseMB is router.max_response_body_bytes in whole MiB, the knob's
+// unit; unset takes the protocol's default.
+func maxResponseMB(cfg *config.Config) int {
+	n := cfg.Router.MaxResponseBodyBytes
+	if n <= 0 {
+		n = shannon.DefaultMaxResponseBodyBytes
+	}
+	return max(1, int(n>>20))
 }
 
 func newRetryFn(cfgFn func() *config.Config, store *tuning.Store) func(domain.ServiceID) config.RetryConfig {

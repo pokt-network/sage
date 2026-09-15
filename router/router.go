@@ -588,6 +588,11 @@ func statusForError(err error) int {
 	if errors.Is(err, context.Canceled) {
 		return statusClientClosedRequest
 	}
+	// A supplier answered, but with more than the response ceiling: a bad
+	// upstream answer from the client's point of view, not the gateway failing.
+	if errors.Is(err, domain.ErrResponseTooLarge) {
+		return http.StatusBadGateway
+	}
 	var re *domain.RelayError
 	if errors.As(err, &re) {
 		switch re.Kind {

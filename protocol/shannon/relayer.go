@@ -80,6 +80,10 @@ type Protocol struct {
 	// metrics records supplier-attributable events (blacklists, relay miner
 	// errors). Never nil — see SetMetrics.
 	metrics supplierMetrics
+	// responseLimit resolves the response ceiling for a service, in bytes.
+	// Nil or non-positive means DefaultMaxResponseBodyBytes — see
+	// SetResponseLimit.
+	responseLimit func(domain.ServiceID) int64
 	// rpcFallbacks is the per-service rpc_type_fallbacks mapping, consulted by
 	// endpointURL wherever a relay is addressed. Nil when no service sets one.
 	rpcFallbacks rpcFallbackTable
@@ -148,6 +152,52 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 	}
 	p.blockedDomains.Store(blockedDomains)
 	return p, nil
+}
+
+// DefaultMaxResponseBodyBytes is the response ceiling when none is set.
+// Reading one response costs about three times its size (the raw bytes, the
+// RelayResponse payload, the deserialized body), so 256 MiB is ~768 MiB on a
+// pod whose limit on mainnet is 3 GiB.
+const DefaultMaxResponseBodyBytes int64 = 256 << 20
+
+// SetResponseLimit installs the per-service response ceiling, read on every
+// relay so a tuning override applies without a restart. Call at wire time.
+func (p *Protocol) SetResponseLimit(fn func(domain.ServiceID) int64) {
+	p.responseLimit = fn
+}
+
+// maxResponseBytes is the response ceiling for serviceID.
+func (p *Protocol) maxResponseBytes(serviceID domain.ServiceID) int64 {
+	if p.responseLimit != nil {
+		if n := p.responseLimit(serviceID); n > 0 {
+			return n
+		}
+	}
+	return DefaultMaxResponseBodyBytes
+}
+
+// readResponse reads a relay response body up to limit bytes. Past the limit
+// it stops reading and reports ErrResponseTooLarge rather than allocate: a
+// supplier's answer to a wide eth_getLogs or a pocket block_results can run
+// past a gigabyte, and one did OOM-kill a mainnet pod on 2026-09-15.
+func (p *Protocol) readResponse(serviceID domain.ServiceID, resp *http.Response) ([]byte, error) {
+	limit := p.maxResponseBytes(serviceID)
+	var body []byte
+	var err error
+	if resp.ContentLength <= limit {
+		body, err = io.ReadAll(io.LimitReader(resp.Body, limit+1))
+		if err != nil {
+			return nil, domain.NewRelayError(domain.ErrTransport, "failed to read relay response body", err, true)
+		}
+	}
+	if resp.ContentLength > limit || int64(len(body)) > limit {
+		p.supplierMetricsRecorder().RecordOversizedResponse(serviceID)
+		p.logger.Warn("SendRelay: supplier response exceeds the response ceiling",
+			"service_id", serviceID, "limit_bytes", limit, "content_length", resp.ContentLength)
+		return nil, domain.NewRelayError(domain.ErrEndpoint, "upstream response too large",
+			fmt.Errorf("%w: over %d bytes", domain.ErrResponseTooLarge, limit), false)
+	}
+	return body, nil
 }
 
 // SendRelay sends a relay for the given service to the specified endpoint.
@@ -325,9 +375,9 @@ func (p *Protocol) SendRelay(
 		defer httpResp.Body.Close()
 		httpStatus = httpResp.StatusCode
 
-		respBz, err = io.ReadAll(httpResp.Body)
+		respBz, err = p.readResponse(serviceID, httpResp)
 		if err != nil {
-			return nil, domain.NewRelayError(domain.ErrTransport, "failed to read relay response body", err, true)
+			return nil, err
 		}
 
 		// A non-2xx status is the relay MINER erroring before it produced a
