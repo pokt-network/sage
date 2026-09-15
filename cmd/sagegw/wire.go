@@ -112,7 +112,10 @@ type App struct {
 	blocklist *blocklist.Manager
 	Leader    *healthcheck.LeaderElector
 	HealthExe *healthcheck.Executor
-	Redis     *redis.Client
+	// CheckOverrides owns the configured health checks: the file's blocks
+	// with the admin API's on top. A reload goes through it.
+	CheckOverrides *healthcheck.CheckOverrides
+	Redis          *redis.Client
 	Metrics   *metrics.Recorder
 	Logger    *slog.Logger
 	// Overrides is the store the runtime seams persist through; see package
@@ -744,11 +747,18 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// Health checks declared in YAML, in addition to the plugin's own. A rule
 	// that could not be built is skipped and said out loud — a check silently
 	// missing reads to an operator as a check that is passing.
-	configuredChecks, checkWarnings := healthcheck.BuildConfiguredChecks(cfg.Gateway.HealthChecks)
-	for _, warning := range checkWarnings {
+	// PUT /admin/health-checks/{service} replaces one service's block at
+	// runtime, persisted in the override store like external block sources;
+	// see healthcheck.CheckOverrides.
+	checkOverrides := healthcheck.NewCheckOverrides(healthExe, func(id domain.ServiceID) bool {
+		return app.Config.Load().Gateway.GetServiceConfig(string(id)) != nil
+	}, logger)
+	checkOverrides.SetOverrides(overrides)
+	for _, warning := range checkOverrides.SetBase(cfg.Gateway.HealthChecks) {
 		app.StartupWarnings = append(app.StartupWarnings, "active_health_checks: "+warning)
 	}
-	healthExe.SetConfiguredChecks(configuredChecks)
+	checkOverrides.Start(ctx)
+	app.CheckOverrides = checkOverrides
 	healthExe.SetBackendURLDedup(!cfg.Gateway.HealthChecks.DisableBackendURLDedup)
 	healthExe.SetProbeTimeout(cfg.Gateway.HealthChecks.ProbeTimeout)
 	// The probe cadence is resolved per cycle rather than captured here, so
@@ -774,7 +784,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	healthExe.SetFlags(flags)
 	// Which declared RPC types no probe covers, said once at boot.
 	app.StartupWarnings = append(app.StartupWarnings,
-		healthcheck.RPCTypeCoverageGaps(cfg.Gateway.AllServices(), qosReg, configuredChecks)...)
+		healthcheck.RPCTypeCoverageGaps(cfg.Gateway.AllServices(), qosReg, checkOverrides.Current())...)
 	// Traffic-informed probing: skip a check against a backend client traffic
 	// has already graded this cycle. Gated by the traffic_informed_probing
 	// flag, which is off by default, and inert until the pod is warm.
@@ -954,6 +964,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		app.Admin.SetAutoDrainEvents(autoDrainEvents)
 	}
 	app.Admin.SetExternalSources(externalSources)
+	app.Admin.SetHealthChecks(checkOverrides)
 	app.Admin.SetOverrides(overrides)
 	// The WS relayer also answers the admin rebind route. Type-asserted
 	// rather than typed: wsRelayer is the router's opener interface, nil

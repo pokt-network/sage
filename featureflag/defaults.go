@@ -76,6 +76,11 @@ const (
 	// its decisions without setting a drain, even where auto_drain is on. On by
 	// default, so every instance collects shadow decisions from day one.
 	FlagAutoDrainShadow = "auto_drain_shadow"
+	// FlagPenalize408 lets a supplier's HTTP 408 cost it a major error. On by
+	// default since 2026-09-15; the same change was reverted on 2026-09-02
+	// for concentrating traffic, so this is its live undo, globally or per
+	// service. Off, a 408 is still retried, just not scored.
+	FlagPenalize408 = "penalize_408"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -113,6 +118,7 @@ var DefaultFlags = map[string]bool{
 	FlagPeerProbeSkip:          true,
 	FlagAutoDrain:              false,
 	FlagAutoDrainShadow:        true,
+	FlagPenalize408:            true,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

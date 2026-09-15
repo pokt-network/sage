@@ -124,11 +124,23 @@ func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (Anal
 	// penalty half for most 408s under a change described as the retry half
 	// alone, and left reason="http_408" matching 7 events out of 455, so the
 	// effect could not be selected on either.
+	//
+	// The penalty half is back since 2026-09-15, as a major error (the same
+	// weight as transport_timeout, and so half a failure in the chronic
+	// term), behind the penalize_408 flag so it can be turned off live. On
+	// mainnet one operator answered 408 to half of bsc's and arb-one's relays
+	// and sat at 97-100, because nothing scored the 408s, and its pages
+	// reached clients. What made the 2026-09-02 revert necessary — demotion
+	// concentrating traffic onto a shrinking tier 1 — is bounded now: the
+	// chronic term demotes but never removes (516616b), and a narrowing
+	// never leaves the pool without vouched capacity. Watch the client 408
+	// and 5xx share against PATH after it rolls; the flag is the undo.
 	case statusCode == http.StatusRequestTimeout:
 		return AnalysisResult{
 			ShouldRetry:        true,
 			ShouldCircuitBreak: false, // slow or overloaded, not broken
-			ShouldPenalize:     false, // the penalty half stays reverted
+			ShouldPenalize:     true,
+			PenaltySeverity:    SeverityMajor,
 			Attribution:        AttrSupplier,
 			Confidence:         0.90,
 			Reason:             "http_408",

@@ -90,6 +90,12 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middle
 			// the host's failure (qos.VerdictRefiner).
 			refineVerdict(registry, ctx, &result)
 
+			// penalize_408 is the live undo for scoring a supplier's 408
+			// (heuristic/analyzer.go): off, the 408 is still retried, not scored.
+			if result.Reason == "http_408" && flags != nil && !flags.IsEnabled(ctx.Ctx, featureflag.FlagPenalize408, ctx.ServiceID) {
+				result.ShouldPenalize = false
+			}
+
 			ctx.HeuristicResult = &result
 
 			if result.ShouldRetry {

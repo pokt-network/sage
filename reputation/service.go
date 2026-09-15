@@ -230,7 +230,7 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 // MinThreshold, the bottom of probation, and no further. Only the additive
 // term — the outage detector — takes a key out of selection. Without the
 // floor, a pool whose every operator shares one timeout tail (mainnet sei,
-// 2026-09-15: nodefleet at 1.2–1.8%, penalty -43 to -48) had keys with a
+// 2026-09-15: every operator at 1.2–1.8%, penalty -43 to -48) had keys with a
 // working additive score of 30–50 read as 0, so the whole service fell into
 // the pool-collapse fallback while the term ranked nobody above anybody.
 func (s *serviceImpl) effective(st State) float64 {
@@ -694,9 +694,9 @@ func sameURL(a, b string) bool {
 // granularity, a host or a supplier address at the coarser ones, or the
 // whole endpoint address at per-endpoint. target may be:
 //   - the key itself, as the listing shows it;
-//   - the identity ("https://rm02.kalorius.tech");
-//   - the identity's host ("rm02.kalorius.tech"), with or without a port;
-//   - an endpoint address ("pokt1abc-https://rm02.kalorius.tech"), matched
+//   - the identity ("https://node.example.org");
+//   - the identity's host ("node.example.org"), with or without a port;
+//   - an endpoint address ("pokt1abc-https://node.example.org"), matched
 //     by its URL, its host, or its supplier.
 //
 // An RPC type in the target ("…|rest") is honoured through the exact form
@@ -714,7 +714,7 @@ func resetTargets(key, target string) bool {
 	}
 	// A trailing slash is not part of what a URL names: the key holds the
 	// dialed URL as the supplier staked it, and "https://host/" and
-	// "https://host" are the same backend. Ops reset nodefleet's sei hosts
+	// "https://host" are the same backend. Ops reset one operator's sei hosts
 	// by URL on 2026-09-14 and matched none of the ones staked with a slash.
 	if sameURL(ident, target) {
 		return true

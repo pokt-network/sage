@@ -163,7 +163,10 @@ func TestSelectEndpoint_DegradedFallback_PluginReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestSelectEndpoint_EmptyEndpoints_Degraded(t *testing.T) {
+// An empty pool is an honest, non-retryable error — never an empty address
+// sent on to the protocol, which reported it as a session rollover and
+// retried it.
+func TestSelectEndpoint_EmptyEndpointsIsAnError(t *testing.T) {
 	repSvc := &mockRepService{}
 	registry := qos.NewRegistry()
 	flags := newMockFlags(nil)
@@ -176,13 +179,12 @@ func TestSelectEndpoint_EmptyEndpoints_Degraded(t *testing.T) {
 	ctx.Endpoints = domain.EndpointAddrList{} // empty from start
 
 	handler := mw(relay.HandlerFunc(func(c *relay.Context) error {
-		if !c.Degraded {
-			t.Error("expected Degraded=true when no endpoints available")
-		}
+		t.Errorf("sent on with endpoint %q from an empty pool", c.Endpoint)
 		return nil
 	}))
 
-	if err := handler.HandleRelay(ctx); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := handler.HandleRelay(ctx)
+	if err == nil || domain.IsRetryable(err) || domain.ErrorKindOf(err) != domain.ErrProtocol {
+		t.Fatalf("err = %v, want a non-retryable protocol error", err)
 	}
 }

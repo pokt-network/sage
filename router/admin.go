@@ -44,6 +44,7 @@ type AdminAPI struct {
 	externalSources ExternalSourceAdmin
 	overrides       override.Store
 	autoDrainEvents AutoDrainEvents
+	healthChecks    HealthCheckAdmin
 	// resetsApplied and resetWatchInterval belong to the reputation-reset
 	// fan-out (admin_reset.go); the interval is zero (the default) outside
 	// tests.
@@ -168,6 +169,10 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/external-sources/{serviceID}", a.handleGetExternalSources)
 	mux.HandleFunc("PUT /admin/external-sources/{serviceID}", a.handleSetExternalSources)
 	mux.HandleFunc("DELETE /admin/external-sources/{serviceID}", a.handleDeleteExternalSources)
+	mux.HandleFunc("GET /admin/health-checks", a.handleListHealthChecks)
+	mux.HandleFunc("GET /admin/health-checks/{serviceID}", a.handleGetHealthChecks)
+	mux.HandleFunc("PUT /admin/health-checks/{serviceID}", a.handleSetHealthChecks)
+	mux.HandleFunc("DELETE /admin/health-checks/{serviceID}", a.handleDeleteHealthChecks)
 
 	// WebSocket
 	mux.HandleFunc("POST /admin/websocket/rebind/{serviceID}", a.handleWebSocketRebind)

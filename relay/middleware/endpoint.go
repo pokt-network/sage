@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/qos"
@@ -53,6 +54,14 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 			if len(candidates) == 0 {
 				ctx.Degraded = true
 				candidates = ctx.Endpoints
+			}
+			// Nothing at all to send to. Say so: selecting from an empty list
+			// used to hand SendRelay an empty address, which it reported as a
+			// session rollover — retryable — so every request burned its
+			// retries on a pool that was simply empty (mainnet persistence and
+			// shentu, 2026-09-15, for the 15 minutes a blacklist emptied them).
+			if len(candidates) == 0 {
+				return domain.NewRelayError(domain.ErrProtocol, "no endpoint available for service", nil, false)
 			}
 
 			// Select the best endpoint by reputation.

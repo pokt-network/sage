@@ -42,6 +42,23 @@ func TestHeuristic_SuccessResponse_NoError(t *testing.T) {
 	}
 }
 
+// A supplier 408 is scored while penalize_408 is on, and only retried when
+// an operator turns it off: the flag is the live undo.
+func TestHeuristic_Penalize408FlagIsTheUndo(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		mw := middleware.Heuristic(newMockFlags(map[string]bool{"heuristic": true, "penalize_408": on}), nil)
+		ctx := newCtx(newPOSTRequest("/v1", ""))
+		ctx.ServiceID = "bsc"
+		ctx.RPCType = domain.RPCTypeJSONRPC
+		ctx.Response = &domain.Response{Body: []byte(`<html>408</html>`), HTTPStatusCode: 408}
+
+		_ = mw(relay.Noop).HandleRelay(ctx)
+		if r := ctx.HeuristicResult; r == nil || r.Reason != "http_408" || !r.ShouldRetry || r.ShouldPenalize != on {
+			t.Fatalf("penalize_408=%v: result %+v", on, r)
+		}
+	}
+}
+
 func TestHeuristic_500Response_TriggersRetry(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
 	mw := middleware.Heuristic(flags, nil)

@@ -58,6 +58,11 @@ across both pods after ~6h.
   Do not reopen this on a share. `sage_retry_resolution_total{reason="http_408"}`
   is the read once an image carries it: `recovered` is a count of requests
   that would have been 408s, and needs no band.
+- **2026-09-15: the 408 penalty is back, as a major error, behind the
+  `penalize_408` flag (default on).** One operator answered 408 to half of
+  bsc's and arb-one's mainnet relays at a score of 97-100. The read is the client
+  408 and 5xx share against PATH over the same windows; if the 2026-09-02
+  concentration shows again, turn the flag off, globally or per service.
 
 - ~~base 408s, watch.~~ Closed 2026-09-05. The claimed step (1.46% -> 1.82%
   at n=73,586) is inside a same-clock-hours band of 0.44% to 1.97% across the

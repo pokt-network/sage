@@ -410,16 +410,18 @@ func TestAvailableEndpoints_FiltersBlacklisted(t *testing.T) {
 		t.Fatal("expected at least one endpoint before blacklisting")
 	}
 
-	// Blacklist the supplier.
+	// Blacklist the supplier. It is the pool's only one, and a blacklist ranks
+	// a supplier out without emptying the pool (mainnet persistence and
+	// shentu, 2026-09-15: a 15-minute blacklist on every supplier was a
+	// 15-minute outage), so it is still served.
 	p.BlacklistSupplier("eth", supplierAddr)
 
-	// Should now return empty.
 	endpoints, err = p.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
 	if err != nil {
 		t.Fatalf("AvailableEndpoints after blacklist: %v", err)
 	}
-	if len(endpoints) != 0 {
-		t.Errorf("expected 0 endpoints after blacklisting, got %d", len(endpoints))
+	if len(endpoints) != 1 {
+		t.Errorf("expected the only supplier still served after blacklisting, got %d endpoints", len(endpoints))
 	}
 }
 

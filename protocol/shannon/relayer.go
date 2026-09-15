@@ -538,6 +538,7 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 	blockedDomains := p.blockedDomains.Load()
 	result := make(domain.EndpointAddrList, 0, len(endpoints))
 	var blacklisted, blocked, drained, supplierBlocked, policyRejected int
+	var benched domain.EndpointAddrList
 	for addr, ep := range endpoints {
 		url := ""
 		if rpcType != domain.RPCTypeUnknown {
@@ -561,10 +562,6 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 			drained++
 			continue
 		}
-		if p.bl.IsBlacklisted(serviceID, ep.Supplier()) {
-			blacklisted++
-			continue
-		}
 		if p.blockedSuppliers.blocked(serviceID, ep.Supplier()) {
 			supplierBlocked++
 			continue
@@ -573,7 +570,24 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 			policyRejected++
 			continue
 		}
+		if p.bl.IsBlacklisted(serviceID, ep.Supplier()) {
+			blacklisted++
+			benched = append(benched, addr)
+			continue
+		}
 		result = append(result, addr)
+	}
+
+	// The blacklist ranks a supplier out; it must not empty the pool. On
+	// mainnet (2026-09-15) a burst of signature failures blacklisted every
+	// comet_bft supplier of persistence and shentu for the full 15 minutes,
+	// and every request failed for that long while the suppliers were up.
+	// When nothing else is left, the blacklisted ones are served — the same
+	// rule the pool-collapse guard and the drain's last-operator check keep.
+	if filtered && len(result) == 0 && len(benched) > 0 {
+		p.logger.Warn("AvailableEndpoints: every eligible supplier is blacklisted; serving them rather than none",
+			"component", "shannon", "service_id", serviceID, "rpc_type", rpcType, "endpoints", len(benched))
+		result = benched
 	}
 
 	if p.logger.Enabled(ctx, slog.LevelDebug) {

@@ -15,8 +15,8 @@ func TestFollowPeer_AppliesOnlyThePeersAutoDrains(t *testing.T) {
 	ctx := context.Background()
 	peerRedis := newFakeRedis()
 	mainnet := NewRedisStore(peerRedis)
-	auto := Key{ServiceID: "sei", Operator: "rpcgate.xyz", RPCType: domain.RPCTypeJSONRPC}
-	manual := Key{ServiceID: "base", Operator: "stakeandrelax.net", RPCType: domain.RPCTypeJSONRPC}
+	auto := Key{ServiceID: "sei", Operator: "opa.example", RPCType: domain.RPCTypeJSONRPC}
+	manual := Key{ServiceID: "base", Operator: "opc.example", RPCType: domain.RPCTypeJSONRPC}
 	_ = mainnet.Set(ctx, Entry{Key: auto, Until: time.Now().Add(time.Hour), Reason: "auto: 40 collapse picks"})
 	_ = mainnet.Set(ctx, Entry{Key: manual, Until: time.Now().Add(time.Hour), Reason: "ops: base relief"})
 

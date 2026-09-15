@@ -23,8 +23,8 @@ func TestAdmin_AutoDrainEvents(t *testing.T) {
 	}
 
 	log := &autodrain.MemoryLog{}
-	_ = log.Append(context.Background(), autodrain.Event{At: time.Now(), ServiceID: "sei", Operator: "rpcgate.xyz", Outcome: autodrain.OutcomeShadow})
-	_ = log.Append(context.Background(), autodrain.Event{At: time.Now(), ServiceID: "base", Operator: "stakeandrelax.net", Outcome: autodrain.OutcomeDrained})
+	_ = log.Append(context.Background(), autodrain.Event{At: time.Now(), ServiceID: "sei", Operator: "opa.example", Outcome: autodrain.OutcomeShadow})
+	_ = log.Append(context.Background(), autodrain.Event{At: time.Now(), ServiceID: "base", Operator: "opc.example", Outcome: autodrain.OutcomeDrained})
 	a.SetAutoDrainEvents(log)
 
 	resp, err = http.Get(srv.URL + "/admin/auto-drain/events?service=sei")
@@ -38,7 +38,7 @@ func TestAdmin_AutoDrainEvents(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusOK || len(body.Events) != 1 || body.Events[0].Operator != "rpcgate.xyz" {
+	if resp.StatusCode != http.StatusOK || len(body.Events) != 1 || body.Events[0].Operator != "opa.example" {
 		t.Fatalf("status %d, events %+v; want sei's one decision", resp.StatusCode, body.Events)
 	}
 
