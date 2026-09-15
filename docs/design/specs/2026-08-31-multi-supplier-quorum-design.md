@@ -24,7 +24,7 @@ redundancy/trust feature, not the default path.
   reused for the vote; the fan-out is new.
 - **Hedge** already fans one request to a second supplier and prefers a
   different **operator** (`EndpointAddr.Operator()` = registrable domain, so all
-  `*.nodefleet.net` hosts are one provider). It is race-to-first, not
+  `*.opb.example` hosts are one provider). It is race-to-first, not
   compare-and-vote, but the operator-diversity and detached-arm machinery are
   the model for the fan-out.
 - **`Protocol.SendRelay`** signs and sends one relay to one endpoint — the arm

@@ -98,7 +98,7 @@ func TestDebugLog_LogsPathVerbNormalizedMethodDialedURLAndError(t *testing.T) {
 	ctx := makeDebugLogCtx(req, log)
 	ctx.ServiceID = "osmosis"
 	ctx.RPCType = domain.RPCTypeREST
-	ctx.Endpoint = "pokt1abc-https://eu-s-01-osmosis-json.kleomedes.network"
+	ctx.Endpoint = "pokt1abc-https://eu-s-01-osmosis-json.opd.example"
 	ctx.Payloads = []domain.Payload{
 		domain.NewPayload(nil, domain.RPCTypeREST, "").WithHTTP("/cosmos/bank/v1beta1/balances/osmo1abc?pagination.limit=1", "GET"),
 	}
@@ -107,8 +107,8 @@ func TestDebugLog_LogsPathVerbNormalizedMethodDialedURLAndError(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := urlProvider{urls: map[domain.RPCType]string{
-		domain.RPCTypeJSONRPC: "https://eu-s-01-osmosis-json.kleomedes.network",
-		domain.RPCTypeREST:    "https://eu-s-01-osmosis-rest.kleomedes.network",
+		domain.RPCTypeJSONRPC: "https://eu-s-01-osmosis-json.opd.example",
+		domain.RPCTypeREST:    "https://eu-s-01-osmosis-rest.opd.example",
 	}}
 
 	inner := relay.HandlerFunc(func(_ *relay.Context) error {
@@ -121,7 +121,7 @@ func TestDebugLog_LogsPathVerbNormalizedMethodDialedURLAndError(t *testing.T) {
 		"http_method=GET",
 		`path="/cosmos/bank/v1beta1/balances/osmo1abc?pagination.limit=1"`,
 		"normalized_method=/cosmos/bank/v1beta1/balances/:var ",
-		"url=https://eu-s-01-osmosis-rest.kleomedes.network",
+		"url=https://eu-s-01-osmosis-rest.opd.example",
 		"rpc_type=rest",
 		`error="upstream endpoint unavailable: relay miner answered HTTP 502"`,
 	} {

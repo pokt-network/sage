@@ -11,7 +11,7 @@ import (
 // refused a historical-state query, and for how long that is trusted.
 //
 // Per host, not per supplier address: on Pocket many staked addresses front
-// one URL (nodefleet's pkp-og carried 162 on kava), and retention is a
+// one URL (one host carried 162 on kava), and retention is a
 // property of the node behind it. Keyed per address the mark was relearned
 // once per address, one archival request each; the cosmos plugin's pruned
 // memory keys on the host for the same reason. Bounded, and the marks

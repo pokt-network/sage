@@ -92,7 +92,7 @@ across both pods after ~6h.
 ## Explore next (raised 2026-09-01)
 
 - **eth-beacon 403: mechanism confirmed, hole closed, re-measure after the
-  audit image.** Ops measured the arc on 2026-09-04: the two kalorius hosts
+  audit image.** Ops measured the arc on 2026-09-04: the two hosts of one operator
   fell from 44% of client relays to a permanent 0% over about 80 minutes,
   moved by probes alone, because client-side REST 4xx was never graded. The
   heuristic now attributes a plain-text 401/403 on REST to the supplier
@@ -276,7 +276,7 @@ across both pods after ~6h.
   `PUT/GET/DELETE /admin/blocked-domains[/{domain}]` and a "Blocked domains"
   tab in the UI; Redis hash `sage:blocked_domains` polled every 5 s so a ban
   reaches every replica and survives a restart; `sage_blocked_domains_admin`
-  counts them. Not yet used in anger — banning nodefleet WS is the first use.
+  counts them. Not yet used in anger — banning one operator's WS is the first use.
 
 - **Consume PATH probe/reputation instead of running our own health checks.**
   Goal: two gateways probing the same suppliers pay twice; share one probe
@@ -291,7 +291,7 @@ across both pods after ~6h.
   Redis stream — same shape).
 
 - **WS cold reputation (what remains of the 1011 thread).** The dial bug is
-  fixed: suppliers stake WS endpoints as https:// (nodefleet stakes every one
+  fixed: suppliers stake WS endpoints as https:// (one operator stakes every one
   that way — 78% of the WS pool) and the bridge handed that to gorilla, which
   rejects non-ws/wss as "malformed ws or wss URL" before a packet is sent.
   ConnectEndpoint now dials http as ws and https as wss (never downgrading);

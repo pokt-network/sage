@@ -310,22 +310,22 @@ func BenchmarkKeyFn(b *testing.B) {
 // operator staking one host per type gets one key per face, and two
 // supplier addresses on that operator still share each face's key.
 func TestKeyPerURL_ResolverNamesTheDialedHost(t *testing.T) {
-	a := domain.EndpointAddr("pokt1a-https://eu-s-01-osmosis-json.kleomedes.network")
-	b := domain.EndpointAddr("pokt1b-https://eu-s-01-osmosis-json.kleomedes.network")
+	a := domain.EndpointAddr("pokt1a-https://eu-s-01-osmosis-json.opd.example")
+	b := domain.EndpointAddr("pokt1b-https://eu-s-01-osmosis-json.opd.example")
 	resolve := func(ep domain.EndpointAddr, rt domain.RPCType) (string, bool) {
 		if rt == domain.RPCTypeREST {
-			return "https://eu-s-01-osmosis-rest.kleomedes.network", true
+			return "https://eu-s-01-osmosis-rest.opd.example", true
 		}
 		return "", false // json_rpc: not resolved, the address's URL stands
 	}
 	key := keyFnFor(KeyPerURL, resolve)
-	if got := key(a, domain.RPCTypeREST); got != "https://eu-s-01-osmosis-rest.kleomedes.network|rest" {
+	if got := key(a, domain.RPCTypeREST); got != "https://eu-s-01-osmosis-rest.opd.example|rest" {
 		t.Fatalf("rest key = %q, want the rest host", got)
 	}
 	if key(a, domain.RPCTypeREST) != key(b, domain.RPCTypeREST) {
 		t.Fatal("two addresses on one operator must share the face's key")
 	}
-	if got := key(a, domain.RPCTypeJSONRPC); got != "https://eu-s-01-osmosis-json.kleomedes.network|json_rpc" {
+	if got := key(a, domain.RPCTypeJSONRPC); got != "https://eu-s-01-osmosis-json.opd.example|json_rpc" {
 		t.Fatalf("unresolved face falls back to the address's URL, got %q", got)
 	}
 	// Other granularities ignore the resolver.

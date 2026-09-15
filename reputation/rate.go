@@ -3,7 +3,7 @@ package reputation
 import "math"
 
 // Defaults for the chronic-failure rate term. The numbers were chosen against
-// PATH's mainnet defect rates (spacebelt 0.216%, rpcgate 0.065%, nodefleet
+// PATH's mainnet defect rates (three operators at 0.216%, 0.065% and
 // 0.00003%) and a simulation of bursts on clean keys; docs/scoring.md §7.3
 // has the table.
 const (

@@ -151,7 +151,7 @@ func (p *Plugin) NormalizeMethod(payload domain.Payload) string {
 // lacks that method, not the EVM: sei's EVM does not implement net_listening,
 // and when any EVM method counted, 145 net_listening refusals in the first
 // minutes of mainnet traffic (2026-09-14) blocked every EVM method on
-// nodefleet's healthy sei hosts for 30 minutes and sent the service to the
+// one operator's healthy sei hosts for 30 minutes and sent the service to the
 // one supplier answering 408. CometBFT and REST methods have no family: a
 // node missing one CometBFT method says nothing about the others.
 func (p *Plugin) MethodFamily(method string) []string {

@@ -37,7 +37,7 @@ height is M`. The heuristic read `message` only, so on a CometBFT service it
 learned nothing from the body, and it graded any `-32603` that matched none
 of its supplier wordings as `internal_error`: retry, major penalty,
 attribution unknown. On akash and shentu that scored the comet_bft operator
-(the kalorius pair, which holds every comet_bft stake on shentu and
+(one operator's pair of hosts, which holds every comet_bft stake on shentu and
 persistence) to 0 for answering client misses correctly, and paid for every
 retry, each of which received the same body and was then delivered to the
 client anyway (shentu: 1.43 paid relays per client request).
@@ -48,7 +48,7 @@ proxy wrapping `connection refused` in `data` still grades as the supplier's;
 anything else at `-32603` is the node's answer, passed through, no retry, no
 penalty, attribution blockchain. The reason label stays `internal_error`.
 After the roll: retry resolutions on akash and shentu empty, comet_bft
-`major_error` gone, kalorius scores climbing with no new penalties, shentu at
+`major_error` gone, that operator's scores climbing with no new penalties, shentu at
 1.03 relays per client request.
 
 The rule the user stated, which this note exists to preserve: *if the client
@@ -57,11 +57,11 @@ it.*
 
 ## Finding 2: persistence's whole comet_bft face is one pruned host
 
-The persistence capture was nine relays, all to `rm02.kalorius.tech`, six of
+The persistence capture was nine relays, all to one host (rm02), six of
 them `block` at heights 27k–98k on a chain past 25M, answered `height N is
 not available, lowest height is 25052001`. On-chain, persistence's and
-shentu's comet_bft stakes are kalorius only (rm02 229 addresses, rm01 42);
-akash has some 220 rpcgate hosts besides. So it is neither a bad supplier nor
+shentu's comet_bft stakes are that one operator's only (rm02 229 addresses, rm01 42);
+akash has some 220 hosts of a second operator besides. So it is neither a bad supplier nor
 a lagging node: an archival query to a pruned face.
 
 Three shapes were tried in one day, and the third is what stands:
@@ -72,7 +72,7 @@ Three shapes were tried in one day, and the third is what stands:
    puts the number between the words, so `height is not available` never
    matched — `lowest height is` was added). On the canary every such retry
    exhausted on akash, shentu and persistence, zero recovered in fifteen
-   minutes, akash with four non-kalorius hosts in session: the other
+   minutes, akash with four other operators' hosts in session: the other
    operators prune too. The three services paid 31–42% more relays for it.
 2. `70315e8` made it pass through again, under its own reason
    (`height_not_available`) so it stays countable.
@@ -99,13 +99,13 @@ address, not per host; aligning them is a follow-up.
 ## Finding 3: two thirds of kava's `json_rpc` stakes front a CometBFT node
 
 On kava `json_rpc` means EVM. Every supplier stakes JSON_RPC there, and
-nodefleet's hosts (1324 of the first 2000 stakes; `pkp-og` alone 162
-addresses on one URL) point that URL at a CometBFT RPC. An EVM call such as
+one operator's hosts (1324 of the first 2000 stakes; one of its hosts alone
+162 addresses on one URL) point that URL at a CometBFT RPC. An EVM call such as
 `eth_blockNumber` reaches a CometBFT node about two thirds of the time and
 gets `{"code":-32601,"message":"Method not found"}`, which is exactly
-CometBFT's reply to an unknown method. `s023.rpcgate.xyz` stakes one
+CometBFT's reply to an unknown method. One host of another operator stakes one
 path-less URL for all five types and answered the same request ok and
-`-32601` alternately. The supplier-side fix is nodefleet restaking kava
+`-32601` alternately. The supplier-side fix is that operator restaking kava
 JSON_RPC to an EVM endpoint; the addresses and counts are with ops.
 
 PATH's cosmos QoS buckets every EVM method as `eth_other` and counts a
@@ -122,8 +122,8 @@ Three changes:
   plugin's catalogue (`evm.KnownMethod`), so a `json_rpc` host that refuses
   an `eth_` method is marked for it and traffic moves to the hosts that
   serve EVM. Fifteen minutes after the roll the marks named exactly the
-  predicted hosts (nodefleet non-custodial, nr, igniter, pkp-og, pkp-og-2,
-  plus kleomedes' kava-json host) and kava's `json_rpc` success share went
+  predicted hosts (five of that operator's hosts, plus a third operator's
+  kava JSON-RPC host) and kava's `json_rpc` success share went
   from 13% to 46%.
 - `5bae566` — a `-32601` on a **catalogued** method is retried once on
   another operator, attribution still client, nothing scored; the heuristic
@@ -172,7 +172,8 @@ per-host memory.
 
 ## Open
 
-- nodefleet outreach on kava (supplier side; fixes PATH too).
+- Outreach to the operator whose kava JSON_RPC stakes front CometBFT
+  (supplier side; fixes PATH too).
 - EVM archival marks keyed per host, like the cosmos pruned memory.
 - `evm_chain_id` for cosmos services and an `eth_chainId` probe on the
   `json_rpc` face.
@@ -221,7 +222,7 @@ next tuning change; noted, not fixed.
 ## Addendum: the paired SAGE-vs-PATH hour, 13:51–14:51Z on `1440b96`
 
 Both canaries, same seven services, same hour; SAGE at ~2% of PATH's volume.
-The rpcgate timeout wave that hit both gateways ended around 13:55, so the
+One operator's timeout wave that hit both gateways ended around 13:55, so the
 first minutes carry its tail on both sides. Inside the hour: osmosis
 `retry.max_retries` 3 and the nine retired external sources (14:20). Not yet:
 the 10 s request deadline and the osmosis retry budget (14:47).
@@ -267,8 +268,8 @@ kava and sei; where PATH spends more it is hedging (sei) and probing.
   (SAGE 4.2/s miner 5xx, PATH 22% errors); the new rows named it.
 - Reputation keys and method-block hosts follow the URL dialed per RPC type
   (`2318987`): on osmosis the old `…-json…|rest` keys froze at the roll and
-  `eu-s-01-osmosis-rest.kleomedes.network|rest` and
-  `osmosis-rest-europe.highstakes.ch|rest` carry the traffic.
+  the two operators' dedicated REST hosts (`…-rest…|rest`) carry the
+  traffic.
 
 Also live through the override store, no deploy: `timeout.relay_timeout`
 10 s global (nothing needed a higher block: relays over 10 s were 0.02% of
@@ -276,7 +277,7 @@ traffic, 504 fell), osmosis `retry.max_retries` 3 and `retry.max_latency`
 1500 ms, nine dead external sources retired. Ops keeps the register in
 pnf-ops `organizations/pnf/apps/sage/RUNTIME-OVERRIDES.md`.
 
-Open now: the ~70 ms in-process median gap; nodefleet outreach on kava;
+Open now: the ~70 ms in-process median gap; operator outreach on kava;
 `evm_chain_id` for the Cosmos EVM face; RPC type in the method-block key
 if a cross-face mark ever shows; the merge.
 

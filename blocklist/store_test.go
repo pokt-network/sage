@@ -57,15 +57,15 @@ func TestManager_SetAppliesUnionAndPersists(t *testing.T) {
 	m := New(ap, be, []config.BlockedDomain{{Domain: "config.example"}})
 	ctx := context.Background()
 
-	require.NoError(t, m.Set(ctx, Entry{Domain: " NodeFleet.NET ", RPCTypes: []string{"WebSocket"}, Reason: "dead since July"}))
+	require.NoError(t, m.Set(ctx, Entry{Domain: " OPB.EXAMPLE ", RPCTypes: []string{"WebSocket"}, Reason: "dead since July"}))
 
-	assert.Equal(t, []string{"config.example", "nodefleet.net"}, domains(ap.last()))
+	assert.Equal(t, []string{"config.example", "opb.example"}, domains(ap.last()))
 	assert.Equal(t, []string{"websocket"}, ap.last()[1].RPCTypes, "rpc types lower-cased")
 
 	saved, err := be.Load(ctx)
 	require.NoError(t, err)
 	require.Len(t, saved, 1)
-	assert.Equal(t, "nodefleet.net", saved[0].Domain)
+	assert.Equal(t, "opb.example", saved[0].Domain)
 	assert.False(t, saved[0].Since.IsZero(), "Since is stamped")
 
 	entries := m.Entries()

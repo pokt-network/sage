@@ -259,8 +259,8 @@ func TestService_ResetMatching(t *testing.T) {
 	defer svc.Stop()
 	ctx := context.Background()
 	svcID := domain.ServiceID("osmosis")
-	ep := domain.EndpointAddr("pokt1abc-https://rm02.kalorius.tech")
-	other := domain.EndpointAddr("pokt1def-https://rm01.kalorius.tech")
+	ep := domain.EndpointAddr("pokt1abc-https://rm02.opc.example")
+	other := domain.EndpointAddr("pokt1def-https://rm01.opc.example")
 	for _, rt := range []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeREST} {
 		require.NoError(t, svc.RecordSignal(ctx, svcID, ep, rt, NewCriticalErrorSignal("bad", 0)))
 		require.NoError(t, svc.RecordSignal(ctx, svcID, other, rt, NewCriticalErrorSignal("bad", 0)))
@@ -277,7 +277,7 @@ func TestService_ResetMatching(t *testing.T) {
 
 	// Host, URL and endpoint address reset every face of that host and
 	// nothing of the other host.
-	for _, target := range []string{"rm02.kalorius.tech", "https://rm02.kalorius.tech", string(ep)} {
+	for _, target := range []string{"rm02.opc.example", "https://rm02.opc.example", string(ep)} {
 		for _, rt := range []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeREST} {
 			require.NoError(t, svc.RecordSignal(ctx, svcID, ep, rt, NewCriticalErrorSignal("bad", 0)))
 		}
@@ -290,44 +290,44 @@ func TestService_ResetMatching(t *testing.T) {
 
 	// Nothing matched: nothing created.
 	before, _ := svc.GetScores(ctx, svcID)
-	_, err = svc.ResetMatching(ctx, svcID, "https://rm02.kalorius.tech|rest|json_rpc")
+	_, err = svc.ResetMatching(ctx, svcID, "https://rm02.opc.example|rest|json_rpc")
 	require.ErrorIs(t, err, ErrNoScore)
-	_, err = svc.ResetMatching(ctx, svcID, "rm03.kalorius.tech")
+	_, err = svc.ResetMatching(ctx, svcID, "rm03.opc.example")
 	require.ErrorIs(t, err, ErrNoScore)
-	require.ErrorIs(t, svc.ResetScore(ctx, svcID, "pokt1zzz-https://rm03.kalorius.tech"), ErrNoScore)
+	require.ErrorIs(t, svc.ResetScore(ctx, svcID, "pokt1zzz-https://rm03.opc.example"), ErrNoScore)
 	after, _ := svc.GetScores(ctx, svcID)
 	assert.Equal(t, len(before), len(after), "an unmatched reset must not create keys")
 }
 
 func TestResetTargets(t *testing.T) {
-	key := "https://rm02.kalorius.tech|rest"
+	key := "https://rm02.opc.example|rest"
 	for _, target := range []string{
-		key, "https://rm02.kalorius.tech", "rm02.kalorius.tech", "rm02.kalorius.tech:443",
-		"pokt1abc-https://rm02.kalorius.tech", "pokt1abc-https://rm02.kalorius.tech:443/v1",
+		key, "https://rm02.opc.example", "rm02.opc.example", "rm02.opc.example:443",
+		"pokt1abc-https://rm02.opc.example", "pokt1abc-https://rm02.opc.example:443/v1",
 	} {
 		assert.True(t, resetTargets(key, target), target)
 	}
 	for _, target := range []string{
-		"", "https://rm02.kalorius.tech|json_rpc", "https://rm02.kalorius.tech|rest|json_rpc",
-		"rm01.kalorius.tech", "https://rm01.kalorius.tech", "kalorius.tech", "pokt1abc-https://rm01.kalorius.tech",
-		"https://rm02.kalorius.tech/v1",
+		"", "https://rm02.opc.example|json_rpc", "https://rm02.opc.example|rest|json_rpc",
+		"rm01.opc.example", "https://rm01.opc.example", "opc.example", "pokt1abc-https://rm01.opc.example",
+		"https://rm02.opc.example/v1",
 	} {
 		assert.False(t, resetTargets(key, target), target)
 	}
 	// Coarser granularities: the identity is a host or a supplier.
-	assert.True(t, resetTargets("rm02.kalorius.tech|rest", "pokt1abc-https://rm02.kalorius.tech"))
+	assert.True(t, resetTargets("rm02.opc.example|rest", "pokt1abc-https://rm02.opc.example"))
 	// A URL staked with a trailing slash is the same backend as without one,
-	// in either direction (nodefleet's sei hosts, 2026-09-14).
-	assert.True(t, resetTargets("https://dopokt.example.net/|json_rpc", "https://dopokt.example.net"))
-	assert.True(t, resetTargets("https://igniter.example.net|json_rpc", "https://igniter.example.net/"))
-	assert.True(t, resetTargets("https://dopokt.example.net/|json_rpc", "pokt1abc-https://dopokt.example.net"))
-	assert.False(t, resetTargets("https://dopokt.example.net/v1|json_rpc", "https://dopokt.example.net"))
-	assert.True(t, resetTargets("pokt1abc|rest", "pokt1abc-https://rm02.kalorius.tech"))
+	// in either direction (one operator's sei hosts, 2026-09-14).
+	assert.True(t, resetTargets("https://opi.example/|json_rpc", "https://opi.example"))
+	assert.True(t, resetTargets("https://h2.opb.example|json_rpc", "https://h2.opb.example/"))
+	assert.True(t, resetTargets("https://opi.example/|json_rpc", "pokt1abc-https://opi.example"))
+	assert.False(t, resetTargets("https://opi.example/v1|json_rpc", "https://opi.example"))
+	assert.True(t, resetTargets("pokt1abc|rest", "pokt1abc-https://rm02.opc.example"))
 	assert.True(t, resetTargets("pokt1abc|rest", "pokt1abc"))
 	assert.False(t, resetTargets("pokt1abc|rest", "pokt1abcd"))
 	// Per-endpoint: the identity is the whole address.
-	assert.True(t, resetTargets("pokt1abc-https://rm02.kalorius.tech|rest", "rm02.kalorius.tech"))
-	assert.True(t, resetTargets("pokt1abc-https://rm02.kalorius.tech|rest", "pokt1abc-https://rm02.kalorius.tech"))
+	assert.True(t, resetTargets("pokt1abc-https://rm02.opc.example|rest", "rm02.opc.example"))
+	assert.True(t, resetTargets("pokt1abc-https://rm02.opc.example|rest", "pokt1abc-https://rm02.opc.example"))
 	// A URL whose host carries a dash is not an endpoint address.
 	assert.True(t, resetTargets("https://eu-s-01.example.com|rest", "https://eu-s-01.example.com"))
 	assert.False(t, resetTargets("https://s-01.example.com|rest", "https://eu-s-01.example.com"))
@@ -840,7 +840,7 @@ func TestRecordSignal_FlooredScoreDoesNotAccrueRate(t *testing.T) {
 }
 
 // The other half of ruling F2: the gate must not touch the case the chronic
-// term exists for. A steady 0.2% violator (spacebelt's mainnet rate) never
+// term exists for. A steady 0.2% violator (the worst mainnet rate) never
 // floors its additive term, so every one of its attempts feeds the rate and it
 // still lands on the §7.3 number.
 func TestRecordSignal_ChronicViolatorIsUnaffectedByTheFlooredGate(t *testing.T) {
@@ -860,7 +860,7 @@ func TestRecordSignal_ChronicViolatorIsUnaffectedByTheFlooredGate(t *testing.T) 
 	require.NoError(t, err)
 	v := views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	require.Equal(t, 100.0, v.Additive, "a 1-in-500 failure rate never floors the additive term")
-	assert.InDelta(t, -23.5, v.Penalty, 3, "docs/scoring.md §7.3: spacebelt at 0.216% is about -23")
+	assert.InDelta(t, -23.5, v.Penalty, 3, "docs/scoring.md §7.3: a violator at 0.216% is about -23")
 	assert.InDelta(t, 76.5, v.Score, 3, "tier 2, as §7.3 says")
 }
 
