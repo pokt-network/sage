@@ -395,7 +395,12 @@ Two more corrections followed the same day, both from mainnet sei:
   `eth_blockNumber` every cycle while answering 408 to real calls, and the
   probes' +5 cancelled the 408s' -5 and held it at 100. Probes remain the
   way a benched key, which gets no traffic, earns its way back; a probe
-  failure always counts.
+  failure always counts. The rule holds only for a selectable key (additive
+  at or above `min_threshold`): below it, probes still lift the key back
+  into probation even when the collapse fallback sent it the odd relay, and
+  from there traffic decides. Without that bound the first version trapped
+  mainnet solana's floored keys at 0 while they answered most of what they
+  got.
 
 Simulated at steady state (100k attempts, 10 runs): operator C 0; operator B `-11`
 (tier 1, 89); operator A `-23` (tier 2, 77); 1% `-40` (tier 2, 60); 5% `-61`;
