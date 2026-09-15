@@ -375,7 +375,12 @@ supplier-attributed failure per attempt (`1` for critical/fatal, `0.5` for
 major, `0` otherwise; client-attributed outcomes are not attempts), half-life
 20,000 attempts, mapped to a penalty that is 0 up to 0.02% and logarithmic
 above it: `-40` at 1%, `-70` at 10% and beyond. Effective score is
-`clamp(additive + rate_penalty)`.
+`clamp(additive + rate_penalty)`, floored at `min(additive, min_threshold)`:
+the rate term may demote a key to the bottom of probation, never out of
+selection. That floor was missing until 2026-09-15, and on mainnet sei every
+nodefleet operator shared one timeout tail (1.2–1.8%, penalty -43 to -48), so
+keys with a working additive of 30–50 read as 0 and the whole service ran on
+the pool-collapse fallback while the term ranked no operator above another.
 
 Simulated at steady state (100k attempts, 10 runs): nodefleet 0; rpcgate `-11`
 (tier 1, 89); spacebelt `-23` (tier 2, 77); 1% `-40` (tier 2, 60); 5% `-61`;
