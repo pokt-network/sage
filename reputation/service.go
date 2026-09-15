@@ -225,8 +225,20 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 
 // effective is the score every reader sees: the additive term plus the
 // chronic rate penalty, clamped. docs/scoring.md §7.3.
+//
+// The rate term demotes, it never removes: it may take a key down to
+// MinThreshold, the bottom of probation, and no further. Only the additive
+// term — the outage detector — takes a key out of selection. Without the
+// floor, a pool whose every operator shares one timeout tail (mainnet sei,
+// 2026-09-15: nodefleet at 1.2–1.8%, penalty -43 to -48) had keys with a
+// working additive score of 30–50 read as 0, so the whole service fell into
+// the pool-collapse fallback while the term ranked nobody above anybody.
 func (s *serviceImpl) effective(st State) float64 {
-	return s.clamp(st.Score + s.rate.Penalty(st.Rate))
+	score := st.Score + s.rate.Penalty(st.Rate)
+	if floor := min(st.Score, s.selector.cfg.MinThreshold); score < floor {
+		score = floor
+	}
+	return s.clamp(score)
 }
 
 // latencyAlpha is the traffic-latency EWMA step. Reporting only.

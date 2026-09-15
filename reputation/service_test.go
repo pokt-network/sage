@@ -592,6 +592,41 @@ func TestService_VouchedUsesEffectiveScore(t *testing.T) {
 	assert.True(t, fresh.Vouched(ctx, "svc", ep2, domain.RPCTypeJSONRPC))
 }
 
+// The rate term demotes a key to the bottom of probation and no further; only
+// the additive term floors it. The sei shape: additive 50, rate penalty at
+// its cap, and before the floor an effective 0 that emptied the pool.
+func TestService_RateTermDemotesButNeverRemoves(t *testing.T) {
+	ctx := context.Background()
+	cfg := DefaultServiceConfig()
+	cfg.Impacts = SignalImpacts{CriticalError: -1} // only the rate term moves
+	svc := newTestService(t, cfg)
+	ep := domain.EndpointAddr("pokt1abc-https://a.example")
+	for i := 0; i < 40_000; i++ {
+		sig := NewSuccessSignal("ok", 0)
+		if i%4 == 0 {
+			sig = NewCriticalErrorSignal("bad", 0)
+		}
+		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, sig))
+	}
+	for i := 0; i < 50; i++ { // additive 100 -> 50; penalty stays at -70
+		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)))
+	}
+	minT := svc.selector.cfg.MinThreshold
+	score, _ := svc.GetScore(ctx, "svc", ep, domain.RPCTypeJSONRPC)
+	assert.Equal(t, minT, score, "additive 50 + penalty -70 floors at MinThreshold, not 0")
+	got := svc.SelectBest(ctx, "svc", domain.EndpointAddrList{ep}, domain.RPCTypeJSONRPC)
+	assert.Equal(t, ep, got)
+
+	// An additive term already below MinThreshold is the outage detector's
+	// verdict: the floor does not lift it into selection.
+	for i := 0; i < 45; i++ { // additive 50 -> 5
+		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)))
+	}
+	score, _ = svc.GetScore(ctx, "svc", ep, domain.RPCTypeJSONRPC)
+	assert.Equal(t, 5.0, score, "below MinThreshold the additive term alone decides")
+	assert.Less(t, score, minT)
+}
+
 func TestService_ResetClearsRate(t *testing.T) {
 	svc := newTestService(t, DefaultServiceConfig())
 	ctx := context.Background()
