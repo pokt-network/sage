@@ -619,6 +619,12 @@ func statusForError(err error) int {
 	if errors.Is(err, context.Canceled) {
 		return statusClientClosedRequest
 	}
+	// A supplier's relay miner said 429 and no other operator could take the
+	// retry (a rate limit is the operator's): the client is told the same.
+	var upstream *domain.UpstreamStatusError
+	if errors.As(err, &upstream) && upstream.Status == http.StatusTooManyRequests {
+		return http.StatusTooManyRequests
+	}
 	// A supplier answered, but with more than the response ceiling: a bad
 	// upstream answer from the client's point of view, not the gateway failing.
 	if errors.Is(err, domain.ErrResponseTooLarge) {
