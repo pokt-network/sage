@@ -589,8 +589,17 @@ const statusClientClosedRequest = 499
 // supplierPage reports whether the response in hand came with a
 // supplier-attributed verdict: the supplier's HTTP layer speaking, not the
 // node answering the request.
+//
+// Only a 408 or a body that is not JSON counts. A supplier-attributed verdict
+// with a JSON-RPC envelope — a node saying "rate limit exceeded" — is still
+// an answer a client can parse, and was delivered before 2026-09-15; turning
+// it into a 500 only moved it from 200 to 5xx in every dashboard (mainnet sei:
+// ~80 per 10 minutes the evening this shipped).
 func supplierPage(ctx *relay.Context) bool {
-	return ctx.HeuristicResult != nil && ctx.HeuristicResult.Attribution == heuristic.AttrSupplier
+	if ctx.HeuristicResult == nil || ctx.HeuristicResult.Attribution != heuristic.AttrSupplier || ctx.Response == nil {
+		return false
+	}
+	return ctx.Response.HTTPStatusCode == http.StatusRequestTimeout || !json.Valid(ctx.Response.Body)
 }
 
 // statusForError maps a gateway-made failure to the HTTP status a client
