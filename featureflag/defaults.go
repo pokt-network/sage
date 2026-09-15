@@ -81,6 +81,11 @@ const (
 	// for concentrating traffic, so this is its live undo, globally or per
 	// service. Off, a 408 is still retried, just not scored.
 	FlagPenalize408 = "penalize_408"
+	// FlagRelativeChronic measures a key's chronic-failure penalty from the
+	// best failure rate in its (service, RPC type) pool rather than from zero,
+	// so a timeout tail every operator shares does not floor all of them. On
+	// by default since 2026-09-15; the live undo, globally or per service.
+	FlagRelativeChronic = "relative_chronic"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -119,6 +124,7 @@ var DefaultFlags = map[string]bool{
 	FlagAutoDrain:              false,
 	FlagAutoDrainShadow:        true,
 	FlagPenalize408:            true,
+	FlagRelativeChronic:        true,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

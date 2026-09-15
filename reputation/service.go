@@ -173,6 +173,10 @@ type serviceImpl struct {
 	lambda float64
 	// signalHook, when set, runs on every recorded signal. Wire time only.
 	signalHook SignalHook
+	// relativeGate turns on the pool-relative chronic penalty per service;
+	// baselines is what refreshBaselines last computed. See penaltyFor.
+	relativeGate atomic.Pointer[func(domain.ServiceID) bool]
+	baselines    atomic.Pointer[map[poolID]float64]
 
 	// In-memory score cache, striped by key hash.
 	shards [scoreShards]scoreShard
@@ -223,8 +227,9 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	return s
 }
 
-// effective is the score every reader sees: the additive term plus the
-// chronic rate penalty, clamped. docs/scoring.md §7.3.
+// effectiveFor is the score every reader sees: the additive term plus the
+// chronic rate penalty (pool-relative when that is on, see penaltyFor),
+// clamped. docs/scoring.md §7.3.
 //
 // The rate term demotes, it never removes: it may take a key down to
 // MinThreshold, the bottom of probation, and no further. Only the additive
@@ -233,12 +238,108 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 // 2026-09-15: every operator at 1.2–1.8%, penalty -43 to -48) had keys with a
 // working additive score of 30–50 read as 0, so the whole service fell into
 // the pool-collapse fallback while the term ranked nobody above anybody.
-func (s *serviceImpl) effective(st State) float64 {
-	score := st.Score + s.rate.Penalty(st.Rate)
+func (s *serviceImpl) effectiveFor(serviceID domain.ServiceID, key string, st State) float64 {
+	score := st.Score + s.penaltyFor(serviceID, key, st.Rate)
 	if floor := min(st.Score, s.selector.cfg.MinThreshold); score < floor {
 		score = floor
 	}
 	return s.clamp(score)
+}
+
+// penaltyFor is the chronic penalty for a key's rate, measured from its
+// pool's baseline when the relative term is on for the service: the best
+// failure rate among the pool's well-attempted keys. A timeout tail every
+// operator of a service shares is the chain's or the network's, not one
+// operator's, and charging it to all of them ranked nobody above anybody
+// while it pinned them to the floor (mainnet sei, 2026-09-15: seven keys at
+// -44 to -49 on rates of 1.2-1.8%). A key worse than the best still pays the
+// difference.
+func (s *serviceImpl) penaltyFor(serviceID domain.ServiceID, key string, rate float64) float64 {
+	p := s.rate.Penalty(rate)
+	if p == 0 {
+		return 0
+	}
+	if m := s.baselines.Load(); m != nil {
+		if base, ok := (*m)[poolID{serviceID, rpcOfKey(key)}]; ok {
+			p = min(0, p-s.rate.Penalty(base))
+		}
+	}
+	return p
+}
+
+// poolID is one (service, RPC type) pool, the unit a baseline is taken over.
+type poolID struct {
+	svc domain.ServiceID
+	rpc string
+}
+
+// rpcOfKey is the RPC type half of a reputation key ("<identity>|<rpc_type>").
+func rpcOfKey(key string) string {
+	if i := strings.LastIndexByte(key, '|'); i >= 0 {
+		return key[i+1:]
+	}
+	return ""
+}
+
+const (
+	// probeDefer is how recent traffic must be for it, not a probe, to have
+	// the last word on a key's score. See RecordSignal.
+	probeDefer = 10 * time.Minute
+	// baselineMinAttempts is how much evidence a key needs before its rate
+	// can be a pool's baseline: a fresh key's rate of 0 says nothing yet.
+	baselineMinAttempts = 1000
+	// baselineRefresh is how often the pool baselines are recomputed; a
+	// relative_chronic flag change takes effect within it.
+	baselineRefresh = 30 * time.Second
+)
+
+// SetRelativeChronic turns on the pool-relative chronic penalty, per service,
+// behind gate. Call at wire time; the gate is read on each baseline refresh.
+func (s *serviceImpl) SetRelativeChronic(gate func(domain.ServiceID) bool) {
+	s.relativeGate.Store(&gate)
+}
+
+// refreshBaselines recomputes each pool's baseline: the lowest failure rate
+// among its keys with baselineMinAttempts and a live additive term, for pools
+// with at least two such keys and the relative term on. Off the relay path.
+func (s *serviceImpl) refreshBaselines() {
+	gp := s.relativeGate.Load()
+	if gp == nil || *gp == nil {
+		s.baselines.Store(nil)
+		return
+	}
+	gate := *gp
+	type acc struct {
+		min float64
+		n   int
+	}
+	pools := map[poolID]*acc{}
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for svc, states := range sh.cache {
+			for key, st := range states {
+				if st.Attempts < baselineMinAttempts || st.Score == 0 {
+					continue
+				}
+				id := poolID{svc, rpcOfKey(key)}
+				if a := pools[id]; a == nil {
+					pools[id] = &acc{min: st.Rate, n: 1}
+				} else {
+					a.min = min(a.min, st.Rate)
+					a.n++
+				}
+			}
+		}
+		sh.mu.RUnlock()
+	}
+	out := make(map[poolID]float64, len(pools))
+	for id, a := range pools {
+		if a.n >= 2 && gate(id.svc) {
+			out[id] = a.min
+		}
+	}
+	s.baselines.Store(&out)
 }
 
 // latencyAlpha is the traffic-latency EWMA step. Reporting only.
@@ -274,7 +375,7 @@ func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.Servi
 	if !ok {
 		return s.cfg.InitialScore, true
 	}
-	return s.effective(st), true
+	return s.effectiveFor(serviceID, key, st), true
 }
 
 // latencyForSelector is the LatencyFn the selector's tie-break reads: the
@@ -312,8 +413,21 @@ func (s *serviceImpl) SetOperatorCap(cfg OperatorCapConfig, gate func(context.Co
 
 // Start begins the background goroutine that flushes writes to storage.
 func (s *serviceImpl) Start() {
-	s.wg.Add(1)
+	s.wg.Add(2)
 	safego.Go(nil, "reputation.drain", s.drainWrites)
+	safego.Go(nil, "reputation.baselines", func() {
+		defer s.wg.Done()
+		t := time.NewTicker(baselineRefresh)
+		defer t.Stop()
+		for {
+			select {
+			case <-s.stopCh:
+				return
+			case <-t.C:
+				safego.Run(nil, "reputation.baselines.tick", s.refreshBaselines)
+			}
+		}
+	})
 }
 
 // Stop signals the background goroutine to exit and waits for it to finish.
@@ -379,8 +493,22 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 			s.pruneUninformative(svcStates)
 		}
 	}
+	ts := signal.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	// A probe is how a benched endpoint earns its way back; it is not evidence
+	// against what traffic is saying right now. A probe success on a key that
+	// served traffic within probeDefer changes nothing: on mainnet sei
+	// (2026-09-15) one operator passed eth_blockNumber every cycle while it
+	// answered 408 to real calls, and the probes' +5 cancelled the 408s' -5,
+	// holding it at 100 in tier 1. Probe failures still count.
+	deferred := signal.Probe && signal.Type == SignalSuccess &&
+		st.LastTraffic > 0 && ts.Unix()-st.LastTraffic < int64(probeDefer/time.Second)
 	prev := st
-	st.Score = s.clamp(st.Score + impact)
+	if !deferred {
+		st.Score = s.clamp(st.Score + impact)
+	}
 	// An endpoint the additive term has already floored is in an outage, not
 	// exhibiting a rate; letting a day of probes against a dead host drive the
 	// chronic term to its cap would cost weeks of probe-only recovery (final
@@ -389,12 +517,13 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// The test is on the score BEFORE this signal: the attempt that floors the
 	// key still feeds the rate, and only what happens to an already-floored key
 	// is discounted.
-	if s.rate.Enabled() && prev.Score != 0 {
+	if s.rate.Enabled() && prev.Score != 0 && !deferred {
 		st.Rate += s.lambda * (FailureWeight(signal.Type) - st.Rate)
 	}
 	st.Attempts++
 	if !signal.Probe {
 		st.TrafficAttempts++
+		st.LastTraffic = ts.Unix()
 		// Successes only: the EWMA now steers selection (latency tie-break),
 		// and a host that fails fast must not read as a fast host. On the
 		// 2026-09-14 canary the first hour of the tie-break fed every
@@ -409,7 +538,7 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 		}
 	}
 	svcStates[repKey] = st
-	newScore := s.effective(st)
+	newScore := s.effectiveFor(serviceID, repKey, st)
 	sh.mu.Unlock()
 
 	// Storage and timeline are keyed by the concatenated string form.
@@ -423,7 +552,7 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 			Event:      "signal",
 			SignalType: string(signal.Type),
 			Reason:     signal.Reason,
-			OldScore:   s.effective(prev),
+			OldScore:   s.effectiveFor(serviceID, repKey, prev),
 			Score:      newScore,
 		})
 	}
@@ -507,7 +636,7 @@ func (s *serviceImpl) GetScore(_ context.Context, serviceID domain.ServiceID, en
 	if !ok {
 		return s.cfg.InitialScore, nil
 	}
-	return s.effective(st), nil
+	return s.effectiveFor(serviceID, key, st), nil
 }
 
 // GetScores returns all cached scores for the given service, keyed by
@@ -518,7 +647,7 @@ func (s *serviceImpl) GetScores(_ context.Context, serviceID domain.ServiceID) (
 		sh := &s.shards[i]
 		sh.mu.RLock()
 		for key, st := range sh.cache[serviceID] {
-			result[key] = s.effective(st)
+			result[key] = s.effectiveFor(serviceID, key, st)
 		}
 		sh.mu.RUnlock()
 	}
@@ -547,8 +676,8 @@ func (s *serviceImpl) GetStates(_ context.Context, serviceID domain.ServiceID) (
 	out := make(map[string]StateView, len(states))
 	for key, st := range states {
 		out[key] = StateView{
-			Score: s.effective(st), Additive: st.Score, Rate: st.Rate,
-			Penalty: s.rate.Penalty(st.Rate), Attempts: st.Attempts,
+			Score: s.effectiveFor(serviceID, key, st), Additive: st.Score, Rate: st.Rate,
+			Penalty: s.penaltyFor(serviceID, key, st.Rate), Attempts: st.Attempts,
 			TrafficAttempts: st.TrafficAttempts, ProbeOnly: st.TrafficAttempts == 0,
 			LatencyMS: st.LatencyMS,
 		}
@@ -766,7 +895,7 @@ func (s *serviceImpl) Vouched(_ context.Context, serviceID domain.ServiceID, end
 	sh.mu.RLock()
 	st, ok := sh.cache[serviceID][key]
 	sh.mu.RUnlock()
-	return ok && s.effective(st) >= s.selector.cfg.ProbationThreshold
+	return ok && s.effectiveFor(serviceID, key, st) >= s.selector.cfg.ProbationThreshold
 }
 
 // clamp constrains a score to [0, MaxScore].

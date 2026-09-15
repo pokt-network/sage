@@ -563,6 +563,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		return flags.IsEnabled(ctx, featureflag.FlagLatencyTieBreak, serviceID)
 	})
 
+	// Pool-relative chronic penalty, read on each 30s baseline refresh.
+	repSvc.SetRelativeChronic(func(serviceID domain.ServiceID) bool {
+		return flags.IsEnabled(context.Background(), featureflag.FlagRelativeChronic, serviceID)
+	})
+
 	// Per-operator concentration cap. Gated per relay so an operator can turn
 	// it off at runtime — globally or for one service — without a deploy.
 	repSvc.SetOperatorCap(
