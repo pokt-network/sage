@@ -304,14 +304,19 @@ func TestHealthChecks_DefaultCometBFT(t *testing.T) {
 	p := newPlugin(10)
 
 	checks := p.HealthChecks()
-	if len(checks) != 1 {
-		t.Fatalf("expected 1 health check, got %d", len(checks))
+	if len(checks) != 2 {
+		t.Fatalf("expected 2 health checks, got %d", len(checks))
 	}
 	if checks[0].Name != "comet_bft_status" {
 		t.Errorf("expected comet_bft_status, got %q", checks[0].Name)
 	}
 	if checks[0].Payload.RPCType() != domain.RPCTypeCometBFT {
 		t.Errorf("expected CometBFT payload, got %q", checks[0].Payload.RPCType())
+	}
+	// The REST face is scored under its own key and needs its own probe.
+	rest := checks[1]
+	if rest.Payload.RPCType() != domain.RPCTypeREST || rest.Payload.Path() != "/cosmos/base/tendermint/v1beta1/syncing" || rest.Essential {
+		t.Errorf("REST check = %s %q essential=%v, want a non-essential REST syncing probe", rest.Payload.RPCType(), rest.Payload.Path(), rest.Essential)
 	}
 }
 

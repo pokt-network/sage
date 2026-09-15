@@ -344,6 +344,18 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 			// come from; an abci_query from a client carries neither.
 			Essential: true,
 		},
+		{
+			// The REST face is a different backend behind the relay miner,
+			// and a score is keyed per RPC type, so the /status probe says
+			// nothing about it. Without this a REST key knocked to 0 by an
+			// outage had no way back but traffic it no longer received
+			// (mainnet 2026-09-15: osmosis, juno and a dozen other Cosmos REST
+			// faces carried traffic with no probe at all). It runs only
+			// against REST-staked suppliers, and is graded on its status: the
+			// answer carries no height, so it is not Essential.
+			Name:    "rest_syncing",
+			Payload: restSyncingPayload(),
+		},
 	}
 }
 
