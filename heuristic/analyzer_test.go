@@ -515,11 +515,12 @@ func TestAnalyze_4xxWithoutEnvelopeOnJSONRPC_IsSupplierFault(t *testing.T) {
 // timing-out supplier down concentrates traffic onto a smaller tier-1 set,
 // which then sheds under the load it inherits, which scores it down in turn.
 //
-// So 408 falls through to the generic 4xx branches, and what happens to it
-// depends on the body, exactly as any other 4xx does. Re-landing the special
-// case needs a canary experiment that separates the retry half from the
-// penalty half, not a rerun of the same reasoning.
-func TestAnalyze_408IsRetriedAndNotPenalized(t *testing.T) {
+// The retry half re-landed first. The penalty half re-landed on 2026-09-15 as
+// a major error, behind the penalize_408 flag (the middleware clears it when
+// the flag is off), after one mainnet operator answered half of bsc's relays
+// with 408 at a score of 97-100. See heuristic/analyzer.go for why the 2026-09-02
+// concentration is bounded now; the flag is the undo if it is not.
+func TestAnalyze_408IsRetriedAndPenalized(t *testing.T) {
 	cases := []struct {
 		name            string
 		body            []byte
@@ -535,6 +536,7 @@ func TestAnalyze_408IsRetriedAndNotPenalized(t *testing.T) {
 			body:            []byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`),
 			rpcType:         domain.RPCTypeJSONRPC,
 			wantRetry:       true,
+			wantPenalize:    true,
 			wantAttribution: AttrSupplier,
 			wantReason:      "http_408",
 		},
@@ -546,6 +548,7 @@ func TestAnalyze_408IsRetriedAndNotPenalized(t *testing.T) {
 			body:            []byte(`{"height":"1"}`),
 			rpcType:         domain.RPCTypeREST,
 			wantRetry:       true,
+			wantPenalize:    true,
 			wantAttribution: AttrSupplier,
 			wantReason:      "http_408",
 		},
@@ -560,6 +563,7 @@ func TestAnalyze_408IsRetriedAndNotPenalized(t *testing.T) {
 			body:            []byte(``),
 			rpcType:         domain.RPCTypeJSONRPC,
 			wantRetry:       true,
+			wantPenalize:    true,
 			wantAttribution: AttrSupplier,
 			wantReason:      "http_408",
 		},
