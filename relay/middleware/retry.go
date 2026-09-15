@@ -83,8 +83,8 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// with no answer at all — a relay miner's 408, a timeout — the
 			// router had nothing to deliver and wrote a 500 over an answer a
 			// healthy node had given. On mainnet celo (2026-09-14) that was
-			// 17,720 "block not found" answers from kleomedes, retried onto
-			// rpcgate's 408s, turned into 13,599 client 500s while PATH handed
+			// 17,720 "block not found" answers from one operator, retried onto
+			// another's 408s, turned into 13,599 client 500s while PATH handed
 			// the same answers through as 200. The last real answer stands
 			// unless a later attempt produced one of its own.
 			var keptResp = ctx.Response

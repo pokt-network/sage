@@ -9,10 +9,10 @@ by a person reading metrics and calling `POST /admin/reputation/drain/{svc}`:
 
 | Service | Drained | What the metrics showed | After the drain |
 |---|---|---|---|
-| sei json_rpc | rpcgate.xyz | 16.9% non-200 (PATH 4.2%); every nodefleet key below the floor, rpcgate holding 12 of 19 keys and answering 408 to everything | 500s 480 → 15 in 9 min |
-| celo json_rpc | rpcgate.xyz | 90% non-200 (PATH 0%); retries landing on rpcgate's 408 | 0.1% |
-| base json_rpc | rpcgate.xyz, stakeandrelax.net | 16.7% non-200 and 19,037 pool-collapse picks in 7 min once released without the fix | 0.1–0.2% |
-| solana json_rpc | rpcgate.xyz | 46% non-200 during an upstream incident; kleomedes the only key above 0 | 0.7% (upstream eased in the same window) |
+| sei json_rpc | operator A | 16.9% non-200 (PATH 4.2%); every operator C key below the floor, operator A holding 12 of 19 keys and answering 408 to everything | 500s 480 → 15 in 9 min |
+| celo json_rpc | operator A | 90% non-200 (PATH 0%); retries landing on operator A's 408 | 0.1% |
+| base json_rpc | operators A and B | 16.7% non-200 and 19,037 pool-collapse picks in 7 min once released without the fix | 0.1–0.2% |
+| solana json_rpc | operator A | 46% non-200 during an upstream incident; operator D the only key above 0 | 0.7% (upstream eased in the same window) |
 
 Every case had the same shape. Tiered selection had already scored the bad
 operator to 0, so it received no tier traffic. It kept receiving the
@@ -26,7 +26,7 @@ proposing, getting approval, applying. It also needs a person awake. The
 engine automates that one decision, with a human veto that sticks.
 
 Counter-case, which the engine must never act on: moonbeam and moonriver,
-where rpcgate is the **only** responsive supplier. Draining it would empty the
+where operator A is the **only** responsive supplier. Draining it would empty the
 pool. Their collapse counts are the highest on mainnet (moonbeam 1,201 per
 10 min) and are correct behaviour.
 
@@ -74,9 +74,9 @@ is long enough that one burst does not act. **All** of the following must hold:
    on this operator's endpoints. Below that it is not the operator the
    fallback is feeding.
 3. **This operator answers nothing:** its success rate on attempts in the
-   window is at most 2%, over at least 50 attempts (the attempt floor). rpcgate
+   window is at most 2%, over at least 50 attempts (the attempt floor). operator A
    on sei, celo and solana was 0% (408 on everything). A slow-but-working
-   operator (nodefleet on sei, 60–80%) never qualifies.
+   operator (operator C on sei, 60–80%) never qualifies.
 4. **Another operator is vouched:** at least one endpoint of a different
    operator in the **current session** passes `reputation.Service.Vouched`
    (score ≥ probation). This is stronger than the admin route's
@@ -206,10 +206,10 @@ until the user decides otherwise.
 Unit tests drive the engine with a fake clock, a fake `drain.Store`, and
 collapse and signal events fed directly:
 
-- **sei shape:** nodefleet at 70% success, rpcgate at 0% absorbing 60% of
-  picks, one nodefleet key vouched. Expect exactly one `Set` on
-  (sei, rpcgate.xyz, json_rpc), with the `auto:` reason.
-- **moonbeam shape:** rpcgate is the only operator. Expect no `Set` and
+- **sei shape:** operator C at 70% success, operator A at 0% absorbing 60% of
+  picks, one operator C key vouched. Expect exactly one `Set` on
+  (sei, operator A, json_rpc), with the `auto:` reason.
+- **moonbeam shape:** operator A is the only operator. Expect no `Set` and
   `last_operator`/`no_vouched_alternative`.
 - **Junk alternative:** a second operator present but below probation. Expect
   no `Set`.
