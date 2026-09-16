@@ -71,6 +71,8 @@ var coalescableMethods = map[string]bool{
 //   - qos.StateResetter
 //   - qos.SubscriptionClassifier
 type Plugin struct {
+	qos.SelectionTiers
+
 	logger          *slog.Logger
 	store           *qos.EndpointStore[evmEndpoint]
 	consensus       *qos.BlockConsensus
@@ -194,6 +196,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 
 	ranker := qos.LeastStaleFallback(getHeight, perceived)
 	result := qos.SelectWithKnownHeights(endpoints, getHeight, filters, relaxedFilters, nonBlockFilters, ranker)
+	p.ReportTier(result.Tier)
 
 	if result.Degraded {
 		p.logger.Warn("endpoint selection degraded",

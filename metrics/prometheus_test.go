@@ -764,3 +764,30 @@ func TestRecordStageTime_SumsPerStage(t *testing.T) {
 		t.Errorf("stage_seconds_total{eth,parse} = %v, want 0.005", got)
 	}
 }
+
+// Tiers 1-3 are counted under a fixed label set; anything else is not a
+// selection that settled on a tier and adds no series.
+func TestRecordSelectionTier(t *testing.T) {
+	r := &Recorder{
+		services: allowedLabel([]domain.ServiceID{"eth"}),
+		selectionTiers: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "qos_selection_tier_total"},
+			[]string{"service_id", "tier"},
+		),
+	}
+	r.RecordSelectionTier("eth", 1)
+	r.RecordSelectionTier("eth", 3)
+	r.RecordSelectionTier("eth", 3)
+	r.RecordSelectionTier("eth", 0)
+	r.RecordSelectionTier("eth", 4)
+
+	if got := value(t, r.selectionTiers.WithLabelValues("eth", "3")); got != 2 {
+		t.Errorf("tier 3 = %v, want 2", got)
+	}
+	series := make(chan prometheus.Metric, 8)
+	r.selectionTiers.Collect(series)
+	close(series)
+	if n := len(series); n != 2 {
+		t.Errorf("series = %d, want 2 (tiers 1 and 3 only)", n)
+	}
+}

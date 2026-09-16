@@ -25,6 +25,8 @@ type solanaEndpoint struct {
 
 // Plugin is the Solana QoS plugin.
 type Plugin struct {
+	qos.SelectionTiers
+
 	logger        *slog.Logger
 	syncAllowance atomic.Uint64
 
@@ -109,6 +111,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 		qos.LeastStaleFallback(getHeight, perceived),
 	)
 
+	p.ReportTier(result.Tier)
 	return result.Endpoints, nil
 }
 

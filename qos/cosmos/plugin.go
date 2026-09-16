@@ -48,6 +48,8 @@ type cosmosEndpoint struct {
 //   - qos.StateResetter
 //   - qos.SubscriptionClassifier
 type Plugin struct {
+	qos.SelectionTiers
+
 	logger            *slog.Logger
 	syncAllowance     atomic.Uint64
 	supportedRPCTypes []domain.RPCType
@@ -251,6 +253,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 
 	ranker := qos.LeastStaleFallback(getHeight, perceived)
 	result := qos.SelectWithKnownHeights(endpoints, getHeight, baseFilters, relaxedFilters, nonBlockFilters, ranker)
+	p.ReportTier(result.Tier)
 
 	if result.Degraded {
 		// A pool with nothing that holds the requested height is the

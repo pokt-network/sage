@@ -639,6 +639,14 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			syncBases[domain.ServiceID(svc.ID)] = tuner.SyncAllowance()
 		}
 	}
+	// Which height tier each selection settled on, per service: the tier was
+	// a WARN log line only, and production runs at level error.
+	for _, svc := range cfg.Gateway.AllServices() {
+		id := domain.ServiceID(svc.ID)
+		if reporter, ok := qosReg.Get(id).(qos.SelectionTierReporter); ok {
+			reporter.SetSelectionTierRecorder(func(tier int) { recorder.RecordSelectionTier(id, tier) })
+		}
+	}
 	baseSampleRate := cfg.Gateway.ObservationPipeline.SampleRate
 	if baseSampleRate <= 0 || baseSampleRate > 1 {
 		baseSampleRate = 1
