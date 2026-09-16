@@ -127,7 +127,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 	// here would be one to keep in step.
 	perceived := p.consensus.PerceivedBlock()
 
-	getHeight := qos.HeightGetter(p.store, func(s endpointState) uint64 { return s.blockHeight })
+	getHeight := qos.HeightGetter(p.store, func(s endpointState) uint64 { return s.blockHeight }, p.consensus.Projection())
 	result := qos.SelectWithKnownHeights(
 		endpoints,
 		getHeight,
@@ -233,7 +233,7 @@ func (p *Plugin) heightFrom(response []byte) (uint64, error) {
 
 // UpdateBlockHeight records a height observation and feeds consensus.
 func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) {
-	p.store.Update(endpoint, func(s *endpointState) { s.blockHeight = height })
+	p.store.ObserveHeight(endpoint, func(s *endpointState) { s.blockHeight = height })
 	p.consensus.AddObservation(endpoint, height)
 }
 

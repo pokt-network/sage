@@ -158,7 +158,7 @@ func TestHeightGetter(t *testing.T) {
 	store.Update("pokt1a-https://a.example.com", func(e *ep) { e.height = 500 })
 	store.Update("pokt1zero-https://zero.example.com", func(e *ep) { e.height = 0 })
 
-	get := HeightGetter(store, func(e ep) uint64 { return e.height })
+	get := HeightGetter(store, func(e ep) uint64 { return e.height }, HeightProjection{})
 
 	if h, ok := get("pokt1a-https://a.example.com"); !ok || h != 500 {
 		t.Errorf("known endpoint: got (%d, %v), want (500, true)", h, ok)

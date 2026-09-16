@@ -19,6 +19,10 @@ type EndpointStore[T any] struct {
 type storedEndpoint[T any] struct {
 	Data     T
 	LastSeen time.Time
+	// HeightAt is when the height in Data was last observed; zero until
+	// ObserveHeight is called. Not LastSeen, which a session change or a
+	// chain-id check also moves without a new height.
+	HeightAt time.Time
 }
 
 // NewEndpointStore creates an empty EndpointStore.
@@ -43,22 +47,28 @@ func NewEndpointStore[T any](logger *slog.Logger) *EndpointStore[T] {
 // which was intended, and the difference is only visible in a pool where an
 // endpoint has been seen but never reported.
 //
+// The height is projected to the moment the perceived head was read (see
+// HeightProjection), so a reading taken a probe cycle ago is not judged as
+// that many blocks behind. A zero projection returns the stored height.
+//
 // Zero means unknown here, for every chain. An endpoint we have no height for
 // is one we cannot judge on height, and excluding it on that basis penalizes it
 // for our own missing data — the same reasoning BlockHeightFilter already
 // applies to an endpoint that is absent from the store entirely. Treating
 // "absent" and "present with no height" differently was the accident.
-func HeightGetter[T any](store *EndpointStore[T], height func(T) uint64) func(domain.EndpointAddr) (uint64, bool) {
+func HeightGetter[T any](store *EndpointStore[T], height func(T) uint64, projection HeightProjection) func(domain.EndpointAddr) (uint64, bool) {
 	return func(addr domain.EndpointAddr) (uint64, bool) {
-		data, ok := store.Get(addr)
+		store.mu.RLock()
+		ep, ok := store.endpoints[addr]
+		store.mu.RUnlock()
 		if !ok {
 			return 0, false
 		}
-		h := height(data)
+		h := height(ep.Data)
 		if h == 0 {
 			return 0, false
 		}
-		return h, true
+		return projection.Project(h, ep.HeightAt), true
 	}
 }
 
@@ -95,6 +105,22 @@ func (s *EndpointStore[T]) Update(addr domain.EndpointAddr, fn func(*T)) {
 	}
 	fn(&ep.Data)
 	ep.LastSeen = time.Now()
+	s.endpoints[addr] = ep
+}
+
+// ObserveHeight is Update for a new height reading: it also records when the
+// height was observed, which HeightGetter projects from.
+func (s *EndpointStore[T]) ObserveHeight(addr domain.EndpointAddr, fn func(*T)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	ep, ok := s.endpoints[addr]
+	if !ok {
+		ep = storedEndpoint[T]{}
+	}
+	fn(&ep.Data)
+	ep.LastSeen = now
+	ep.HeightAt = now
 	s.endpoints[addr] = ep
 }
 

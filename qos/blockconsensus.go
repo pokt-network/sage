@@ -350,6 +350,58 @@ func (bc *BlockConsensus) BlockRate() (float64, bool) {
 	return blockRate(bc.rateSamples)
 }
 
+// HeightProjection advances a stored height reading to the moment the
+// perceived head last moved, at the chain's own block rate. Take one per
+// selection with Projection; the zero value projects nothing.
+//
+// It exists because the height filter compared readings of different ages. A
+// pool is probed once per cycle, so a healthy endpoint read 100 s before the
+// head was read is 100 s of blocks "behind" it — about 130 blocks on bsc,
+// which is more than its allowance — and the strict filter rejected it for our
+// own sampling rather than for its lag. The chain view already projects this
+// way for its disagreement metric.
+type HeightProjection struct {
+	rate      float64
+	headAt    time.Time
+	perceived uint64
+	window    time.Duration
+}
+
+// Projection captures what Project needs under one read lock, so a selection
+// does not take the lock once per endpoint.
+func (bc *BlockConsensus) Projection() HeightProjection {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	p := HeightProjection{perceived: bc.perceived.Load(), window: bc.windowDuration}
+	if rate, ok := blockRate(bc.rateSamples); ok {
+		p.rate = rate
+		p.headAt = bc.rateSamples[len(bc.rateSamples)-1].at
+	}
+	return p
+}
+
+// Project returns height, read at observedAt, as it would have read when the
+// head was read, never above the perceived head. The reading is returned
+// unchanged when the rate is unknown, when it is no older than the head's,
+// or when it is more than two consensus windows older.
+//
+// Projecting assumes the node kept syncing since it was read, so a node that
+// stalled just after its reading passes until the next reading shows the
+// stall — one probe cycle, since that reading carries a fresh time. Two
+// windows is the bound for when readings stop coming: one window is the 120 s
+// mainnet probe cycle itself, and a reading taken just over a cycle ago is the
+// ordinary case, not the stale one.
+func (p HeightProjection) Project(height uint64, observedAt time.Time) uint64 {
+	if p.rate <= 0 || observedAt.IsZero() || height >= p.perceived {
+		return height
+	}
+	age := p.headAt.Sub(observedAt)
+	if age <= 0 || age > 2*p.window {
+		return height
+	}
+	return min(height+uint64(p.rate*age.Seconds()), p.perceived)
+}
+
 func blockRate(samples []rateSample) (float64, bool) {
 	if len(samples) < 2 {
 		return 0, false
