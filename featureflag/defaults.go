@@ -86,13 +86,15 @@ const (
 	// so a timeout tail every operator shares does not floor all of them. On
 	// by default since 2026-09-15; the live undo, globally or per service.
 	FlagRelativeChronic = "relative_chronic"
-	// FlagOperatorChronic measures the chronic-failure rate per operator over
-	// every key it holds in a (service, RPC type) pool, each key corrected for
-	// its EWMA warm-up, instead of per key. Off restores the per-key rate.
+	// FlagOperatorChronic charges a key its OPERATOR's chronic failure rate
+	// rather than its own. The operator rate is a decayed count of attempts
+	// and failures kept against (service, operator, RPC type) and persisted,
+	// so it survives the session draw that replaces an operator's endpoints
+	// every 20 blocks. Off restores the per-key rate.
 	//
 	// Off by default: it changes what every score in a pool is charged, so it
 	// wants a read of its own before it decides traffic. See
-	// reputation/operator.go for the mainnet measurement it comes from.
+	// reputation/opstats.go for the mainnet measurement it comes from.
 	FlagOperatorChronic = "operator_chronic"
 )
 

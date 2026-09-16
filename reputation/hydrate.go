@@ -19,6 +19,8 @@ type HydrateResult struct {
 	// Skipped counts states read but not loaded — stale, unparseable, or over
 	// the per-shard bound.
 	Skipped int
+	// Operators is how many per-operator counters were adopted from storage.
+	Operators int
 }
 
 // Hydrator is the optional half of Service that loads persisted state back
@@ -88,6 +90,17 @@ func (s *serviceImpl) Hydrate(ctx context.Context) (HydrateResult, error) {
 		}
 		result.Keys++
 		seen[serviceID] = struct{}{}
+	}
+
+	// Operator evidence is adopted too, and it is the half that matters most
+	// to a cold pod: per-key state ages out with the session draw, while an
+	// operator's counters are the fleet's accumulated view of who answers
+	// (opstats.go).
+	if store, ok := s.storage.(OperatorStatStore); ok {
+		stored, opErr := store.GetOperatorStats(ctx)
+		if opErr == nil {
+			result.Operators = s.ops.merge(stored, time.Now())
+		}
 	}
 
 	result.Services = make([]domain.ServiceID, 0, len(seen))

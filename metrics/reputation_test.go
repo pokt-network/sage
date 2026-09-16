@@ -219,9 +219,9 @@ func TestNewHydratedGauges(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := prometheus.NewRegistry()
-			collectors := NewHydratedGauges(tc.keys, tc.services)
-			if len(collectors) != 2 {
-				t.Fatalf("got %d collectors, want 2", len(collectors))
+			collectors := NewHydratedGauges(tc.keys, tc.services, 0)
+			if len(collectors) != 3 {
+				t.Fatalf("got %d collectors, want 3", len(collectors))
 			}
 			reg.MustRegister(collectors...)
 

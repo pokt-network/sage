@@ -189,6 +189,14 @@ func (p *Protocol) readResponse(serviceID domain.ServiceID, resp *http.Response)
 		if err != nil {
 			return nil, domain.NewRelayError(domain.ErrTransport, "failed to read relay response body", err, true)
 		}
+		// Measured here, where the bytes were actually buffered — including a
+		// body about to be rejected, since holding it is what cost the memory.
+		// A response refused on its declared Content-Length allocates nothing
+		// and is deliberately not observed: a zero beside a gigabyte would
+		// flatten the distribution this exists to show. sage_oversized_
+		// responses_total counts what crossed the ceiling; this says where the
+		// ceiling belongs, which a counter of zero never could.
+		p.supplierMetricsRecorder().RecordResponseSize(serviceID, len(body))
 	}
 	if resp.ContentLength > limit || int64(len(body)) > limit {
 		p.supplierMetricsRecorder().RecordOversizedResponse(serviceID)

@@ -46,9 +46,15 @@ func newHarness(t *testing.T, vouch fakeVouch, act bool) *harness {
 }
 
 func newHarnessWith(t *testing.T, vouch fakeVouch, act bool, rates OperatorRates) *harness {
+	return newHarnessOn(t, drain.NewMemoryStore(), vouch, act, rates)
+}
+
+// newHarnessOn builds an engine over an existing drain store, so a test can
+// stand a second instance on the drains the first one set.
+func newHarnessOn(t *testing.T, drains *drain.MemoryStore, vouch fakeVouch, act bool, rates OperatorRates) *harness {
 	t.Helper()
 	h := &harness{
-		drains: drain.NewMemoryStore(),
+		drains: drains,
 		flags:  featureflag.NewMemoryStore(featureflag.DefaultFlags),
 		log:    &MemoryLog{},
 		now:    time.Now(),

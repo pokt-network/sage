@@ -21,6 +21,20 @@ type recordingMetrics struct {
 	blacklists []string
 	minerErrs  []string
 	oversized  int
+	sizes      []int
+}
+
+func (r *recordingMetrics) RecordResponseSize(_ domain.ServiceID, bytes int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sizes = append(r.sizes, bytes)
+}
+
+// observedSizes returns the response sizes recorded so far.
+func (r *recordingMetrics) observedSizes() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]int(nil), r.sizes...)
 }
 
 func (r *recordingMetrics) RecordOversizedResponse(domain.ServiceID) {

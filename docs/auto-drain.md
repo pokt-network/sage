@@ -95,15 +95,24 @@ is long enough that one burst does not act. **All** of the following must hold:
    2.2%, and every one was on a service SAGE was already serving better than
    PATH (base 0.08% against PATH's 14%, giwa 0.009% against 0.59%); every drain
    a person actually made sat above 5%. A candidate below the bar is recorded
-   as `below_client_failure` and never acted on.
+   as `below_client_failure` and never acted on; one whose window holds fewer
+   than 50 client answers is recorded as `no_client_evidence` instead, because
+   a chain at 0.1 requests/second reaches neither the floor nor any conclusion
+   — "nobody is failing" and "nobody asked" are different facts and the label
+   says which. Over a long enough window the small chains do reach the floor:
+   moonriver and poly-zkevm, at 92% and 100% client failure, are gated on
+   having no vouched alternative, not on the client bar.
 
 **Second trigger — the operator the collapse share cannot see.** Conditions 2
 and 3 are blind to an operator that spreads one service over many keys: its
 picks never concentrate and it answers most requests, while each key's failure
-rate stays too young to read (`reputation/operator.go`). mainnet sei was drained
-by hand three times in two days while the engine proposed nothing there. So a
-candidate is also raised when its **per-operator corrected chronic rate is at
-least 3%** over the same attempt floor, whatever its collapse share. Conditions
+rate stays too young to read, because the session draw replaces its endpoints
+every 20 blocks (`reputation/opstats.go`). mainnet sei was drained by hand three
+times in two days while the engine proposed nothing there. So a candidate is
+also raised when its **per-operator failure rate is at least 3%** — the decayed
+attempt and failure counters kept against the operator identity, which the
+session draw does not rotate — over the same attempt floor, whatever its
+collapse share. Conditions
 4–6 still apply, so a drain still needs a vouched alternative and real client
 harm. The event records which trigger raised it (`collapse` or
 `operator_rate`), the operator rate, and the client failure share behind the
