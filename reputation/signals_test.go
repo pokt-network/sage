@@ -5,10 +5,11 @@ import (
 	"time"
 )
 
-func TestDefaultImpact(t *testing.T) {
+func TestSignalImpacts_Defaults(t *testing.T) {
+	defaults := SignalImpacts{}.Normalized()
 	tests := []struct {
 		signal   SignalType
-		expected int
+		expected float64
 	}{
 		{SignalSuccess, 5},
 		{SignalMinorError, -3},
@@ -23,9 +24,9 @@ func TestDefaultImpact(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.signal), func(t *testing.T) {
-			got := DefaultImpact(tt.signal)
+			got := defaults.Impact(tt.signal)
 			if got != tt.expected {
-				t.Errorf("DefaultImpact(%s) = %d, want %d", tt.signal, got, tt.expected)
+				t.Errorf("default impact of %s = %v, want %v", tt.signal, got, tt.expected)
 			}
 		})
 	}

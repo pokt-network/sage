@@ -25,8 +25,9 @@ import (
 // This file used to answer each of those separately — sanitizeLabel,
 // serviceLabel, boundedLabel — each added by a different incident, each
 // correct, none aware of the others, and an author adding a metric had to know
-// which of the three applied. They are now one type with three constructors, so
-// the question is "which policy", not "which mechanism", and sanitizing is not
+// which of the three applied. They are now one type with a constructor for each
+// of the two external sources (the closed sets need no policy), so the
+// question is "which policy", not "which mechanism", and sanitizing is not
 // something a call site can forget: every policy does it.
 
 const (
@@ -82,10 +83,6 @@ type labelPolicy struct {
 	mu   sync.RWMutex
 	seen map[string]struct{}
 }
-
-// openLabel sanitizes and admits everything. For values from SAGE's own closed
-// sets.
-func openLabel() *labelPolicy { return &labelPolicy{} }
 
 // allowedLabel admits only the given values. For a label whose real set is
 // known at startup — configured service IDs — where anything else is a client

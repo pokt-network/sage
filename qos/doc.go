@@ -11,7 +11,7 @@
 // [Plugin] has two methods — parse a request, filter the endpoint list. That
 // is the whole obligation for a new chain. Every further capability is an
 // optional extension interface in plugin.go: [BlockHeightTracker],
-// [ArchivalDetector], [HealthChecker], [DataExtractor], [CachePolicy],
+// [HealthChecker], [DataExtractor], [CachePolicy],
 // [CoalescenceClassifier], and the rest. A plugin gains a capability by
 // implementing the interface; callers type-assert for it and skip the feature
 // when absent.

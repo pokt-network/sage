@@ -31,10 +31,20 @@ func newBlacklist() *blacklist {
 }
 
 // BlacklistSupplier adds a supplier to the blacklist for a specific service.
+//
+// Expired entries are pruned here, the only place the map grows. A periodic
+// cleanup existed and nothing ever called it, so every supplier ever
+// blacklisted stayed in the map for the life of the process.
 func (b *blacklist) BlacklistSupplier(serviceID domain.ServiceID, addr string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.blocked[blacklistKey{serviceID, addr}] = time.Now().Add(b.duration)
+	now := time.Now()
+	for key, expiry := range b.blocked {
+		if now.After(expiry) {
+			delete(b.blocked, key)
+		}
+	}
+	b.blocked[blacklistKey{serviceID, addr}] = now.Add(b.duration)
 }
 
 // UnblacklistSupplier removes a supplier from the blacklist.
@@ -62,14 +72,3 @@ func (b *blacklist) IsBlacklisted(serviceID domain.ServiceID, addr string) bool 
 	return time.Now().Before(expiry)
 }
 
-// cleanup removes all expired entries. Should be called periodically.
-func (b *blacklist) cleanup() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	now := time.Now()
-	for key, expiry := range b.blocked {
-		if now.After(expiry) {
-			delete(b.blocked, key)
-		}
-	}
-}

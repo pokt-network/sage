@@ -159,6 +159,7 @@ func main() {
 
 	logger.Info("SAGE gateway initialized",
 		"version", versionInfo,
+		"build_date", BuildDate,
 		"services", len(services),
 		"service_ids", strings.Join(serviceIDs, ", "),
 		"port", cfg.Router.Port,

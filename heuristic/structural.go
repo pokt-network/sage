@@ -61,21 +61,3 @@ func IsPlainText(body []byte) bool {
 	return true
 }
 
-// IsXML returns true if the response body looks like XML (but not HTML).
-func IsXML(body []byte) bool {
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 {
-		return false
-	}
-	if bytes.HasPrefix(trimmed, []byte("<?xml")) || bytes.HasPrefix(trimmed, []byte("<?XML")) {
-		return true
-	}
-	// Check for XML-like structure that isn't HTML.
-	if trimmed[0] == '<' && !IsHTML(body) {
-		// Look for closing tags typical of XML error responses.
-		if bytes.Contains(trimmed, []byte("</Error>")) || bytes.Contains(trimmed, []byte("</error>")) {
-			return true
-		}
-	}
-	return false
-}

@@ -184,7 +184,8 @@ func TestSelectEndpoint_EmptyEndpointsIsAnError(t *testing.T) {
 	}))
 
 	err := handler.HandleRelay(ctx)
-	if err == nil || domain.IsRetryable(err) || domain.ErrorKindOf(err) != domain.ErrProtocol {
+	var relayErr *domain.RelayError
+	if err == nil || domain.IsRetryable(err) || !errors.As(err, &relayErr) || relayErr.Kind != domain.ErrProtocol {
 		t.Fatalf("err = %v, want a non-retryable protocol error", err)
 	}
 }

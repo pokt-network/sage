@@ -80,7 +80,8 @@ func TestBlacklist_ServiceIsolation(t *testing.T) {
 	}
 }
 
-func TestBlacklist_Cleanup(t *testing.T) {
+// Expired entries leave the map when the next supplier is blacklisted.
+func TestBlacklist_AddPrunesExpired(t *testing.T) {
 	bl := newBlacklist()
 	bl.duration = 1 * time.Millisecond
 
@@ -88,13 +89,13 @@ func TestBlacklist_Cleanup(t *testing.T) {
 	bl.BlacklistSupplier("eth", "pokt1b")
 
 	time.Sleep(5 * time.Millisecond)
-	bl.cleanup()
+	bl.BlacklistSupplier("eth", "pokt1c")
 
 	bl.mu.RLock()
 	n := len(bl.blocked)
 	bl.mu.RUnlock()
 
-	if n != 0 {
-		t.Errorf("cleanup should remove expired entries, got %d remaining", n)
+	if n != 1 {
+		t.Errorf("blocked holds %d entries, want only the fresh one", n)
 	}
 }

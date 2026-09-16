@@ -171,7 +171,7 @@ func (p *Plugin) ClassifyRPCType(req *http.Request, body []byte, detected domain
 //  1. Block height — endpoints must be within syncAllowance of the perceived head.
 //  2. RPC type compatibility — endpoints must support the requested RPC type.
 //
-// It uses the tiered degradation logic in qos.Select.
+// It uses the tiered degradation logic in qos.SelectWithKnownHeights.
 func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []domain.Payload) (domain.EndpointAddrList, error) {
 	if len(endpoints) == 0 {
 		return nil, nil

@@ -68,21 +68,11 @@ func TestBoundedLabel_ConcurrentUseStaysWithinCap(t *testing.T) {
 	}
 }
 
-// The three policies exist because label values arrive from three places that
-// fail differently. What they share is the floor: none of them can hand
+// The policies exist because label values arrive from places that fail
+// differently. What they share is the floor: none of them can hand
 // client_golang a value that panics it.
 func TestLabelPolicies(t *testing.T) {
 	invalid := "eth\xff\xc0\xae"
-
-	t.Run("open admits everything but still sanitizes", func(t *testing.T) {
-		p := openLabel()
-		if got := p.value("anything-at-all"); got != "anything-at-all" {
-			t.Errorf("value = %q, want it admitted unchanged", got)
-		}
-		if got := p.value(invalid); !utf8.ValidString(got) {
-			t.Errorf("value = %q, which is not valid UTF-8 — client_golang panics on that", got)
-		}
-	})
 
 	t.Run("allowed collapses anything unconfigured", func(t *testing.T) {
 		p := allowedLabel([]domain.ServiceID{"eth", "poly"})

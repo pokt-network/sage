@@ -146,13 +146,6 @@ func IsRetryable(err error) bool {
 	return false
 }
 
-// ErrorKindOf extracts the ErrorKind from an error, defaulting to ErrTransport.
-func ErrorKindOf(err error) ErrorKind {
-	if re, ok := err.(*RelayError); ok {
-		return re.Kind
-	}
-	return ErrTransport
-}
 
 // UpstreamStatusError is the cause carried when a relay miner's HTTP layer
 // answered with a non-2xx status before producing a signed RelayResponse:

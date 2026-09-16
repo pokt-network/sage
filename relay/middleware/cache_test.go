@@ -235,3 +235,32 @@ func TestCache_RecordsHitAndMiss(t *testing.T) {
 		t.Fatalf("hits=%d misses=%d, want 1/1", rec.hits, rec.misses)
 	}
 }
+
+func TestCacheKey_Determinism(t *testing.T) {
+	svc := domain.ServiceID("eth")
+	p := domain.NewPayload([]byte(`{"method":"eth_blockNumber","params":[]}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+
+	k1 := cacheKey(svc, []domain.Payload{p})
+	k2 := cacheKey(svc, []domain.Payload{p})
+	if k1 != k2 {
+		t.Fatalf("cacheKey is not deterministic: %s vs %s", k1, k2)
+	}
+}
+
+func TestCacheKey_DifferentServicesDiffer(t *testing.T) {
+	p := domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	k1 := cacheKey("eth", []domain.Payload{p})
+	k2 := cacheKey("poly", []domain.Payload{p})
+	if k1 == k2 {
+		t.Fatal("keys for different services should differ")
+	}
+}
+
+func TestCacheKey_DifferentPayloadsDiffer(t *testing.T) {
+	svc := domain.ServiceID("eth")
+	p1 := domain.NewPayload([]byte(`params1`), domain.RPCTypeJSONRPC, "m")
+	p2 := domain.NewPayload([]byte(`params2`), domain.RPCTypeJSONRPC, "m")
+	if cacheKey(svc, []domain.Payload{p1}) == cacheKey(svc, []domain.Payload{p2}) {
+		t.Fatal("keys for different payloads should differ")
+	}
+}
