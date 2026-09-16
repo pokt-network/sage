@@ -128,6 +128,7 @@ type supplierMetrics interface {
 	RecordSupplierBlacklist(serviceID domain.ServiceID, reason string)
 	RecordRelayMinerError(serviceID domain.ServiceID, codespace string)
 	RecordOversizedResponse(serviceID domain.ServiceID)
+	RecordResponseSize(serviceID domain.ServiceID, bytes int)
 }
 
 // noopSupplierMetrics is the default, so no call site needs a nil check.
@@ -136,6 +137,7 @@ type noopSupplierMetrics struct{}
 func (noopSupplierMetrics) RecordSupplierBlacklist(domain.ServiceID, string) {}
 func (noopSupplierMetrics) RecordRelayMinerError(domain.ServiceID, string)   {}
 func (noopSupplierMetrics) RecordOversizedResponse(domain.ServiceID)         {}
+func (noopSupplierMetrics) RecordResponseSize(domain.ServiceID, int)         {}
 
 // SetMetrics attaches a metrics recorder to the protocol. Not safe to call
 // concurrently with relays; call it at wire time.

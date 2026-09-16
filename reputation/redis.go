@@ -85,6 +85,46 @@ func decodeState(val string) (State, error) {
 	return State{Score: f}, nil
 }
 
+var _ OperatorStatStore = (*RedisStorage)(nil)
+
+// operatorHashKey is the HASH holding per-operator evidence, beside the
+// per-key scores. A separate hash rather than reserved fields in the same one:
+// the score hash is swept by an idle TTL tuned to keys that rotate out of a
+// session, and operator evidence must not be swept on that rule — an operator
+// is still the same operator after a quiet hour.
+func (r *RedisStorage) operatorHashKey() string {
+	return r.hashKey + "operators"
+}
+
+// GetOperatorStats reads every stored operator stat.
+func (r *RedisStorage) GetOperatorStats(ctx context.Context) (map[string]OperatorStat, error) {
+	all, err := r.client.HGetAll(ctx, r.operatorHashKey()).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis HGetAll %s: %w", r.operatorHashKey(), err)
+	}
+	out := make(map[string]OperatorStat, len(all))
+	for field, val := range all {
+		var st OperatorStat
+		if err := json.Unmarshal([]byte(val), &st); err != nil {
+			continue // a field we cannot read is skipped, like a bad state
+		}
+		out[field] = st
+	}
+	return out, nil
+}
+
+// SetOperatorStat writes one operator stat.
+func (r *RedisStorage) SetOperatorStat(ctx context.Context, field string, st OperatorStat) error {
+	b, err := json.Marshal(st)
+	if err != nil {
+		return fmt.Errorf("encode operator stat %s: %w", field, err)
+	}
+	if err := r.client.HSet(ctx, r.operatorHashKey(), field, string(b)).Err(); err != nil {
+		return fmt.Errorf("redis HSet %s: %w", field, err)
+	}
+	return nil
+}
+
 // GetState retrieves the state for the given key from the Redis HASH.
 func (r *RedisStorage) GetState(ctx context.Context, key string) (State, error) {
 	val, err := r.client.HGet(ctx, r.hashKey, ScoreField(key)).Result()

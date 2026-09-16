@@ -16,15 +16,38 @@ var ErrScoreNotFound = ErrStateNotFound
 
 // MemoryStorage is a thread-safe in-memory implementation of Storage.
 type MemoryStorage struct {
-	mu     sync.RWMutex
-	states map[string]State
+	mu      sync.RWMutex
+	states  map[string]State
+	opStats map[string]OperatorStat
 }
 
 // NewMemoryStorage creates a new in-memory storage backend.
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
-		states: make(map[string]State),
+		states:  make(map[string]State),
+		opStats: make(map[string]OperatorStat),
 	}
+}
+
+var _ OperatorStatStore = (*MemoryStorage)(nil)
+
+// GetOperatorStats returns every stored operator stat.
+func (m *MemoryStorage) GetOperatorStats(_ context.Context) (map[string]OperatorStat, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]OperatorStat, len(m.opStats))
+	for k, v := range m.opStats {
+		out[k] = v
+	}
+	return out, nil
+}
+
+// SetOperatorStat stores one operator stat.
+func (m *MemoryStorage) SetOperatorStat(_ context.Context, field string, st OperatorStat) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.opStats[field] = st
+	return nil
 }
 
 // GetState retrieves the state for the given key.

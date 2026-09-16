@@ -423,6 +423,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	prometheus.MustRegister(metrics.NewScoreCollector(repSvc, serviceIDsFrom(cfg), 100))
 	// The timeline is bounded by design; this is the gauge that proves it.
 	prometheus.MustRegister(metrics.NewTimelineKeysGauge(timeline.Len))
+	prometheus.MustRegister(metrics.NewOperatorStatsGauge(repSvc.OperatorStatsLen))
 
 	// 6b. Method blocks: per-host, per-method memory consulted at selection.
 	// Local memory only — see the methodblock package doc.
@@ -936,7 +937,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		}
 		// The durable form of that line: a log entry can be filtered out by
 		// level, a gauge cannot.
-		prometheus.MustRegister(metrics.NewHydratedGauges(loaded.Keys, len(loaded.Services))...)
+		prometheus.MustRegister(metrics.NewHydratedGauges(loaded.Keys, len(loaded.Services), loaded.Skipped)...)
 	}
 
 	// active_health_checks.enabled: false means no probes at all. The

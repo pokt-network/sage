@@ -584,6 +584,16 @@ func TestSendRelay_ResponseOverCeilingIsAbandoned(t *testing.T) {
 		if p.bl.IsBlacklisted("eth", supplierAddr) || rec.oversized != 1 {
 			t.Errorf("chunked=%v: blacklisted=%v oversized=%d, want false and 1", chunked, p.bl.IsBlacklisted("eth", supplierAddr), rec.oversized)
 		}
+		// The size histogram measures what was buffered, which is the memory
+		// actually spent: a chunked body is read before it can be judged, a
+		// declared-oversized one is refused without allocating.
+		sizes := rec.observedSizes()
+		if chunked && (len(sizes) != 1 || sizes[0] == 0) {
+			t.Errorf("chunked: observed sizes = %v, want one non-zero: the body was buffered before it was rejected", sizes)
+		}
+		if !chunked && len(sizes) != 0 {
+			t.Errorf("declared oversized: observed sizes = %v, want none: nothing was read", sizes)
+		}
 	}
 }
 

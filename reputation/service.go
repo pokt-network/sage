@@ -94,6 +94,11 @@ type ServiceConfig struct {
 	// StateSweepInterval is how often the write-behind goroutine runs the
 	// sweep. Zero means defaultStateSweepInterval.
 	StateSweepInterval time.Duration
+	// OperatorHalfLife is how long an operator's failure evidence takes to
+	// lose half its weight. Zero means DefaultOperatorHalfLife. Decay is by
+	// time, not by attempts, because an operator's endpoints are redrawn every
+	// session and an attempt count is not a clock (opstats.go).
+	OperatorHalfLife time.Duration
 	// URLResolver, when set, keys per-URL scores on the host a face is
 	// actually dialed from rather than the address's public URL. Wire sets
 	// it from the protocol after construction (SetURLResolver).
@@ -179,6 +184,10 @@ type serviceImpl struct {
 	relativeGate atomic.Pointer[func(domain.ServiceID) bool]
 	operatorGate atomic.Pointer[func(domain.ServiceID) bool]
 	chronic      atomic.Pointer[chronicView]
+	// ops is the per-operator evidence the chronic term actually reads: an
+	// identity that does not rotate with the session draw (operator.go,
+	// opstats.go). Persisted through OperatorStatStore when storage has one.
+	ops *opTracker
 
 	// In-memory score cache, striped by key hash.
 	shards [scoreShards]scoreShard
@@ -220,6 +229,7 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 		s.shards[i].cache = make(map[domain.ServiceID]map[string]State)
 	}
 	s.lambda = s.rate.Lambda()
+	s.ops = newOpTracker(cfg.OperatorHalfLife)
 	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, cfg.URLResolver)))
 	selCfg := cfg.Selector
 	if selCfg == (SelectorConfig{}) {
@@ -401,10 +411,6 @@ func (s *serviceImpl) refreshBaselines() {
 
 	// One walk of the cache collects both bases: per-key states for the pool
 	// baseline, and the attempt-weighted sum per operator for the operator rate.
-	type opAcc struct {
-		sum, weight float64
-		attempts    uint64
-	}
 	type keyState struct {
 		id   keyID
 		pool poolID
@@ -415,7 +421,6 @@ func (s *serviceImpl) refreshBaselines() {
 		// these vote on what the pool's best rate is.
 		wellAttempted bool
 	}
-	ops := map[opID]*opAcc{}
 	var keys []keyState
 	for i := range s.shards {
 		sh := &s.shards[i]
@@ -434,32 +439,23 @@ func (s *serviceImpl) refreshBaselines() {
 					wellAttempted: st.Attempts >= baselineMinAttempts,
 				}
 				keys = append(keys, ks)
-				if st.Attempts < minOpSamples {
-					continue
-				}
-				a := ops[ks.op]
-				if a == nil {
-					a = &opAcc{}
-					ops[ks.op] = a
-				}
-				w := float64(st.Attempts)
-				a.sum += correctedRate(s.lambda, st.Rate, st.Attempts) * w
-				a.weight += w
-				a.attempts += st.Attempts
 			}
 		}
 		sh.mu.RUnlock()
 	}
 
+	// The operator rates come from the tracker, not from these keys: a key
+	// lives one session and an operator does not (opstats.go).
+	stats := s.ops.snapshot(time.Now())
 	v := chronicView{
-		byOp:     make(map[opID]OperatorRateView, len(ops)),
+		byOp:     make(map[opID]OperatorRateView, len(stats)),
 		byKey:    map[keyID]float64{},
 		baseline: map[poolID]float64{},
 		opOn:     map[domain.ServiceID]bool{},
 	}
-	for id, a := range ops {
-		if a.weight > 0 {
-			v.byOp[id] = OperatorRateView{Rate: a.sum / a.weight, Attempts: a.attempts}
+	for id, st := range stats {
+		if rate := st.Rate(); rate > 0 {
+			v.byOp[id] = OperatorRateView{Rate: rate, Attempts: uint64(st.Attempts)}
 		}
 	}
 	// A service is measured in one basis or the other, never a mix: charging
@@ -727,6 +723,25 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	svcStates[repKey] = st
 	newScore := s.effectiveFor(serviceID, repKey, st)
 	sh.mu.Unlock()
+
+	// The same evidence, charged to the operator instead of the key. Outside
+	// the shard lock: the tracker has its own, and nesting them would put two
+	// mutexes on the relay path where one will do.
+	//
+	// Deliberately NOT gated on the key's score, unlike the per-key rate
+	// above. That gate exists so a day of probes against a dead host cannot
+	// drive a key's chronic term to its cap, which would cost weeks of
+	// probe-only recovery — an attempt-decayed term has no other way back. It
+	// does not apply here: these counters decay on a clock, so evidence ages
+	// out on its own, and the traffic a floored key still receives is exactly
+	// what this measures. The pool-collapse fallback keeps feeding floored
+	// keys, and dropping those attempts would make the operator the fallback
+	// is feeding look better the worse it got (mainnet sei, 2026-09-16).
+	if s.rate.Enabled() && !deferred {
+		if op := endpoint.Operator(); op != "" {
+			s.ops.record(opID{serviceID, op, string(rpcType)}, FailureWeight(signal.Type), ts)
+		}
+	}
 
 	// Storage and timeline are keyed by the concatenated string form.
 	key := scoreKey(serviceID, repKey)
@@ -1113,6 +1128,16 @@ func (s *serviceImpl) drainWrites() {
 		defer ticker.Stop()
 		sweep = ticker.C
 	}
+	// Operator evidence is written on its own cadence rather than per signal:
+	// it is one row per (service, operator, RPC type), so a flush is tens of
+	// writes, not one per relay.
+	opStore, canFlush := s.storage.(OperatorStatStore)
+	var flush <-chan time.Time
+	if canFlush {
+		ticker := time.NewTicker(operatorFlushInterval)
+		defer ticker.Stop()
+		flush = ticker.C
+	}
 	for {
 		select {
 		case op := <-s.writeCh:
@@ -1124,6 +1149,8 @@ func (s *serviceImpl) drainWrites() {
 			safego.Run(nil, "reputation.sweep", func() {
 				_, _ = sweeper.DeleteStale(context.Background(), now.Add(-s.cfg.StateIdleTTL))
 			})
+		case now := <-flush:
+			safego.Run(nil, "reputation.opstats", func() { s.flushOperatorStats(opStore, now) })
 		case <-s.stopCh:
 			// Drain remaining writes.
 			for {
@@ -1135,6 +1162,21 @@ func (s *serviceImpl) drainWrites() {
 				}
 			}
 		}
+	}
+}
+
+// operatorFlushInterval paces the operator write-behind. Losing at most this
+// much evidence to a hard kill is acceptable; the counters decay over hours.
+const operatorFlushInterval = 15 * time.Second
+
+// flushOperatorStats writes the operator counters that changed since the last
+// flush. Errors are dropped like every other write-behind error: the next
+// flush carries the same rows, because a dirty mark is only cleared when the
+// value is taken, not when the write succeeds.
+func (s *serviceImpl) flushOperatorStats(store OperatorStatStore, now time.Time) {
+	for id, st := range s.ops.takeDirty(now) {
+		_ = store.SetOperatorStat(context.Background(),
+			OperatorField(id.svc, id.op, domain.RPCType(id.rpc)), st)
 	}
 }
 

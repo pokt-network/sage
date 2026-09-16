@@ -1,8 +1,8 @@
 package reputation
 
 import (
-	"math"
 	"strings"
+	"time"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -45,10 +45,8 @@ type OperatorRateView struct {
 	Attempts uint64
 }
 
-// minOpSamples is the evidence a single key needs before it joins its
-// operator's rate. Below it the warm-up correction divides by a number small
-// enough that one failure reads as a double-digit rate.
-const minOpSamples = 50
+// OperatorStatsLen is how many per-operator counters are held, for the gauge.
+func (s *serviceImpl) OperatorStatsLen() int { return s.ops.len() }
 
 // chronicView is everything the chronic term reads, rebuilt every
 // baselineRefresh and swapped in whole. Reading it costs one atomic load and
@@ -75,21 +73,6 @@ type keyID struct {
 	key string
 }
 
-// correctedRate removes an EWMA's warm-up bias: a rate that has only seen n
-// attempts is a fraction 1-e^(-lambda*n) of the rate it is converging to.
-// Dividing by that fraction reports what the key is actually doing, so a young
-// key and an old one exhibiting the same behaviour are charged the same.
-func correctedRate(lambda, rate float64, n uint64) float64 {
-	if lambda <= 0 || rate <= 0 || n == 0 {
-		return 0
-	}
-	warm := 1 - math.Exp(-lambda*float64(n))
-	if warm <= 0 {
-		return 0
-	}
-	return min(rate/warm, 1)
-}
-
 // operatorOfKey is the operator a reputation key belongs to. Keys are
 // "<identity>|<rpc_type>", and the identity is a URL at the default
 // granularity and a supplier address or hostname at the others — a
@@ -111,12 +94,18 @@ func operatorOfKey(key string) string {
 // the last refresh. The auto-drain engine reads it to see an operator whose
 // per-key rates are diluted below every threshold.
 func (s *serviceImpl) OperatorRate(serviceID domain.ServiceID, rpcType domain.RPCType, operator string) (OperatorRateView, bool) {
-	v := s.chronic.Load()
-	if v == nil {
+	// Read the tracker rather than the 30s view: the auto-drain engine
+	// evaluates on its own minute and there is no reason to hand it a stale
+	// copy of something an atomic read away.
+	st, ok := s.ops.get(opID{serviceID, operator, string(rpcType)}, time.Now())
+	if !ok {
 		return OperatorRateView{}, false
 	}
-	r, ok := v.byOp[opID{serviceID, operator, string(rpcType)}]
-	return r, ok
+	rate := st.Rate()
+	if rate == 0 {
+		return OperatorRateView{}, false
+	}
+	return OperatorRateView{Rate: rate, Attempts: uint64(st.Attempts)}, true
 }
 
 // SetOperatorChronic turns on the per-operator chronic rate, per service,

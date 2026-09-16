@@ -63,6 +63,7 @@ type Recorder struct {
 	supplierBlacklists    *prometheus.CounterVec
 	relayMinerErrors      *prometheus.CounterVec
 	oversizedResponses    *prometheus.CounterVec
+	responseBytes         *prometheus.HistogramVec
 	autoDrains            *prometheus.CounterVec
 	methodBlockEvents     *prometheus.CounterVec
 	reputationAttempts    *prometheus.CounterVec
@@ -241,6 +242,18 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id"},
 		),
+		responseBytes: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "response_bytes",
+				Help:      "Supplier relay response body size in bytes, by service, observed for every body read including one about to be rejected as oversized. The ceiling (router.max_response_body_bytes, knob relay.max_response_mb) bounds one response; nothing bounds how many large ones a pod reads at once, and sage_oversized_responses_total stays zero while a legal response costs gigabytes. This is the distribution that says where the ceiling belongs.",
+				Buckets: []float64{
+					1 << 10, 8 << 10, 64 << 10, 512 << 10,
+					4 << 20, 16 << 20, 64 << 20, 256 << 20,
+				},
+			},
+			[]string{"service_id"},
+		),
 		codespaces: cappedLabel(maxCodespaceLabels),
 		// No domain label on purpose: the gauge above names the host, and a
 		// counter keyed on host is the series growth PATH's cardinality
@@ -372,6 +385,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.supplierBlacklists,
 		r.relayMinerErrors,
 		r.oversizedResponses,
+		r.responseBytes,
 		r.autoDrains,
 		r.methodBlockEvents,
 		r.reputationAttempts,
@@ -463,6 +477,12 @@ func (r *Recorder) SetClientRequestHook(fn func(domain.ServiceID, int)) {
 		return
 	}
 	r.clientRequestHook.Store(&fn)
+}
+
+// RecordResponseSize observes one supplier response body's size in bytes.
+// Satisfies the protocol's supplier metrics.
+func (r *Recorder) RecordResponseSize(serviceID domain.ServiceID, bytes int) {
+	r.responseBytes.WithLabelValues(r.services.serviceValue(serviceID)).Observe(float64(bytes))
 }
 
 // RecordRPCType counts one client request by the RPC type it was classified

@@ -192,13 +192,35 @@ func NewTimelineKeysGauge(keys func() int) prometheus.GaugeFunc {
 	)
 }
 
+// NewOperatorStatsGauge exposes how many per-operator counters the service
+// holds:
+//
+//	sage_reputation_operator_stats <count>
+//
+// An operator identity does not rotate with the session draw, so unlike
+// sage_reputation_keys this should be small and steady — roughly the operators
+// serving the configured services. A count that climbs with time is the signal
+// that something is minting operator identities, which would mean the eTLD+1
+// extraction is failing and every host is becoming its own operator.
+func NewOperatorStatsGauge(count func() int) prometheus.Collector {
+	return prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "reputation_operator_stats",
+			Help:      "Per-operator failure counters held by the reputation service, one per (service, operator, RPC type). Operator identity does not rotate with the session draw, so this should be small and steady; a climbing count means eTLD+1 extraction is failing and each host is becoming its own operator.",
+		},
+		func() float64 { return float64(count()) },
+	)
+}
+
 // NewHydratedGauges exposes what the startup warm-up read loaded:
 //
 //	sage_reputation_hydrated_keys <count>
 //	sage_reputation_hydrated_services <count>
+//	sage_reputation_hydrated_skipped <count>
 //
-// Both are set once, at startup, and never change — which is the point. The
-// only other evidence that hydration ran is a log line, and on the mainnet
+// All three are set once, at startup, and never change — which is the point.
+// The only other evidence that hydration ran is a log line, and on the mainnet
 // canary (2026-09-02) that line was invisible: the log level suppresses INFO,
 // so the first roll carrying hydration had to be confirmed by inferring it
 // from sage_reputation_keys being implausibly high for a fresh pod. These say
@@ -206,12 +228,16 @@ func NewTimelineKeysGauge(keys func() int) prometheus.GaugeFunc {
 //
 // Zero keys on a pod that should have inherited state is the signal worth
 // alerting on: it means the store was empty, unreachable, or entirely stale,
-// and the pod is warming from probes the slow way.
+// and the pod is warming from probes the slow way. Skipped beside keys is the
+// other half of that reading: it is the history each roll throws away, and it
+// is large when endpoints rotate out of the session faster than the idle TTL
+// keeps them.
+//
 // The Name and Help below are spelled out per gauge rather than passed to a
 // shared helper: internal/docgen reads these literals out of the AST to
 // generate docs/metrics.md, and a metric named by a variable is a metric the
 // reference silently omits.
-func NewHydratedGauges(keys, services int) []prometheus.Collector {
+func NewHydratedGauges(keys, services, skipped int) []prometheus.Collector {
 	keysGauge := prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "sage",
 		Name:      "reputation_hydrated_keys",
@@ -226,5 +252,12 @@ func NewHydratedGauges(keys, services int) []prometheus.Collector {
 	})
 	servicesGauge.Set(float64(services))
 
-	return []prometheus.Collector{keysGauge, servicesGauge}
+	skippedGauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "sage",
+		Name:      "reputation_hydrated_skipped",
+		Help:      "Reputation states read from storage but not adopted by the startup warm-up: stale past the idle TTL, unparseable, or over the per-shard bound. This is how much history each roll discards — high against sage_reputation_hydrated_keys means the pod is re-learning most of the pool, which happens when endpoints rotate out of the session faster than the TTL keeps them.",
+	})
+	skippedGauge.Set(float64(skipped))
+
+	return []prometheus.Collector{keysGauge, servicesGauge, skippedGauge}
 }
