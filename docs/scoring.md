@@ -39,7 +39,7 @@ to the breaker, and `observe`, which converts it into the signal. (A third,
 The chain positions are what make the difference between those two:
 
 ```
-… cache → batch → singleflight → observe → cross_validate → retry → hedge
+… cache → batch → singleflight → observe → retry → hedge
     → supplier_affinity → circuit_break → select_endpoint → score → heuristic
     → send_relay
 ```

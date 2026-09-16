@@ -37,17 +37,16 @@ HTTP Request
                   [Batch]  — decompose batch → fan-out → recombine
                     [Singleflight] — coalesce identical concurrent requests
                       [Observe]    — async reputation + deep parsing
-                        [CrossValidate] — response digest consensus
-                          [Retry]  — retry with endpoint rotation
-                            [Hedge]    — race primary vs delayed secondary
-                              [Metrics]  — one sage_relay_total + latency observation per attempt
-                                [Affinity] — sticky supplier after writes
-                                  [CircuitBreak] — skip broken domains
-                                  [MethodBlocks] — skip hosts blocked for this method
-                                    [SelectEndpoint] — reputation + QoS filtering
-                                      [Score]        — one reputation signal per attempt
-                                        [DebugLog]   — full request/response logging
-                                          [Heuristic] — response quality analysis
+                        [Retry]  — retry with endpoint rotation
+                          [Hedge]    — race primary vs delayed secondary
+                            [Metrics]  — one sage_relay_total + latency observation per attempt
+                              [Affinity] — sticky supplier after writes
+                                [CircuitBreak] — skip broken domains
+                                [MethodBlocks] — skip hosts blocked for this method
+                                  [SelectEndpoint] — reputation + QoS filtering
+                                    [Score]        — one reputation signal per attempt
+                                      [DebugLog]   — full request/response logging
+                                        [Heuristic] — response quality analysis
                                             [SendRelay] — sign, send, validate
 ```
 
@@ -249,7 +248,6 @@ re-break as a repeat offender.
 | latency_tiebreak | on | Inside tier 1 of selection, a faster host is asked more often than a slower equal, by the per-key latency EWMA; scores stay latency-blind |
 | singleflight | on | Coalesce identical concurrent requests |
 | cache | on | LRU response cache for finalized data |
-| cross_validation | on | Cross-endpoint response digest comparison. Report-only: an outlier is logged, and nothing feeds reputation or the blocks — deciding which of three disagreeing endpoints is wrong needs its own design (`docs/next-steps.md`) |
 | heuristic | on | Response quality analysis. Gates body analysis only: transport errors are graded on the way out regardless of the flag, because attribution is what the breaker, the method blocks and reputation key on |
 | observation_pipeline | on | Async deep parsing |
 | health_checks | on | Active endpoint health checks |
@@ -312,15 +310,6 @@ them would degrade endpoint selection — no block heights, no chain ID assertio
 - **Worker pool**: configurable concurrency
 - **Multi-instance**: Redis pub/sub shares observations across pods (JSON serialization, no proto)
 - **Extracted data**: block height, chain ID, sync status, archival capability
-
-### Cross-Validation
-
-`crossvalidation/` detects bad actors via response consensus:
-
-- Records response digests (SHA-256) per (service, method)
-- Background goroutine runs majority consensus every 30s
-- Endpoints disagreeing with the majority are flagged as outliers
-- Minimum quorum of 3 before flagging
 
 ### Response Caching
 
@@ -476,7 +465,7 @@ not implemented" section of the configuration reference.
 7. **sync_allowance silently ignored** — strict config validation at load time
 8. **Non-leader replicas start empty** — observation pub/sub shares state continuously
 9. **Block height parsing bugs** — one parser per chain (plugin interface), uint64 everywhere, validation wrapper
-10. **Deceptive supplier detection** — response format validation + cross-validation consensus
+10. **Deceptive supplier detection** — response format validation
 11. **`result:null` false positive** — gjson parsing for critical checks, null != result
 12. **Supplier vs blockchain fault** — ErrorAttribution in heuristic results
 13. **Byte-pattern matching pitfalls** — gjson for Tier 2+, byte patterns only for Tier 1
@@ -516,7 +505,6 @@ sage/
   tuning/              — runtime knobs (retry, hedge, probe cadence) with a base/override split
   reload/              — config reload result types
   observe/             — async observation pipeline
-  crossvalidation/     — response consensus + outlier detection
   responsecache/       — LRU response cache with TTL
   healthcheck/         — periodic probes (leader only; results streamed to every replica), leader election, external block sources
   websockets/          — generic bidirectional bridge with endpoint rebind, ping/pong liveness, Observer hook for metrics

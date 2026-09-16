@@ -20,7 +20,6 @@ const (
 	MWBatch            = "batch"
 	MWSingleflight     = "singleflight"
 	MWObserve          = "observe"
-	MWCrossValidate    = "cross_validate"
 	MWRetry            = "retry"
 	MWHedge            = "hedge"
 	MWSupplierAffinity = "supplier_affinity"
@@ -56,7 +55,6 @@ func DefaultChainOrder() []string {
 		MWBatch,
 		MWSingleflight,
 		MWObserve,
-		MWCrossValidate,
 		MWRetry,
 		MWHedge,
 		// Inside every fan-out and outside selection: one upstream attempt is
@@ -86,7 +84,7 @@ func DefaultChainOrder() []string {
 // Invariants:
 //   - send_relay, if present, must be unique and the innermost (last) entry.
 //   - parse must precede validate, cache, batch, singleflight,
-//     cross_validate, select_endpoint, send_relay, heuristic
+//     select_endpoint, send_relay, heuristic
 //     (they all read fields Parse sets: ServiceID, RPCType, Payloads).
 //   - parse must precede timeout (timeout resolves its deadline per service,
 //     which parse sets; before parse it resolves for service "" and no
@@ -149,7 +147,6 @@ func ValidateChainOrder(names []string) error {
 		{MWParse, MWCache, "cache keys on parsed method"},
 		{MWParse, MWBatch, "batch decomposes parsed payloads"},
 		{MWParse, MWSingleflight, "singleflight keys on parsed request"},
-		{MWParse, MWCrossValidate, "cross_validate needs parsed payload"},
 		{MWParse, MWSelectEndpoint, "select_endpoint reads ServiceID"},
 		{MWParse, MWSendRelay, "send_relay needs parsed payload"},
 		{MWParse, MWHeuristic, "heuristic keys on method"},
@@ -193,7 +190,6 @@ func ValidateChainOrder(names []string) error {
 		{MWClientIP, MWSupplierAffinity, "supplier_affinity keys on ctx.ClientIP, which client_ip sets"},
 		{MWTimeout, MWHedge, "the deadline must bound the whole race, not one arm"},
 		{MWObserve, MWHeuristic, "observe reads ctx.HeuristicResult on the way out"},
-		{MWCrossValidate, MWSendRelay, "cross_validate digests ctx.Response after send_relay fills it"},
 		{MWDebugLog, MWSendRelay, "debug_log reads ctx.Endpoint and ctx.Response after send_relay"},
 	}
 
