@@ -575,6 +575,7 @@ var (
 	_ qos.DataExtractor         = (*Plugin)(nil)
 	_ qos.CoalescenceClassifier = (*Plugin)(nil)
 	_ qos.CachePolicy           = (*Plugin)(nil)
+	_ qos.ImmutableClassifier   = (*Plugin)(nil)
 )
 
 // --- chain ID assertion ---

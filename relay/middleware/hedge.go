@@ -45,7 +45,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 	}
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
-			if !flags.IsEnabled(ctx.Ctx, featureflag.FlagHedge, ctx.ServiceID) {
+			if ctx.QuorumArm || !flags.IsEnabled(ctx.Ctx, featureflag.FlagHedge, ctx.ServiceID) {
 				return next.HandleRelay(ctx)
 			}
 

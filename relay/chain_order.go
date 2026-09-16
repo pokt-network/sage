@@ -20,6 +20,7 @@ const (
 	MWBatch            = "batch"
 	MWSingleflight     = "singleflight"
 	MWObserve          = "observe"
+	MWQuorum           = "quorum"
 	MWRetry            = "retry"
 	MWHedge            = "hedge"
 	MWSupplierAffinity = "supplier_affinity"
@@ -51,6 +52,10 @@ func DefaultChainOrder() []string {
 		// is what parse sets. Before cache/batch: the deadline must cover the
 		// fan-out and every attempt inside it.
 		MWTimeout,
+		// Outside everything that would make an arm less than one
+		// independent attempt at one operator: cache, singleflight, retry and
+		// hedge pass through on an arm, and observe then sees each arm.
+		MWQuorum,
 		MWCache,
 		MWBatch,
 		MWSingleflight,
@@ -160,6 +165,14 @@ func ValidateChainOrder(names []string) error {
 		{MWCircuitBreak, MWSelectEndpoint, "circuit_break prunes broken domains before selection"},
 
 		{MWParse, MWTimeout, "timeout resolves its deadline per service, which parse sets"},
+		{MWParse, MWQuorum, "quorum reads the payload and plugin parse sets"},
+		{MWTimeout, MWQuorum, "the deadline must bound every quorum arm"},
+		{MWQuorum, MWCache, "a quorum arm must not be answered from cache"},
+		{MWQuorum, MWSingleflight, "a quorum arm must not share another request's relay"},
+		{MWQuorum, MWObserve, "each quorum arm is observed, not the merged answer"},
+		{MWQuorum, MWRetry, "retry passes through on an arm, which it can only see from inside"},
+		{MWQuorum, MWHedge, "hedge passes through on an arm, which it can only see from inside"},
+		{MWQuorum, MWSelectEndpoint, "each arm selects within the operator quorum assigned it"},
 		{MWTimeout, MWBatch, "the deadline must cover the batch fan-out"},
 		{MWTimeout, MWRetry, "the deadline must cover every retry attempt"},
 

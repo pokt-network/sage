@@ -46,7 +46,7 @@ func SingleflightWithRecorder(flags featureflag.FlagStore, rec SingleflightRecor
 
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
-			if !flags.IsEnabled(ctx.Ctx, featureflag.FlagSingleflight, ctx.ServiceID) {
+			if ctx.QuorumArm || !flags.IsEnabled(ctx.Ctx, featureflag.FlagSingleflight, ctx.ServiceID) {
 				return next.HandleRelay(ctx)
 			}
 

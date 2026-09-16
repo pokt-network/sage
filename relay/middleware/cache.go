@@ -32,7 +32,7 @@ func Cache(flags featureflag.FlagStore, cache *responsecache.Cache) relay.Middle
 func CacheWithRecorder(flags featureflag.FlagStore, cache *responsecache.Cache, rec CacheRecorder) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
-			if !flags.IsEnabled(ctx.Ctx, featureflag.FlagCache, ctx.ServiceID) {
+			if ctx.QuorumArm || !flags.IsEnabled(ctx.Ctx, featureflag.FlagCache, ctx.ServiceID) {
 				return next.HandleRelay(ctx)
 			}
 

@@ -67,6 +67,7 @@ var coalescableMethods = map[string]bool{
 //   - qos.MethodNormalizer
 //   - qos.CoalescenceClassifier
 //   - qos.CachePolicy
+//   - qos.ImmutableClassifier
 //   - qos.StateResetter
 //   - qos.SubscriptionClassifier
 type Plugin struct {

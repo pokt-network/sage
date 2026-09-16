@@ -95,6 +95,13 @@ const (
 	// wants a read of its own before it decides traffic. See
 	// reputation/opstats.go for the mainnet measurement it comes from.
 	FlagOperatorChronic = "operator_chronic"
+	// FlagQuorum gates the quorum middleware: a request carrying
+	// Target-Quorum-Count or Target-Quorum-Mode is sent to several operators
+	// at once and answered by majority or as every answer side by side. Off
+	// by default because each such request costs several paid relays; turn
+	// it on for a service only once the edge strips the headers from clients
+	// that may not spend that.
+	FlagQuorum = "quorum"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -134,6 +141,7 @@ var DefaultFlags = map[string]bool{
 	FlagPenalize408:            true,
 	FlagRelativeChronic:        true,
 	FlagOperatorChronic:        false,
+	FlagQuorum:                 false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

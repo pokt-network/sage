@@ -65,6 +65,8 @@ type Recorder struct {
 	oversizedResponses    *prometheus.CounterVec
 	responseBytes         *prometheus.HistogramVec
 	batchPayloads         *prometheus.HistogramVec
+	quorumRequests        *prometheus.CounterVec
+	quorumDissent         *prometheus.CounterVec
 	batchSubRelays        prometheus.Gauge
 	batchResponseBytes    prometheus.Gauge
 	autoDrains            *prometheus.CounterVec
@@ -266,6 +268,22 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id"},
 		),
+		quorumRequests: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "quorum_requests_total",
+				Help:      "Client requests that asked for a quorum (Target-Quorum-Count or Target-Quorum-Mode), by service and outcome: majority (consensus answered with the agreed answer), no_majority (consensus fell back to the collect envelope), collect (collect mode as asked), collect_not_immutable (consensus asked for a request the plugin cannot vouch is immutable, answered in collect mode), timeout (the deadline ended the wait), skipped_disabled / skipped_batch / skipped_rpc_type (answered as an ordinary request). Each non-skipped request cost up to X-Quorum-Count relays, which sage_relay_total counts one by one.",
+			},
+			[]string{"service_id", "outcome"},
+		),
+		quorumDissent: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "quorum_dissent_total",
+				Help:      "Quorum answers that disagreed with the majority a consensus request was answered with, by service, among those in by the time the majority formed. Counted and not scored: each answer's own attempt was already graded on its merits. Rising on one service is a supplier serving different data than its peers for the same immutable request.",
+			},
+			[]string{"service_id"},
+		),
 		batchSubRelays: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "sage",
 			Name:      "batch_subrelays_in_flight",
@@ -409,6 +427,8 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.oversizedResponses,
 		r.responseBytes,
 		r.batchPayloads,
+		r.quorumRequests,
+		r.quorumDissent,
 		r.batchSubRelays,
 		r.batchResponseBytes,
 		r.autoDrains,
@@ -514,6 +534,17 @@ func (r *Recorder) RecordResponseSize(serviceID domain.ServiceID, bytes int) {
 // middleware.BatchRecorder.
 func (r *Recorder) RecordBatchPayloads(serviceID domain.ServiceID, n int) {
 	r.batchPayloads.WithLabelValues(r.services.serviceValue(serviceID)).Observe(float64(n))
+}
+
+// RecordQuorum counts one quorum request by outcome. Satisfies
+// middleware.QuorumRecorder.
+func (r *Recorder) RecordQuorum(serviceID domain.ServiceID, outcome string) {
+	r.quorumRequests.WithLabelValues(r.services.serviceValue(serviceID), outcome).Inc()
+}
+
+// RecordQuorumDissent counts answers that disagreed with a quorum's majority.
+func (r *Recorder) RecordQuorumDissent(serviceID domain.ServiceID, n int) {
+	r.quorumDissent.WithLabelValues(r.services.serviceValue(serviceID)).Add(float64(n))
 }
 
 // AddBatchSubRelays moves the batch sub-relays in flight gauge.

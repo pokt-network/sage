@@ -117,6 +117,13 @@ type Context struct {
 	// purpose — see ScoreSink.
 	ScoreSink *ScoreSink
 
+	// QuorumArm marks one arm of a quorum fan-out: written by quorum on the
+	// clone it hands each arm, false everywhere else. Cache, singleflight,
+	// retry and hedge pass through on an arm — an arm is one independent
+	// attempt at one operator, and a cached, coalesced, retried or hedged
+	// answer is not that. A scalar, so the shallow Clone cannot share it.
+	QuorumArm bool
+
 	// Degraded means some stage settled for less than it wanted: set by
 	// select_endpoint (a below-floor pick), method_blocks (a blocked host
 	// served anyway) and batch (merged from its sub-relays, atomically). The
