@@ -24,15 +24,21 @@ PATH `origin/main` at `4606957a`, 2026-08-25; new work is on
   (`Config.Warnings`), the block treated as disabled (probe everything,
   run the auto-drain engine rather than follow a peer's drains). Keep the
   other peer errors fatal. About 15 minutes with tests.
-- **Verify multi-supplier quorum on beta, then enable per service.** Built
-  2026-09-16 behind the `quorum` flag (off); decisions in
+- **Multi-supplier quorum: agreement between live operators is unproven.**
+  Built 2026-09-16 behind the `quorum` flag (off); decisions in
   `docs/design/specs/2026-08-31-multi-supplier-quorum-design.md` under "Built".
-  Unverified against live suppliers: on beta, flag it on for one EVM service
-  and send `eth_getTransactionReceipt` in both modes, then `eth_blockNumber`
-  in consensus (must collect), and read `X-Quorum-*` and
-  `sage_quorum_requests_total`. Before any mainnet service turns it on, the
-  edge must strip `Target-Quorum-Count` / `Target-Quorum-Mode` from clients
-  that may not buy up to 9 relays per request.
+  On beta (pnf-anvil, same night) every path behaved: collect, consensus on a
+  mutable method answered as collect, batch and flag-off skipped, a bad mode
+  400, majority with the three dead operators blocked, 200 concurrent requests
+  with no panics and goroutines back to baseline. Beta cannot show two live
+  operators agreeing — only one of anvil's four operators answers — so the
+  first real vote will be on mainnet. Two things before that: the edge must
+  strip `Target-Quorum-Count` / `Target-Quorum-Mode` from clients that may not
+  buy up to 9 relays per request; and operators are ranked by their best
+  endpoint's score, which on beta kept three dead operators in the top three
+  for 200 requests running, because an operator with many unmeasured
+  endpoints always has one at the initial score. Rank on measured evidence
+  before a pool with such an operator turns quorum on.
 
 ## After the audit roll (2026-09-04, image c838f4c at 1%)
 

@@ -269,6 +269,12 @@ func quorumSize(header string) int {
 
 // topOperators groups the pool by operator and returns the n operators whose
 // best endpoint scores highest, ties broken by name so the ranking is stable.
+//
+// Fewer operators than n, and an even count of them above two, drops the
+// lowest-ranked one: four arms need three to agree and survive one failure,
+// which three arms already do for one relay less. Beta's pool of four
+// operators is where the even count first appeared. Two stay two — both must
+// agree, which one alone could not show.
 func topOperators(ctx *relay.Context, repSvc reputation.Service, pool domain.EndpointAddrList, n int) []operatorGroup {
 	byOperator := map[string]*operatorGroup{}
 	var groups []*operatorGroup
@@ -296,8 +302,12 @@ func topOperators(ctx *relay.Context, repSvc reputation.Service, pool domain.End
 		}
 		return strings.Compare(a.operator, b.operator)
 	})
-	out := make([]operatorGroup, 0, min(n, len(groups)))
-	for _, g := range groups[:min(n, len(groups))] {
+	take := min(n, len(groups))
+	if take > 2 && take%2 == 0 {
+		take--
+	}
+	out := make([]operatorGroup, 0, take)
+	for _, g := range groups[:take] {
 		out = append(out, *g)
 	}
 	return out

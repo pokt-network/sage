@@ -290,6 +290,14 @@ func TestQuorumSize(t *testing.T) {
 	}
 }
 
+// Four operators asked for five arms is three, not four.
+func TestTopOperators_NeverAnEvenCountAboveTwo(t *testing.T) {
+	ctx, _, _ := quorumCtx(t, nil, nil, 1)
+	four := append(domain.EndpointAddrList{"pokt1e-https://rpc.delta.net"}, quorumPool...)
+	assert.Len(t, topOperators(ctx, flatScores{}, four, 5), 3)
+	assert.Len(t, topOperators(ctx, flatScores{}, quorumPool[:2], 9), 2, "two operators stay two")
+}
+
 // Never more arms than operators, and the pool's siblings count as one.
 func TestTopOperators_ClampsToOperatorsAndGroupsSiblings(t *testing.T) {
 	ctx, _, _ := quorumCtx(t, nil, nil, 1)
