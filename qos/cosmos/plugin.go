@@ -44,6 +44,7 @@ type cosmosEndpoint struct {
 //   - qos.DataExtractor
 //   - qos.ChainViewer
 //   - qos.MethodNormalizer
+//   - qos.ImmutableClassifier
 //   - qos.StateResetter
 //   - qos.SubscriptionClassifier
 type Plugin struct {

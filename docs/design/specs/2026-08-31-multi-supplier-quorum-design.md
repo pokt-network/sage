@@ -194,11 +194,17 @@ immutable-method allowlist contents.
 8. **A dissenter is counted, not scored** (`sage_quorum_dissent_total`). Its
    own attempt is already graded on its merits; whether being outvoted should
    cost more stays undecided.
-9. **Immutable allowlist (EVM only):** `eth_chainId`,
-   `eth_getTransactionByHash`, `eth_getTransactionReceipt`,
-   `eth_getBlockByHash`, `eth_getBlockByNumber` with a hex number,
-   `eth_getLogs` with a `blockHash`. Every other chain and method is answered
-   in collect mode (`X-Quorum-Mode: collect`).
+9. **Immutable allowlist.** EVM: `eth_chainId`, `eth_getTransactionByHash`,
+   `eth_getTransactionReceipt`, `eth_getBlockByHash`, `eth_getBlockByNumber`
+   with a hex number, `eth_getLogs` with a `blockHash`. Cosmos (added the same
+   night): CometBFT `block`, `header`, `commit`, `block_results`,
+   `validators` at an explicit height and `block_by_hash`, `header_by_hash`,
+   `tx` by hash, on either face (JSON-RPC POST or GET with a query); REST
+   `cosmos/base/tendermint/v1beta1/{blocks,validatorsets}/{height}`,
+   `cosmos/tx/v1beta1/txs/{hash}` and `txs/block/{height}`. `abci_query` at a
+   height is left out: a pruned node answers it with an error, and the vote
+   would count pruning. Solana and the JSON-height chains have no classifier,
+   so every quorum request there is collect mode (`X-Quorum-Mode: collect`).
 10. **Not applied** (served as an ordinary request, `X-Quorum-Skipped` says
     why): the flag off (`disabled`), a batch (`batch`: a quorum per item
     multiplies the fan-out that OOMed mainnet), gRPC (`rpc_type`). An unknown
