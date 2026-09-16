@@ -390,6 +390,23 @@ Two more corrections followed the same day, both from mainnet sei:
   additive term, recomputed every 30 s, for pools with two such keys. A tail
   every operator shares costs none of them; a key worse than the best pays
   the difference, on the same curve.
+- **The rate is measured per operator, corrected for warm-up** (flag
+  `operator_chronic`, default off, added 2026-09-16). An EWMA that starts at
+  zero has only reached `1 - e^(-lambda*n)` of the true rate after `n`
+  attempts, so at the 20,000-attempt half-life a key with 300 attempts shows
+  about 1% of how often it actually fails and cannot cross the 0.02% onset
+  however badly it answers. That makes the term measure how widely an operator
+  spread its traffic as much as how well it answered: on mainnet sei
+  (2026-09-16) one operator's 7 keys carried 41k–105k attempts each, showed
+  3.5–4.5% and scored 10–39, while another's ~90 keys carried 200–6,000 each,
+  showed 0.06–1.6% and scored 90–100 — and once corrected the second was
+  failing 5–9.5%, twice as often as the first. The pool baseline, being the
+  lowest rate in the pool, was one of those young keys, so the concentrated
+  operator paid the full difference against a rate nothing exhibited. With the
+  flag on, each key's rate is corrected by its own warm-up, weighted by its
+  attempts into one rate per operator per pool, and every key of that operator
+  is charged it; the baseline is then the best *operator* in the pool, one vote
+  each. A service is measured in one basis or the other, never a mix.
 - **A probe cannot outvote traffic.** A probe success on a key that served
   traffic in the last 10 minutes moves neither term. One operator passed
   `eth_blockNumber` every cycle while answering 408 to real calls, and the

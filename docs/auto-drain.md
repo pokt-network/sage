@@ -86,9 +86,34 @@ is long enough that one burst does not act. **All** of the following must hold:
 5. **The admin route's own guard passes:** `lastOperatorStanding` returns
    false. It is reused, not re-implemented.
 
+6. **Callers are actually failing** (added 2026-09-16): over the same window,
+   at least 5% of the service's client-facing answers failed (5xx, 408, 429),
+   over at least 50 of them. Conditions 1–3 say the fallback keeps feeding an
+   operator that answers nothing; they do not say anyone noticed, because retry
+   usually rescues the request on another operator. Of 44 shadow proposals over
+   2026-09-15/16 not one sat on a service whose clients were failing above
+   2.2%, and every one was on a service SAGE was already serving better than
+   PATH (base 0.08% against PATH's 14%, giwa 0.009% against 0.59%); every drain
+   a person actually made sat above 5%. A candidate below the bar is recorded
+   as `below_client_failure` and never acted on.
+
+**Second trigger — the operator the collapse share cannot see.** Conditions 2
+and 3 are blind to an operator that spreads one service over many keys: its
+picks never concentrate and it answers most requests, while each key's failure
+rate stays too young to read (`reputation/operator.go`). mainnet sei was drained
+by hand three times in two days while the engine proposed nothing there. So a
+candidate is also raised when its **per-operator corrected chronic rate is at
+least 3%** over the same attempt floor, whatever its collapse share. Conditions
+4–6 still apply, so a drain still needs a vouched alternative and real client
+harm. The event records which trigger raised it (`collapse` or
+`operator_rate`), the operator rate, and the client failure share behind the
+decision.
+
 Success, attempts and failures are counted from supplier-attributed attempts
 only. Client- and blockchain-attributed outcomes are not attempts, the same
-rule the chronic term uses (`reputation/rate.go:103`).
+rule the chronic term uses (`reputation/rate.go:103`). The client-facing share
+in condition 6 is the opposite measurement on purpose: one count per client
+request, whatever retry did underneath.
 
 **Inputs the engine needs that the hooks do not carry today:**
 

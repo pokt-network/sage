@@ -86,6 +86,14 @@ const (
 	// so a timeout tail every operator shares does not floor all of them. On
 	// by default since 2026-09-15; the live undo, globally or per service.
 	FlagRelativeChronic = "relative_chronic"
+	// FlagOperatorChronic measures the chronic-failure rate per operator over
+	// every key it holds in a (service, RPC type) pool, each key corrected for
+	// its EWMA warm-up, instead of per key. Off restores the per-key rate.
+	//
+	// Off by default: it changes what every score in a pool is charged, so it
+	// wants a read of its own before it decides traffic. See
+	// reputation/operator.go for the mainnet measurement it comes from.
+	FlagOperatorChronic = "operator_chronic"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -125,6 +133,7 @@ var DefaultFlags = map[string]bool{
 	FlagAutoDrainShadow:        true,
 	FlagPenalize408:            true,
 	FlagRelativeChronic:        true,
+	FlagOperatorChronic:        false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

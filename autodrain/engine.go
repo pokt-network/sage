@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,24 @@ const (
 	minAttempts = 50   // traffic attempts on this operator in the window
 	maxSuccess  = 0.02 // its success rate at or below this
 
+	// The client gate. Collapse evidence says the fallback keeps feeding an
+	// operator that answers nothing; it does not say a caller noticed, because
+	// retry usually rescues the request on another operator. Of 44 shadow
+	// proposals over 2026-09-15/16 not one sat on a service whose clients were
+	// failing above 2.2%, and each was on a service SAGE was already serving
+	// better than PATH; every drain a person actually made sat above 5%. A
+	// proposal below the bar is recorded and never acted on.
+	minClientFailure  = 0.05
+	minClientRequests = 50
+
+	// opRateTrigger is the second way in, for the case collapse share cannot
+	// see: an operator whose corrected chronic rate is this high over
+	// minAttempts attempts, however its picks are spread. An operator holding
+	// ~90 keys of one service dilutes its per-key rate below every threshold
+	// and never concentrates the fallback — mainnet sei, drained by hand three
+	// times in two days while the engine proposed nothing (reputation/operator.go).
+	opRateTrigger = 0.03
+
 	drainFor      = 2 * time.Hour
 	maxLivePool   = 1 // live auto drains per (service, RPC type)
 	maxLiveFleet  = 5
@@ -59,6 +78,15 @@ const (
 	OutcomeCapped      = "capped"
 	OutcomeNoVouched   = "no_vouched_alternative"
 	OutcomeManual      = "manual_drain"
+	// OutcomeBelowClient is a candidate the client gate stopped: the operator
+	// meets the trigger, the callers of that service are not failing.
+	OutcomeBelowClient = "below_client_failure"
+)
+
+// What put a candidate in front of the decision, recorded on the event.
+const (
+	TriggerCollapse     = "collapse"
+	TriggerOperatorRate = "operator_rate"
 )
 
 // Event is one decision and the evidence behind it.
@@ -75,6 +103,16 @@ type Event struct {
 	// Alternative is the other operator reputation vouches for, when found.
 	Alternative string     `json:"vouched_alternative,omitempty"`
 	Until       *time.Time `json:"until,omitempty"`
+	// Trigger is which condition raised this candidate (collapse share or the
+	// operator's chronic rate).
+	Trigger string `json:"trigger,omitempty"`
+	// OperatorRate is the operator's corrected chronic failure rate in the pool.
+	OperatorRate float64 `json:"operator_rate,omitempty"`
+	// ClientFailure is the share of the service's client-facing answers that
+	// failed over the same window, and ClientRequests how many there were: the
+	// evidence the gate reads.
+	ClientFailure  float64 `json:"client_failure"`
+	ClientRequests int     `json:"client_requests"`
 }
 
 // EndpointProvider lists a service's current endpoints for one RPC type.
@@ -93,6 +131,13 @@ type Recorder interface {
 	RecordAutoDrain(serviceID domain.ServiceID, rpcType, outcome string)
 }
 
+// OperatorRates reports an operator's chronic failure rate across every key it
+// holds in a pool. reputation's service satisfies it; nil leaves the engine on
+// collapse evidence alone.
+type OperatorRates interface {
+	OperatorRate(serviceID domain.ServiceID, rpcType domain.RPCType, operator string) (reputation.OperatorRateView, bool)
+}
+
 // Deps is what the engine reads and writes.
 type Deps struct {
 	Drains    drain.Store
@@ -101,6 +146,9 @@ type Deps struct {
 	Flags     featureflag.FlagStore
 	Events    EventLog
 	Recorder  Recorder
+	// Rates is the per-operator chronic rate, the second trigger's input. Nil
+	// leaves the engine on collapse evidence alone.
+	Rates OperatorRates
 	// IsLeader gates evaluation and counting: only one instance acts, and
 	// drains fan out through the store. Nil means always leader.
 	IsLeader func() bool
@@ -140,8 +188,9 @@ type Engine struct {
 
 	// ponytail: one mutex over every counter, taken per reputation signal;
 	// shard by pool if it ever shows in a profile.
-	mu    sync.Mutex
-	pools map[poolKey]*pool
+	mu      sync.Mutex
+	pools   map[poolKey]*pool
+	clients map[domain.ServiceID]*clientWindow
 
 	// Evaluation state, touched only from Evaluate.
 	live       map[drain.Key]time.Time // auto drains this instance set, until
@@ -165,6 +214,7 @@ func New(d Deps) *Engine {
 	e := &Engine{
 		d:          d,
 		pools:      make(map[poolKey]*pool),
+		clients:    make(map[domain.ServiceID]*clientWindow),
 		live:       make(map[drain.Key]time.Time),
 		suppressed: make(map[drain.Key]time.Time),
 		lastBySvc:  make(map[domain.ServiceID]time.Time),
@@ -235,6 +285,80 @@ func (e *Engine) OnSignal(svc domain.ServiceID, rpc domain.RPCType, ep domain.En
 	}
 }
 
+// clientSlot is one minute of client-facing answers for a service.
+type clientSlot struct {
+	minute        int64
+	total, failed int
+}
+
+type clientWindow struct{ slots [windowSlots]clientSlot }
+
+// OnClientResult counts one client-facing answer. This is the gate's evidence
+// and it is deliberately not the relay counters: retry and hedge mean an
+// operator can answer nothing while every caller of that service is served.
+func (e *Engine) OnClientResult(svc domain.ServiceID, status int) {
+	if svc == "" || !e.counting.Load() {
+		return
+	}
+	now := e.d.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	w := e.clients[svc]
+	if w == nil {
+		w = &clientWindow{}
+		e.clients[svc] = w
+	}
+	m := now.Unix() / 60
+	s := &w.slots[m%windowSlots]
+	if s.minute != m {
+		*s = clientSlot{minute: m}
+	}
+	s.total++
+	if clientFailed(status) {
+		s.failed++
+	}
+}
+
+// clientFailed is the client-facing failure bucket: every 5xx, plus the two
+// statuses SAGE returns for an upstream that timed out or rate-limited it. A
+// JSON-RPC error inside a 200 is the chain answering, not a failure.
+func clientFailed(status int) bool {
+	return status >= 500 || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests
+}
+
+// clientShare sums a service's live client slots. Caller holds e.mu.
+func (e *Engine) clientShare(svc domain.ServiceID, oldest int64) (share float64, requests int) {
+	w := e.clients[svc]
+	if w == nil {
+		return 0, 0
+	}
+	failed := 0
+	for i := range w.slots {
+		s := &w.slots[i]
+		if s.minute < oldest {
+			continue
+		}
+		requests += s.total
+		failed += s.failed
+	}
+	if requests == 0 {
+		return 0, 0
+	}
+	return float64(failed) / float64(requests), requests
+}
+
+// opRate is the operator's corrected chronic rate in the pool, 0 when unknown.
+func (e *Engine) opRate(k poolKey, operator string) float64 {
+	if e.d.Rates == nil {
+		return 0
+	}
+	r, ok := e.d.Rates.OperatorRate(k.svc, k.rpc, operator)
+	if !ok {
+		return 0
+	}
+	return r.Rate
+}
+
 func (e *Engine) slot(k poolKey, now time.Time) *slot {
 	p := e.pools[k]
 	if p == nil {
@@ -290,23 +414,33 @@ func (e *Engine) window(now time.Time) []candidate {
 				ops[name] = t
 			}
 		}
-		if collapse < minCollapse {
-			continue
-		}
+		cshare, creq := e.clientShare(k.svc, oldest)
 		for name, c := range ops {
-			share := float64(c.picks) / float64(collapse)
-			if share < minShare || c.attempts < minAttempts {
+			if c.attempts < minAttempts {
 				continue
 			}
-			rate := float64(c.successes) / float64(c.attempts)
-			if rate > maxSuccess {
+			share := 0.0
+			if collapse > 0 {
+				share = float64(c.picks) / float64(collapse)
+			}
+			success := float64(c.successes) / float64(c.attempts)
+			opRate := e.opRate(k, name)
+			trigger := ""
+			switch {
+			case collapse >= minCollapse && share >= minShare && success <= maxSuccess:
+				trigger = TriggerCollapse
+			case opRate >= opRateTrigger:
+				trigger = TriggerOperatorRate
+			default:
 				continue
 			}
 			out = append(out, candidate{
 				key: drain.Key{ServiceID: k.svc, Operator: name, RPCType: k.rpc},
 				event: Event{
 					ServiceID: k.svc, RPCType: k.rpc, Operator: name,
-					CollapsePicks: collapse, Share: share, Attempts: c.attempts, SuccessRate: rate,
+					CollapsePicks: collapse, Share: share, Attempts: c.attempts, SuccessRate: success,
+					Trigger: trigger, OperatorRate: opRate,
+					ClientFailure: cshare, ClientRequests: creq,
 				},
 			})
 		}
@@ -390,6 +524,12 @@ func (e *Engine) decide(ctx context.Context, k drain.Key, now time.Time, act boo
 			return ""
 		}
 		return OutcomeManual
+	}
+	// The client gate: an operator answering nothing while every caller of the
+	// service is served is a routing inefficiency, not an incident, and a drain
+	// buys nothing a retry is not already buying.
+	if ev.ClientRequests < minClientRequests || ev.ClientFailure < minClientFailure {
+		return OutcomeBelowClient
 	}
 	eps, _ := e.d.Endpoints.AvailableEndpoints(ctx, k.ServiceID, k.RPCType)
 	for _, ep := range eps {
@@ -477,11 +617,13 @@ func (e *Engine) emit(ctx context.Context, k drain.Key, ev Event) {
 		}
 	}
 	level := slog.LevelWarn
-	if ev.Outcome == OutcomeShadow {
+	if ev.Outcome == OutcomeShadow || ev.Outcome == OutcomeBelowClient {
 		level = slog.LevelInfo
 	}
 	e.d.Logger.Log(ctx, level, "autodrain: decision",
 		"outcome", ev.Outcome, "service_id", ev.ServiceID, "rpc_type", ev.RPCType, "operator", ev.Operator,
-		"collapse_picks", ev.CollapsePicks, "share", ev.Share, "attempts", ev.Attempts,
-		"success_rate", ev.SuccessRate, "vouched_alternative", ev.Alternative)
+		"trigger", ev.Trigger, "collapse_picks", ev.CollapsePicks, "share", ev.Share, "attempts", ev.Attempts,
+		"success_rate", ev.SuccessRate, "operator_rate", ev.OperatorRate,
+		"client_failure", ev.ClientFailure, "client_requests", ev.ClientRequests,
+		"vouched_alternative", ev.Alternative)
 }

@@ -173,10 +173,12 @@ type serviceImpl struct {
 	lambda float64
 	// signalHook, when set, runs on every recorded signal. Wire time only.
 	signalHook SignalHook
-	// relativeGate turns on the pool-relative chronic penalty per service;
-	// baselines is what refreshBaselines last computed. See penaltyFor.
+	// relativeGate turns on the pool-relative chronic penalty per service and
+	// operatorGate the per-operator rate; chronic is what refreshBaselines last
+	// computed from both. See penaltyFor and operator.go.
 	relativeGate atomic.Pointer[func(domain.ServiceID) bool]
-	baselines    atomic.Pointer[map[poolID]float64]
+	operatorGate atomic.Pointer[func(domain.ServiceID) bool]
+	chronic      atomic.Pointer[chronicView]
 
 	// In-memory score cache, striped by key hash.
 	shards [scoreShards]scoreShard
@@ -255,12 +257,21 @@ func (s *serviceImpl) effectiveFor(serviceID domain.ServiceID, key string, st St
 // -44 to -49 on rates of 1.2-1.8%). A key worse than the best still pays the
 // difference.
 func (s *serviceImpl) penaltyFor(serviceID domain.ServiceID, key string, rate float64) float64 {
+	v := s.chronic.Load()
+	// Where the operator term is on, every key of an operator is charged the
+	// operator's corrected rate: a rate per key measures how widely an operator
+	// spread its traffic as much as how well it answered (operator.go).
+	if v != nil && v.opOn[serviceID] {
+		if r, ok := v.byKey[keyID{serviceID, key}]; ok {
+			rate = r
+		}
+	}
 	p := s.rate.Penalty(rate)
 	if p == 0 {
 		return 0
 	}
-	if m := s.baselines.Load(); m != nil {
-		if base, ok := (*m)[poolID{serviceID, rpcOfKey(key)}]; ok {
+	if v != nil {
+		if base, ok := v.baseline[poolID{serviceID, rpcOfKey(key)}]; ok {
 			p = min(0, p-s.rate.Penalty(base))
 		}
 	}
@@ -379,47 +390,135 @@ func (s *serviceImpl) SetRelativeChronic(gate func(domain.ServiceID) bool) {
 	s.relativeGate.Store(&gate)
 }
 
-// refreshBaselines recomputes each pool's baseline: the lowest failure rate
-// among its keys with baselineMinAttempts and a live additive term, for pools
-// with at least two such keys and the relative term on. Off the relay path.
+// refreshBaselines recomputes everything the chronic term reads: each
+// operator's corrected rate, the key-to-operator-rate map scoring charges from,
+// and each pool's baseline — the best rate among its members, measured per
+// operator where the operator term is on and per key otherwise. Off the relay
+// path, every baselineRefresh, swapped in whole.
 func (s *serviceImpl) refreshBaselines() {
-	gp := s.relativeGate.Load()
-	if gp == nil || *gp == nil {
-		s.baselines.Store(nil)
-		return
+	relative := gateOf(&s.relativeGate)
+	operator := gateOf(&s.operatorGate)
+
+	// One walk of the cache collects both bases: per-key states for the pool
+	// baseline, and the attempt-weighted sum per operator for the operator rate.
+	type opAcc struct {
+		sum, weight float64
+		attempts    uint64
 	}
-	gate := *gp
-	type acc struct {
-		min float64
-		n   int
+	type keyState struct {
+		id   keyID
+		pool poolID
+		op   opID
+		rate float64
+		// wellAttempted is whether this key alone carries enough evidence to
+		// set a pool baseline. Every key is charged its operator's rate; only
+		// these vote on what the pool's best rate is.
+		wellAttempted bool
 	}
-	pools := map[poolID]*acc{}
+	ops := map[opID]*opAcc{}
+	var keys []keyState
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.RLock()
 		for svc, states := range sh.cache {
 			for key, st := range states {
-				if st.Attempts < baselineMinAttempts || st.Score == 0 {
+				if st.Score == 0 {
 					continue
 				}
-				id := poolID{svc, rpcOfKey(key)}
-				if a := pools[id]; a == nil {
-					pools[id] = &acc{min: st.Rate, n: 1}
-				} else {
-					a.min = min(a.min, st.Rate)
-					a.n++
+				rpc := rpcOfKey(key)
+				ks := keyState{
+					id:            keyID{svc, key},
+					pool:          poolID{svc, rpc},
+					op:            opID{svc, operatorOfKey(key), rpc},
+					rate:          st.Rate,
+					wellAttempted: st.Attempts >= baselineMinAttempts,
 				}
+				keys = append(keys, ks)
+				if st.Attempts < minOpSamples {
+					continue
+				}
+				a := ops[ks.op]
+				if a == nil {
+					a = &opAcc{}
+					ops[ks.op] = a
+				}
+				w := float64(st.Attempts)
+				a.sum += correctedRate(s.lambda, st.Rate, st.Attempts) * w
+				a.weight += w
+				a.attempts += st.Attempts
 			}
 		}
 		sh.mu.RUnlock()
 	}
-	out := make(map[poolID]float64, len(pools))
-	for id, a := range pools {
-		if a.n >= 2 && gate(id.svc) {
-			out[id] = a.min
+
+	v := chronicView{
+		byOp:     make(map[opID]OperatorRateView, len(ops)),
+		byKey:    map[keyID]float64{},
+		baseline: map[poolID]float64{},
+		opOn:     map[domain.ServiceID]bool{},
+	}
+	for id, a := range ops {
+		if a.weight > 0 {
+			v.byOp[id] = OperatorRateView{Rate: a.sum / a.weight, Attempts: a.attempts}
 		}
 	}
-	s.baselines.Store(&out)
+	// A service is measured in one basis or the other, never a mix: charging
+	// one key an operator rate and its pool-mate a key rate would compare two
+	// different measurements through the baseline.
+	for _, ks := range keys {
+		if operator != nil && operator(ks.id.svc) {
+			v.opOn[ks.id.svc] = true
+		}
+	}
+	type acc struct {
+		min float64
+		n   int
+	}
+	pools := map[poolID]*acc{}
+	seen := map[opID]bool{}
+	for _, ks := range keys {
+		rate := ks.rate
+		if v.opOn[ks.id.svc] {
+			r, ok := v.byOp[ks.op]
+			if !ok {
+				continue
+			}
+			// Every key of the operator is charged the operator's rate, however
+			// little traffic that key itself has seen — diluting a rate across
+			// keys is the thing this measures around.
+			rate = r.Rate
+			v.byKey[ks.id] = r.Rate
+			if seen[ks.op] || r.Attempts < baselineMinAttempts {
+				continue // one vote per operator, and only a well-evidenced one
+			}
+			seen[ks.op] = true
+		} else if !ks.wellAttempted {
+			continue
+		}
+		if a := pools[ks.pool]; a == nil {
+			pools[ks.pool] = &acc{min: rate, n: 1}
+		} else {
+			a.min = min(a.min, rate)
+			a.n++
+		}
+	}
+	for id, a := range pools {
+		// The relative term is what a baseline is for; without it a key is
+		// charged from zero, as it was before pool-relative scoring.
+		if a.n >= 2 && relative != nil && relative(id.svc) {
+			v.baseline[id] = a.min
+		}
+	}
+	s.chronic.Store(&v)
+}
+
+// gateOf reads a per-service gate pointer, nil when unset.
+func gateOf(p *atomic.Pointer[func(domain.ServiceID) bool]) func(domain.ServiceID) bool {
+	gp := p.Load()
+	if gp == nil {
+		return nil
+	}
+	return *gp
 }
 
 // latencyAlpha is the traffic-latency EWMA step. Reporting only.
@@ -763,12 +862,18 @@ func (s *serviceImpl) GetStates(_ context.Context, serviceID domain.ServiceID) (
 	}
 	out := make(map[string]StateView, len(states))
 	for key, st := range states {
-		out[key] = StateView{
+		view := StateView{
 			Score: s.effectiveFor(serviceID, key, st), Additive: st.Score, Rate: st.Rate,
 			Penalty: s.penaltyFor(serviceID, key, st.Rate), Attempts: st.Attempts,
 			TrafficAttempts: st.TrafficAttempts, ProbeOnly: st.TrafficAttempts == 0,
 			LatencyMS: st.LatencyMS,
 		}
+		// The rate a young key shows and the rate its operator is charged are
+		// different numbers; a reader comparing keys needs both (operator.go).
+		if r, ok := s.OperatorRate(serviceID, domain.RPCType(rpcOfKey(key)), operatorOfKey(key)); ok {
+			view.OperatorRate = r.Rate
+		}
+		out[key] = view
 	}
 	return out, nil
 }
