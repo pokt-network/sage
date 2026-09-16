@@ -95,7 +95,13 @@ is long enough that one burst does not act. **All** of the following must hold:
    2.2%, and every one was on a service SAGE was already serving better than
    PATH (base 0.08% against PATH's 14%, giwa 0.009% against 0.59%); every drain
    a person actually made sat above 5%. A candidate below the bar is recorded
-   as `below_client_failure` and never acted on.
+   as `below_client_failure` and never acted on; one whose window holds fewer
+   than 50 client answers is recorded as `no_client_evidence` instead, because
+   a chain at 0.1 requests/second reaches neither the floor nor any conclusion
+   — "nobody is failing" and "nobody asked" are different facts and the label
+   says which. Over a long enough window the small chains do reach the floor:
+   moonriver and poly-zkevm, at 92% and 100% client failure, are gated on
+   having no vouched alternative, not on the client bar.
 
 **Second trigger — the operator the collapse share cannot see.** Conditions 2
 and 3 are blind to an operator that spreads one service over many keys: its

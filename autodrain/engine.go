@@ -81,6 +81,12 @@ const (
 	// OutcomeBelowClient is a candidate the client gate stopped: the operator
 	// meets the trigger, the callers of that service are not failing.
 	OutcomeBelowClient = "below_client_failure"
+	// OutcomeNoClientEvidence is the other half of the gate: too few
+	// client-facing answers in the window to say anything either way. It is a
+	// separate outcome because "nobody is failing" and "nobody asked" are
+	// different facts, and a chain at 0.1 requests/second hits the second one
+	// while 98% of its callers fail (mainnet poly-zkevm, 2026-09-16).
+	OutcomeNoClientEvidence = "no_client_evidence"
 )
 
 // What put a candidate in front of the decision, recorded on the event.
@@ -528,7 +534,10 @@ func (e *Engine) decide(ctx context.Context, k drain.Key, now time.Time, act boo
 	// The client gate: an operator answering nothing while every caller of the
 	// service is served is a routing inefficiency, not an incident, and a drain
 	// buys nothing a retry is not already buying.
-	if ev.ClientRequests < minClientRequests || ev.ClientFailure < minClientFailure {
+	if ev.ClientRequests < minClientRequests {
+		return OutcomeNoClientEvidence
+	}
+	if ev.ClientFailure < minClientFailure {
 		return OutcomeBelowClient
 	}
 	eps, _ := e.d.Endpoints.AvailableEndpoints(ctx, k.ServiceID, k.RPCType)
@@ -617,7 +626,8 @@ func (e *Engine) emit(ctx context.Context, k drain.Key, ev Event) {
 		}
 	}
 	level := slog.LevelWarn
-	if ev.Outcome == OutcomeShadow || ev.Outcome == OutcomeBelowClient {
+	switch ev.Outcome {
+	case OutcomeShadow, OutcomeBelowClient, OutcomeNoClientEvidence:
 		level = slog.LevelInfo
 	}
 	e.d.Logger.Log(ctx, level, "autodrain: decision",
