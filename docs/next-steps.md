@@ -42,10 +42,6 @@ baseline the items below are measured against: 200 at 98.21%, 408 at 1.08%,
 zero health-check cycle overruns, six circuit breaks; heap flat at 450-560MB
 across both pods after ~6h.
 
-- **Break the warm line's `skipped` into its causes.** It counts three
-  things — an unparseable key, an entry past the 1h idle TTL, a key already
-  in cache — and on 2026-09-04 it went 11 → 42 across four rolls, which ops
-  had to ask about. Three fields on `HydrateResult` and the line says which.
 - **bsc `sync_allowance` 100 → 500-600 (Otto's config): measure before
   bumping.** Against a steady spread of ~250 the strict filter rejected the
   tail every cycle by construction, most of it the age of the readings. Since

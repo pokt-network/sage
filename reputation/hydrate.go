@@ -16,9 +16,20 @@ type HydrateResult struct {
 	// executor seeds its readiness coverage from this: a service whose scores
 	// are loaded is a service this pod can already steer traffic for.
 	Services []domain.ServiceID
-	// Skipped counts states read but not loaded — stale, unparseable, or over
-	// the per-shard bound.
+	// Skipped counts states read but not loaded. The four fields after it
+	// say why, and sum to it: on 2026-09-04 it went 11 → 42 across four rolls
+	// and the number alone could not say which cause moved.
 	Skipped int
+	// Stale is states past the idle TTL, or unstamped, or any state at all
+	// when the sweep is disabled.
+	Stale int
+	// Unparseable is storage fields that are not a service and a key.
+	Unparseable int
+	// Present is keys this pod had already scored before the read reached
+	// them; its own signal is newer.
+	Present int
+	// OverBound is keys the per-shard cap had no room for.
+	OverBound int
 	// Operators is how many per-operator counters were adopted from storage.
 	Operators int
 }
@@ -80,11 +91,17 @@ func (s *serviceImpl) Hydrate(ctx context.Context) (HydrateResult, error) {
 
 	for field, st := range states {
 		serviceID, repKey, ok := splitScoreKey(field)
-		if !ok || !s.fresh(st, cutoff) {
-			result.Skipped++
-			continue
+		var skip *int
+		switch {
+		case !ok:
+			skip = &result.Unparseable
+		case !s.fresh(st, cutoff):
+			skip = &result.Stale
+		default:
+			skip = s.loadState(serviceID, repKey, st, &result)
 		}
-		if !s.loadState(serviceID, repKey, st) {
+		if skip != nil {
+			*skip++
 			result.Skipped++
 			continue
 		}
@@ -131,12 +148,13 @@ func (s *serviceImpl) stateIdleTTL() time.Duration {
 	return s.cfg.StateIdleTTL
 }
 
-// loadState places one state in the cache, reporting whether it landed. It
-// does not overwrite: a key already present was written by a signal this
+// loadState places one state in the cache. It returns nil when the state
+// landed, and otherwise the result counter that says why it did not. It does
+// not overwrite: a key already present was written by a signal this
 // process saw, which is newer than storage by construction.
-func (s *serviceImpl) loadState(serviceID domain.ServiceID, repKey string, st State) bool {
+func (s *serviceImpl) loadState(serviceID domain.ServiceID, repKey string, st State, result *HydrateResult) *int {
 	if s.cfg.StateIdleTTL < 0 {
-		return false
+		return &result.Stale
 	}
 	sh := s.shard(repKey)
 	sh.mu.Lock()
@@ -148,18 +166,18 @@ func (s *serviceImpl) loadState(serviceID domain.ServiceID, repKey string, st St
 		sh.cache[serviceID] = svcStates
 	}
 	if _, exists := svcStates[repKey]; exists {
-		return false
+		return &result.Present
 	}
 	if len(svcStates) >= maxScoresPerServiceShard {
 		s.pruneUninformative(svcStates)
 		if len(svcStates) >= maxScoresPerServiceShard {
-			return false
+			return &result.OverBound
 		}
 	}
 	// LatencyMS is reporting-only and deliberately not persisted (see State),
 	// so it stays zero until this pod measures its own.
 	svcStates[repKey] = st
-	return true
+	return nil
 }
 
 // splitScoreKey reverses scoreKey. The service ID is everything before the

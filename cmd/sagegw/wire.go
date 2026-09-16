@@ -912,7 +912,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			// suppress INFO — the canary roll that carried this could not
 			// confirm hydration from the logs at all.
 			logger.Warn("reputation warm-up read found nothing; starting cold",
-				"skipped", loaded.Skipped)
+				"skipped", loaded.Skipped, "stale", loaded.Stale, "present", loaded.Present,
+				"over_bound", loaded.OverBound, "unparseable", loaded.Unparseable)
 		default:
 			// Only services that also hold a session: readiness has to mean
 			// "can serve", and scores without a session are half the answer.
@@ -931,8 +932,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			}
 			healthExe.SeedCoverage(ready)
 			app.StartupNotes = append(app.StartupNotes, fmt.Sprintf(
-				"reputation warmed from storage: keys=%d services=%d credited=%d skipped=%d",
-				loaded.Keys, len(loaded.Services), len(ready), loaded.Skipped))
+				"reputation warmed from storage: keys=%d services=%d credited=%d skipped=%d (stale=%d present=%d over_bound=%d unparseable=%d)",
+				loaded.Keys, len(loaded.Services), len(ready), loaded.Skipped,
+				loaded.Stale, loaded.Present, loaded.OverBound, loaded.Unparseable))
 		}
 		// The durable form of that line: a log entry can be filtered out by
 		// level, a gauge cannot.
