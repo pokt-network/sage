@@ -71,4 +71,3 @@ func (b *blacklist) IsBlacklisted(serviceID domain.ServiceID, addr string) bool 
 	}
 	return time.Now().Before(expiry)
 }
-

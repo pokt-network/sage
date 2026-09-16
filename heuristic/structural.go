@@ -60,4 +60,3 @@ func IsPlainText(body []byte) bool {
 	// If it's printable ASCII and doesn't start with JSON/XML markers, it's plain text.
 	return true
 }
-
