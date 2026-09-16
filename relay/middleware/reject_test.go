@@ -103,7 +103,7 @@ func TestParse_PluginRejection_IsJSONRPCEnvelopeWithIDAndReason(t *testing.T) {
 }
 
 func TestParse_BodyOverCap_Is413(t *testing.T) {
-	mw := middleware.ParseWithOptions(qos.NewRegistry(), middleware.ParseOptions{MaxBodyBytes: 16})
+	mw := middleware.ParseWithOptions(qos.NewRegistry(), middleware.ParseOptions{MaxBodyBytes: func() int64 { return 16 }})
 	req := newPOSTRequest("/v1", `{"jsonrpc":"2.0","id":7,"method":"eth_blockNumber","params":[]}`)
 	req.Header.Set("Target-Service-Id", "eth")
 	ctx := newCtx(req)

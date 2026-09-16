@@ -61,8 +61,8 @@ func TestService_ProbesStillLiftABenchedKey(t *testing.T) {
 		require.NoError(t, svc.RecordSignal(ctx, "solana", ep, domain.RPCTypeJSONRPC, probe))
 	}
 	got, _ := svc.GetScore(ctx, "solana", ep, domain.RPCTypeJSONRPC)
-	assert.GreaterOrEqual(t, got, svc.selector.cfg.MinThreshold, "probes lift a benched key back into probation")
-	assert.Less(t, got, svc.selector.cfg.ProbationThreshold, "and no further while traffic is recent")
+	assert.GreaterOrEqual(t, got, svc.selector.cfg.Load().MinThreshold, "probes lift a benched key back into probation")
+	assert.Less(t, got, svc.selector.cfg.Load().ProbationThreshold, "and no further while traffic is recent")
 }
 
 // The chronic penalty is measured from the pool's best rate when the relative
@@ -82,7 +82,7 @@ func TestService_ChronicPenaltyIsRelativeToThePool(t *testing.T) {
 		sh.cache["sei"][key] = State{Score: 100, Rate: rate, Attempts: 5000, TrafficAttempts: 5000}
 		sh.mu.Unlock()
 	}
-	rc := svc.rate
+	rc := svc.scoring.Load().rate
 
 	absolute, _ := svc.GetScore(ctx, "sei", worse, domain.RPCTypeJSONRPC)
 	assert.InDelta(t, 100+rc.Penalty(0.015), absolute, 0.01, "no gate: the absolute penalty")

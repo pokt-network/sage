@@ -182,6 +182,12 @@ func NewWSRelayer(deps WSRelayerDeps) *WSRelayer {
 	}
 }
 
+// SetMaxConcurrentConnections moves the live-bridge cap on a running relayer.
+// <= 0 removes it. Bridges already open above a lowered cap are not closed.
+func (r *WSRelayer) SetMaxConcurrentConnections(n int) {
+	r.connLimiter.SetMax(n)
+}
+
 // Open upgrades the incoming HTTP request to a WebSocket, selects a supplier
 // endpoint using tier-cascade + load-aware weighting, opens a Shannon-signed
 // bridge to the supplier, and blocks until the bridge shuts down.

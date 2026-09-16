@@ -36,7 +36,7 @@ func TestBatch_SinglePayload_PassThrough(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(4, 0, nil, nil)
+	mw := Batch(fixedLimits(4, 0), nil, nil)
 	handler := mw(inner)
 
 	p := domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
@@ -67,7 +67,7 @@ func TestBatch_MultiplePayloads_FanOut(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(4, 0, nil, nil)
+	mw := Batch(fixedLimits(4, 0), nil, nil)
 	handler := mw(inner)
 
 	payloads := []domain.Payload{
@@ -109,7 +109,7 @@ func TestBatch_PartialFailure_IncludedInResult(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(4, 0, nil, nil)
+	mw := Batch(fixedLimits(4, 0), nil, nil)
 	handler := mw(inner)
 
 	payloads := []domain.Payload{
@@ -191,7 +191,7 @@ func TestBatch_EmptyBodyIsAnErrorResponseWithTheRequestID(t *testing.T) {
 		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"ok"}`), HTTPStatusCode: 200}
 		return nil
 	})
-	handler := Batch(4, 0, nil, nil)(inner)
+	handler := Batch(fixedLimits(4, 0), nil, nil)(inner)
 
 	payloads := []domain.Payload{
 		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"ok"}`), domain.RPCTypeJSONRPC, "ok"),
@@ -218,7 +218,7 @@ func TestBatch_EmptyBodyIsAnErrorResponseWithTheRequestID(t *testing.T) {
 // The items a dead request never started are answered the same way.
 func TestBatch_NotStartedItemsCarryTheirRequestIDs(t *testing.T) {
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error { return nil })
-	handler := Batch(16, 0, nil, nil)(inner)
+	handler := Batch(fixedLimits(16, 0), nil, nil)(inner)
 
 	payloads := []domain.Payload{
 		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":"a","method":"m"}`), domain.RPCTypeJSONRPC, "m"),
@@ -246,7 +246,7 @@ func TestBatch_EmptyPayloads_PassThrough(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(4, 0, nil, nil)
+	mw := Batch(fixedLimits(4, 0), nil, nil)
 	handler := mw(inner)
 
 	ctx := makeMultiPayloadCtx(nil)
@@ -267,7 +267,7 @@ func TestBatch_UnboundedParallelism(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(0, 0, nil, nil) // unbounded
+	mw := Batch(fixedLimits(0, 0), nil, nil) // unbounded
 	handler := mw(inner)
 
 	payloads := make([]domain.Payload, 10)
@@ -296,7 +296,7 @@ func TestBatch_OversizedBatchRejectedBeforeFanOut(t *testing.T) {
 		return nil
 	})
 
-	mw := Batch(4, 3, nil, nil)
+	mw := Batch(fixedLimits(4, 3), nil, nil)
 	handler := mw(inner)
 
 	payloads := make([]domain.Payload, 10)
@@ -334,7 +334,7 @@ func TestBatch_AtLimitIsAllowed(t *testing.T) {
 		return nil
 	})
 
-	handler := Batch(4, 3, nil, nil)(inner)
+	handler := Batch(fixedLimits(4, 3), nil, nil)(inner)
 
 	payloads := make([]domain.Payload, 3)
 	for i := range payloads {
@@ -356,7 +356,7 @@ func TestBatch_ZeroLimitDisablesCap(t *testing.T) {
 		ctx.Response = &domain.Response{Body: []byte(`{"result":"ok"}`), HTTPStatusCode: 200}
 		return nil
 	})
-	handler := Batch(4, 0, nil, nil)(inner)
+	handler := Batch(fixedLimits(4, 0), nil, nil)(inner)
 
 	payloads := make([]domain.Payload, 50)
 	for i := range payloads {
@@ -395,7 +395,7 @@ func TestBatch_MergesDegradedFromSubRelays(t *testing.T) {
 				return nil
 			})
 
-			handler := Batch(1, 0, nil, nil)(inner) // maxParallel=1 makes the index deterministic
+			handler := Batch(fixedLimits(1, 0), nil, nil)(inner) // maxParallel=1 makes the index deterministic
 
 			payloads := make([]domain.Payload, 3)
 			for i := range payloads {
@@ -421,7 +421,7 @@ func TestBatch_SinglePayloadDegradedPassesThrough(t *testing.T) {
 		ctx.Response = &domain.Response{Body: []byte(`{"result":"ok"}`), HTTPStatusCode: 200}
 		return nil
 	})
-	handler := Batch(4, 0, nil, nil)(inner)
+	handler := Batch(fixedLimits(4, 0), nil, nil)(inner)
 
 	p := domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
 	ctx := makeMultiPayloadCtx([]domain.Payload{p})
@@ -478,7 +478,7 @@ func TestBatch_ConcurrencyBoundIsGlobalAcrossRequests(t *testing.T) {
 	})
 
 	// ONE middleware instance shared by both requests — as in wire.go.
-	handler := Batch(budget, 0, nil, nil)(inner)
+	handler := Batch(fixedLimits(budget, 0), nil, nil)(inner)
 
 	payloads := make([]domain.Payload, 4)
 	for i := range payloads {
@@ -542,7 +542,7 @@ func TestBatch_SaturatedBudgetRespectsRequestDeadline(t *testing.T) {
 		return nil
 	})
 
-	handler := Batch(1, 0, nil, nil)(inner) // budget of exactly one
+	handler := Batch(fixedLimits(1, 0), nil, nil)(inner) // budget of exactly one
 
 	payloads := make([]domain.Payload, 2)
 	for i := range payloads {
@@ -583,7 +583,7 @@ func TestBatch_CancelledRequestDoesNotSpendBudget(t *testing.T) {
 	})
 
 	// A wide-open budget: nothing is contended, only the context is dead.
-	handler := Batch(16, 0, nil, nil)(inner)
+	handler := Batch(fixedLimits(16, 0), nil, nil)(inner)
 
 	payloads := make([]domain.Payload, 2)
 	for i := range payloads {
@@ -622,7 +622,7 @@ func TestBatch_PanicInOnePayloadIsIsolated(t *testing.T) {
 		domain.NewPayload([]byte(`{"method":"eth_chainId"}`), domain.RPCTypeJSONRPC, "eth_chainId"),
 	})
 
-	if err := Batch(4, 0, nil, nil)(inner).HandleRelay(ctx); err != nil {
+	if err := Batch(fixedLimits(4, 0), nil, nil)(inner).HandleRelay(ctx); err != nil {
 		t.Fatalf("batch failed wholesale: %v", err)
 	}
 
@@ -672,7 +672,7 @@ func TestBatch_SetsSinkAndFlushesWorstOf(t *testing.T) {
 	// and the two after it are successes" is deterministic rather than a race
 	// that would sometimes let the fatal be the last Add and pass regardless
 	// of whether the collapse is worst-of or last-wins.
-	h := Batch(1, 0, flags, rep)(inner)
+	h := Batch(fixedLimits(1, 0), flags, rep)(inner)
 	ctx := baseContext()
 	ctx.Payloads = make([]domain.Payload, 5)
 	for i := range ctx.Payloads {
@@ -694,7 +694,7 @@ func TestBatch_NoSinkWhenFlagOff(t *testing.T) {
 		ctx.Response = &domain.Response{Body: []byte(`{}`), HTTPStatusCode: 200}
 		return nil
 	})
-	h := Batch(0, 0, newFlags(), rep)(inner)
+	h := Batch(fixedLimits(0, 0), newFlags(), rep)(inner)
 	ctx := baseContext()
 	ctx.Payloads = make([]domain.Payload, 2)
 	for i := range ctx.Payloads {
@@ -718,7 +718,7 @@ func TestBatch_SinglePayload_NoSinkWithFlagOn(t *testing.T) {
 		return nil
 	})
 
-	h := Batch(4, 0, newFlags(featureflag.FlagScoringV2), rep)(inner)
+	h := Batch(fixedLimits(4, 0), newFlags(featureflag.FlagScoringV2), rep)(inner)
 	ctx := baseContext()
 	ctx.Payloads = []domain.Payload{
 		domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber"),
@@ -748,7 +748,7 @@ func TestBatch_SubRelaysCarryBatchSize(t *testing.T) {
 		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":3,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber"),
 	}
 	ctx := makeMultiPayloadCtx(payloads)
-	if err := Batch(4, 0, nil, nil)(inner).HandleRelay(ctx); err != nil {
+	if err := Batch(fixedLimits(4, 0), nil, nil)(inner).HandleRelay(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if len(sizes) != 3 {
@@ -762,4 +762,45 @@ func TestBatch_SubRelaysCarryBatchSize(t *testing.T) {
 	if ctx.BatchSize != 0 {
 		t.Fatalf("parent BatchSize = %d, want 0: the field belongs to the item, not the batch request", ctx.BatchSize)
 	}
+}
+
+// fixedLimits is a BatchLimits that never changes.
+func fixedLimits(maxConcurrentRelays, maxPayloads int) BatchLimits {
+	return func() (int, int) { return maxConcurrentRelays, maxPayloads }
+}
+
+// Both bounds are read per batch, so an apply that lowers or raises them
+// reaches the next request without rebuilding the chain.
+func TestBatch_LimitsChangeOnARunningMiddleware(t *testing.T) {
+	var maxRelays, maxPayloads atomic.Int32
+	maxRelays.Store(1)
+	maxPayloads.Store(2)
+	limits := func() (int, int) { return int(maxRelays.Load()), int(maxPayloads.Load()) }
+
+	var active, peak atomic.Int32
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		n := active.Add(1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		time.Sleep(20 * time.Millisecond)
+		active.Add(-1)
+		ctx.Response = &domain.Response{Body: []byte(`{"result":"ok"}`), HTTPStatusCode: 200}
+		return nil
+	})
+	handler := Batch(limits, nil, nil)(inner)
+
+	payloads := make([]domain.Payload, 4)
+	for i := range payloads {
+		payloads[i] = domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	}
+
+	require.Error(t, handler.HandleRelay(makeMultiPayloadCtx(payloads)), "4 payloads over a cap of 2")
+
+	maxPayloads.Store(4)
+	require.NoError(t, handler.HandleRelay(makeMultiPayloadCtx(payloads)))
+	assert.Equal(t, int32(1), peak.Load(), "budget of 1 runs the sub-relays one at a time")
+
+	maxRelays.Store(4)
+	require.NoError(t, handler.HandleRelay(makeMultiPayloadCtx(payloads)))
+	assert.Equal(t, int32(4), peak.Load(), "a raised budget is in force on the next batch")
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/reload"
+	"github.com/pokt-network/sage/reputation"
 	"github.com/pokt-network/sage/tuning"
 )
 
@@ -400,10 +401,11 @@ func TestReload_ReportsConfigWarnings(t *testing.T) {
 //
 // The test mutates each top-level field in turn and insists the diff notices.
 func TestDiffConfig_NewTopLevelFieldNeedsRestart(t *testing.T) {
-	// The two fields with runtime seams are covered by their own tests above,
-	// and the parse-metadata fields describe the parse rather than the
-	// configuration. Everything else has to be fail-safe.
-	seams := map[string]bool{"Gateway": true, "FeatureFlags": true}
+	// The fields with runtime seams are covered by their own tests, and the
+	// parse-metadata fields describe the parse rather than the configuration.
+	// Router and WebSocket are walked leaf-wise and still restart on their
+	// first field. Everything else has to be fail-safe.
+	seams := map[string]bool{"Gateway": true, "FeatureFlags": true, "Concurrency": true}
 	metadata := map[string]bool{"Ignored": true, "Inert": true, "Unimplemented": true, "Warnings": true}
 
 	typ := reflect.TypeOf(config.Config{})
@@ -439,7 +441,7 @@ func TestDiffConfig_NewGatewayFieldNeedsRestart(t *testing.T) {
 	seams := map[string]bool{
 		"Retry": true, "Defaults": true, "HealthChecks": true,
 		"BlockedDomains": true, "MethodBlocks": true,
-		"Services": true, "UnifiedServices": true,
+		"Services": true, "UnifiedServices": true, "Reputation": true,
 	}
 
 	typ := reflect.TypeOf(config.GatewayConfig{})
@@ -642,25 +644,106 @@ func TestDiffConfig_DefaultsDescendLeafWise(t *testing.T) {
 	}
 }
 
-// TestDiffConfig_ReputationTuningNeedsRestart: the scoring keys are honoured
-// now, which makes how a reload reports them a claim an operator will act on.
-// The service is built once at wire time, so changing them takes a restart —
-// and the reflection diff has to keep saying so as keys are added to the block,
-// rather than a hand-written list quietly missing the new ones.
-func TestDiffConfig_ReputationTuningNeedsRestart(t *testing.T) {
+// TestDiffConfig_ReputationDescendsLeafWise: the scoring constants Retune
+// takes are applied; initial_score and key_granularity change how stored state
+// is read and still need a restart, as does any key added to the block later.
+func TestDiffConfig_ReputationDescendsLeafWise(t *testing.T) {
 	old := &config.Config{}
 	next := &config.Config{}
 	next.Gateway.Reputation.ChronicHalfLifeAttempts = 5000
 	next.Gateway.Reputation.TieredSelection.Tier1Threshold = 90
-	next.Gateway.Reputation.SignalImpacts.Success = 2
+	next.Gateway.Reputation.SignalImpacts.CriticalError = -25
+	next.Gateway.Reputation.InitialScore = 90
+	next.Gateway.Reputation.KeyGranularity = "per-supplier"
 
 	d := diffConfig(old, next)
 
-	if !slices.Contains(d.needsRestart, "gateway_config.reputation_config") {
-		t.Errorf("needs_restart = %v, want gateway_config.reputation_config", d.needsRestart)
+	for _, want := range []string{
+		"gateway_config.reputation_config.chronic_half_life_attempts",
+		"gateway_config.reputation_config.signal_impacts",
+		"gateway_config.reputation_config.tiered_selection",
+	} {
+		if !slices.Contains(d.reputation, want) {
+			t.Errorf("reputation = %v, want %s", d.reputation, want)
+		}
 	}
-	if slices.Contains(d.defaults, "gateway_config.reputation_config") {
-		t.Error("the diff claims the reputation block was applied; the service is built once")
+	for _, want := range []string{
+		"gateway_config.reputation_config.initial_score",
+		"gateway_config.reputation_config.key_granularity",
+	} {
+		if !slices.Contains(d.needsRestart, want) {
+			t.Errorf("needs_restart = %v, want %s", d.needsRestart, want)
+		}
+	}
+}
+
+// retuneRecorder stands in for the reputation service to observe what a
+// reload hands Retune.
+type retuneRecorder struct {
+	reputation.Service
+	impacts reputation.SignalImpacts
+	sel     reputation.SelectorConfig
+	calls   int
+}
+
+// Retune records its arguments.
+func (r *retuneRecorder) Retune(impacts reputation.SignalImpacts, _ reputation.RateConfig, sel reputation.SelectorConfig, _ reputation.OperatorCapConfig) {
+	r.impacts, r.sel = impacts, sel
+	r.calls++
+}
+
+// TestReload_TuningLeversApply covers the levers reached for mid-incident:
+// scoring constants, the batch fan-out bounds and the body caps all land
+// without a restart, and the WebSocket cap is named as not in effect where
+// there is no relayer to take it.
+func TestReload_TuningLeversApply(t *testing.T) {
+	app, path := buildReloadApp(t, reloadTestYAML)
+	rec := &retuneRecorder{Service: app.RepSvc}
+	app.RepSvc = rec
+
+	edited := strings.Replace(reloadTestYAML, `concurrency_config:
+  max_concurrent_relays: 100
+  max_batch_payloads: 10`, `concurrency_config:
+  max_concurrent_relays: 50
+  max_batch_payloads: 5
+router_config:
+  max_request_body_bytes: 1048576
+websocket_config:
+  max_concurrent_connections: 20`, 1)
+	edited = strings.Replace(edited, "  gateway_mode: centralized", `  gateway_mode: centralized
+  reputation_config:
+    signal_impacts:
+      critical_error: -25
+    tiered_selection:
+      tier1_threshold: 85`, 1)
+	rewriteReloadConfig(t, path, edited)
+
+	res, err := app.Reload(t.Context())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(res.NeedsRestart) != 0 {
+		t.Errorf("needs_restart = %v, want nothing", res.NeedsRestart)
+	}
+	for _, key := range []string{
+		"concurrency_config.max_concurrent_relays",
+		"concurrency_config.max_batch_payloads",
+		"router_config.max_request_body_bytes",
+		"gateway_config.reputation_config.signal_impacts",
+		"gateway_config.reputation_config.tiered_selection",
+	} {
+		if !slices.Contains(res.Applied, key) {
+			t.Errorf("applied = %v, want %s", res.Applied, key)
+		}
+	}
+	if !strings.Contains(strings.Join(res.Warnings, "; "), keyWSConnections) {
+		t.Errorf("warnings = %v, want %s named as not in effect under the mock backend", res.Warnings, keyWSConnections)
+	}
+	if rec.calls != 1 || rec.impacts.CriticalError != -25 || rec.sel.Tier1Threshold != 85 {
+		t.Errorf("Retune got calls=%d critical=%v tier1=%v, want 1, -25, 85", rec.calls, rec.impacts.CriticalError, rec.sel.Tier1Threshold)
+	}
+	if got := app.Config.Load().Concurrency.MaxBatchPayloads; got != 5 {
+		t.Errorf("snapshot max_batch_payloads = %d, want 5 — the batch middleware reads it per request", got)
 	}
 }
 

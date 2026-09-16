@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -72,7 +73,10 @@ type LatencyFn func(ctx context.Context, serviceID domain.ServiceID, ep domain.E
 // Tier 1 (best) is tried first; if empty, tier 2; then tier 3. Within each
 // tier a random endpoint is chosen. Probation endpoints may be prepended.
 type TieredSelector struct {
-	cfg    SelectorConfig
+	// cfg and operatorCap are swapped whole by SetConfig while relays select,
+	// so a reload never shows a selection half of the old thresholds and half
+	// of the new.
+	cfg    atomic.Pointer[SelectorConfig]
 	scores ScoreFn
 
 	// latency and latencyGate drive the tie-break inside the winning tier;
@@ -87,7 +91,7 @@ type TieredSelector struct {
 
 	// operatorCap bounds any single operator's share of selections within the
 	// winning tier. See concentration.go.
-	operatorCap OperatorCapConfig
+	operatorCap atomic.Pointer[OperatorCapConfig]
 	// capGate decides per relay whether the cap applies. Nil means never — the
 	// cap is opt-in at wire time, behind a feature flag, so it can be turned
 	// off at runtime without a deploy.
@@ -97,10 +101,18 @@ type TieredSelector struct {
 // NewTieredSelector creates a selector that uses the provided score lookup
 // function to classify endpoints into tiers.
 func NewTieredSelector(cfg SelectorConfig, scoreFn ScoreFn) *TieredSelector {
-	return &TieredSelector{
-		cfg:    cfg,
-		scores: scoreFn,
-	}
+	s := &TieredSelector{scores: scoreFn}
+	s.cfg.Store(&cfg)
+	s.operatorCap.Store(&OperatorCapConfig{})
+	return s
+}
+
+// SetConfig replaces the tier thresholds and the operator cap's shares on a
+// running selector. The cap's gate is untouched: whether the cap applies is a
+// feature flag, and only its numbers are config.
+func (s *TieredSelector) SetConfig(cfg SelectorConfig, operatorCap OperatorCapConfig) {
+	s.cfg.Store(&cfg)
+	s.operatorCap.Store(&operatorCap)
 }
 
 // CollapseHook is told each time the pool-collapse guard serves sub-threshold
@@ -119,7 +131,7 @@ func (s *TieredSelector) SetCollapseHook(fn CollapseHook) {
 // gate (nil gate = never applied). Not safe to call concurrently with
 // selection; call it at wire time.
 func (s *TieredSelector) SetOperatorCap(cfg OperatorCapConfig, gate func(context.Context, domain.ServiceID) bool) {
-	s.operatorCap = cfg
+	s.operatorCap.Store(&cfg)
 	s.capGate = gate
 }
 
@@ -165,14 +177,15 @@ func (s *TieredSelector) classify(ctx context.Context, serviceID domain.ServiceI
 		// Unknown endpoints default to tier 3 (they'll get a score after first relay).
 		return tier3Idx, score
 	}
+	cfg := s.cfg.Load()
 	switch {
-	case score < s.cfg.MinThreshold:
+	case score < cfg.MinThreshold:
 		return -1, score // filtered out entirely
-	case score < s.cfg.ProbationThreshold:
+	case score < cfg.ProbationThreshold:
 		return probationIdx, score
-	case score >= s.cfg.Tier1Threshold:
+	case score >= cfg.Tier1Threshold:
 		return tier1Idx, score
-	case score >= s.cfg.Tier2Threshold:
+	case score >= cfg.Tier2Threshold:
 		return tier2Idx, score
 	default:
 		return tier3Idx, score
@@ -288,7 +301,7 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 		if weights != nil {
 			weightFn = func(i int) float64 { return weights[i] }
 		}
-		if _, capped, ok := cappedPickWeighted(s.operatorCap, endpoints, func(i int) bool {
+		if _, capped, ok := cappedPickWeighted(*s.operatorCap.Load(), endpoints, func(i int) bool {
 			return int(tiers[i]) == best
 		}, weightFn); ok {
 			selected = capped
@@ -302,7 +315,8 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 	}
 
 	// Probation routing: prepend a probation endpoint with configured probability.
-	if count[probationIdx] > 0 && s.cfg.ProbationPct > 0 && rand.IntN(100) < s.cfg.ProbationPct {
+	cfg := s.cfg.Load()
+	if count[probationIdx] > 0 && cfg.ProbationPct > 0 && rand.IntN(100) < cfg.ProbationPct {
 		// Prepend: probation endpoint first, healthy endpoint second.
 		return domain.EndpointAddrList{pick[probationIdx], selected}
 	}
@@ -311,7 +325,7 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 	// endpoint first so that tier is measured by traffic and not only by
 	// probes. The tier-1 pick stays behind it for Retry. Only when tier 1 won:
 	// if tier 2 is the winning tier it already carries everything.
-	if best == tier1Idx && count[tier2Idx] > 0 && s.cfg.Tier2Pct > 0 && rand.IntN(100) < s.cfg.Tier2Pct {
+	if best == tier1Idx && count[tier2Idx] > 0 && cfg.Tier2Pct > 0 && rand.IntN(100) < cfg.Tier2Pct {
 		return domain.EndpointAddrList{pick[tier2Idx], selected}
 	}
 

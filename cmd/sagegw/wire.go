@@ -109,6 +109,9 @@ type App struct {
 	// mock backend, which hands out endpoints without consulting one — a
 	// reload says so rather than reporting the section applied.
 	blockedDomains blockedDomainSetter
+	// wsConnections is the WebSocket relayer's connection cap. Nil under the
+	// mock backend, which has no relayer.
+	wsConnections wsConnectionLimiter
 	// blocklist is the same manager, for the admin API's routes.
 	blocklist *blocklist.Manager
 	Leader    *healthcheck.LeaderElector
@@ -702,7 +705,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWParse, func() relay.Middleware {
 		return middleware.ParseWithOptions(qosReg, middleware.ParseOptions{
 			RPCTypes:     rpcTypesFn,
-			MaxBodyBytes: cfg.Router.MaxRequestBodyBytes,
+			MaxBodyBytes: func() int64 { return app.Config.Load().Router.MaxRequestBodyBytes },
 		})
 	})
 	mwReg.Register(relay.MWValidate, func() relay.Middleware {
@@ -710,7 +713,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	})
 	mwReg.Register(relay.MWCache, func() relay.Middleware { return middleware.CacheWithRecorder(flags, respCache, recorder) })
 	mwReg.Register(relay.MWBatch, func() relay.Middleware {
-		return middleware.Batch(cfg.Concurrency.MaxConcurrentRelays, cfg.Concurrency.MaxBatchPayloads, flags, repSvc)
+		return middleware.Batch(func() (int, int) {
+			c := app.Config.Load().Concurrency
+			return c.MaxConcurrentRelays, c.MaxBatchPayloads
+		}, flags, repSvc)
 	})
 	mwReg.Register(relay.MWSingleflight, func() relay.Middleware { return middleware.SingleflightWithRecorder(flags, recorder) })
 	mwReg.Register(relay.MWObserve, func() relay.Middleware {
@@ -986,7 +992,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		// WebSocket setting silently zeroed the other two — taking WS
 		// observability with it, with no error and no log line.
 		wsCfg := cfg.WebSocket
-		wsRelayer = shannon.NewWSRelayer(shannon.WSRelayerDeps{
+		relayer := shannon.NewWSRelayer(shannon.WSRelayerDeps{
 			Protocol:                   app.Protocol,
 			Reputation:                 repSvc,
 			Observe:                    obsQueue,
@@ -998,6 +1004,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			Metrics:                    metrics.NewWebSocketMetrics(serviceIDsFrom(cfg)),
 			QoS:                        qosReg,
 		})
+		wsRelayer = relayer
+		app.wsConnections = relayer
 	}
 
 	// 16. Admin API + Router

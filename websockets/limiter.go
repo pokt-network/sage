@@ -16,17 +16,27 @@ import "sync/atomic"
 // always succeeds. That keeps the limiter optional without making every caller
 // and test construct one.
 type ConnectionLimiter struct {
-	max    int64
+	// max <= 0 means no cap. Atomic so SetMax can move it under live traffic.
+	max    atomic.Int64
 	active atomic.Int64
 }
 
 // NewConnectionLimiter returns a limiter capping concurrent connections at max.
-// A max <= 0 returns nil, which disables limiting.
+// A max <= 0 disables limiting until SetMax says otherwise.
 func NewConnectionLimiter(max int) *ConnectionLimiter {
-	if max <= 0 {
-		return nil
+	l := &ConnectionLimiter{}
+	l.max.Store(int64(max))
+	return l
+}
+
+// SetMax changes the cap. Lowering it below Active closes nothing: the
+// connections already open keep their slots, and new ones are refused until
+// enough of them leave. A nil limiter is a no-op.
+func (l *ConnectionLimiter) SetMax(max int) {
+	if l == nil {
+		return
 	}
-	return &ConnectionLimiter{max: int64(max)}
+	l.max.Store(int64(max))
 }
 
 // Acquire reserves a slot. It returns true when one was reserved — the caller
@@ -44,7 +54,7 @@ func (l *ConnectionLimiter) Acquire() bool {
 	// the number untrustworthy exactly when it is being looked at.
 	for {
 		cur := l.active.Load()
-		if cur >= l.max {
+		if max := l.max.Load(); max > 0 && cur >= max {
 			return false
 		}
 		if l.active.CompareAndSwap(cur, cur+1) {

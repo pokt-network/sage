@@ -107,7 +107,11 @@ func (a *AdminAPI) handleClearConfigOverride(w http.ResponseWriter, req *http.Re
 // handleReload re-reads the config file the gateway started with (`-config`),
 // validates it exactly as startup does, and applies the sections that have a
 // runtime seam: the retry/hedge/timeout knobs, `feature_flags`,
-// `active_health_checks`, `blocked_domains` and the `method_blocks` knobs.
+// `active_health_checks`, `blocked_domains`, the `method_blocks` knobs,
+// `concurrency_config`, the router's body caps,
+// `websocket_config.max_concurrent_connections`, and the scoring constants in
+// `gateway_config.reputation_config` (every key but `initial_score` and
+// `key_granularity`, which change how recorded scores are read).
 //
 // The response is the honest account. `applied` names the key paths that took
 // effect, as they are written in the file — `gateway_config.defaults.retry_config`,

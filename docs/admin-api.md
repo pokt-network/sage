@@ -122,7 +122,7 @@ failureThreshold) here.
 | `DELETE` | `/admin/tuning/{knob}` | Removes the global override for a knob, returning the config file's value to effect. |
 | `DELETE` | `/admin/tuning/{knob}/{serviceID}` | Removes one service's override, leaving the global one (or the config value) in effect for it. |
 | `GET` | `/admin/config` | Returns the gateway's effective runtime configuration: resolved feature flags, registered services and their QoS plugins. |
-| `POST` | `/admin/reload` | Re-reads the config file the gateway started with (`-config`), validates it exactly as startup does, and applies the sections that have a runtime seam: the retry/hedge/timeout knobs, `feature_flags`, `active_health_checks`, `blocked_domains` and the `method_blocks` knobs. |
+| `POST` | `/admin/reload` | Re-reads the config file the gateway started with (`-config`), validates it exactly as startup does, and applies the sections that have a runtime seam: the retry/hedge/timeout knobs, `feature_flags`, `active_health_checks`, `blocked_domains`, the `method_blocks` knobs, `concurrency_config`, the router's body caps, `websocket_config.max_concurrent_connections`, and the scoring constants in `gateway_config.reputation_config` (every key but `initial_score` and `key_granularity`, which change how recorded scores are read). |
 | `PUT` | `/admin/config` | Applies a config document sent in the request body, as POST /admin/reload applies the file, and stores it as the config override. |
 | `DELETE` | `/admin/config` | Forgets the uploaded config and re-applies the file, on every replica through the override store. |
 | `GET` | `/admin/log-level` | Returns the level the process is logging at right now. |
@@ -417,7 +417,11 @@ through this API since startup.
 Re-reads the config file the gateway started with (`-config`),
 validates it exactly as startup does, and applies the sections that have a
 runtime seam: the retry/hedge/timeout knobs, `feature_flags`,
-`active_health_checks`, `blocked_domains` and the `method_blocks` knobs.
+`active_health_checks`, `blocked_domains`, the `method_blocks` knobs,
+`concurrency_config`, the router's body caps,
+`websocket_config.max_concurrent_connections`, and the scoring constants in
+`gateway_config.reputation_config` (every key but `initial_score` and
+`key_granularity`, which change how recorded scores are read).
 
 The response is the honest account. `applied` names the key paths that took
 effect, as they are written in the file — `gateway_config.defaults.retry_config`,
