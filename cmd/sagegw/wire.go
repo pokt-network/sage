@@ -517,10 +517,15 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			Flags:     flags,
 			Events:    autoDrainEvents,
 			Recorder:  recorder,
+			Rates:     repSvc,
 			IsLeader:  func() bool { return leader == nil || leader.IsLeader() },
 			MaxDrain:  cfg.Admin.EffectiveMaxDrain(),
 			Logger:    logger,
 		})
+		// The engine gates on what callers saw, which only the client-facing
+		// status says: retry and hedge mean an operator can answer nothing
+		// while the service serves every request.
+		recorder.SetClientRequestHook(autoDrain.OnClientResult)
 	}
 
 	// The breaker's failure-rate gate keys on hostname; every relay counter
@@ -567,6 +572,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// Pool-relative chronic penalty, read on each 30s baseline refresh.
 	repSvc.SetRelativeChronic(func(serviceID domain.ServiceID) bool {
 		return flags.IsEnabled(context.Background(), featureflag.FlagRelativeChronic, serviceID)
+	})
+
+	// Per-operator chronic rate, read on the same refresh. The rates are
+	// computed either way — the auto-drain engine reads them — and the flag
+	// decides only whether scoring charges them.
+	repSvc.SetOperatorChronic(func(serviceID domain.ServiceID) bool {
+		return flags.IsEnabled(context.Background(), featureflag.FlagOperatorChronic, serviceID)
 	})
 
 	// When a drain ends, its endpoints restart at the bottom of probation

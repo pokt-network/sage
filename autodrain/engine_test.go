@@ -42,6 +42,10 @@ type harness struct {
 }
 
 func newHarness(t *testing.T, vouch fakeVouch, act bool) *harness {
+	return newHarnessWith(t, vouch, act, nil)
+}
+
+func newHarnessWith(t *testing.T, vouch fakeVouch, act bool, rates OperatorRates) *harness {
 	t.Helper()
 	h := &harness{
 		drains: drain.NewMemoryStore(),
@@ -60,15 +64,35 @@ func newHarness(t *testing.T, vouch fakeVouch, act bool) *harness {
 		Vouch:     vouch,
 		Flags:     h.flags,
 		Events:    h.log,
+		Rates:     rates,
 		IsLeader:  func() bool { return h.leader },
 		Now:       func() time.Time { return h.now },
 	})
 	return h
 }
 
+// clients records what callers of the service saw over the window. The gate
+// reads this, so every traffic shape below has to say whether anyone was hurt.
+func (h *harness) clients(total, failed int) {
+	for i := 0; i < total; i++ {
+		status := 200
+		if i < failed {
+			status = 504
+		}
+		h.e.OnClientResult(sei, status)
+	}
+}
+
 // feed reproduces the sei shape: the collapse guard sends opa 40 of 50
 // picks, opa answers none of its 60 attempts, opb answers 70 of 100.
+// feed is the incident shape: the traffic below, and callers of the service
+// failing 20% of the time while it lasts.
 func (h *harness) feed(opaSuccess, opaAttempts int) {
+	h.feedTraffic(opaSuccess, opaAttempts)
+	h.clients(200, 40)
+}
+
+func (h *harness) feedTraffic(opaSuccess, opaAttempts int) {
 	for i := 0; i < 40; i++ {
 		h.e.OnCollapse(sei, jsonrpc, domain.EndpointAddrList{opa})
 	}

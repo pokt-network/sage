@@ -42,6 +42,11 @@ func (e EndpointAddr) Domain() string {
 	if err != nil {
 		return ""
 	}
+	return hostOfURL(url)
+}
+
+// hostOfURL reduces a URL to its host: no scheme, no path, no port.
+func hostOfURL(url string) string {
 	// Strip scheme
 	if idx := strings.Index(url, "://"); idx >= 0 {
 		url = url[idx+3:]
@@ -55,6 +60,17 @@ func (e EndpointAddr) Domain() string {
 		url = url[:idx]
 	}
 	return url
+}
+
+// OperatorOfURL returns the operator identity (eTLD+1) of a bare URL or host,
+// the same answer EndpointAddr.Operator gives for an endpoint on that URL.
+//
+// It exists for callers holding a URL rather than an address — reputation keys
+// at per-URL granularity are one — and is deliberately not memoized: the
+// address-keyed cache behind Operator covers the per-relay path, and a caller
+// here is walking a key set off the hot path.
+func OperatorOfURL(url string) string {
+	return computeOperator(hostOfURL(url))
 }
 
 // Operator returns the endpoint's operator identity: the registrable domain

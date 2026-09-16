@@ -51,6 +51,11 @@ type StateView struct {
 	TrafficAttempts uint64  `json:"traffic_attempts"`
 	ProbeOnly       bool    `json:"probe_only"`
 	LatencyMS       float64 `json:"latency_ms"`
+	// OperatorRate is the warm-up-corrected failure rate of every key this
+	// key's operator holds in the pool, 0 when the operator has too little
+	// evidence. It is what the chronic term charges where the operator term is
+	// on, and a truer reading than Rate either way — see reputation/operator.go.
+	OperatorRate float64 `json:"operator_rate,omitempty"`
 }
 
 // StateLister is the optional read interface the admin API asks a

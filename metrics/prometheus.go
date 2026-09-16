@@ -5,6 +5,7 @@ package metrics
 import (
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -39,6 +40,11 @@ type Recorder struct {
 	// configuration collapses every ID to __unknown__, which is the honest
 	// reading, not a reason to trust the input.
 	services *labelPolicy
+
+	// clientRequestHook, when set, is told every client-facing status as it is
+	// counted. Wire time only; the auto-drain engine reads it so its gate sees
+	// what callers saw rather than what one attempt did.
+	clientRequestHook atomic.Pointer[func(domain.ServiceID, int)]
 
 	relayTotal            *prometheus.CounterVec
 	clientRequestsTotal   *prometheus.CounterVec
@@ -443,6 +449,20 @@ func (r *Recorder) recordRelayAttempt(
 // 4xx/5xx. Distinct from RecordRelay, which counts each relay ATTEMPT.
 func (r *Recorder) RecordClientRequest(serviceID domain.ServiceID, status int) {
 	r.clientRequestsTotal.WithLabelValues(r.services.serviceValue(serviceID), strconv.Itoa(status)).Inc()
+	if fn := r.clientRequestHook.Load(); fn != nil {
+		(*fn)(serviceID, status)
+	}
+}
+
+// SetClientRequestHook installs a callback run on every client-facing status,
+// after it is counted. Wire time only: it is read on the response path of every
+// request, so it must not block.
+func (r *Recorder) SetClientRequestHook(fn func(domain.ServiceID, int)) {
+	if fn == nil {
+		r.clientRequestHook.Store(nil)
+		return
+	}
+	r.clientRequestHook.Store(&fn)
 }
 
 // RecordRPCType counts one client request by the RPC type it was classified
