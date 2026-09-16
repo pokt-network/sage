@@ -52,6 +52,7 @@ func parse(data []byte) (*Config, error) {
 	cfg.Warnings = append(cfg.Warnings, gatewayModeWarnings(cfg.Gateway.GatewayMode)...)
 	cfg.Warnings = append(cfg.Warnings, ownedAppKeyWarnings(cfg.Gateway)...)
 	cfg.Warnings = append(cfg.Warnings, applyLogLevelEnv(&cfg, os.Getenv(EnvLogLevel))...)
+	cfg.Warnings = append(cfg.Warnings, applyPeerProbeSelf(&cfg)...)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
@@ -257,10 +258,29 @@ func validate(cfg *Config) error {
 	if err := validateAllStaticRoutes(cfg.Gateway); err != nil {
 		return err
 	}
-	if peer := cfg.Gateway.HealthChecks.PeerProbeStream; peer.Enabled && peer.DB == cfg.Redis.DB {
-		return fmt.Errorf("active_health_checks.peer_probe_stream.db (%d) is this instance's own redis_config.db: the leader would skip its own probes", peer.DB)
-	}
 	return nil
+}
+
+// applyPeerProbeSelf turns off a peer_probe_stream that points at this
+// instance's own Redis db, and says so.
+//
+// Reading its own stream as a peer would make the leader skip its own probes,
+// so the block cannot be honoured, and it has one safe reading: no peer. It
+// used to be a startup error, and on 2026-09-15 a canary block copied into the
+// mainnet config crash-looped the new pods for five minutes; the old pods
+// served throughout, but a restart of any of them would have taken mainnet
+// down. Disabled, the instance probes everything itself and runs its own
+// auto-drain engine, which is what it did before the block was written.
+func applyPeerProbeSelf(cfg *Config) []string {
+	peer := &cfg.Gateway.HealthChecks.PeerProbeStream
+	if !peer.Enabled || peer.DB != cfg.Redis.DB {
+		return nil
+	}
+	peer.Enabled = false
+	return []string{fmt.Sprintf(
+		"active_health_checks.peer_probe_stream.db (%d) is this instance's own redis_config.db, so the peer stream is OFF: "+
+			"this instance probes every backend itself and runs its own auto-drain engine. Point db at the other instance's redis_config.db to follow it",
+		peer.DB)}
 }
 
 // knownRPCTypes is what a config may name where an RPC type is expected.

@@ -14,16 +14,6 @@ PATH `origin/main` at `4606957a`, 2026-08-25; new work is on
 
 ## Open (2026-09-15)
 
-- **A peer probe stream that points at the instance's own Redis db should be
-  ignored, not fatal.** Today `config/load.go` refuses to start when
-  `active_health_checks.peer_probe_stream.db` equals `redis_config.db` ("the
-  leader would skip its own probes"). On 2026-09-15 a canary block copied into
-  the mainnet config crash-looped the new pods for five minutes; the old pods
-  served throughout, but any restart of them would have taken mainnet down.
-  The case has one safe reading — no peer — so: a loud startup warning
-  (`Config.Warnings`), the block treated as disabled (probe everything,
-  run the auto-drain engine rather than follow a peer's drains). Keep the
-  other peer errors fatal. About 15 minutes with tests.
 - **Multi-supplier quorum: agreement between live operators is unproven.**
   Built 2026-09-16 behind the `quorum` flag (off); decisions in
   `docs/design/specs/2026-08-31-multi-supplier-quorum-design.md` under "Built".
