@@ -187,7 +187,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	}
 
 	// Block height filter factory (parameterised by sync allowance multiplier).
-	getHeight := qos.HeightGetter(p.store, func(ep cosmosEndpoint) uint64 { return ep.BlockHeight })
+	getHeight := qos.HeightGetter(p.store, func(ep cosmosEndpoint) uint64 { return ep.BlockHeight }, p.consensus.Projection())
 
 	makeBlockFilter := func(allowance uint64) qos.FilterFunc {
 		return qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, allowance))
@@ -277,7 +277,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 // UpdateBlockHeight records a new block height observation for an endpoint and
 // feeds it into the consensus computation.
 func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) {
-	p.store.Update(endpoint, func(ep *cosmosEndpoint) {
+	p.store.ObserveHeight(endpoint, func(ep *cosmosEndpoint) {
 		ep.BlockHeight = height
 	})
 	p.consensus.AddObservation(endpoint, height)

@@ -76,8 +76,8 @@ func TestHydrate_SkipsStaleAndUnstamped(t *testing.T) {
 	if res.Keys != 1 {
 		t.Errorf("loaded %d keys, want only the fresh one", res.Keys)
 	}
-	if res.Skipped != 2 {
-		t.Errorf("skipped %d, want 2 (stale + unstamped)", res.Skipped)
+	if res.Skipped != 2 || res.Stale != 2 {
+		t.Errorf("skipped %d (stale %d), want 2, both stale (stale + unstamped)", res.Skipped, res.Stale)
 	}
 	for _, host := range []string{"https://stale.example.com", "https://unstamped.example.com"} {
 		got, _ := svc.scoreForSelector(context.Background(), "eth", domain.EndpointAddr("supA-"+host), domain.RPCTypeJSONRPC)
@@ -106,6 +106,9 @@ func TestHydrate_DoesNotOverwriteLiveState(t *testing.T) {
 	}
 	if res.Keys != 0 {
 		t.Errorf("loaded %d keys over live state, want 0", res.Keys)
+	}
+	if res.Present != 1 || res.Skipped != 1 {
+		t.Errorf("present %d, skipped %d, want the live key counted as present", res.Present, res.Skipped)
 	}
 	got, _ := svc.scoreForSelector(context.Background(), "eth", ep, domain.RPCTypeJSONRPC)
 	if got != live {
@@ -141,5 +144,21 @@ func TestSplitScoreKey(t *testing.T) {
 				t.Errorf("got (%q, %q), want (%q, %q)", svc, key, tc.svc, tc.key)
 			}
 		})
+	}
+}
+
+// A field scoreKey did not write is counted as unparseable, not as stale.
+func TestHydrate_CountsUnparseableApart(t *testing.T) {
+	store := NewMemoryStorage()
+	stored(t, store, "eth", "https://node1.example.com|json_rpc", 42, time.Minute)
+	if err := store.SetState(context.Background(), "nocolon", State{Score: 9, UpdatedAt: time.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := NewService(store, nil, DefaultServiceConfig()).Hydrate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Keys != 1 || res.Unparseable != 1 || res.Stale != 0 || res.Skipped != 1 {
+		t.Errorf("keys %d, unparseable %d, stale %d, skipped %d; want 1, 1, 0, 1", res.Keys, res.Unparseable, res.Stale, res.Skipped)
 	}
 }

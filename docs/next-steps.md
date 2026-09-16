@@ -42,20 +42,13 @@ baseline the items below are measured against: 200 at 98.21%, 408 at 1.08%,
 zero health-check cycle overruns, six circuit breaks; heap flat at 450-560MB
 across both pods after ~6h.
 
-- **Break the warm line's `skipped` into its causes.** It counts three
-  things — an unparseable key, an entry past the 1h idle TTL, a key already
-  in cache — and on 2026-09-04 it went 11 → 42 across four rolls, which ops
-  had to ask about. Three fields on `HydrateResult` and the line says which.
-- **A time-aware height filter.** The strict filter compares each endpoint's
-  last observed height against perceived minus `sync_allowance`, and on a
-  fast chain most of a pool's spread is the age of the readings (a 120 s
-  probe cycle on bsc is ~160 blocks). Projecting each stored height forward
-  by the chain's block rate before comparing — the chain view already does
-  this for the disagreement metric — would make "behind" mean behind, and
-  retire the allowance bumps below. A design item.
-- **bsc `sync_allowance` 100 → 500-600 (Otto's config).** Against a steady
-  spread of ~250 the strict filter rejects the tail every cycle by
-  construction. robinhood at 3000 sits at its edge (spread 1,200-3,240).
+- **bsc `sync_allowance` 100 → 500-600 (Otto's config): measure before
+  bumping.** Against a steady spread of ~250 the strict filter rejected the
+  tail every cycle by construction, most of it the age of the readings. Since
+  2026-09-16 the filter projects each reading to the head's moment at the
+  chain's block rate (`qos.HeightProjection`), which should remove that part
+  without a bump; read bsc's tier-3 fallbacks on the first image carrying it
+  before changing the allowance. robinhood at 3000 sits at its edge (spread 1,200-3,240).
   The check once it lands: fewer tier-3 fallbacks on bsc,
   `sage_degraded_total{tier="response"}` staying at zero.
 - **Fleet 408s halved at the c30ce90 roll (536 → 228 per 15m), base 86 →

@@ -94,7 +94,7 @@ func (p *Plugin) ParseRequest(_ context.Context, _ *http.Request, body []byte, _
 func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.Payload) (domain.EndpointAddrList, error) {
 	perceived := p.consensus.PerceivedBlock()
 
-	getHeight := qos.HeightGetter(p.store, func(ep solanaEndpoint) uint64 { return ep.BlockHeight })
+	getHeight := qos.HeightGetter(p.store, func(ep solanaEndpoint) uint64 { return ep.BlockHeight }, p.consensus.Projection())
 
 	blockFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance.Load()))
 	// Relaxed tier: twice the allowance.
@@ -116,7 +116,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 
 // UpdateBlockHeight records a block height observation from an endpoint.
 func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) {
-	p.store.Update(endpoint, func(ep *solanaEndpoint) {
+	p.store.ObserveHeight(endpoint, func(ep *solanaEndpoint) {
 		ep.BlockHeight = height
 	})
 	p.consensus.AddObservation(endpoint, height)

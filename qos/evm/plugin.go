@@ -156,7 +156,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	perceived := p.consensus.PerceivedBlock()
 	needsArchival := p.IsArchivalRequest(payloads)
 
-	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber })
+	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, p.consensus.Projection())
 
 	archivalFilter := func(addr domain.EndpointAddr) error {
 		if !needsArchival {
@@ -212,7 +212,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 
 // UpdateBlockHeight records a new block height observation from an endpoint.
 func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) {
-	p.store.Update(endpoint, func(ep *evmEndpoint) {
+	p.store.ObserveHeight(endpoint, func(ep *evmEndpoint) {
 		ep.BlockNumber = height
 	})
 	p.consensus.AddObservation(endpoint, height)
@@ -350,7 +350,7 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		if err != nil {
 			return nil, fmt.Errorf("eth_blockNumber: %w", err)
 		}
-		p.store.Update(endpoint, func(ep *evmEndpoint) {
+		p.store.ObserveHeight(endpoint, func(ep *evmEndpoint) {
 			ep.BlockNumber = height
 		})
 		p.consensus.AddObservation(endpoint, height)
