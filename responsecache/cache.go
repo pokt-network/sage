@@ -4,22 +4,11 @@ package responsecache
 
 import (
 	"container/list"
-	"crypto/sha256"
-	"encoding/hex"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
 )
-
-// CacheStats holds aggregate statistics for the cache.
-type CacheStats struct {
-	Hits      uint64
-	Misses    uint64
-	Size      int
-	Evictions uint64
-}
 
 type entry struct {
 	response *domain.Response
@@ -37,10 +26,6 @@ type Cache struct {
 	// order holds entries in LRU order: front is the oldest (least recently used).
 	order   *list.List
 	maxSize int
-
-	hits      atomic.Uint64
-	misses    atomic.Uint64
-	evictions atomic.Uint64
 }
 
 // NewCache creates a new Cache with the given maximum number of entries.
@@ -65,7 +50,6 @@ func (c *Cache) Get(key string) (*domain.Response, bool) {
 
 	elem, ok := c.entries[key]
 	if !ok {
-		c.misses.Add(1)
 		return nil, false
 	}
 	e := elem.Value.(*entry)
@@ -73,14 +57,11 @@ func (c *Cache) Get(key string) (*domain.Response, bool) {
 	if time.Now().After(e.expiry) {
 		// Lazy expiry eviction.
 		c.removeElement(elem)
-		c.evictions.Add(1)
-		c.misses.Add(1)
 		return nil, false
 	}
 
 	// Promote to most-recently-used.
 	c.order.MoveToBack(elem)
-	c.hits.Add(1)
 	return e.response, true
 }
 
@@ -112,7 +93,6 @@ func (c *Cache) Set(key string, resp *domain.Response, ttl time.Duration) {
 			break
 		}
 		c.removeElement(oldest)
-		c.evictions.Add(1)
 	}
 
 	c.entries[key] = c.order.PushBack(&entry{
@@ -120,32 +100,6 @@ func (c *Cache) Set(key string, resp *domain.Response, ttl time.Duration) {
 		expiry:   time.Now().Add(ttl),
 		key:      key,
 	})
-}
-
-// Key builds a deterministic cache key from a service ID and a list of
-// payloads. The key is a hex-encoded SHA-256 hash of: serviceID + each
-// payload's method name + each payload's raw bytes, all concatenated.
-func Key(serviceID domain.ServiceID, payloads []domain.Payload) string {
-	h := sha256.New()
-	_, _ = h.Write([]byte(serviceID))
-	for _, p := range payloads {
-		_, _ = h.Write([]byte(p.Method()))
-		_, _ = h.Write(p.Bytes())
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// Stats returns a snapshot of the cache statistics.
-func (c *Cache) Stats() CacheStats {
-	c.mu.Lock()
-	size := len(c.entries)
-	c.mu.Unlock()
-	return CacheStats{
-		Hits:      c.hits.Load(),
-		Misses:    c.misses.Load(),
-		Size:      size,
-		Evictions: c.evictions.Load(),
-	}
 }
 
 // removeElement removes an element from both the map and the order list.

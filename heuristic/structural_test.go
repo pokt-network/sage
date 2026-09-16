@@ -68,25 +68,3 @@ func TestIsPlainText(t *testing.T) {
 		})
 	}
 }
-
-func TestIsXML(t *testing.T) {
-	tests := []struct {
-		name string
-		body []byte
-		want bool
-	}{
-		{"xml declaration", []byte(`<?xml version="1.0"?><root/>`), true},
-		{"XML upper", []byte(`<?XML version="1.0"?><root/>`), true},
-		{"xml error", []byte(`<Error><Code>500</Code></Error>`), true},
-		{"html", []byte("<!DOCTYPE html><html></html>"), false},
-		{"json", []byte(`{"a":1}`), false},
-		{"empty", []byte(""), false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := IsXML(tt.body); got != tt.want {
-				t.Errorf("IsXML() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}

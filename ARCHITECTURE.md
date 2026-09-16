@@ -317,7 +317,7 @@ them would degrade endpoint selection — no block heights, no chain ID assertio
 
 - Per-method TTL declared by QoS plugins (e.g., `eth_getTransactionReceipt` = 5min)
 - Cache key: SHA-256 of serviceID + method + raw request payload
-- Hit/miss/eviction statistics exposed via admin API
+- Hits and misses counted in `sage_cache_hits_total` / `sage_cache_misses_total`
 
 ### Request Coalescing (Singleflight)
 

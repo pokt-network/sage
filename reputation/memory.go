@@ -11,9 +11,6 @@ import (
 // ErrStateNotFound is returned when a state key does not exist in storage.
 var ErrStateNotFound = errors.New("state not found")
 
-// ErrScoreNotFound is the former name of ErrStateNotFound.
-var ErrScoreNotFound = ErrStateNotFound
-
 // MemoryStorage is a thread-safe in-memory implementation of Storage.
 type MemoryStorage struct {
 	mu      sync.RWMutex

@@ -112,7 +112,7 @@ func (p *Plugin) ParseRequest(_ context.Context, req *http.Request, body []byte,
 }
 
 // SelectEndpoints filters the pool by how far behind the perceived head an
-// endpoint is, in the tiers qos.Select provides.
+// endpoint is, in the tiers qos.SelectWithKnownHeights provides.
 //
 // Unfiltered when syncAllowance is zero or nothing has reported a height yet:
 // a cold start must not empty a pool, which is the rule every other plugin

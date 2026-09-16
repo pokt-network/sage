@@ -32,7 +32,6 @@ Callers type-assert and skip the feature when it is absent.
 | Interface | What it buys |
 |---|---|
 | `BlockHeightTracker` | per-endpoint height, perceived chain head |
-| `ArchivalDetector` | route historical-state requests to archival nodes |
 | `HealthChecker` | supply the plugin's own health check payloads |
 | `DataExtractor` | pull height / chain ID / sync state out of responses |
 | `CoalescenceClassifier` | mark methods safe to deduplicate in flight |

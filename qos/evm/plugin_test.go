@@ -571,7 +571,6 @@ func TestExtractData_UnknownMethod(t *testing.T) {
 var (
 	_ qos.Plugin                = (*Plugin)(nil)
 	_ qos.BlockHeightTracker    = (*Plugin)(nil)
-	_ qos.ArchivalDetector      = (*Plugin)(nil)
 	_ qos.HealthChecker         = (*Plugin)(nil)
 	_ qos.DataExtractor         = (*Plugin)(nil)
 	_ qos.CoalescenceClassifier = (*Plugin)(nil)
@@ -723,7 +722,7 @@ func TestConfig_Validate(t *testing.T) {
 // proof of archival before serving an archival request excluded every one of
 // them — which is why this pairs an unobserved endpoint with a known-pruned
 // one. Excluding both is indistinguishable from excluding neither at the
-// selection boundary: qos.Select exhausts all three tiers and hands back the
+// selection boundary: qos.SelectWithKnownHeights exhausts all three tiers and hands back the
 // unfiltered list, so the old filter cost a warning per request and changed
 // nothing. Only a set of exactly one discriminates.
 func TestSelectEndpoints_ArchivalUnobservedNotExcluded(t *testing.T) {

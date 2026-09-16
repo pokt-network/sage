@@ -34,9 +34,8 @@ type Observation struct {
 
 // ExtractedData holds parsed fields from a response.
 type ExtractedData struct {
-	BlockHeight  *uint64 `json:"block_height,omitempty"`
-	ChainID      *string `json:"chain_id,omitempty"`
-	IsSyncing    *bool   `json:"is_syncing,omitempty"`
-	IsArchival   *bool   `json:"is_archival,omitempty"`
-	ResponseHash []byte  `json:"response_hash,omitempty"`
+	BlockHeight *uint64 `json:"block_height,omitempty"`
+	ChainID     *string `json:"chain_id,omitempty"`
+	IsSyncing   *bool   `json:"is_syncing,omitempty"`
+	IsArchival  *bool   `json:"is_archival,omitempty"`
 }

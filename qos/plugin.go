@@ -45,14 +45,6 @@ type BlockHeightTracker interface {
 	StartSync(ctx context.Context)
 }
 
-// ArchivalDetector is implemented by plugins that recognise a request for
-// historical state, so selection can prefer endpoints not known to lack it.
-// Whether an endpoint IS archival is the plugin's own tri-state mark, consulted
-// inside SelectEndpoints; nothing outside the plugin asks.
-type ArchivalDetector interface {
-	IsArchivalRequest(payloads []domain.Payload) bool
-}
-
 // RPCTypeClassifier is implemented by a plugin whose chain fronts several
 // protocols on one service and can say which one a request addresses better
 // than the generic detector in relay/middleware/parse.go can. Parse consults

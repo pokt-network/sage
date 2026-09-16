@@ -41,16 +41,6 @@ func TestIsRetryable(t *testing.T) {
 	}
 }
 
-func TestErrorKindOf(t *testing.T) {
-	re := NewRelayError(ErrRateLimit, "429", nil, true)
-	if ErrorKindOf(re) != ErrRateLimit {
-		t.Error("should be ErrRateLimit")
-	}
-	if ErrorKindOf(errors.New("unknown")) != ErrTransport {
-		t.Error("unknown errors should default to ErrTransport")
-	}
-}
-
 // The cause chain belongs in the log, not in a response body. On a gateway
 // with no client authentication, err.Error() hands the operator's own
 // infrastructure to anyone who can send a request.

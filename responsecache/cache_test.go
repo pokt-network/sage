@@ -95,8 +95,8 @@ func TestCache_OverwriteExisting(t *testing.T) {
 		t.Fatalf("expected v2, got %s", got.Body)
 	}
 	// Size should still be 1.
-	if c.Stats().Size != 1 {
-		t.Fatalf("expected size 1, got %d", c.Stats().Size)
+	if len(c.entries) != 1 {
+		t.Fatalf("expected size 1, got %d", len(c.entries))
 	}
 }
 
@@ -111,66 +111,5 @@ func TestCache_ZeroOrNegativeTTL_NotStored(t *testing.T) {
 	c.Set("k", makeResponse("v"), -time.Second)
 	if _, ok := c.Get("k"); ok {
 		t.Fatal("expected miss: negative TTL should not store")
-	}
-}
-
-func TestCache_Stats(t *testing.T) {
-	c := NewCache(2)
-
-	// Two misses.
-	c.Get("x")
-	c.Get("y")
-
-	c.Set("x", makeResponse("x"), time.Minute)
-	c.Set("y", makeResponse("y"), time.Minute)
-
-	// Two hits.
-	c.Get("x")
-	c.Get("y")
-
-	// One eviction: add a third entry to a cache with maxSize=2.
-	c.Set("z", makeResponse("z"), time.Minute)
-
-	stats := c.Stats()
-	if stats.Misses != 2 {
-		t.Fatalf("expected 2 misses, got %d", stats.Misses)
-	}
-	if stats.Hits != 2 {
-		t.Fatalf("expected 2 hits, got %d", stats.Hits)
-	}
-	if stats.Evictions != 1 {
-		t.Fatalf("expected 1 eviction, got %d", stats.Evictions)
-	}
-	if stats.Size != 2 {
-		t.Fatalf("expected size 2, got %d", stats.Size)
-	}
-}
-
-func TestKey_Determinism(t *testing.T) {
-	svc := domain.ServiceID("eth")
-	p := domain.NewPayload([]byte(`{"method":"eth_blockNumber","params":[]}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
-
-	k1 := Key(svc, []domain.Payload{p})
-	k2 := Key(svc, []domain.Payload{p})
-	if k1 != k2 {
-		t.Fatalf("Key is not deterministic: %s vs %s", k1, k2)
-	}
-}
-
-func TestKey_DifferentServicesDiffer(t *testing.T) {
-	p := domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
-	k1 := Key("eth", []domain.Payload{p})
-	k2 := Key("poly", []domain.Payload{p})
-	if k1 == k2 {
-		t.Fatal("keys for different services should differ")
-	}
-}
-
-func TestKey_DifferentPayloadsDiffer(t *testing.T) {
-	svc := domain.ServiceID("eth")
-	p1 := domain.NewPayload([]byte(`params1`), domain.RPCTypeJSONRPC, "m")
-	p2 := domain.NewPayload([]byte(`params2`), domain.RPCTypeJSONRPC, "m")
-	if Key(svc, []domain.Payload{p1}) == Key(svc, []domain.Payload{p2}) {
-		t.Fatal("keys for different payloads should differ")
 	}
 }

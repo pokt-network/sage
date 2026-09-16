@@ -90,14 +90,8 @@ var defaultImpacts = map[SignalType]int{
 	SignalFatalError:    -50,
 }
 
-// DefaultImpact returns the default score impact for a signal type.
-// Unknown signal types return 0.
-func DefaultImpact(signalType SignalType) int {
-	return defaultImpacts[signalType]
-}
-
 // SignalImpacts is the score delta per surviving signal type. Zero means the
-// default for that type (DefaultImpact), so an operator sets only the ones
+// default for that type (defaultImpacts), so an operator sets only the ones
 // they mean to move.
 type SignalImpacts struct {
 	Success, MinorError, MajorError, CriticalError, FatalError int

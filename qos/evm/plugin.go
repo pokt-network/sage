@@ -61,7 +61,6 @@ var coalescableMethods = map[string]bool{
 // Plugin is the EVM QoS plugin. It implements:
 //   - qos.Plugin
 //   - qos.BlockHeightTracker
-//   - qos.ArchivalDetector
 //   - qos.HealthChecker
 //   - qos.DataExtractor
 //   - qos.ChainViewer
@@ -144,7 +143,7 @@ func (p *Plugin) ParseRequest(_ context.Context, _ *http.Request, body []byte, r
 
 // SelectEndpoints filters the candidate list by block height and archival capability.
 //
-// Three degradation tiers (via qos.Select):
+// Three degradation tiers (via qos.SelectWithKnownHeights):
 //   - Tier 1: block height within syncAllowance
 //   - Tier 2: block height within 2×syncAllowance
 //   - Tier 3: no block height filter (archival filter still applied if needed)
@@ -241,7 +240,7 @@ func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
 	return extractBlockNumber(response)
 }
 
-// --- qos.ArchivalDetector ---
+// --- Archival routing ---
 
 // IsArchivalRequest returns true if any payload in the batch requests archival state.
 func (p *Plugin) IsArchivalRequest(payloads []domain.Payload) bool {

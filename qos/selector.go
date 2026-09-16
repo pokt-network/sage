@@ -13,16 +13,12 @@ type SelectResult struct {
 	Tier      int
 }
 
-// Select applies filters to the endpoint list with tiered degradation.
-//
-// Degradation tiers:
+// SelectWithKnownHeights applies filters to the endpoint list with tiered
+// degradation:
 //   - Tier 1: apply all filters normally
 //   - Tier 2: relax sync allowance by 2x (re-run filters with relaxedFilters)
 //   - Tier 3: skip block height filter entirely (only run non-block-height filters)
 //   - If still empty after tier 3: return original list (degraded=true, tier=3)
-//
-// The relaxedFilters and nonBlockHeightFilters parameters support the tiered fallback.
-// If they are nil, Select falls back to the original list when tier 1 yields nothing.
 //
 // fallbackRanker, when non-nil, narrows the *degraded* fallback sets (tier 3 and
 // the all-exhausted case) to the least-stale endpoints. Block-height filtering
@@ -30,41 +26,8 @@ type SelectResult struct {
 // from which downstream reputation selection picks — can include arbitrarily
 // stale endpoints. Tiers 1 and 2 are left untouched (they already passed a
 // block-height bound). Pass nil to keep the full unranked fallback.
-func Select(
-	endpoints domain.EndpointAddrList,
-	filters []FilterFunc,
-	relaxedFilters []FilterFunc,
-	nonBlockHeightFilters []FilterFunc,
-	fallbackRanker func(domain.EndpointAddrList) domain.EndpointAddrList,
-) SelectResult {
-	if len(endpoints) == 0 {
-		return SelectResult{Endpoints: nil, Degraded: false, Tier: 0}
-	}
-
-	// Tier 1: all filters.
-	if result := applyFilters(endpoints, filters); len(result) > 0 {
-		return SelectResult{Endpoints: result, Degraded: false, Tier: 1}
-	}
-
-	// Tier 2: relaxed sync allowance.
-	if relaxedFilters != nil {
-		if result := applyFilters(endpoints, relaxedFilters); len(result) > 0 {
-			return SelectResult{Endpoints: result, Degraded: true, Tier: 2}
-		}
-	}
-
-	// Tier 3: skip block height filters entirely.
-	if nonBlockHeightFilters != nil {
-		if result := applyFilters(endpoints, nonBlockHeightFilters); len(result) > 0 {
-			return SelectResult{Endpoints: rankFallback(result, fallbackRanker), Degraded: true, Tier: 3}
-		}
-	}
-
-	// All tiers exhausted: return original list.
-	return SelectResult{Endpoints: rankFallback(endpoints, fallbackRanker), Degraded: true, Tier: 3}
-}
-
-// SelectWithKnownHeights is Select with one more rule, for the height
+//
+// One more rule, for the height
 // filters every plugin builds: a tier-1 or tier-2 set made only of endpoints
 // whose height is UNKNOWN, while some endpoint's height is known, is not a
 // pass. Selection falls through to the next tier, and tier 3 ranks the known
@@ -170,7 +133,7 @@ func rankFallback(eps domain.EndpointAddrList, ranker func(domain.EndpointAddrLi
 	return eps
 }
 
-// LeastStaleFallback returns a fallback ranker for qos.Select that narrows a
+// LeastStaleFallback returns a fallback ranker for SelectWithKnownHeights that narrows a
 // degraded candidate set to its least-stale band: the endpoints whose observed
 // block height is closest to perceived. All endpoints tied at the minimum lag
 // are kept (so downstream load-spreading still has room to distribute), while

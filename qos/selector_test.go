@@ -7,6 +7,10 @@ import (
 	"github.com/pokt-network/sage/domain"
 )
 
+// allKnown reports every endpoint's height as known, under which
+// SelectWithKnownHeights is plain tiered filtering.
+func allKnown(domain.EndpointAddr) (uint64, bool) { return 1, true }
+
 func TestSelect_NormalFiltering(t *testing.T) {
 	eps := domain.EndpointAddrList{"a", "b", "c"}
 
@@ -20,7 +24,7 @@ func TestSelect_NormalFiltering(t *testing.T) {
 		},
 	}
 
-	result := Select(eps, filters, nil, nil, nil)
+	result := SelectWithKnownHeights(eps, allKnown, filters, nil, nil, nil)
 	if result.Degraded {
 		t.Fatal("should not be degraded")
 	}
@@ -50,7 +54,7 @@ func TestSelect_TierCascade(t *testing.T) {
 		},
 	}
 
-	result := Select(eps, strictFilters, relaxedFilters, nil, nil)
+	result := SelectWithKnownHeights(eps, allKnown, strictFilters, relaxedFilters, nil, nil)
 	if !result.Degraded {
 		t.Fatal("expected degraded")
 	}
@@ -77,7 +81,7 @@ func TestSelect_FallbackToTier3(t *testing.T) {
 		},
 	}
 
-	result := Select(eps, rejectAll, rejectAll, allowA, nil)
+	result := SelectWithKnownHeights(eps, allKnown, rejectAll, rejectAll, allowA, nil)
 	if !result.Degraded {
 		t.Fatal("expected degraded")
 	}
@@ -96,7 +100,7 @@ func TestSelect_FallbackToOriginal(t *testing.T) {
 		func(_ domain.EndpointAddr) error { return fmt.Errorf("nope") },
 	}
 
-	result := Select(eps, rejectAll, rejectAll, rejectAll, nil)
+	result := SelectWithKnownHeights(eps, allKnown, rejectAll, rejectAll, rejectAll, nil)
 	if !result.Degraded {
 		t.Fatal("expected degraded")
 	}
@@ -109,7 +113,7 @@ func TestSelect_FallbackToOriginal(t *testing.T) {
 }
 
 func TestSelect_EmptyInput(t *testing.T) {
-	result := Select(nil, nil, nil, nil, nil)
+	result := SelectWithKnownHeights(nil, allKnown, nil, nil, nil, nil)
 	if result.Endpoints != nil {
 		t.Fatal("expected nil for empty input")
 	}
@@ -120,7 +124,7 @@ func TestSelect_EmptyInput(t *testing.T) {
 
 func TestSelect_NoFilters(t *testing.T) {
 	eps := domain.EndpointAddrList{"a", "b"}
-	result := Select(eps, nil, nil, nil, nil)
+	result := SelectWithKnownHeights(eps, allKnown, nil, nil, nil, nil)
 	if len(result.Endpoints) != 2 {
 		t.Fatalf("expected 2, got %d", len(result.Endpoints))
 	}
@@ -195,7 +199,7 @@ func TestSelect_FallbackRankerNarrowsDegradedSet(t *testing.T) {
 	}
 
 	// All tiers reject → final fallback. Ranker must narrow to the freshest.
-	result := Select(eps, rejectAll, rejectAll, rejectAll, LeastStaleFallback(getHeight, 100))
+	result := SelectWithKnownHeights(eps, getHeight, rejectAll, rejectAll, rejectAll, LeastStaleFallback(getHeight, 100))
 	if !result.Degraded || result.Tier != 3 {
 		t.Fatalf("expected degraded tier 3, got degraded=%v tier=%d", result.Degraded, result.Tier)
 	}
@@ -277,7 +281,7 @@ func TestSelectWithKnownHeights_UnknownOnlySetIsNotAPass(t *testing.T) {
 	relaxed := []FilterFunc{BlockHeightFilter(getHeight, MinAllowedHeight(perceived, 10))}
 
 	// The old rule, for contrast: tier 1 is exactly the dead host.
-	if old := Select(eps, strict, relaxed, nil, LeastStaleFallback(getHeight, perceived)); len(old.Endpoints) != 1 || old.Endpoints[0] != "dead" || old.Degraded {
+	if old := SelectWithKnownHeights(eps, allKnown, strict, relaxed, nil, LeastStaleFallback(getHeight, perceived)); len(old.Endpoints) != 1 || old.Endpoints[0] != "dead" || old.Degraded {
 		t.Fatalf("precondition: Select should hand back only the dead host as a non-degraded tier 1, got %+v", old)
 	}
 
