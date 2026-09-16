@@ -347,7 +347,7 @@ equivalent.
 | Key | Type | Description |
 |---|---|---|
 | `enabled` | boolean | Turns the feed on. Off by default: trusting another instance's verdicts is a decision, not a default. |
-| `db` | integer | The Redis logical database the other instance publishes in (its redis_config.db), on this instance's redis_config server. It must differ from this instance's own db: reading its own stream as a peer would make the leader skip its own probes. |
+| `db` | integer | The Redis logical database the other instance publishes in (its redis_config.db), on this instance's redis_config server. It must differ from this instance's own db: reading its own stream as a peer would make the leader skip its own probes, so a block naming its own db is turned off with a startup warning rather than refused. |
 | `max_age` | duration | How long one of the other's results stands in for this instance's own check. Zero means the check's own interval, which is the age at which this instance would have probed anyway. |
 
 #### `gateway_config.active_health_checks.local[]`
