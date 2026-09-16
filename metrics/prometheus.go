@@ -64,6 +64,9 @@ type Recorder struct {
 	relayMinerErrors      *prometheus.CounterVec
 	oversizedResponses    *prometheus.CounterVec
 	responseBytes         *prometheus.HistogramVec
+	batchPayloads         *prometheus.HistogramVec
+	batchSubRelays        prometheus.Gauge
+	batchResponseBytes    prometheus.Gauge
 	autoDrains            *prometheus.CounterVec
 	methodBlockEvents     *prometheus.CounterVec
 	reputationAttempts    *prometheus.CounterVec
@@ -254,6 +257,25 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id"},
 		),
+		batchPayloads: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "batch_payloads",
+				Help:      "Payloads per multi-payload client request, by service, observed before the concurrency_config.max_batch_payloads cap so a refused batch is counted too. One batch fans out into this many upstream relays, each with its own retry and hedge; this is the distribution that says where the cap belongs.",
+				Buckets:   []float64{2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000},
+			},
+			[]string{"service_id"},
+		),
+		batchSubRelays: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "batch_subrelays_in_flight",
+			Help:      "Batch sub-relays running now, across every service. Each holds a slot of the process-wide concurrency_config.max_concurrent_relays budget while that budget is on, so this against the configured value is the budget's occupancy. Single-payload requests do not count.",
+		}),
+		batchResponseBytes: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "batch_response_bytes_in_flight",
+			Help:      "Sub-relay response bytes held by batches that have not yet returned, across every service. Nothing bounds this but max_batch_payloads × the response ceiling, and the merged response each batch builds at the end is not counted, so the heap cost at a batch's completion is about twice its share of this.",
+		}),
 		codespaces: cappedLabel(maxCodespaceLabels),
 		// No domain label on purpose: the gauge above names the host, and a
 		// counter keyed on host is the series growth PATH's cardinality
@@ -386,6 +408,9 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.relayMinerErrors,
 		r.oversizedResponses,
 		r.responseBytes,
+		r.batchPayloads,
+		r.batchSubRelays,
+		r.batchResponseBytes,
 		r.autoDrains,
 		r.methodBlockEvents,
 		r.reputationAttempts,
@@ -483,6 +508,22 @@ func (r *Recorder) SetClientRequestHook(fn func(domain.ServiceID, int)) {
 // Satisfies the protocol's supplier metrics.
 func (r *Recorder) RecordResponseSize(serviceID domain.ServiceID, bytes int) {
 	r.responseBytes.WithLabelValues(r.services.serviceValue(serviceID)).Observe(float64(bytes))
+}
+
+// RecordBatchPayloads observes one batch's payload count. Satisfies
+// middleware.BatchRecorder.
+func (r *Recorder) RecordBatchPayloads(serviceID domain.ServiceID, n int) {
+	r.batchPayloads.WithLabelValues(r.services.serviceValue(serviceID)).Observe(float64(n))
+}
+
+// AddBatchSubRelays moves the batch sub-relays in flight gauge.
+func (r *Recorder) AddBatchSubRelays(delta int) {
+	r.batchSubRelays.Add(float64(delta))
+}
+
+// AddBatchResponseBytes moves the batch response bytes in flight gauge.
+func (r *Recorder) AddBatchResponseBytes(delta int64) {
+	r.batchResponseBytes.Add(float64(delta))
 }
 
 // RecordRPCType counts one client request by the RPC type it was classified

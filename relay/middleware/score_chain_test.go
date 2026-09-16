@@ -123,7 +123,7 @@ func buildChain(rep reputation.Service, b *scriptedBackend, hedgeDelay time.Dura
 	h = Hedge(flags, retryCfg)(h)
 	h = Retry(flags, retryCfg)(h)
 	h = Observe(flags, nil, rep, nil)(h)
-	h = Batch(fixedLimits(0, 0), flags, rep)(h)
+	h = Batch(fixedLimits(0, 0), flags, rep, nil)(h)
 	return h
 }
 
