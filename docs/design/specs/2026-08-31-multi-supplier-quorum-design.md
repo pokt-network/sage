@@ -1,6 +1,8 @@
 # Multi-supplier quorum / consensus relays
 
-*2026-08-31. Status: proposed / scoping. Prompted by Otto.*
+*2026-08-31. Status: built 2026-09-16 behind the `quorum` flag (off), not yet
+verified against live suppliers. Prompted by Otto. What the build changed is
+under "Built" at the end; where it disagrees with the sections above, it wins.*
 
 ## Goal
 
@@ -172,6 +174,55 @@ background version, because the N were queried simultaneously).
 
 Still to pin during build: the exact collect-envelope JSON shape and the initial
 immutable-method allowlist contents.
+
+## Built (2026-09-16)
+
+`relay/middleware/quorum.go`, `qos.ImmutableClassifier` (EVM:
+`qos/evm/immutable.go`), metrics `sage_quorum_requests_total{outcome}` and
+`sage_quorum_dissent_total`. Decided while building, with Otto:
+
+6. **Arms run through the ordinary inner chain**, not a quorum-owned
+   select→send. Each arm is a clone marked `QuorumArm` whose candidate list is
+   one operator's endpoints; selection, circuit breaking, method blocks,
+   scoring, the heuristic and metrics apply per arm, and cache, singleflight,
+   retry and hedge pass through on an arm. The middleware sits right after
+   `timeout`, before `cache`, with `mustPrecede` rules for each of those.
+7. **No cross-validation.** The package §1 and §6 relied on was deleted on
+   2026-09-16. The vote carries its own digest: status plus the body
+   re-encoded with sorted keys, numbers as written, and the JSON-RPC `id` and
+   `jsonrpc` members dropped.
+8. **A dissenter is counted, not scored** (`sage_quorum_dissent_total`). Its
+   own attempt is already graded on its merits; whether being outvoted should
+   cost more stays undecided.
+9. **Immutable allowlist.** EVM: `eth_chainId`, `eth_getTransactionByHash`,
+   `eth_getTransactionReceipt`, `eth_getBlockByHash`, `eth_getBlockByNumber`
+   with a hex number, `eth_getLogs` with a `blockHash`. Cosmos (added the same
+   night): CometBFT `block`, `header`, `commit`, `block_results`,
+   `validators` at an explicit height and `block_by_hash`, `header_by_hash`,
+   `tx` by hash, on either face (JSON-RPC POST or GET with a query); REST
+   `cosmos/base/tendermint/v1beta1/{blocks,validatorsets}/{height}`,
+   `cosmos/tx/v1beta1/txs/{hash}` and `txs/block/{height}`. `abci_query` at a
+   height is left out: a pruned node answers it with an error, and the vote
+   would count pruning. Solana and the JSON-height chains have no classifier,
+   so every quorum request there is collect mode (`X-Quorum-Mode: collect`).
+10. **Not applied** (served as an ordinary request, `X-Quorum-Skipped` says
+    why): the flag off (`disabled`), a batch (`batch`: a quorum per item
+    multiplies the fan-out that OOMed mainnet), gRPC (`rpc_type`). An unknown
+    mode is a 400.
+11. **Envelope:** `{"quorum":{"count":N,"responses":[{"operator","http_status",
+    "body","error"}]}}` in operator-ranking order; an arm still running at the
+    deadline is listed with an error. **Operators, not supplier addresses**:
+    SAGE sends no supplier identity to clients (`docs/path-compat.md`).
+12. **N:** even counts round down (4 → 3), so an odd request never buys more
+    relays than asked, and so does an even number of operators above two.
+    Operators with an endpoint reputation vouches for (`Vouched`: scored and
+    above probation) rank first, by their best vouched score; unmeasured
+    operators only fill the arms left. Ranking on raw best score kept three
+    dead beta operators in the top three for 200 requests.
+    An answer counts once per operator, because an arm whose operator's
+    endpoints were all pruned is handed the full pool by `select_endpoint`.
+13. **Not built:** `services[].quorum` config defaults; the headers are the
+    only trigger.
 
 ## Not in scope
 

@@ -146,7 +146,6 @@ func IsRetryable(err error) bool {
 	return false
 }
 
-
 // UpstreamStatusError is the cause carried when a relay miner's HTTP layer
 // answered with a non-2xx status before producing a signed RelayResponse:
 // its own 502 or 503, a 413 for a payload it will not take, a 429. The body

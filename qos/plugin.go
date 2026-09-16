@@ -194,6 +194,17 @@ type CoalescenceClassifier interface {
 	IsCoalescable(method string) bool
 }
 
+// ImmutableClassifier is implemented by plugins that can say a request's answer
+// cannot change once it exists: a transaction by hash, a block by hash or by
+// explicit number. Any two synced nodes give the same answer to such a request,
+// so the quorum middleware lets a majority of byte-identical answers decide it.
+// A request the plugin cannot vouch for — anything at "latest", anything
+// pending — is answered in collect mode instead, since nodes a block apart
+// legitimately disagree on it.
+type ImmutableClassifier interface {
+	IsImmutable(payload domain.Payload) bool
+}
+
 // CachePolicy is implemented by plugins that control per-method response caching.
 type CachePolicy interface {
 	CacheTTL(method string, params []byte, response []byte) time.Duration

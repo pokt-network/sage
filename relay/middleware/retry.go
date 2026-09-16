@@ -52,7 +52,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 	}
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) (retErr error) {
-			if !flags.IsEnabled(ctx.Ctx, featureflag.FlagRetry, ctx.ServiceID) {
+			if ctx.QuorumArm || !flags.IsEnabled(ctx.Ctx, featureflag.FlagRetry, ctx.ServiceID) {
 				return next.HandleRelay(ctx)
 			}
 

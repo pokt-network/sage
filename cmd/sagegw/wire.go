@@ -704,6 +704,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWValidate, func() relay.Middleware {
 		return middleware.Validate(cfg.Gateway.AllServices())
 	})
+	mwReg.Register(relay.MWQuorum, func() relay.Middleware {
+		return middleware.Quorum(flags, proto, repSvc, recorder)
+	})
 	mwReg.Register(relay.MWCache, func() relay.Middleware { return middleware.CacheWithRecorder(flags, respCache, recorder) })
 	mwReg.Register(relay.MWBatch, func() relay.Middleware {
 		return middleware.Batch(func() (int, int) {

@@ -33,21 +33,22 @@ HTTP Request
           [Parse]    — extract service ID, detect RPC type, load QoS plugin
             [Validate]     — check RPC type is supported by service
               [Timeout]    — per-request deadline (after Parse: resolved per service)
-                [Cache]    — LRU response cache for finalized data
-                  [Batch]  — decompose batch → fan-out → recombine
-                    [Singleflight] — coalesce identical concurrent requests
-                      [Observe]    — async reputation + deep parsing
-                        [Retry]  — retry with endpoint rotation
-                          [Hedge]    — race primary vs delayed secondary
-                            [Metrics]  — one sage_relay_total + latency observation per attempt
-                              [Affinity] — sticky supplier after writes
-                                [CircuitBreak] — skip broken domains
-                                [MethodBlocks] — skip hosts blocked for this method
-                                  [SelectEndpoint] — reputation + QoS filtering
-                                    [Score]        — one reputation signal per attempt
-                                      [DebugLog]   — full request/response logging
-                                        [Heuristic] — response quality analysis
-                                            [SendRelay] — sign, send, validate
+                [Quorum]   — N operators at once when asked by header (flag, off by default)
+                  [Cache]    — LRU response cache for finalized data
+                    [Batch]  — decompose batch → fan-out → recombine
+                      [Singleflight] — coalesce identical concurrent requests
+                        [Observe]    — async reputation + deep parsing
+                          [Retry]  — retry with endpoint rotation
+                            [Hedge]    — race primary vs delayed secondary
+                              [Metrics]  — one sage_relay_total + latency observation per attempt
+                                [Affinity] — sticky supplier after writes
+                                  [CircuitBreak] — skip broken domains
+                                  [MethodBlocks] — skip hosts blocked for this method
+                                    [SelectEndpoint] — reputation + QoS filtering
+                                      [Score]        — one reputation signal per attempt
+                                        [DebugLog]   — full request/response logging
+                                          [Heuristic] — response quality analysis
+                                              [SendRelay] — sign, send, validate
 ```
 
 Most middleware can be **enabled/disabled at runtime** per-service via feature flags (Redis-backed, no redeploy needed). The structural ones — request_id, client_ip, parse, validate, timeout, metrics, send_relay — always run; they are what makes a request a relay, not a policy about it. Every link where one middleware reads a field another writes is a `mustPrecede` rule in `relay/chain_order.go`, so a YAML chain cannot silently disable a reader by placing it before its writer.
@@ -257,6 +258,7 @@ re-break as a repeat offender.
 | operator_aware_selection | on | Per-operator concentration cap; operator-aware retry/hedge |
 | debug_log | off | Per-attempt request/response logging at debug level: verb, path, method, the URL dialed for the RPC type, bodies, status, error |
 | shadow_mode | off | Process traffic but don't serve responses |
+| quorum | off | A request carrying `Target-Quorum-Count` / `Target-Quorum-Mode` goes to up to 9 operators at once and is answered by majority (immutable requests) or with every answer in an envelope. Each such request costs N relays; turn on per service only once the edge strips the headers from clients that may not spend that |
 | request_sampler | on | Per-service request-shape sampling for diversity metrics and the admin request-sample routes |
 | scoring_v2 | on | Per-attempt reputation scoring: the score middleware records each attempt against its own endpoint; batch collapses to one signal per endpoint; Observe records nothing. Off restores once-per-request scoring in Observe |
 

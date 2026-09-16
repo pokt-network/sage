@@ -179,10 +179,10 @@ func New(
 const defaultMaxHeaderBytes = 2_000_000
 
 // corsAllowHeaders is what a browser may send to /v1: the JSON-RPC content
-// type, the two headers SAGE itself reads, and the two PATH allows so a dapp
+// type, the headers SAGE itself reads, and the two PATH allows so a dapp
 // written against it keeps working (Authorization for portal keys,
 // solana-client for the Solana web3 library).
-const corsAllowHeaders = "Content-Type, Target-Service-Id, RPC-Type, Authorization, solana-client"
+const corsAllowHeaders = "Content-Type, Target-Service-Id, RPC-Type, Target-Quorum-Count, Target-Quorum-Mode, Authorization, solana-client"
 
 // setCORS grants the request's own origin, as PATH does: this gateway has no
 // notion of a client, so it has no basis on which to refuse one. The grant is
