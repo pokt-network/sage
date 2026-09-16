@@ -19,7 +19,6 @@ import (
 	"github.com/pokt-network/sage/blocklist"
 	"github.com/pokt-network/sage/circuitbreaker"
 	"github.com/pokt-network/sage/config"
-	"github.com/pokt-network/sage/crossvalidation"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/drain"
 	"github.com/pokt-network/sage/featureflag"
@@ -69,7 +68,6 @@ type App struct {
 	Protocol *shannon.Protocol
 	RepSvc   reputation.Service
 	ObsQueue *observe.Queue
-	CrossVal *crossvalidation.Validator
 	// Config is the current config snapshot. Build stores the boot config here;
 	// a reload (POST /admin/reload, not yet implemented) swaps it with
 	// Config.Store, and every closure that resolves a per-service knob
@@ -120,8 +118,8 @@ type App struct {
 	// with the admin API's on top. A reload goes through it.
 	CheckOverrides *healthcheck.CheckOverrides
 	Redis          *redis.Client
-	Metrics   *metrics.Recorder
-	Logger    *slog.Logger
+	Metrics        *metrics.Recorder
+	Logger         *slog.Logger
 	// Overrides is the store the runtime seams persist through; see package
 	// override. cmd/sagegw watches the log-level key on it.
 	Overrides override.Store
@@ -494,12 +492,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// 8. Response cache
 	respCache := responsecache.NewCache(10000)
 
-	// 9. Cross-validation
-	crossVal := crossvalidation.NewValidator(logger)
-	crossVal.Start(ctx)
-	app.CrossVal = crossVal
-
-	// 10. Metrics recorder
+	// 9. Metrics recorder
 	recorder := metrics.NewRecorder(serviceIDsFrom(cfg))
 	app.Metrics = recorder
 
@@ -625,7 +618,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		},
 	)
 
-	// 11. Per-service config functions.
+	// 10. Per-service config functions.
 	//
 	// Each reads the config value and then lets the tuning store override it,
 	// which is what makes a knob changeable without a restart: the middlewares
@@ -671,7 +664,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 	timeoutFn := newTimeoutFn(app.Config.Load, tuningStore)
 
-	// 12. Build middleware chain.
+	// 11. Build middleware chain.
 	//
 	// Each middleware registers under its canonical name; the chain is then
 	// composed in the order the config asks for (gateway_config.middleware_chain),
@@ -722,9 +715,6 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWObserve, func() relay.Middleware {
 		return middleware.Observe(flags, obsQueue, repSvc, sampler)
 	})
-	mwReg.Register(relay.MWCrossValidate, func() relay.Middleware {
-		return middleware.CrossValidate(flags, crossVal)
-	})
 	mwReg.Register(relay.MWRetry, func() relay.Middleware {
 		return middleware.RetryWithRecorder(flags, retryFn, recorder, middleware.RetryVouchedBy(repSvc))
 	})
@@ -774,7 +764,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		return nil, fmt.Errorf("build middleware chain: %w", err)
 	}
 
-	// 13. Health checks
+	// 12. Health checks
 	leader = healthcheck.NewLeaderElector(redisClient, logger)
 	leader.Start(ctx)
 	app.Leader = leader
@@ -957,7 +947,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 	app.HealthExe = healthExe
 
-	// 14. External block height fetchers. A trusted outside height is a
+	// 13. External block height fetchers. A trusted outside height is a
 	// FLOOR under the perceived head, not one more endpoint's vote: fed in as
 	// an observation from a fake endpoint named "external" — which is what
 	// this did until 2026-09-04 — it was outvoted by the pool it was meant to
@@ -982,7 +972,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	externalSources.SetOverrides(overrides)
 	externalSources.Start(ctx)
 
-	// 15. WebSocket relayer — single public entry point for WS upgrades.
+	// 14. WebSocket relayer — single public entry point for WS upgrades.
 	// Requires the concrete Shannon protocol (per-frame signing); in mock mode
 	// it stays nil and the router answers WS upgrades with 503.
 	var wsRelayer router.WebSocketOpener
@@ -1008,7 +998,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		app.wsConnections = relayer
 	}
 
-	// 16. Admin API + Router
+	// 15. Admin API + Router
 	//
 	// endpoints is proto, which already satisfies protocol.EndpointProvider
 	// for the relay chain — the same value the middleware chain's

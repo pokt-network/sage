@@ -341,14 +341,14 @@ the selector (reputation/selector) when picked up.
 None blocking. The mechanical items from the scoring v2 and admin passes
 landed on 2026-08-29; what is left needs a decision.
 
-- **Cross-validation is report-only, by decision on 2026-09-04.** The
-  `cross_validation` flag defaults on and the validator records digests and
-  logs outliers; nothing feeds reputation or the blocks. Making it act needs
-  a design that says which of three disagreeing endpoints is wrong (majority
-  of digests is not it: two lagging nodes outvote one fresh one on a moving
-  chain), what signal the loser gets, and how a JSON-RPC error body that is
-  the chain's own answer is kept out of the digest. Until then the flag is a
-  logging switch and the docs say so.
+- **Cross-validation was deleted on 2026-09-16** after two weeks as a
+  report-only logging switch nothing read. A version that acts needs a design
+  that says which of three disagreeing endpoints is wrong (majority of digests
+  is not it: two lagging nodes outvote one fresh one on a moving chain), what
+  signal the loser gets, and how a JSON-RPC error body that is the chain's own
+  answer is kept out of the digest. The multi-supplier quorum spec
+  (`docs/design/specs/2026-08-31-multi-supplier-quorum-design.md`) is the
+  place for that; the removed digest window is in git history.
 - **Follower reputation never re-reads Redis after boot**, by decision on
   2026-09-04: probe results converge through the `sage:probes` stream, and
   traffic-derived scores stay per replica for the pod's lifetime. Revisit

@@ -29,8 +29,7 @@ the source of truth for the design and the reasoning behind it.
   suppliers.
 - **Circuit breaker**, with `ShouldRetry` and `ShouldCircuitBreak` kept
   independent so a retry can never escalate to a domain-wide lockout.
-- **Cross-validation**, **response caching**, and **request coalescing
-  (singleflight)**.
+- **Response caching** and **request coalescing (singleflight)**.
 
 ### Added — transports (Shannon RPC types)
 
@@ -1163,6 +1162,13 @@ the source of truth for the design and the reasoning behind it.
   executor now logs one WARN per cycle until it is warm, carrying the coverage
   count, the threshold, and the services still awaited (bounded to ten, with a
   count of the rest). It stops the moment the pod warms.
+- **Removed: the `cross_validate` middleware and the `cross_validation`
+  flag.** Report-only since 2026-09-04: it hashed every response under one
+  process-wide mutex and logged majority outliers at DEBUG, which production
+  levels suppress, and nothing acted on them. Its digest windows were keyed on
+  the client's method string and never pruned, so a client cycling method names
+  grew them without bound. A `middleware_chain` naming `cross_validate` is now
+  a startup error; a `feature_flags` entry for it is a startup warning.
 
 ### Added — config & compatibility
 

@@ -10,7 +10,6 @@ const (
 	FlagCircuitBreaker      = "circuit_breaker"
 	FlagSingleflight        = "singleflight"
 	FlagCache               = "cache"
-	FlagCrossValidation     = "cross_validation"
 	FlagHeuristic           = "heuristic"
 	FlagObservationPipeline = "observation_pipeline"
 	FlagHealthChecks        = "health_checks"
@@ -113,7 +112,6 @@ var DefaultFlags = map[string]bool{
 	FlagCircuitBreaker:      true,
 	FlagSingleflight:        true,
 	FlagCache:               true,
-	FlagCrossValidation:     true,
 	FlagHeuristic:           true,
 	FlagObservationPipeline: true,
 	FlagHealthChecks:        true,
