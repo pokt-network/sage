@@ -64,8 +64,15 @@ type QuorumRecorder interface {
 // endpoints, run through the rest of the chain: selection, circuit breaking,
 // method blocks, scoring, the heuristic and metrics all apply to it as to any
 // attempt, while cache, singleflight, retry and hedge pass through. Operators
-// are ranked by their best endpoint's score and the top N taken, N odd, 3 to
-// 9, and never more than the operators there are.
+// are ranked on measured evidence (below) and the top N taken, N odd, 3 to 9,
+// and never more than the operators there are.
+//
+// Operators with an endpoint reputation vouches for — scored, and above
+// probation — are ranked ahead of those without one, by their best vouched
+// score; the unmeasured only fill arms the measured cannot. Ranking every
+// operator by its best raw score put three dead beta operators in the top
+// three for 200 requests running: an operator with many endpoints nothing has
+// scored always has one at the initial score.
 //
 // Consensus mode returns the first answer a majority of arms agree on, as the
 // normal response; the arms still running finish detached and score
@@ -247,9 +254,11 @@ type armResult struct {
 }
 
 // operatorGroup is one operator's endpoints, the candidate list of one arm.
+// best is its highest vouched score when vouched, else its highest score.
 type operatorGroup struct {
 	operator  string
 	endpoints domain.EndpointAddrList
+	vouched   bool
 	best      float64
 }
 
@@ -267,8 +276,9 @@ func quorumSize(header string) int {
 	return n
 }
 
-// topOperators groups the pool by operator and returns the n operators whose
-// best endpoint scores highest, ties broken by name so the ranking is stable.
+// topOperators groups the pool by operator and returns the n best: operators
+// with a vouched endpoint first, then by best score, ties broken by name so
+// the ranking is stable.
 //
 // Fewer operators than n, and an even count of them above two, drops the
 // lowest-ranked one: four arms need three to agree and survive one failure,
@@ -287,14 +297,28 @@ func topOperators(ctx *relay.Context, repSvc reputation.Service, pool domain.End
 			groups = append(groups, g)
 		}
 		g.endpoints = append(g.endpoints, ep)
-		if repSvc != nil {
-			if score, err := repSvc.GetScore(ctx.Ctx, ctx.ServiceID, ep, ctx.RPCType); err == nil && score > g.best {
-				g.best = score
-			}
+		if repSvc == nil {
+			continue
+		}
+		score, err := repSvc.GetScore(ctx.Ctx, ctx.ServiceID, ep, ctx.RPCType)
+		if err != nil {
+			continue
+		}
+		vouched := repSvc.Vouched(ctx.Ctx, ctx.ServiceID, ep, ctx.RPCType)
+		switch {
+		case vouched && !g.vouched:
+			g.vouched, g.best = true, score
+		case vouched == g.vouched && score > g.best:
+			g.best = score
 		}
 	}
 	slices.SortFunc(groups, func(a, b *operatorGroup) int {
 		switch {
+		case a.vouched != b.vouched:
+			if a.vouched {
+				return -1
+			}
+			return 1
 		case a.best > b.best:
 			return -1
 		case a.best < b.best:

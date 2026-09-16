@@ -36,12 +36,35 @@ func (p *immutablePlugin) SelectEndpoints(eps domain.EndpointAddrList, _ []domai
 
 func (p *immutablePlugin) IsImmutable(domain.Payload) bool { return p.immutable }
 
-// flatScores scores every endpoint the same; nothing else of the service is
-// used by quorum.
+// flatScores scores every endpoint the same and vouches for none; nothing
+// else of the service is used by quorum.
 type flatScores struct{ reputation.Service }
 
 func (flatScores) GetScore(context.Context, domain.ServiceID, domain.EndpointAddr, domain.RPCType) (float64, error) {
 	return 100, nil
+}
+
+func (flatScores) Vouched(context.Context, domain.ServiceID, domain.EndpointAddr, domain.RPCType) bool {
+	return false
+}
+
+// measuredScores gives listed endpoints a score and vouches for them; any
+// other endpoint is unmeasured at the initial score.
+type measuredScores struct {
+	reputation.Service
+	scores map[domain.EndpointAddr]float64
+}
+
+func (m measuredScores) GetScore(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType) (float64, error) {
+	if s, ok := m.scores[ep]; ok {
+		return s, nil
+	}
+	return 100, nil
+}
+
+func (m measuredScores) Vouched(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType) bool {
+	_, ok := m.scores[ep]
+	return ok
 }
 
 // quorumRecorder keeps outcomes and the dissent total.
@@ -296,6 +319,29 @@ func TestTopOperators_NeverAnEvenCountAboveTwo(t *testing.T) {
 	four := append(domain.EndpointAddrList{"pokt1e-https://rpc.delta.net"}, quorumPool...)
 	assert.Len(t, topOperators(ctx, flatScores{}, four, 5), 3)
 	assert.Len(t, topOperators(ctx, flatScores{}, quorumPool[:2], 9), 2, "two operators stay two")
+}
+
+// An operator whose endpoints nothing has measured sits at the initial score
+// and used to outrank a measured one below it. Measured operators come first,
+// by their best measured score; the unmeasured fill what is left.
+func TestTopOperators_MeasuredOperatorsFirst(t *testing.T) {
+	ctx, _, _ := quorumCtx(t, nil, nil, 1)
+	pool := domain.EndpointAddrList{
+		"pokt1a-https://rpc.alpha.net",
+		"pokt1b-https://rpc.beta.net",
+		"pokt1c-https://rpc.gamma.net",
+		"pokt1d-https://rpc2.alpha.net",
+		"pokt1e-https://rpc.delta.net",
+	}
+	rep := measuredScores{scores: map[domain.EndpointAddr]float64{
+		"pokt1a-https://rpc.alpha.net": 85,
+		"pokt1c-https://rpc.gamma.net": 95,
+	}}
+	var got []string
+	for _, g := range topOperators(ctx, rep, pool, 3) {
+		got = append(got, g.operator)
+	}
+	assert.Equal(t, []string{"gamma.net", "alpha.net", "beta.net"}, got)
 }
 
 // Never more arms than operators, and the pool's siblings count as one.

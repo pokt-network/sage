@@ -208,7 +208,11 @@ immutable-method allowlist contents.
     deadline is listed with an error. **Operators, not supplier addresses**:
     SAGE sends no supplier identity to clients (`docs/path-compat.md`).
 12. **N:** even counts round down (4 → 3), so an odd request never buys more
-    relays than asked. Operators are ranked by their best endpoint's score.
+    relays than asked, and so does an even number of operators above two.
+    Operators with an endpoint reputation vouches for (`Vouched`: scored and
+    above probation) rank first, by their best vouched score; unmeasured
+    operators only fill the arms left. Ranking on raw best score kept three
+    dead beta operators in the top three for 200 requests.
     An answer counts once per operator, because an arm whose operator's
     endpoints were all pruned is handed the full pool by `select_endpoint`.
 13. **Not built:** `services[].quorum` config defaults; the headers are the

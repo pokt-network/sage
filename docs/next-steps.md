@@ -32,13 +32,9 @@ PATH `origin/main` at `4606957a`, 2026-08-25; new work is on
   400, majority with the three dead operators blocked, 200 concurrent requests
   with no panics and goroutines back to baseline. Beta cannot show two live
   operators agreeing — only one of anvil's four operators answers — so the
-  first real vote will be on mainnet. Two things before that: the edge must
-  strip `Target-Quorum-Count` / `Target-Quorum-Mode` from clients that may not
-  buy up to 9 relays per request; and operators are ranked by their best
-  endpoint's score, which on beta kept three dead operators in the top three
-  for 200 requests running, because an operator with many unmeasured
-  endpoints always has one at the initial score. Rank on measured evidence
-  before a pool with such an operator turns quorum on.
+  first real vote will be on mainnet. Before that, the edge must strip
+  `Target-Quorum-Count` / `Target-Quorum-Mode` from clients that may not buy
+  up to 9 relays per request.
 
 ## After the audit roll (2026-09-04, image c838f4c at 1%)
 
