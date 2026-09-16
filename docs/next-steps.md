@@ -47,8 +47,10 @@ across both pods after ~6h.
   tail every cycle by construction, most of it the age of the readings. Since
   2026-09-16 the filter projects each reading to the head's moment at the
   chain's block rate (`qos.HeightProjection`), which should remove that part
-  without a bump; read bsc's tier-3 fallbacks on the first image carrying it
-  before changing the allowance. robinhood at 3000 sits at its edge (spread 1,200-3,240).
+  without a bump; read bsc's tier-3 share on the first image carrying it
+  (`sage_qos_selection_tier_total{tier="3"}` over the sum across tiers, per
+  attempt) before changing the allowance. The `ba56bde` baseline is the WARN
+  line only, which mainnet's error level suppresses. robinhood at 3000 sits at its edge (spread 1,200-3,240).
   The check once it lands: fewer tier-3 fallbacks on bsc,
   `sage_degraded_total{tier="response"}` staying at zero.
 - **Fleet 408s halved at the c30ce90 roll (536 → 228 per 15m), base 86 →

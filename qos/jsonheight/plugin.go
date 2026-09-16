@@ -63,6 +63,8 @@ type Chain struct {
 
 // Plugin serves one chain declared by a Chain.
 type Plugin struct {
+	qos.SelectionTiers
+
 	chain         Chain
 	logger        *slog.Logger
 	syncAllowance atomic.Uint64
@@ -136,6 +138,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 		nil,
 		qos.LeastStaleFallback(getHeight, perceived),
 	)
+	p.ReportTier(result.Tier)
 	if result.Degraded {
 		p.logger.Warn("endpoint selection degraded",
 			"chain", p.chain.Name,

@@ -66,6 +66,7 @@ type Recorder struct {
 	responseBytes         *prometheus.HistogramVec
 	batchPayloads         *prometheus.HistogramVec
 	quorumRequests        *prometheus.CounterVec
+	selectionTiers        *prometheus.CounterVec
 	quorumDissent         *prometheus.CounterVec
 	batchSubRelays        prometheus.Gauge
 	batchResponseBytes    prometheus.Gauge
@@ -268,6 +269,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id"},
 		),
+		selectionTiers: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "qos_selection_tier_total",
+				Help:      "Endpoint selections by the height tier the service's QoS plugin settled on: 1 within sync_allowance of the perceived head, 2 within twice it, 3 with the height filter abandoned and the candidates ranked least-stale. One count per selection, which is one per relay attempt (every retry, hedge arm, batch item and quorum arm selects), not one per client request. rate(tier=\"3\") over the sum across tiers is the share of attempts sent without a height guarantee. Counted by the plugins that filter on height: evm (tron included), cosmos, solana and the JSON-height chains; a service on the passthrough plugin has no series. Reads compare heights projected to the head's moment, so a reading one probe cycle old is not counted as behind.",
+			},
+			[]string{"service_id", "tier"},
+		),
 		quorumRequests: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -428,6 +437,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.responseBytes,
 		r.batchPayloads,
 		r.quorumRequests,
+		r.selectionTiers,
 		r.quorumDissent,
 		r.batchSubRelays,
 		r.batchResponseBytes,
@@ -534,6 +544,23 @@ func (r *Recorder) RecordResponseSize(serviceID domain.ServiceID, bytes int) {
 // middleware.BatchRecorder.
 func (r *Recorder) RecordBatchPayloads(serviceID domain.ServiceID, n int) {
 	r.batchPayloads.WithLabelValues(r.services.serviceValue(serviceID)).Observe(float64(n))
+}
+
+// RecordSelectionTier counts one endpoint selection by its height tier. Tiers
+// outside 1-3 (an empty candidate list) are not counted.
+func (r *Recorder) RecordSelectionTier(serviceID domain.ServiceID, tier int) {
+	var label string
+	switch tier {
+	case 1:
+		label = "1"
+	case 2:
+		label = "2"
+	case 3:
+		label = "3"
+	default:
+		return
+	}
+	r.selectionTiers.WithLabelValues(r.services.serviceValue(serviceID), label).Inc()
 }
 
 // RecordQuorum counts one quorum request by outcome. Satisfies
