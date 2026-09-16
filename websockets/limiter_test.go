@@ -45,9 +45,36 @@ func TestConnectionLimiter_NilIsUnlimited(t *testing.T) {
 
 func TestNewConnectionLimiter_NonPositiveDisables(t *testing.T) {
 	for _, max := range []int{0, -1, -10000} {
-		if l := NewConnectionLimiter(max); l != nil {
-			t.Errorf("NewConnectionLimiter(%d) = %v, want nil (disabled)", max, l)
+		l := NewConnectionLimiter(max)
+		for i := 0; i < 100; i++ {
+			if !l.Acquire() {
+				t.Fatalf("NewConnectionLimiter(%d) refused acquire %d, want no cap", max, i)
+			}
 		}
+	}
+}
+
+// SetMax moves the cap under held slots: lowering it refuses new connections
+// without evicting open ones, and raising it admits them again.
+func TestConnectionLimiter_SetMax(t *testing.T) {
+	l := NewConnectionLimiter(3)
+	for i := 0; i < 3; i++ {
+		if !l.Acquire() {
+			t.Fatalf("acquire %d refused under a cap of 3", i)
+		}
+	}
+	l.SetMax(2)
+	if l.Acquire() {
+		t.Fatal("acquire succeeded with 3 open under a cap of 2")
+	}
+	l.Release()
+	l.Release()
+	if !l.Acquire() {
+		t.Fatal("acquire refused with 1 open under a cap of 2")
+	}
+	l.SetMax(-1)
+	if !l.Acquire() {
+		t.Fatal("acquire refused with the cap disabled")
 	}
 }
 

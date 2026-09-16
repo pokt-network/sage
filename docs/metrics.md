@@ -19,6 +19,9 @@ means traffic is arriving for services this gateway does not serve.
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `sage_auto_drain_total` | counter | `service_id`, `rpc_type`, `outcome` | Auto-drain engine decisions, by service, RPC type and outcome: drained, shadow (would have drained), suppressed, rate_limited, capped, no_vouched_alternative, manual_drain. One per decision change, not per evaluation tick. The evidence behind each is in GET /admin/auto-drain/events. |
+| `sage_batch_payloads` | histogram | `service_id` | Payloads per multi-payload client request, by service, observed before the concurrency_config.max_batch_payloads cap so a refused batch is counted too. One batch fans out into this many upstream relays, each with its own retry and hedge; this is the distribution that says where the cap belongs. |
+| `sage_batch_response_bytes_in_flight` | gauge | — | Sub-relay response bytes held by batches that have not yet returned, across every service. Nothing bounds this but max_batch_payloads × the response ceiling, and the merged response each batch builds at the end is not counted, so the heap cost at a batch's completion is about twice its share of this. |
+| `sage_batch_subrelays_in_flight` | gauge | — | Batch sub-relays running now, across every service. Each holds a slot of the process-wide concurrency_config.max_concurrent_relays budget while that budget is on, so this against the configured value is the budget's occupancy. Single-payload requests do not count. |
 | `sage_blocked_domains_admin` | gauge | — | Domains banned through the admin API (PUT /admin/blocked-domains), in force on this replica, not counting gateway_config.blocked_domains. Non-zero on a fresh replica is a ban inherited through Redis. |
 | `sage_cache_hits_total` | counter | `service_id` | Total response cache hits. |
 | `sage_cache_misses_total` | counter | `service_id` | Total response cache misses. |

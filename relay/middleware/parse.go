@@ -70,8 +70,9 @@ type ParseOptions struct {
 	// RPCTypes reports the RPC types a service declares in config; nil means
 	// nothing is known and an unrecognised path defaults to JSON-RPC.
 	RPCTypes func(domain.ServiceID) []string
-	// MaxBodyBytes caps the request body. Zero takes DefaultMaxBodyBytes.
-	MaxBodyBytes int64
+	// MaxBodyBytes reports the request body cap, read per request so a config
+	// apply moves it. Nil, or a result <= 0, takes DefaultMaxBodyBytes.
+	MaxBodyBytes func() int64
 }
 
 // rpcTypeHeader is the request header a client uses to say which surface it
@@ -81,10 +82,6 @@ const rpcTypeHeader = "RPC-Type"
 // ParseWithOptions returns the parse middleware with every knob supplied.
 func ParseWithOptions(registry *qos.Registry, opts ParseOptions) relay.Middleware {
 	rpcTypes := opts.RPCTypes
-	maxBody := opts.MaxBodyBytes
-	if maxBody <= 0 {
-		maxBody = DefaultMaxBodyBytes
-	}
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			// Extract service ID.
@@ -101,6 +98,12 @@ func ParseWithOptions(registry *qos.Registry, opts ParseOptions) relay.Middlewar
 
 			// Read the body once, bounded; the same slice is shared by RPC type
 			// detection and plugin parsing (plugins must not re-read req.Body).
+			maxBody := DefaultMaxBodyBytes
+			if opts.MaxBodyBytes != nil {
+				if n := opts.MaxBodyBytes(); n > 0 {
+					maxBody = n
+				}
+			}
 			body, err := readBody(ctx.HTTPRequest, maxBody)
 			if err != nil {
 				if errors.Is(err, errBodyTooLarge) {

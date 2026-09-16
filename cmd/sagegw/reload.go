@@ -12,6 +12,7 @@ import (
 	"github.com/pokt-network/sage/healthcheck"
 	"github.com/pokt-network/sage/override"
 	"github.com/pokt-network/sage/reload"
+	"github.com/pokt-network/sage/reputation"
 )
 
 // Key paths a reload reports, in the vocabulary of the YAML an operator wrote.
@@ -29,6 +30,7 @@ const (
 	keyHealthChecks   = "gateway_config.active_health_checks"
 	keyBlockedDomains = "gateway_config.blocked_domains"
 	keyMethodBlocks   = "gateway_config.method_blocks"
+	keyWSConnections  = "websocket_config.max_concurrent_connections"
 )
 
 // blockedDomainSetter swaps the operator domain ban.
@@ -39,6 +41,19 @@ const (
 // this is nil and a changed blocked_domains has nowhere to go.
 type blockedDomainSetter interface {
 	SetBlockedDomains(entries []config.BlockedDomain) error
+}
+
+// reputationRetuner swaps the scoring constants of a running reputation
+// service. An interface because App.RepSvc is the reputation.Service interface,
+// which has no reason to grow a reload concern.
+type reputationRetuner interface {
+	Retune(impacts reputation.SignalImpacts, rate reputation.RateConfig, sel reputation.SelectorConfig, operatorCap reputation.OperatorCapConfig)
+}
+
+// wsConnectionLimiter moves the live WebSocket connection cap. Nil under the
+// mock backend, which has no WebSocket relayer.
+type wsConnectionLimiter interface {
+	SetMaxConcurrentConnections(n int)
 }
 
 // Reload re-reads the config file SAGE started with, refuses it if it would
@@ -266,6 +281,31 @@ func (a *App) apply(ctx context.Context, next *config.Config) (reload.Result, er
 		}
 	}
 
+	if len(diff.reputation) > 0 {
+		if retuner, ok := a.RepSvc.(reputationRetuner); !ok {
+			for _, key := range diff.reputation {
+				res.Warnings = append(res.Warnings, unavailable(key, "the reputation service cannot be retuned"))
+			}
+		} else {
+			rep := next.Gateway.Reputation
+			retuner.Retune(rep.Impacts(), rep.RateConfig(), rep.SelectorConfig(), reputation.OperatorCapConfig{
+				MaxShare:            rep.MaxOperatorShare,
+				TwoOperatorMaxShare: rep.MaxOperatorShareTwoOperators,
+				DisplacementCeiling: rep.OperatorDisplacementCeiling,
+			})
+			res.Applied = append(res.Applied, diff.reputation...)
+		}
+	}
+
+	if diff.wsConnections {
+		if a.wsConnections == nil {
+			res.Warnings = append(res.Warnings, unavailable(keyWSConnections, "no WebSocket relayer is running"))
+		} else {
+			a.wsConnections.SetMaxConcurrentConnections(next.WebSocket.EffectiveMaxConcurrentConnections())
+			res.Applied = append(res.Applied, keyWSConnections)
+		}
+	}
+
 	// Last, and unconditional: the snapshot is what the per-request closures
 	// read, and it also carries the Ignored/Inert report for whatever
 	// GET /admin/config grows into.
@@ -353,10 +393,16 @@ func (a *App) applyFlags(ctx context.Context, old, next config.FeatureFlags) []s
 type configDiff struct {
 	// defaults lists the key paths that changed and land on the snapshot
 	// swap: gateway_config.retry_config, gateway_config.defaults.retry_config
-	// and .timeout_config, and each service's own two blocks. They share one
-	// seam and are reported as the paths that were edited, because the seam is
-	// our word for it and the path is the operator's.
+	// and .timeout_config, each service's own two blocks, concurrency_config,
+	// and router_config's body caps. They share one seam and are reported as
+	// the paths that were edited, because the seam is our word for it and the
+	// path is the operator's.
 	defaults []string
+	// reputation lists the gateway_config.reputation_config key paths that
+	// changed and that Retune applies.
+	reputation []string
+	// wsConnections is websocket_config.max_concurrent_connections.
+	wsConnections bool
 	// flags is gateway-wide feature_flags.
 	flags bool
 	// healthChecks is gateway_config.active_health_checks.
@@ -411,6 +457,20 @@ func diffConfig(old, next *config.Config) configDiff {
 		case "FeatureFlags":
 			d.flags = !reflect.DeepEqual(old.FeatureFlags, next.FeatureFlags)
 
+		case "Concurrency":
+			// Both read by the batch middleware per request.
+			d.applyLeaves("concurrency_config", old.Concurrency, next.Concurrency)
+
+		case "Router":
+			// The body caps are read per request; the rest configure the
+			// listener SAGE is already serving on.
+			d.diffLeavesExcept("router_config", old.Router, next.Router, d.applyDefault,
+				"MaxRequestBodyBytes", "MaxResponseBodyBytes")
+
+		case "WebSocket":
+			d.diffLeavesExcept("websocket_config", old.WebSocket, next.WebSocket, func(string) { d.wsConnections = true },
+				"MaxConcurrentConnections")
+
 		case "Admin":
 			// Leaf granularity, because the fields differ in kind: addr and
 			// auth_token are the listener SAGE is already serving on, while
@@ -429,6 +489,7 @@ func diffConfig(old, next *config.Config) configDiff {
 	d.needsRestart = slices.Compact(d.needsRestart)
 	slices.Sort(d.defaults)
 	d.defaults = slices.Compact(d.defaults)
+	slices.Sort(d.reputation)
 	return d
 }
 
@@ -451,6 +512,15 @@ func (d *configDiff) diffGateway(old, next config.GatewayConfig) {
 			}
 		case "Defaults":
 			d.diffDefaults("gateway_config.defaults", old.Defaults, next.Defaults)
+		case "Reputation":
+			// Not InitialScore or KeyGranularity: Retune cannot take them (see
+			// reputation.serviceImpl.Retune). Not the three keys nothing reads
+			// either — reporting a change to them as applied would claim an
+			// effect there is none of.
+			d.diffLeavesExcept("gateway_config.reputation_config", old.Reputation, next.Reputation,
+				func(key string) { d.reputation = append(d.reputation, key) },
+				"MinThreshold", "MaxOperatorShare", "MaxOperatorShareTwoOperators", "OperatorDisplacementCeiling",
+				"ChronicHalfLifeAttempts", "ChronicOnsetRate", "ChronicFullRate", "TieredSelection", "SignalImpacts")
 		case "HealthChecks":
 			d.healthChecks = d.healthChecks || differs
 		case "BlockedDomains":
@@ -609,6 +679,34 @@ func (d *configDiff) diffLeaves(prefix string, old, next any) {
 	for i := range typ.NumField() {
 		if !reflect.DeepEqual(oldValue.Field(i).Interface(), nextValue.Field(i).Interface()) {
 			d.restart(prefix + "." + yamlKey(typ.Field(i)))
+		}
+	}
+}
+
+// applyLeaves records every differing field of a struct read per request from
+// the config snapshot, one key path per field.
+func (d *configDiff) applyLeaves(prefix string, old, next any) {
+	d.diffLeavesExcept(prefix, old, next, d.applyDefault)
+}
+
+// diffLeavesExcept reports the differing fields of a struct one key path per
+// field: the fields named in seamed go to apply, and every other field needs
+// a restart. Listing the seamed fields rather than the restart ones keeps the
+// fail-safe of diffConfig — a field added later lands in needs_restart.
+func (d *configDiff) diffLeavesExcept(prefix string, old, next any, apply func(key string), seamed ...string) {
+	oldValue := reflect.ValueOf(old)
+	nextValue := reflect.ValueOf(next)
+	typ := oldValue.Type()
+
+	for i := range typ.NumField() {
+		if reflect.DeepEqual(oldValue.Field(i).Interface(), nextValue.Field(i).Interface()) {
+			continue
+		}
+		key := prefix + "." + yamlKey(typ.Field(i))
+		if seamed == nil || slices.Contains(seamed, typ.Field(i).Name) {
+			apply(key)
+		} else {
+			d.restart(key)
 		}
 	}
 }

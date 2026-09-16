@@ -135,7 +135,7 @@ func TestService_SelectBest(t *testing.T) {
 	// at 100 in Tier 1; the tier cascade picks ep2 — on every relay the
 	// tier-2 trickle does not claim, so the trickle is off for this test.
 	_ = svc.RecordSignal(ctx, svcID, ep1, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("fail", 0))
-	svc.selector.cfg.Tier2Pct = 0
+	svc.selector.cfg.Load().Tier2Pct = 0
 
 	best := svc.SelectBest(ctx, svcID, domain.EndpointAddrList{ep1, ep2}, domain.RPCTypeJSONRPC)
 	if best != ep2 {
@@ -556,7 +556,7 @@ func TestService_VouchedUsesEffectiveScore(t *testing.T) {
 	}
 	score, _ := svc.GetScore(ctx, "svc", ep, domain.RPCTypeJSONRPC)
 	assert.InDelta(t, 30, score, 1, "additive 100, penalty -70")
-	assert.Equal(t, score >= svc.selector.cfg.ProbationThreshold,
+	assert.Equal(t, score >= svc.selector.cfg.Load().ProbationThreshold,
 		svc.Vouched(ctx, "svc", ep, domain.RPCTypeJSONRPC),
 		"Vouched must agree with the effective score against the probation threshold")
 
@@ -611,7 +611,7 @@ func TestService_RateTermDemotesButNeverRemoves(t *testing.T) {
 	for i := 0; i < 50; i++ { // additive 100 -> 50; penalty stays at -70
 		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)))
 	}
-	minT := svc.selector.cfg.MinThreshold
+	minT := svc.selector.cfg.Load().MinThreshold
 	score, _ := svc.GetScore(ctx, "svc", ep, domain.RPCTypeJSONRPC)
 	assert.Equal(t, minT, score, "additive 50 + penalty -70 floors at MinThreshold, not 0")
 	got := svc.SelectBest(ctx, "svc", domain.EndpointAddrList{ep}, domain.RPCTypeJSONRPC)
@@ -882,4 +882,37 @@ func TestRecordSignal_LatencyEWMAIgnoresErrors(t *testing.T) {
 	if ms, _ := svc.latencyForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC); ms != 300 {
 		t.Fatalf("a fast failure moved the EWMA to %v", ms)
 	}
+}
+
+// Retune reaches the next signal and the next selection on a running
+// service, and keeps the scores already recorded.
+func TestService_Retune(t *testing.T) {
+	svc, _ := newTestServiceStore()
+	defer svc.Stop()
+	ctx := context.Background()
+	svcID := domain.ServiceID("eth")
+	ep1, ep2 := domain.EndpointAddr("ep1"), domain.EndpointAddr("ep2")
+
+	_ = svc.RecordSignal(ctx, svcID, ep1, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("fail", 0))
+	before, _ := svc.GetScore(ctx, svcID, ep1, domain.RPCTypeJSONRPC)
+
+	sel := DefaultSelectorConfig()
+	sel.Tier1Threshold = 96
+	sel.Tier2Pct = 0
+	svc.Retune(SignalImpacts{CriticalError: -5}, RateConfig{HalfLifeAttempts: -1}, sel, OperatorCapConfig{})
+
+	after, _ := svc.GetScore(ctx, svcID, ep1, domain.RPCTypeJSONRPC)
+	assert.Equal(t, before, after, "a retune does not rewrite recorded scores")
+
+	_ = svc.RecordSignal(ctx, svcID, ep2, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("fail", 0))
+	got, _ := svc.GetScore(ctx, svcID, ep2, domain.RPCTypeJSONRPC)
+	assert.Equal(t, 95.0, got, "the next signal carries the retuned impact")
+
+	// Under the default tier-1 threshold of 80 ep2 (95) would win every
+	// selection over ep1 (75). At 96 both are tier 2 and share the traffic.
+	picked := map[domain.EndpointAddr]bool{}
+	for range 100 {
+		picked[svc.SelectBest(ctx, svcID, domain.EndpointAddrList{ep1, ep2}, domain.RPCTypeJSONRPC)] = true
+	}
+	assert.True(t, picked[ep1], "the retuned tier-1 threshold is in force for selection")
 }

@@ -170,12 +170,9 @@ type serviceImpl struct {
 	selector *TieredSelector
 	// key maps an endpoint address to the identity its score lives under.
 	key atomic.Pointer[KeyFn]
-	// impacts and rate are the two halves of the score: the additive delta per
-	// signal, and the chronic-failure penalty. Both normalized at construction.
-	impacts SignalImpacts
-	rate    RateConfig
-	// lambda is rate.Lambda(), hoisted out of the per-signal path under lock.
-	lambda float64
+	// scoring is the additive delta per signal and the chronic-failure
+	// penalty, swapped whole by Retune while signals are being recorded.
+	scoring atomic.Pointer[scoring]
 	// signalHook, when set, runs on every recorded signal. Wire time only.
 	signalHook SignalHook
 	// relativeGate turns on the pool-relative chronic penalty per service and
@@ -220,15 +217,13 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 		cfg:      cfg,
 		storage:  storage,
 		timeline: timeline,
-		impacts:  cfg.Impacts.Normalized(),
-		rate:     cfg.Rate.Normalized(),
 		writeCh:  make(chan writeOp, cfg.WriteQueueSize),
 		stopCh:   make(chan struct{}),
 	}
 	for i := range s.shards {
 		s.shards[i].cache = make(map[domain.ServiceID]map[string]State)
 	}
-	s.lambda = s.rate.Lambda()
+	s.scoring.Store(newScoring(cfg.Impacts, cfg.Rate))
 	s.ops = newOpTracker(cfg.OperatorHalfLife)
 	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, cfg.URLResolver)))
 	selCfg := cfg.Selector
@@ -237,6 +232,34 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	}
 	s.selector = NewTieredSelector(selCfg, s.scoreForSelector)
 	return s
+}
+
+// scoring is the half of a ServiceConfig Retune can change on a running
+// service, normalized once.
+type scoring struct {
+	impacts SignalImpacts
+	rate    RateConfig
+	// lambda is rate.Lambda(), hoisted out of the per-signal path.
+	lambda float64
+}
+
+func newScoring(impacts SignalImpacts, rate RateConfig) *scoring {
+	rate = rate.Normalized()
+	return &scoring{impacts: impacts.Normalized(), rate: rate, lambda: rate.Lambda()}
+}
+
+// Retune replaces the scoring constants of a running service: signal
+// impacts, the chronic-rate curve, the tier thresholds and the operator
+// cap's shares. Scores already recorded are kept and read under the new
+// constants — the same thing a restart does, since state outlives the
+// process in storage.
+//
+// InitialScore and KeyGranularity are not here: one decides which stored
+// states count as untouched and the other what a key is, and changing either
+// under live state would misread what is already recorded.
+func (s *serviceImpl) Retune(impacts SignalImpacts, rate RateConfig, sel SelectorConfig, operatorCap OperatorCapConfig) {
+	s.scoring.Store(newScoring(impacts, rate))
+	s.selector.SetConfig(sel, operatorCap)
 }
 
 // effectiveFor is the score every reader sees: the additive term plus the
@@ -252,7 +275,7 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 // the pool-collapse fallback while the term ranked nobody above anybody.
 func (s *serviceImpl) effectiveFor(serviceID domain.ServiceID, key string, st State) float64 {
 	score := st.Score + s.penaltyFor(serviceID, key, st.Rate)
-	if floor := min(st.Score, s.selector.cfg.MinThreshold); score < floor {
+	if floor := min(st.Score, s.selector.cfg.Load().MinThreshold); score < floor {
 		score = floor
 	}
 	return s.clamp(score)
@@ -276,13 +299,14 @@ func (s *serviceImpl) penaltyFor(serviceID domain.ServiceID, key string, rate fl
 			rate = r
 		}
 	}
-	p := s.rate.Penalty(rate)
+	sc := s.scoring.Load()
+	p := sc.rate.Penalty(rate)
 	if p == 0 {
 		return 0
 	}
 	if v != nil {
 		if base, ok := v.baseline[poolID{serviceID, rpcOfKey(key)}]; ok {
-			p = min(0, p-s.rate.Penalty(base))
+			p = min(0, p-sc.rate.Penalty(base))
 		}
 	}
 	return p
@@ -322,7 +346,7 @@ const (
 // 18:57Z). From probation it earns tier 1 again on traffic. It returns the
 // number of keys lowered.
 func (s *serviceImpl) RebaseAfterDrain(serviceID domain.ServiceID, endpoints domain.EndpointAddrList, rpcType domain.RPCType) int {
-	floor := s.selector.cfg.MinThreshold
+	floor := s.selector.cfg.Load().MinThreshold
 	seen := make(map[string]bool, len(endpoints))
 	n := 0
 	for _, ep := range endpoints {
@@ -642,8 +666,9 @@ func (s *serviceImpl) Stop() {
 //
 // Must be called with the shard locked.
 func (s *serviceImpl) pruneUninformative(svcStates map[string]State) {
+	rate := s.scoring.Load().rate
 	for k, v := range svcStates {
-		if v.Score == s.cfg.InitialScore && s.rate.Penalty(v.Rate) == 0 {
+		if v.Score == s.cfg.InitialScore && rate.Penalty(v.Rate) == 0 {
 			delete(svcStates, k)
 		}
 	}
@@ -651,7 +676,10 @@ func (s *serviceImpl) pruneUninformative(svcStates map[string]State) {
 
 // RecordSignal applies a signal's impact to the endpoint's score.
 func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType, signal Signal) error {
-	impact := s.impacts.Impact(signal.Type)
+	// One load for the whole signal: a Retune landing halfway through must
+	// not score it with the old impact and the new rate.
+	sc := s.scoring.Load()
+	impact := sc.impacts.Impact(signal.Type)
 
 	repKey := s.keyOf(endpoint, rpcType)
 	sh := s.shard(repKey)
@@ -686,7 +714,7 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// solana's floored keys sat at 0 answering most of what they were sent.
 	// Probes bring a key back into probation; traffic takes it from there.
 	deferred := signal.Probe && signal.Type == SignalSuccess &&
-		st.Score >= s.selector.cfg.MinThreshold &&
+		st.Score >= s.selector.cfg.Load().MinThreshold &&
 		st.LastTraffic > 0 && ts.Unix()-st.LastTraffic < int64(probeDefer/time.Second)
 	prev := st
 	if !deferred {
@@ -700,8 +728,8 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// The test is on the score BEFORE this signal: the attempt that floors the
 	// key still feeds the rate, and only what happens to an already-floored key
 	// is discounted.
-	if s.rate.Enabled() && prev.Score != 0 && !deferred {
-		st.Rate += s.lambda * (FailureWeight(signal.Type) - st.Rate)
+	if sc.rate.Enabled() && prev.Score != 0 && !deferred {
+		st.Rate += sc.lambda * (FailureWeight(signal.Type) - st.Rate)
 	}
 	st.Attempts++
 	if !signal.Probe {
@@ -737,7 +765,7 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// what this measures. The pool-collapse fallback keeps feeding floored
 	// keys, and dropping those attempts would make the operator the fallback
 	// is feeding look better the worse it got (mainnet sei, 2026-09-16).
-	if s.rate.Enabled() && !deferred {
+	if sc.rate.Enabled() && !deferred {
 		if op := endpoint.Operator(); op != "" {
 			s.ops.record(opID{serviceID, op, string(rpcType)}, FailureWeight(signal.Type), ts)
 		}
@@ -945,7 +973,7 @@ func (s *serviceImpl) SelectSpread(ctx context.Context, serviceID domain.Service
 	// This runs on the WebSocket open path, not per relay, so narrowing the
 	// list is affordable here in a way it would not be in Select.
 	if s.selector.capActive(ctx, serviceID) {
-		if operator, _, ok := cappedPick(s.selector.operatorCap, candidates, nil); ok {
+		if operator, _, ok := cappedPick(*s.selector.operatorCap.Load(), candidates, nil); ok {
 			withinOperator := make(domain.EndpointAddrList, 0, len(candidates))
 			for _, ep := range candidates {
 				if ep.Operator() == operator {
@@ -1103,7 +1131,7 @@ func (s *serviceImpl) Vouched(_ context.Context, serviceID domain.ServiceID, end
 	sh.mu.RLock()
 	st, ok := sh.cache[serviceID][key]
 	sh.mu.RUnlock()
-	return ok && s.effectiveFor(serviceID, key, st) >= s.selector.cfg.ProbationThreshold
+	return ok && s.effectiveFor(serviceID, key, st) >= s.selector.cfg.Load().ProbationThreshold
 }
 
 // clamp constrains a score to [0, MaxScore].

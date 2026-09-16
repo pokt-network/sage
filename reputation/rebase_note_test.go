@@ -27,7 +27,7 @@ func TestService_RebaseAfterDrainRestartsAtProbation(t *testing.T) {
 	n := svc.RebaseAfterDrain("sei", domain.EndpointAddrList{top, low}, domain.RPCTypeJSONRPC)
 	assert.Equal(t, 1, n, "only the key above the floor is lowered")
 	got, _ := svc.GetScore(ctx, "sei", top, domain.RPCTypeJSONRPC)
-	assert.Equal(t, svc.selector.cfg.MinThreshold, got)
+	assert.Equal(t, svc.selector.cfg.Load().MinThreshold, got)
 	still, _ := svc.GetScore(ctx, "sei", low, domain.RPCTypeJSONRPC)
 	assert.Equal(t, 0.0, still)
 }

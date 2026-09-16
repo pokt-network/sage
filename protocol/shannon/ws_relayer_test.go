@@ -485,13 +485,11 @@ func TestWSRelayer_FlagOffDoesNotConsumeASlot(t *testing.T) {
 	}
 }
 
-// Zero or negative means no cap, and the nil limiter must not break Open.
+// Zero or negative means no cap.
 func TestWSRelayer_NoCapConfigured(t *testing.T) {
 	for _, max := range []int{0, -1} {
 		r := newCappedRelayer(t, max)
-		if r.connLimiter != nil {
-			t.Errorf("MaxConcurrentConnections=%d should disable the limiter", max)
-		}
+		r.connLimiter.Acquire() // would fill a cap of 1, if there were one
 		// Still reaches (and fails at) endpoint lookup rather than being refused.
 		err := r.Open(context.Background(), "eth", httptest.NewRequest(http.MethodGet, "/v1/ws", nil), httptest.NewRecorder())
 		if err != nil && strings.Contains(err.Error(), "connection limit") {

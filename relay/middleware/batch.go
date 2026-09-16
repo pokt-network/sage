@@ -16,7 +16,7 @@ import (
 )
 
 // Batch returns a middleware that fans out multi-payload requests into
-// individual relays that run in parallel (bounded by maxConcurrentRelays), then
+// individual relays that run in parallel (bounded by max_concurrent_relays), then
 // merges the results into a JSON array response.
 //
 // Single-payload requests (len(ctx.Payloads) <= 1) pass through unchanged.
@@ -29,7 +29,10 @@ import (
 // N−1 answers beside it were already relayed and paid for. The final HTTP
 // status is always 200.
 //
-// maxConcurrentRelays is a GLOBAL ceiling on sub-relay goroutines in flight —
+// limits is read on every batch, so both bounds can change on a running process
+// (a config apply swaps the snapshot it reads).
+//
+// max_concurrent_relays is a GLOBAL ceiling on sub-relay goroutines in flight —
 // the semaphore is built once here, not per request, which is the only way the
 // bound means anything. A per-request semaphore bounds one batch and nothing
 // else: N concurrent batches each get their own, so the total is N × the
@@ -41,7 +44,7 @@ import (
 // together, and without that check one stuck supplier could hold slots past the
 // point anyone is still waiting for the answer.
 //
-// maxPayloads caps how many payloads one request may fan out into. It is
+// max_batch_payloads caps how many payloads one request may fan out into. It is
 // rejected up front rather than absorbed, because a batch is an amplifier: one
 // HTTP request becomes len(Payloads) upstream relays, each with its own retry
 // and hedge fan-out. Without a cap the only limit is the request body size, so
@@ -52,11 +55,32 @@ import (
 // the batch installs a relay.ScoreSink so the whole fan-out costs an endpoint
 // one signal rather than one per payload (docs/scoring.md §4.3). Both may be
 // nil, which disables that and leaves scoring to Observe as before.
-func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, repSvc reputation.Service) relay.Middleware {
-	// Built once per process, deliberately: see above.
-	var sem chan struct{}
-	if maxConcurrentRelays > 0 {
-		sem = make(chan struct{}, maxConcurrentRelays)
+//
+// recorder may be nil.
+func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Service, recorder BatchRecorder) relay.Middleware {
+	if recorder == nil {
+		recorder = noopBatchRecorder{}
+	}
+	// Shared by every request, deliberately: see above. Rebuilt only when
+	// max_concurrent_relays changes.
+	var budget atomic.Pointer[chan struct{}]
+	semFor := func(maxConcurrentRelays int) chan struct{} {
+		if maxConcurrentRelays <= 0 {
+			return nil
+		}
+		cur := budget.Load()
+		if cur != nil && cap(*cur) == maxConcurrentRelays {
+			return *cur
+		}
+		// ponytail: a resized budget is a fresh channel, so until the slots
+		// held on the old one are released (one request timeout at most) the
+		// true ceiling is old + new. Fine for tuning mid-incident; a shrink
+		// that must bind instantly needs a mutex-counted semaphore.
+		next := make(chan struct{}, maxConcurrentRelays)
+		if budget.CompareAndSwap(cur, &next) {
+			return next
+		}
+		return *budget.Load()
 	}
 
 	return func(next relay.Handler) relay.Handler {
@@ -64,6 +88,13 @@ func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, re
 			if len(ctx.Payloads) <= 1 {
 				return next.HandleRelay(ctx)
 			}
+			maxConcurrentRelays, maxPayloads := limits()
+			// Before the cap, so a rejected batch still says how large the
+			// batches clients send are.
+			recorder.RecordBatchPayloads(ctx.ServiceID, len(ctx.Payloads))
+			// Released to the channel it was taken from, which a resize may
+			// already have replaced.
+			sem := semFor(maxConcurrentRelays)
 
 			if maxPayloads > 0 && len(ctx.Payloads) > maxPayloads {
 				return rejectRequest(ctx, nil, http.StatusRequestEntityTooLarge, domain.ErrValidation,
@@ -104,6 +135,12 @@ func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, re
 			// field on the parent context.
 			var degraded atomic.Bool
 
+			// Response bytes this batch holds, released from the gauge when
+			// it returns. The merged copy made below is not counted, so the
+			// true peak per batch is about twice this.
+			var heldBytes atomic.Int64
+			defer func() { recorder.AddBatchResponseBytes(-heldBytes.Load()) }()
+
 			var wg sync.WaitGroup
 			wg.Add(n)
 
@@ -123,6 +160,7 @@ func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, re
 					break
 				}
 
+				recorder.AddBatchSubRelays(1)
 				go func() {
 					// First, so it runs last: safego.Call below converts a
 					// panic inside the relay into this payload's error, and
@@ -131,6 +169,7 @@ func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, re
 					// still completes.
 					defer safego.Recover(ctx.Logger, "batch.payload.goroutine")
 					defer func() {
+						recorder.AddBatchSubRelays(-1)
 						if sem != nil {
 							<-sem
 						}
@@ -172,6 +211,8 @@ func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, re
 						return
 					}
 					results[i] = json.RawMessage(sub.Response.Body)
+					heldBytes.Add(int64(len(sub.Response.Body)))
+					recorder.AddBatchResponseBytes(int64(len(sub.Response.Body)))
 				}()
 			}
 
@@ -199,6 +240,29 @@ func Batch(maxConcurrentRelays, maxPayloads int, flags featureflag.FlagStore, re
 		})
 	}
 }
+
+// BatchRecorder is what the batch middleware reports, for sizing
+// max_batch_payloads and max_concurrent_relays from data.
+type BatchRecorder interface {
+	// RecordBatchPayloads observes one multi-payload request's payload count,
+	// including one about to be refused for exceeding the cap.
+	RecordBatchPayloads(serviceID domain.ServiceID, n int)
+	// AddBatchSubRelays moves the count of sub-relays running.
+	AddBatchSubRelays(delta int)
+	// AddBatchResponseBytes moves the count of sub-relay response bytes held
+	// by batches that have not returned.
+	AddBatchResponseBytes(delta int64)
+}
+
+type noopBatchRecorder struct{}
+
+func (noopBatchRecorder) RecordBatchPayloads(domain.ServiceID, int) {}
+func (noopBatchRecorder) AddBatchSubRelays(int)                     {}
+func (noopBatchRecorder) AddBatchResponseBytes(int64)               {}
+
+// BatchLimits reports max_concurrent_relays and max_batch_payloads. <= 0
+// disables either bound.
+type BatchLimits func() (maxConcurrentRelays, maxPayloads int)
 
 // acquire takes a slot from the shared budget, reporting false when the
 // request's context ended first.
