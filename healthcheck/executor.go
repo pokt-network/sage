@@ -1024,7 +1024,13 @@ func (e *Executor) Warm() bool {
 	}
 	if !e.warmReleased {
 		e.warmReleased = true
-		e.logger.Warn("health checks: readiness released on the warm-up deadline, short of the coverage threshold",
+		// ERROR, and the only ERROR on this path, because it is the one line
+		// that has to survive a production log level. A fleet runs at error —
+		// the per-cycle "not warm" WARN above it is dropped there, which is how
+		// a held pod came to be diagnosed from a goroutine dump. This fires
+		// once per process, latched, so it cannot flood: a gate that released
+		// without the coverage it asked for is a discrete event, not a state.
+		e.logger.Error("health checks: readiness released on the warm-up deadline, short of the coverage threshold",
 			"covered", len(e.coveredServices),
 			"needed", e.warmThreshold,
 			"waited", warmDeadline.String(),
@@ -1146,6 +1152,11 @@ const maxUnwarmedServicesLogged = 10
 // kills it. A rolled mainnet pod did exactly that on 2026-09-17: 40 services
 // credited against a threshold of 48, eleven minutes of 503, and the only
 // explanation anywhere was a WARN the production log level drops.
+//
+// The release is logged at ERROR, not WARN. A fleet running at log level error
+// drops every WARN, including the gate's own per-cycle explanation, and that is
+// precisely how the held pod above ended up being diagnosed from a goroutine
+// dump. It is latched to one line per process.
 //
 // Two minutes is long enough that a pod which is merely slow to warm still
 // warms on its own evidence, and well inside a startup probe's budget. What it
