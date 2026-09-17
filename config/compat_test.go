@@ -103,6 +103,9 @@ func TestConfigCompatibility_GlobalSections(t *testing.T) {
 		if cfg.Concurrency.MaxBatchPayloads != 4000 {
 			t.Errorf("max_batch_payloads = %d, want 4000", cfg.Concurrency.MaxBatchPayloads)
 		}
+		if cfg.Concurrency.MaxBatchConcurrency != 16 {
+			t.Errorf("max_batch_concurrency = %d, want 16", cfg.Concurrency.MaxBatchConcurrency)
+		}
 	})
 
 	t.Run("full_node", func(t *testing.T) {

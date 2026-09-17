@@ -65,6 +65,7 @@ type Recorder struct {
 	oversizedResponses    *prometheus.CounterVec
 	responseBytes         *prometheus.HistogramVec
 	batchPayloads         *prometheus.HistogramVec
+	batchCapped           *prometheus.CounterVec
 	quorumRequests        *prometheus.CounterVec
 	selectionTiers        *prometheus.CounterVec
 	quorumDissent         *prometheus.CounterVec
@@ -293,6 +294,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id"},
 		),
+		batchCapped: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "batch_concurrency_capped_total",
+				Help:      "Batch requests with more payloads than concurrency_config.max_batch_concurrency, by service. Such a batch relays that many payloads at a time and waits on its own ceiling for the rest, so it is answered later than it would be uncapped; against rate(sage_batch_payloads_count) this is the share of batches that ceiling slows.",
+			},
+			[]string{"service_id"},
+		),
 		batchSubRelays: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "sage",
 			Name:      "batch_subrelays_in_flight",
@@ -436,6 +445,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.oversizedResponses,
 		r.responseBytes,
 		r.batchPayloads,
+		r.batchCapped,
 		r.quorumRequests,
 		r.selectionTiers,
 		r.quorumDissent,
@@ -572,6 +582,12 @@ func (r *Recorder) RecordQuorum(serviceID domain.ServiceID, outcome string) {
 // RecordQuorumDissent counts answers that disagreed with a quorum's majority.
 func (r *Recorder) RecordQuorumDissent(serviceID domain.ServiceID, n int) {
 	r.quorumDissent.WithLabelValues(r.services.serviceValue(serviceID)).Add(float64(n))
+}
+
+// RecordBatchConcurrencyCapped counts a batch that runs under
+// max_batch_concurrency. Satisfies middleware.BatchRecorder.
+func (r *Recorder) RecordBatchConcurrencyCapped(serviceID domain.ServiceID) {
+	r.batchCapped.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // AddBatchSubRelays moves the batch sub-relays in flight gauge.

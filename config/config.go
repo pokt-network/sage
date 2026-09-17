@@ -364,6 +364,14 @@ type ConcurrencyConfig struct {
 	// MaxBatchPayloads caps payloads in one batch request. Must be <=
 	// MaxConcurrentRelays. Default: 5500.
 	MaxBatchPayloads int `yaml:"max_batch_payloads"`
+	// MaxBatchConcurrency caps how many of one batch's payloads are relayed at
+	// once, under the global max_concurrent_relays. A larger batch runs that
+	// many at a time and takes longer; it is not refused. It bounds the bytes
+	// one batch holds mid-read, which the global slot count does not: each
+	// response body is held three to four times over while it is decoded.
+	// Default: 32. A negative value removes the cap. Applied on reload and
+	// PUT /admin/config without a restart.
+	MaxBatchConcurrency int `yaml:"max_batch_concurrency"`
 
 	// NOTE: PATH's max_parallel_endpoints has no field here on purpose. It means
 	// "how many endpoints to query in parallel per request", and SAGE has no
