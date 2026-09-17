@@ -1426,6 +1426,41 @@ func TestSeedCoverage_IgnoresUnconfiguredServices(t *testing.T) {
 	}
 }
 
+// Coverage that settles below the threshold and stops moving — services with a
+// session but no endpoint to probe, plus a warm-up read that reached only what
+// the fleet wrote in the last idle TTL — would hold readiness at 503 for the
+// pod's whole life. The gate releases on the deadline instead, and not before.
+func TestWarm_ReleasesOnTheDeadline(t *testing.T) {
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{
+		"eth": {}, "poly": {}, "kava": {}, "sei": {},
+	}}
+	exec := NewExecutor(&stubRelayer{}, &stubEndpointProvider{}, sessions,
+		probeableRegistry(t, "eth", "poly", "kava", "sei"), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
+	now := time.Now()
+	exec.now = func() time.Time { return now }
+
+	// Two of four, against a threshold of three: short, and nothing will move it.
+	exec.SeedCoverage([]domain.ServiceID{"eth", "poly"})
+	if exec.Warm() {
+		t.Fatal("precondition: coverage below the threshold must not read warm")
+	}
+
+	now = now.Add(warmDeadline - time.Second)
+	if exec.Warm() {
+		t.Error("the gate released before the deadline")
+	}
+
+	now = now.Add(2 * time.Second)
+	if !exec.Warm() {
+		t.Error("past the deadline the gate must release rather than hold 503 forever")
+	}
+	// Latched, so a later read does not go back to 503.
+	now = now.Add(time.Hour)
+	if !exec.Warm() {
+		t.Error("the release must latch")
+	}
+}
+
 // The probe stream is shared too: a replica with another config publishes
 // results for services this pod does not serve, and those must not warm it.
 func TestApplyResult_StreamResultForUnconfiguredServiceDoesNotWarm(t *testing.T) {
