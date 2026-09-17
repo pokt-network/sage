@@ -201,6 +201,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Concurrency.MaxBatchPayloads == 0 {
 		cfg.Concurrency.MaxBatchPayloads = 5500
 	}
+	if cfg.Concurrency.MaxBatchConcurrency == 0 {
+		cfg.Concurrency.MaxBatchConcurrency = 32
+	}
 
 	// Feature flags need no defaulting here: cfg.FeatureFlags carries only what
 	// YAML set, and the stores fall back to featureflag.DefaultFlags for anything

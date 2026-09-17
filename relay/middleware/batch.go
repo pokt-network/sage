@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -88,7 +89,7 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 			if len(ctx.Payloads) <= 1 {
 				return next.HandleRelay(ctx)
 			}
-			maxConcurrentRelays, maxPayloads := limits()
+			maxConcurrentRelays, maxPayloads, maxPerBatch := limits()
 			// Before the cap, so a rejected batch still says how large the
 			// batches clients send are.
 			recorder.RecordBatchPayloads(ctx.ServiceID, len(ctx.Payloads))
@@ -141,6 +142,19 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 			var heldBytes atomic.Int64
 			defer func() { recorder.AddBatchResponseBytes(-heldBytes.Load()) }()
 
+			// A batch's own ceiling, under the global one. The global budget
+			// bounds slots and says nothing about bytes: on 2026-09-16 one pod
+			// had 514 sub-relays of batches under 1000 payloads reading at once,
+			// each body held three to four times over while it is decoded, and
+			// was OOM-killed inside one scrape with the 10000-slot budget never
+			// engaged. Taken before the global slot, so a batch waiting on its
+			// own ceiling holds nothing anyone else needs.
+			var local chan struct{}
+			if maxPerBatch > 0 && n > maxPerBatch {
+				local = make(chan struct{}, maxPerBatch)
+				recorder.RecordBatchConcurrencyCapped(ctx.ServiceID)
+			}
+
 			var wg sync.WaitGroup
 			wg.Add(n)
 
@@ -149,7 +163,12 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 
 				// Acquire before spawning, so the ceiling bounds goroutines that
 				// exist rather than goroutines that have already been created.
-				if sem != nil && !acquire(ctx.Ctx, sem) {
+				gotLocal := local == nil || acquire(ctx.Ctx, local)
+				gotGlobal := gotLocal && (sem == nil || acquire(ctx.Ctx, sem))
+				if gotLocal && !gotGlobal && local != nil {
+					<-local
+				}
+				if !gotGlobal {
 					// The request is over; do not queue behind the budget for an
 					// answer nobody is waiting for. Report the rest and stop.
 					for j := i; j < n; j++ {
@@ -172,6 +191,9 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 						recorder.AddBatchSubRelays(-1)
 						if sem != nil {
 							<-sem
+						}
+						if local != nil {
+							<-local
 						}
 						wg.Done()
 					}()
@@ -226,7 +248,7 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 				ctx.Degraded = true
 			}
 
-			combined, err := json.Marshal(results)
+			combined, err := mergeBatch(results)
 			if err != nil {
 				// Extremely unlikely; fall back to an error response.
 				combined = []byte(`{"error":"failed to combine batch responses"}`)
@@ -252,17 +274,59 @@ type BatchRecorder interface {
 	// AddBatchResponseBytes moves the count of sub-relay response bytes held
 	// by batches that have not returned.
 	AddBatchResponseBytes(delta int64)
+	// RecordBatchConcurrencyCapped counts a batch larger than
+	// max_batch_concurrency, which runs its sub-relays that many at a time.
+	RecordBatchConcurrencyCapped(serviceID domain.ServiceID)
 }
 
 type noopBatchRecorder struct{}
 
-func (noopBatchRecorder) RecordBatchPayloads(domain.ServiceID, int) {}
-func (noopBatchRecorder) AddBatchSubRelays(int)                     {}
-func (noopBatchRecorder) AddBatchResponseBytes(int64)               {}
+func (noopBatchRecorder) RecordBatchPayloads(domain.ServiceID, int)     {}
+func (noopBatchRecorder) AddBatchSubRelays(int)                         {}
+func (noopBatchRecorder) AddBatchResponseBytes(int64)                   {}
+func (noopBatchRecorder) RecordBatchConcurrencyCapped(domain.ServiceID) {}
 
 // BatchLimits reports max_concurrent_relays and max_batch_payloads. <= 0
 // disables either bound.
-type BatchLimits func() (maxConcurrentRelays, maxPayloads int)
+type BatchLimits func() (maxConcurrentRelays, maxPayloads, maxPerBatch int)
+
+// mergeBatch renders the batch response array: byte for byte what
+// json.Marshal of the []json.RawMessage produces — each item compacted and
+// HTML-escaped, a nil item as null, and an error for an item that is not JSON
+// — without Marshal's working copy. Marshal builds the array in a buffer that
+// grows by doubling and then returns a copy of it, so the merge of a large
+// batch held its response bytes up to three times over at the moment the
+// batch was largest. Here the output is sized up front and each item passes
+// through one scratch buffer at a time.
+//
+// Compacting and then escaping is the same as Marshal's single pass: in
+// compact JSON the characters HTMLEscape rewrites can only appear inside
+// strings, which is where Marshal escapes them.
+func mergeBatch(results []json.RawMessage) ([]byte, error) {
+	size := len(results) + 1
+	for _, r := range results {
+		size += len(r)
+	}
+	out := bytes.NewBuffer(make([]byte, 0, size))
+	var scratch bytes.Buffer
+	out.WriteByte('[')
+	for i, r := range results {
+		if i > 0 {
+			out.WriteByte(',')
+		}
+		if r == nil {
+			out.WriteString("null")
+			continue
+		}
+		scratch.Reset()
+		if err := json.Compact(&scratch, r); err != nil {
+			return nil, err
+		}
+		json.HTMLEscape(out, scratch.Bytes())
+	}
+	out.WriteByte(']')
+	return out.Bytes(), nil
+}
 
 // acquire takes a slot from the shared budget, reporting false when the
 // request's context ended first.

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -766,7 +767,7 @@ func TestBatch_SubRelaysCarryBatchSize(t *testing.T) {
 
 // fixedLimits is a BatchLimits that never changes.
 func fixedLimits(maxConcurrentRelays, maxPayloads int) BatchLimits {
-	return func() (int, int) { return maxConcurrentRelays, maxPayloads }
+	return func() (int, int, int) { return maxConcurrentRelays, maxPayloads, 0 }
 }
 
 // Both bounds are read per batch, so an apply that lowers or raises them
@@ -775,7 +776,7 @@ func TestBatch_LimitsChangeOnARunningMiddleware(t *testing.T) {
 	var maxRelays, maxPayloads atomic.Int32
 	maxRelays.Store(1)
 	maxPayloads.Store(2)
-	limits := func() (int, int) { return int(maxRelays.Load()), int(maxPayloads.Load()) }
+	limits := func() (int, int, int) { return int(maxRelays.Load()), int(maxPayloads.Load()), 0 }
 
 	var active, peak atomic.Int32
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
@@ -810,9 +811,12 @@ type batchGauges struct {
 	payloads           atomic.Int64
 	subRelays, peakSub atomic.Int64
 	bytes, peakBytes   atomic.Int64
+	capped             atomic.Int64
 }
 
 func (g *batchGauges) RecordBatchPayloads(_ domain.ServiceID, n int) { g.payloads.Add(int64(n)) }
+
+func (g *batchGauges) RecordBatchConcurrencyCapped(domain.ServiceID) { g.capped.Add(1) }
 
 func (g *batchGauges) AddBatchSubRelays(delta int) {
 	n := g.subRelays.Add(int64(delta))
@@ -850,4 +854,65 @@ func TestBatch_RecordsFanOut(t *testing.T) {
 	assert.Equal(t, int64(6*len(body)), g.peakBytes.Load(), "every response is held until the batch returns")
 	assert.Zero(t, g.subRelays.Load())
 	assert.Zero(t, g.bytes.Load())
+}
+
+// A batch over max_batch_concurrency runs that many sub-relays at a time
+// however large the global budget is, and says so; a batch at the ceiling
+// runs as before and is not counted.
+func TestBatch_PerBatchConcurrencyCap(t *testing.T) {
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		time.Sleep(10 * time.Millisecond)
+		ctx.Response = &domain.Response{Body: []byte(`{"result":"0x1"}`), HTTPStatusCode: 200}
+		return nil
+	})
+	payloads := func(n int) []domain.Payload {
+		out := make([]domain.Payload, n)
+		for i := range out {
+			out[i] = domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+		}
+		return out
+	}
+	g := &batchGauges{}
+	handler := Batch(func() (int, int, int) { return 1000, 100, 3 }, nil, nil, g)(inner)
+
+	require.NoError(t, handler.HandleRelay(makeMultiPayloadCtx(payloads(3))))
+	assert.Zero(t, g.capped.Load(), "a batch at the ceiling is not capped")
+
+	ctx := makeMultiPayloadCtx(payloads(12))
+	require.NoError(t, handler.HandleRelay(ctx))
+	assert.Equal(t, int64(3), g.peakSub.Load(), "twelve payloads run three at a time")
+	assert.Equal(t, int64(1), g.capped.Load())
+	var items []json.RawMessage
+	require.NoError(t, json.Unmarshal(ctx.Response.Body, &items))
+	assert.Len(t, items, 12, "every payload still answered")
+}
+
+// The merge must not change a byte of what clients received from json.Marshal:
+// compacted items, HTML-escaped strings, null for a missing item, and the same
+// refusal of a body that is not JSON.
+func TestMergeBatch_ByteIdenticalToMarshal(t *testing.T) {
+	cases := [][]json.RawMessage{
+		{json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`), json.RawMessage(`{"jsonrpc":"2.0","id":2,"result":"0x2"}`)},
+		{json.RawMessage("{\n  \"id\": 1,\n  \"result\": [1, 2,  3]\n}\n"), json.RawMessage(` "x" `)},
+		{json.RawMessage(`{"result":"<script>&amp;</script>"}`), json.RawMessage(`{"result":"line\u2028sep \u2029  "}`)},
+		{json.RawMessage(`{"result":"café \u00e9 \"quoted\""}`), nil, json.RawMessage(`12345678901234567890`)},
+		{json.RawMessage(`[]`), json.RawMessage(`{}`), json.RawMessage(`null`), json.RawMessage(`true`)},
+	}
+	for i, results := range cases {
+		want, wantErr := json.Marshal(results)
+		got, gotErr := mergeBatch(results)
+		if (wantErr != nil) != (gotErr != nil) {
+			t.Fatalf("case %d: Marshal err %v, mergeBatch err %v", i, wantErr, gotErr)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("case %d:\n got %s\nwant %s", i, got, want)
+		}
+	}
+	for _, bad := range []json.RawMessage{json.RawMessage(`<html>502</html>`), json.RawMessage(`{"a":`)} {
+		_, wantErr := json.Marshal([]json.RawMessage{bad})
+		_, gotErr := mergeBatch([]json.RawMessage{bad})
+		if wantErr == nil || gotErr == nil {
+			t.Errorf("%s: Marshal err %v, mergeBatch err %v, want both to refuse", bad, wantErr, gotErr)
+		}
+	}
 }

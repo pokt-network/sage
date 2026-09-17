@@ -97,6 +97,7 @@ Controls parallel processing limits.
 |---|---|---|
 | `max_concurrent_relays` | integer | A global ceiling on relay goroutines in flight across all batch requests. Default: 10000. |
 | `max_batch_payloads` | integer | Caps payloads in one batch request. Must be <= MaxConcurrentRelays. Default: 5500. |
+| `max_batch_concurrency` | integer | Caps how many of one batch's payloads are relayed at once, under the global max_concurrent_relays. A larger batch runs that many at a time and takes longer; it is not refused. It bounds the bytes one batch holds mid-read, which the global slot count does not: each response body is held three to four times over while it is decoded. Default: 32. A negative value removes the cap. Applied on reload and PUT /admin/config without a restart. |
 
 ## `full_node_config`
 
