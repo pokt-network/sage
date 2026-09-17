@@ -24,13 +24,14 @@ func Shadow(flags featureflag.FlagStore) relay.Middleware {
 				return next.HandleRelay(ctx)
 			}
 
-			// Run the full relay pipeline (including send to backend).
-			_ = next.HandleRelay(ctx)
-
-			// Suppress the response — client sees nothing.
+			// Suppress the response — client sees nothing. Before the chain
+			// runs, not after: a streamed batch writes its body from inside it.
 			if ctx.Writer != nil {
 				ctx.Writer.SetShadow(true)
 			}
+
+			// Run the full relay pipeline (including send to backend).
+			_ = next.HandleRelay(ctx)
 
 			// Always report success from the shadow middleware's perspective.
 			return nil

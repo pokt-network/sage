@@ -372,6 +372,19 @@ type ConcurrencyConfig struct {
 	// Default: 32. A negative value removes the cap. Applied on reload and
 	// PUT /admin/config without a restart.
 	MaxBatchConcurrency int `yaml:"max_batch_concurrency"`
+	// MaxBatchWindow is how many finished answers a streamed batch may keep
+	// waiting behind a slower earlier one before it stops starting new
+	// payloads. A batch's answers are written in order as they are ready and
+	// released once written, so the most one batch holds is
+	// (max_batch_concurrency + max_batch_window) × answer size, whatever its
+	// payload count. Larger lets fast answers keep flowing past a slow one;
+	// smaller holds less. Default: 32, the same as max_batch_concurrency, so a
+	// single slow item never stalls a batch before a full concurrency's worth
+	// of answers has finished behind it. A negative value removes the window
+	// (the batch still streams, but holds whatever finishes). No effect when
+	// max_batch_concurrency is negative. Applied on reload and
+	// PUT /admin/config without a restart.
+	MaxBatchWindow int `yaml:"max_batch_window"`
 
 	// NOTE: PATH's max_parallel_endpoints has no field here on purpose. It means
 	// "how many endpoints to query in parallel per request", and SAGE has no

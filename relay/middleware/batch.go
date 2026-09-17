@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -91,7 +91,7 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 				return next.HandleRelay(ctx)
 			}
 			start := time.Now()
-			maxConcurrentRelays, maxPayloads, maxPerBatch := limits()
+			maxConcurrentRelays, maxPayloads, maxPerBatch, maxWindow := limits()
 			// Before the cap, so a rejected batch still says how large the
 			// batches clients send are.
 			recorder.RecordBatchPayloads(ctx.ServiceID, len(ctx.Payloads))
@@ -157,97 +157,199 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 				recorder.RecordBatchConcurrencyCapped(ctx.ServiceID, n)
 			}
 
-			var wg sync.WaitGroup
-			wg.Add(n)
-
-			for i, payload := range ctx.Payloads {
-				i, payload := i, payload // capture loop variables
-
-				// Acquire before spawning, so the ceiling bounds goroutines that
-				// exist rather than goroutines that have already been created.
-				gotLocal := local == nil || acquire(ctx.Ctx, local)
-				gotGlobal := gotLocal && (sem == nil || acquire(ctx.Ctx, sem))
-				if gotLocal && !gotGlobal && local != nil {
-					<-local
-				}
-				if !gotGlobal {
-					// The request is over; do not queue behind the budget for an
-					// answer nobody is waiting for. Report the rest and stop.
-					for j := i; j < n; j++ {
-						results[j] = jsonRPCErrorItem(ctx.Payloads[j].JSONRPCID(),
-							"batch payload not started: "+ctx.Ctx.Err().Error())
-						wg.Done()
-					}
-					break
-				}
-
-				recorder.AddBatchSubRelays(1)
-				go func() {
-					// First, so it runs last: safego.Call below converts a
-					// panic inside the relay into this payload's error, and
-					// this contains one in the clone and result bookkeeping
-					// around it — after wg.Done has already run, so the batch
-					// still completes.
-					defer safego.Recover(ctx.Logger, "batch.payload.goroutine")
-					defer func() {
-						recorder.AddBatchSubRelays(-1)
-						if sem != nil {
-							<-sem
-						}
-						if local != nil {
-							<-local
-						}
-						wg.Done()
-					}()
-
-					sub := ctx.Clone()
-					sub.Payloads = []domain.Payload{payload}
-					sub.BatchSize = n
-					sub.Response = nil
-					sub.Err = nil
-					// A verdict belongs to the attempt that produced it, and
-					// Clone() is shallow — without this a sub-relay starts out
-					// holding the parent's.
-					sub.HeuristicResult = nil
-
-					// A panic here becomes this payload's error rather than the
-					// process's exit: wg.Done() already runs on the way out, so
-					// an unconverted panic would leave results[i] empty and the
-					// client would get a null where an error belongs.
-					err := safego.Call(sub.Logger, "batch.payload", func() error {
-						return next.HandleRelay(sub)
-					})
-					if sub.Degraded {
-						degraded.Store(true)
-					}
-					// domain.ClientMessage, not err.Error(): the cause chain
-					// names the operator's own infrastructure, exactly as on the
-					// single-request path in router.writeRelayError.
-					if err != nil {
-						results[i] = jsonRPCErrorItem(payload.JSONRPCID(), domain.ClientMessage(err))
-						return
-					}
-					// An empty body is not a response object; a null in its
-					// place is not one either. The client asked a question and
-					// gets an error it can attribute.
-					if sub.Response == nil || len(sub.Response.Body) == 0 {
-						results[i] = jsonRPCErrorItem(payload.JSONRPCID(), "endpoint error: empty response")
-						return
-					}
-					results[i] = json.RawMessage(sub.Response.Body)
-					heldBytes.Add(int64(len(sub.Response.Body)))
-					recorder.AddBatchResponseBytes(int64(len(sub.Response.Body)))
-				}()
+			// Streamed when the writer can take the body in pieces: each
+			// answer goes out in order as soon as it and every one before it
+			// are in, and is released once written, so a batch holds only what
+			// is in flight or waiting behind a slower earlier item — not N
+			// answers and then a merged copy of them (a 500-item eth batch at
+			// 1.6MiB per answer peaked a pod from 274M to 901M on 2026-09-17).
+			// The window bounds the waiting part: an item does not start while
+			// max_batch_concurrency + max_batch_window started items are still
+			// unwritten, which is what makes the held bytes at most that many
+			// answers. A slow client holds the window by back-pressure.
+			stream, streaming := ctx.Writer.(relay.StreamWriter)
+			var window chan struct{}
+			if streaming && maxPerBatch > 0 && maxWindow >= 0 {
+				window = make(chan struct{}, maxPerBatch+maxWindow)
 			}
 
-			wg.Wait()
+			// Cancelled when the client goes away mid-stream, so the answers
+			// nobody will read stop being fetched.
+			batchCtx, cancelBatch := context.WithCancel(ctx.Ctx)
+			defer cancelBatch()
+
+			// ready carries each item's index once its result is set, started
+			// or not; sizes and started are written before that send and read
+			// only after it.
+			ready := make(chan int, n)
+			sizes := make([]int64, n)
+			started := make([]bool, n)
+
+			safego.Go(ctx.Logger, "batch.dispatch", func() {
+				for i, payload := range ctx.Payloads {
+					// Acquire before spawning, so the ceilings bound goroutines
+					// that exist rather than goroutines already created.
+					gotWindow := window == nil || acquire(batchCtx, window)
+					gotLocal := gotWindow && (local == nil || acquire(batchCtx, local))
+					gotGlobal := gotLocal && (sem == nil || acquire(batchCtx, sem))
+					if !gotGlobal {
+						if gotLocal && local != nil {
+							<-local
+						}
+						if gotWindow && window != nil {
+							<-window
+						}
+						// The request is over, or its client gone; do not queue
+						// behind the budget for an answer nobody is waiting for.
+						for j := i; j < n; j++ {
+							results[j] = jsonRPCErrorItem(ctx.Payloads[j].JSONRPCID(),
+								"batch payload not started: "+batchCtx.Err().Error())
+							ready <- j
+						}
+						return
+					}
+					started[i] = true
+
+					recorder.AddBatchSubRelays(1)
+					go func() {
+						// First, so it runs last: safego.Call below converts a
+						// panic inside the relay into this payload's error, and
+						// this contains one in the clone and result bookkeeping
+						// around it — after ready has been told, so the batch
+						// still completes.
+						defer safego.Recover(ctx.Logger, "batch.payload.goroutine")
+						defer func() {
+							recorder.AddBatchSubRelays(-1)
+							if sem != nil {
+								<-sem
+							}
+							if local != nil {
+								<-local
+							}
+							ready <- i
+						}()
+
+						sub := ctx.Clone()
+						sub.Ctx = batchCtx
+						sub.Payloads = []domain.Payload{payload}
+						sub.BatchSize = n
+						sub.Response = nil
+						sub.Err = nil
+						// A verdict belongs to the attempt that produced it, and
+						// Clone() is shallow — without this a sub-relay starts out
+						// holding the parent's.
+						sub.HeuristicResult = nil
+
+						// A panic here becomes this payload's error rather than
+						// the process's exit: ready is told on the way out, so an
+						// unconverted panic would leave results[i] empty and the
+						// client would get a null where an error belongs.
+						err := safego.Call(sub.Logger, "batch.payload", func() error {
+							return next.HandleRelay(sub)
+						})
+						if sub.Degraded {
+							degraded.Store(true)
+						}
+						// domain.ClientMessage, not err.Error(): the cause chain
+						// names the operator's own infrastructure, exactly as on
+						// the single-request path in router.writeRelayError.
+						if err != nil {
+							results[i] = jsonRPCErrorItem(payload.JSONRPCID(), domain.ClientMessage(err))
+							return
+						}
+						// An empty body is not a response object; a null in its
+						// place is not one either. The client asked a question
+						// and gets an error it can attribute.
+						if sub.Response == nil || len(sub.Response.Body) == 0 {
+							results[i] = jsonRPCErrorItem(payload.JSONRPCID(), "endpoint error: empty response")
+							return
+						}
+						results[i] = json.RawMessage(sub.Response.Body)
+						sizes[i] = int64(len(sub.Response.Body))
+						heldBytes.Add(sizes[i])
+						recorder.AddBatchResponseBytes(sizes[i])
+					}()
+				}
+			})
+
+			// Collect in order. Unstreamed, every answer is kept for the merge;
+			// streamed, each is written the moment the ones before it are, and
+			// then released.
+			var (
+				out       relay.StreamWriter
+				chunk     bytes.Buffer
+				scratch   bytes.Buffer
+				abandoned bool
+			)
+			if streaming {
+				out = stream
+				ctx.Writer.SetHeader("Content-Type", "application/json")
+				if err := out.WriteStream([]byte{'['}); err != nil {
+					abandoned = true
+					cancelBatch()
+				}
+			}
+			done := make([]bool, n)
+			nextOut := 0
+			for received := 0; received < n; received++ {
+				done[<-ready] = true
+				for nextOut < n && done[nextOut] {
+					if streaming {
+						if !abandoned && errors.Is(ctx.Ctx.Err(), context.Canceled) {
+							abandoned = true
+							cancelBatch()
+						}
+						if !abandoned {
+							chunk.Reset()
+							if nextOut > 0 {
+								chunk.WriteByte(',')
+							}
+							if err := appendItem(&chunk, &scratch, results[nextOut]); err != nil {
+								// Not the whole response's fallback body, as the
+								// unstreamed merge does: earlier answers are
+								// already on the wire. The item becomes an error
+								// its id can be matched to. A failed Compact
+								// wrote nothing to chunk.
+								_ = appendItem(&chunk, &scratch, jsonRPCErrorItem(ctx.Payloads[nextOut].JSONRPCID(),
+									"endpoint error: response is not JSON"))
+							}
+							if err := out.WriteStream(chunk.Bytes()); err != nil {
+								abandoned = true
+								cancelBatch()
+							}
+						}
+						results[nextOut] = nil
+						heldBytes.Add(-sizes[nextOut])
+						recorder.AddBatchResponseBytes(-sizes[nextOut])
+						if window != nil && started[nextOut] {
+							<-window
+						}
+					}
+					nextOut++
+				}
+			}
 
 			// Sub-relays run on clones, so a fallback in any of them is invisible
 			// to the caller unless it is merged back — the batch response is
 			// partly degraded if any part of it was. Mirrors hedge.mergeContext,
-			// which does the same for its winning arm.
+			// which does the same for its winning arm. A streamed batch has
+			// committed its headers, so this reaches sage_degraded_total and not
+			// X-Degraded.
 			if degraded.Load() {
 				ctx.Degraded = true
+			}
+
+			if streaming {
+				if abandoned {
+					recorder.RecordBatchClientDisconnect(ctx.ServiceID)
+				} else {
+					_ = out.WriteStream([]byte{']'})
+				}
+				// The body is on the wire; the router's write of this empty
+				// response is a no-op on a committed writer.
+				ctx.Response = &domain.Response{HTTPStatusCode: http.StatusOK}
+				recorder.RecordBatchSeconds(ctx.ServiceID, n, time.Since(start))
+				return nil
 			}
 
 			combined, err := mergeBatch(results)
@@ -283,9 +385,12 @@ type BatchRecorder interface {
 	// max_batch_concurrency, which runs its sub-relays that many at a time.
 	RecordBatchConcurrencyCapped(serviceID domain.ServiceID, n int)
 	// RecordBatchSeconds observes a batch of n payloads from the middleware's
-	// entry to its merged response. A batch refused over max_batch_payloads
-	// is not observed.
+	// entry to its last byte written when streamed, or its merged response
+	// when not. A batch refused over max_batch_payloads is not observed.
 	RecordBatchSeconds(serviceID domain.ServiceID, n int, d time.Duration)
+	// RecordBatchClientDisconnect counts a streamed batch whose client went
+	// away before the last answer was written.
+	RecordBatchClientDisconnect(serviceID domain.ServiceID)
 }
 
 type noopBatchRecorder struct{}
@@ -295,10 +400,11 @@ func (noopBatchRecorder) AddBatchSubRelays(int)                                 
 func (noopBatchRecorder) AddBatchResponseBytes(int64)                             {}
 func (noopBatchRecorder) RecordBatchConcurrencyCapped(domain.ServiceID, int)      {}
 func (noopBatchRecorder) RecordBatchSeconds(domain.ServiceID, int, time.Duration) {}
+func (noopBatchRecorder) RecordBatchClientDisconnect(domain.ServiceID)            {}
 
 // BatchLimits reports max_concurrent_relays and max_batch_payloads. <= 0
 // disables either bound.
-type BatchLimits func() (maxConcurrentRelays, maxPayloads, maxPerBatch int)
+type BatchLimits func() (maxConcurrentRelays, maxPayloads, maxPerBatch, maxWindow int)
 
 // mergeBatch renders the batch response array: byte for byte what
 // json.Marshal of the []json.RawMessage produces — each item compacted and
@@ -324,18 +430,27 @@ func mergeBatch(results []json.RawMessage) ([]byte, error) {
 		if i > 0 {
 			out.WriteByte(',')
 		}
-		if r == nil {
-			out.WriteString("null")
-			continue
-		}
-		scratch.Reset()
-		if err := json.Compact(&scratch, r); err != nil {
+		if err := appendItem(out, &scratch, r); err != nil {
 			return nil, err
 		}
-		json.HTMLEscape(out, scratch.Bytes())
 	}
 	out.WriteByte(']')
 	return out.Bytes(), nil
+}
+
+// appendItem writes one batch answer as json.Marshal would inside the array:
+// compacted, HTML-escaped, null when missing. scratch is reused between items.
+func appendItem(out, scratch *bytes.Buffer, r json.RawMessage) error {
+	if r == nil {
+		out.WriteString("null")
+		return nil
+	}
+	scratch.Reset()
+	if err := json.Compact(scratch, r); err != nil {
+		return err
+	}
+	json.HTMLEscape(out, scratch.Bytes())
+	return nil
 }
 
 // acquire takes a slot from the shared budget, reporting false when the
