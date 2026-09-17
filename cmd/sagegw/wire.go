@@ -495,6 +495,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// 9. Metrics recorder
 	recorder := metrics.NewRecorder(serviceIDsFrom(cfg))
 	app.Metrics = recorder
+	// Reputation write-behind losses were silent: a full queue dropped a
+	// write with nothing to count it.
+	repSvc.SetWriteDropHook(recorder.RecordReputationWriteDropped)
+	prometheus.MustRegister(metrics.NewReputationWriteQueueDepth(repSvc.WriteQueueDepth))
 
 	// Auto-drain engine (docs/auto-drain.md). Needs a drain store, so not on
 	// the mock protocol. Not on an instance that follows a peer's probe
