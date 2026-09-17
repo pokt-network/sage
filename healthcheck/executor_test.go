@@ -1559,3 +1559,88 @@ func TestLogWarmProgress_BoundsTheServiceList(t *testing.T) {
 		t.Errorf("listed %d services, want %d: %s", strings.Count(out, "svc-"), maxUnwarmedServicesLogged, out)
 	}
 }
+
+// perServiceEndpoints answers AvailableEndpoints per service, so a test can
+// give one service suppliers and another none.
+type perServiceEndpoints struct {
+	mu   sync.Mutex
+	eps  map[domain.ServiceID]domain.EndpointAddrList
+	some domain.EndpointAddrList
+}
+
+func (p *perServiceEndpoints) AvailableEndpoints(_ context.Context, svc domain.ServiceID, _ domain.RPCType) (domain.EndpointAddrList, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.eps[svc], nil
+}
+
+func (p *perServiceEndpoints) give(svc domain.ServiceID) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.eps[svc] = p.some
+}
+
+// A service that declares checks but has no endpoint staked for their RPC types
+// can never be covered, so counting it towards the threshold made the threshold
+// unreachable: 40 of 64 covered on mainnet against a threshold of 48 that
+// included 24 such services. The denominator must exclude them, and must say
+// how many it excluded.
+func TestRefreshWarmDenominator_ExcludesServicesWithNoEndpointToProbe(t *testing.T) {
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{
+		"eth": {}, "poly": {}, "kava": {}, "sei": {},
+	}}
+	eps := &perServiceEndpoints{
+		eps:  map[domain.ServiceID]domain.EndpointAddrList{"eth": {"pokt1a-https://a.example"}},
+		some: domain.EndpointAddrList{"pokt1b-https://b.example"},
+	}
+	exec := NewExecutor(&stubRelayer{}, eps, sessions,
+		probeableRegistry(t, "eth", "poly", "kava", "sei"), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
+
+	// Before any pass: the conservative count, 75% of all four.
+	if _, needed, _ := exec.WarmProgress(); needed != 3 {
+		t.Fatalf("precondition: needed = %d, want 3 (75%% of four probeable)", needed)
+	}
+
+	// One service has endpoints, so the threshold is 75% of one, and covering
+	// that one service is enough.
+	exec.SeedCoverage([]domain.ServiceID{"eth"})
+	exec.refreshWarmDenominator(context.Background())
+
+	covered, needed, unprobeable := exec.WarmProgress()
+	if covered != 1 || needed != 1 || unprobeable != 3 {
+		t.Errorf("covered=%d needed=%d unprobeable=%d, want 1/1/3", covered, needed, unprobeable)
+	}
+	if !exec.Warm() {
+		t.Error("coverage of every service that can be covered must read warm, with no deadline wait")
+	}
+}
+
+// A service excluded for having no suppliers must not be written off for the
+// life of the process: when its endpoints appear it rejoins the denominator.
+func TestRefreshWarmDenominator_ServiceRejoinsWhenEndpointsAppear(t *testing.T) {
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{
+		"eth": {}, "poly": {}, "kava": {}, "sei": {},
+	}}
+	eps := &perServiceEndpoints{
+		eps:  map[domain.ServiceID]domain.EndpointAddrList{"eth": {"pokt1a-https://a.example"}},
+		some: domain.EndpointAddrList{"pokt1b-https://b.example"},
+	}
+	exec := NewExecutor(&stubRelayer{}, eps, sessions,
+		probeableRegistry(t, "eth", "poly", "kava", "sei"), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
+
+	exec.refreshWarmDenominator(context.Background())
+	if _, needed, _ := exec.WarmProgress(); needed != 1 {
+		t.Fatalf("precondition: needed = %d, want 1", needed)
+	}
+
+	// Three more services get suppliers; the denominator grows with them.
+	for _, svc := range []domain.ServiceID{"poly", "kava", "sei"} {
+		eps.give(svc)
+	}
+	exec.refreshWarmDenominator(context.Background())
+
+	_, needed, unprobeable := exec.WarmProgress()
+	if needed != 3 || unprobeable != 0 {
+		t.Errorf("needed=%d unprobeable=%d, want 3/0 once every service has endpoints", needed, unprobeable)
+	}
+}

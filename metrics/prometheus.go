@@ -903,10 +903,17 @@ func (r *Recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 //
 //	sage_health_check_warm_services_covered <count>
 //	sage_health_check_warm_services_needed <count>
+//	sage_health_check_warm_services_unprobeable <count>
 //
 // Covered below needed is a pod answering /ready with 503, and the pair says
 // how far short it is. Read at scrape time, so covered climbs as coverage
-// arrives; both are flat once the pod is warm, because the gate latches.
+// arrives; all three are flat once the pod is warm, because the gate latches.
+//
+// Needed is 75% of the services that can produce coverage at all, which is not
+// 75% of the config: one that declares checks but has no endpoint staked for
+// their RPC types can never be covered, and counting it made the threshold
+// unreachable. Unprobeable is how many were excluded, so the two together say
+// what the denominator is and why it moved.
 //
 // It exists because a held pod was undiagnosable from outside. /ready returns a
 // bare status code, the gate's own explanation is a WARN that production log
@@ -920,18 +927,23 @@ func (r *Recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 //
 // Name and Help are literals per gauge because internal/docgen reads them from
 // the AST; a metric named by a variable is one docs/metrics.md omits.
-func NewWarmGauges(progress func() (covered, needed int)) []prometheus.Collector {
+func NewWarmGauges(progress func() (covered, needed, unprobeable int)) []prometheus.Collector {
 	return []prometheus.Collector{
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Namespace: "sage",
 			Name:      "health_check_warm_services_covered",
 			Help:      "Services the health-check warm gate has applied a result for, from the startup warm-up read or from probes since. Below sage_health_check_warm_services_needed the pod answers /ready with 503 and takes no traffic.",
-		}, func() float64 { covered, _ := progress(); return float64(covered) }),
+		}, func() float64 { covered, _, _ := progress(); return float64(covered) }),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 			Namespace: "sage",
 			Name:      "health_check_warm_services_needed",
-			Help:      "Services the warm gate needs covered before readiness: 75% of the services that can be probed at all, computed once at the first readiness read. A service with a session but no endpoint to probe counts here and can never be covered, which is why the gate also releases on a deadline.",
-		}, func() float64 { _, needed := progress(); return float64(needed) }),
+			Help:      "Services the warm gate needs covered before readiness: 75% of the services that declare checks AND have an endpoint to send one to, recomputed every cycle. Services with no endpoint are excluded and counted in sage_health_check_warm_services_unprobeable, so this shrinks for a reason rather than mysteriously; it is the threshold actually applied, and the deadline release is judged against it.",
+		}, func() float64 { _, needed, _ := progress(); return float64(needed) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "health_check_warm_services_unprobeable",
+			Help:      "Services left OUT of sage_health_check_warm_services_needed because they declare checks but have no endpoint staked for any of their RPC types, so no probe can be sent and no coverage can ever arrive. This is why the threshold is lower than 75% of the configured services, and it is recomputed every cycle: a service whose suppliers appear later leaves this count and rejoins the denominator. High and steady means that much of the config has no suppliers on the network.",
+		}, func() float64 { _, _, unprobeable := progress(); return float64(unprobeable) }),
 	}
 }
 
