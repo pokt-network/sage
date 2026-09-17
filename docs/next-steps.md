@@ -14,6 +14,28 @@ PATH `origin/main` at `4606957a`, 2026-08-25; new work is on
 
 ## Open (2026-09-15)
 
+- **Pod-wide response byte budget (D): plan of record, on hold until a day of
+  `48081c0` data.** The 2026-09-16 23:44Z OOM was about 514 batch sub-relays
+  reading at once, each body held three to four times over while it is read and
+  decoded. `max_batch_concurrency` (32) and the copy-free merge shipped first.
+  Decide on D after reading `sage_batch_concurrency_capped_total`, the OOMs, and
+  big-batch latency. There is no latency metric by batch size, so read
+  `sage_client_latency_seconds` p99 on the capped services. The design, as
+  agreed:
+  - Reserve 3× a per-(service, method) EWMA of body size, floor 4KiB, before
+    the relay is signed.
+  - Wait in FIFO order, bounded only by the attempt's context. A reservation is
+    clamped to the budget size.
+  - On expiry the attempt fails `unavailable: gateway busy: response budget
+    exhausted`: non-retryable, not scored, no breaker. A single request gets
+    503 with -32603; in a batch only that item gets -32603.
+  - A sent relay is never failed for bytes. Its reservation tops up without
+    waiting and may overdraw, up to `max_response_mb` × 3 per response.
+  - Released when SendRelay returns.
+  - A `concurrency_config` key with a live seam, default 1024MiB. Health-check
+    probes are exempt.
+  - Metrics: limit and reserved bytes (gauges), waits and wait seconds,
+    rejections, overdraw bytes.
 - **Multi-supplier quorum: agreement between live operators is unproven.**
   Built 2026-09-16 behind the `quorum` flag (off); decisions in
   `docs/design/specs/2026-08-31-multi-supplier-quorum-design.md` under "Built".
