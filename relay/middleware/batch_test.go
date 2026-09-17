@@ -812,11 +812,20 @@ type batchGauges struct {
 	subRelays, peakSub atomic.Int64
 	bytes, peakBytes   atomic.Int64
 	capped             atomic.Int64
+	timed              atomic.Int64
+	timedPayloads      atomic.Int64
+	timedNanos         atomic.Int64
 }
 
 func (g *batchGauges) RecordBatchPayloads(_ domain.ServiceID, n int) { g.payloads.Add(int64(n)) }
 
-func (g *batchGauges) RecordBatchConcurrencyCapped(domain.ServiceID) { g.capped.Add(1) }
+func (g *batchGauges) RecordBatchConcurrencyCapped(domain.ServiceID, int) { g.capped.Add(1) }
+
+func (g *batchGauges) RecordBatchSeconds(_ domain.ServiceID, n int, d time.Duration) {
+	g.timed.Add(1)
+	g.timedPayloads.Add(int64(n))
+	g.timedNanos.Add(int64(d))
+}
 
 func (g *batchGauges) AddBatchSubRelays(delta int) {
 	n := g.subRelays.Add(int64(delta))
@@ -850,6 +859,9 @@ func TestBatch_RecordsFanOut(t *testing.T) {
 	require.Error(t, handler.HandleRelay(makeMultiPayloadCtx(append(payloads, payloads[0]))))
 
 	assert.Equal(t, int64(13), g.payloads.Load(), "6 served + 7 refused")
+	assert.Equal(t, int64(1), g.timed.Load(), "only the served batch is timed")
+	assert.Equal(t, int64(6), g.timedPayloads.Load())
+	assert.GreaterOrEqual(t, time.Duration(g.timedNanos.Load()), 20*time.Millisecond, "six 10ms sub-relays three at a time take two rounds")
 	assert.Equal(t, int64(3), g.peakSub.Load(), "sub-relays in flight peak at the budget")
 	assert.Equal(t, int64(6*len(body)), g.peakBytes.Load(), "every response is held until the batch returns")
 	assert.Zero(t, g.subRelays.Load())

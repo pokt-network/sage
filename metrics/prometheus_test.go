@@ -791,3 +791,11 @@ func TestRecordSelectionTier(t *testing.T) {
 		t.Errorf("series = %d, want 2 (tiers 1 and 3 only)", n)
 	}
 }
+
+func TestBatchSize(t *testing.T) {
+	for n, want := range map[int]string{2: "le32", 32: "le32", 33: "le128", 128: "le128", 129: "le512", 512: "le512", 513: "gt512", 5500: "gt512"} {
+		if got := batchSize(n); got != want {
+			t.Errorf("batchSize(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
