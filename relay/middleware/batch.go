@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
@@ -89,6 +90,7 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 			if len(ctx.Payloads) <= 1 {
 				return next.HandleRelay(ctx)
 			}
+			start := time.Now()
 			maxConcurrentRelays, maxPayloads, maxPerBatch := limits()
 			// Before the cap, so a rejected batch still says how large the
 			// batches clients send are.
@@ -152,7 +154,7 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 			var local chan struct{}
 			if maxPerBatch > 0 && n > maxPerBatch {
 				local = make(chan struct{}, maxPerBatch)
-				recorder.RecordBatchConcurrencyCapped(ctx.ServiceID)
+				recorder.RecordBatchConcurrencyCapped(ctx.ServiceID, n)
 			}
 
 			var wg sync.WaitGroup
@@ -258,6 +260,9 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 				Body:           combined,
 				HTTPStatusCode: http.StatusOK,
 			}
+			// Merge included; the router's write is not, and is in
+			// sage_stage_seconds_total{stage="router_write"}.
+			recorder.RecordBatchSeconds(ctx.ServiceID, n, time.Since(start))
 			return nil
 		})
 	}
@@ -274,17 +279,22 @@ type BatchRecorder interface {
 	// AddBatchResponseBytes moves the count of sub-relay response bytes held
 	// by batches that have not returned.
 	AddBatchResponseBytes(delta int64)
-	// RecordBatchConcurrencyCapped counts a batch larger than
+	// RecordBatchConcurrencyCapped counts a batch of n payloads larger than
 	// max_batch_concurrency, which runs its sub-relays that many at a time.
-	RecordBatchConcurrencyCapped(serviceID domain.ServiceID)
+	RecordBatchConcurrencyCapped(serviceID domain.ServiceID, n int)
+	// RecordBatchSeconds observes a batch of n payloads from the middleware's
+	// entry to its merged response. A batch refused over max_batch_payloads
+	// is not observed.
+	RecordBatchSeconds(serviceID domain.ServiceID, n int, d time.Duration)
 }
 
 type noopBatchRecorder struct{}
 
-func (noopBatchRecorder) RecordBatchPayloads(domain.ServiceID, int)     {}
-func (noopBatchRecorder) AddBatchSubRelays(int)                         {}
-func (noopBatchRecorder) AddBatchResponseBytes(int64)                   {}
-func (noopBatchRecorder) RecordBatchConcurrencyCapped(domain.ServiceID) {}
+func (noopBatchRecorder) RecordBatchPayloads(domain.ServiceID, int)               {}
+func (noopBatchRecorder) AddBatchSubRelays(int)                                   {}
+func (noopBatchRecorder) AddBatchResponseBytes(int64)                             {}
+func (noopBatchRecorder) RecordBatchConcurrencyCapped(domain.ServiceID, int)      {}
+func (noopBatchRecorder) RecordBatchSeconds(domain.ServiceID, int, time.Duration) {}
 
 // BatchLimits reports max_concurrent_relays and max_batch_payloads. <= 0
 // disables either bound.

@@ -66,6 +66,7 @@ type Recorder struct {
 	responseBytes         *prometheus.HistogramVec
 	batchPayloads         *prometheus.HistogramVec
 	batchCapped           *prometheus.CounterVec
+	batchSeconds          *prometheus.HistogramVec
 	quorumRequests        *prometheus.CounterVec
 	selectionTiers        *prometheus.CounterVec
 	quorumDissent         *prometheus.CounterVec
@@ -298,9 +299,18 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "batch_concurrency_capped_total",
-				Help:      "Batch requests with more payloads than concurrency_config.max_batch_concurrency, by service. Such a batch relays that many payloads at a time and waits on its own ceiling for the rest, so it is answered later than it would be uncapped; against rate(sage_batch_payloads_count) this is the share of batches that ceiling slows.",
+				Help:      "Batch requests with more payloads than concurrency_config.max_batch_concurrency, by service and payload-count bucket (size: le32, le128, le512, gt512, the same buckets as sage_batch_seconds). Such a batch relays that many payloads at a time and waits on its own ceiling for the rest, so it is answered later than it would be uncapped; against sage_batch_seconds_count of the same size this is the share of batches of that size the ceiling slows.",
 			},
-			[]string{"service_id"},
+			[]string{"service_id", "size"},
+		),
+		batchSeconds: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "batch_seconds",
+				Help:      "Wall time of a batch request, by service and payload-count bucket (size: le32, le128, le512, gt512 payloads, counted before any cap), from the batch middleware's entry to its merged response, merge included; the router's write is in sage_stage_seconds_total{stage=\"router_write\"}. A batch refused over max_batch_payloads is not observed (sage_batch_payloads counts it). This is the evidence for tuning concurrency_config.max_batch_concurrency: a lower cap bounds memory and shows up here as latency on the larger sizes.",
+				Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30},
+			},
+			[]string{"service_id", "size"},
 		),
 		batchSubRelays: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "sage",
@@ -446,6 +456,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.responseBytes,
 		r.batchPayloads,
 		r.batchCapped,
+		r.batchSeconds,
 		r.quorumRequests,
 		r.selectionTiers,
 		r.quorumDissent,
@@ -584,10 +595,28 @@ func (r *Recorder) RecordQuorumDissent(serviceID domain.ServiceID, n int) {
 	r.quorumDissent.WithLabelValues(r.services.serviceValue(serviceID)).Add(float64(n))
 }
 
-// RecordBatchConcurrencyCapped counts a batch that runs under
+// RecordBatchConcurrencyCapped counts a batch of n payloads that runs under
 // max_batch_concurrency. Satisfies middleware.BatchRecorder.
-func (r *Recorder) RecordBatchConcurrencyCapped(serviceID domain.ServiceID) {
-	r.batchCapped.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
+func (r *Recorder) RecordBatchConcurrencyCapped(serviceID domain.ServiceID, n int) {
+	r.batchCapped.WithLabelValues(r.services.serviceValue(serviceID), batchSize(n)).Inc()
+}
+
+// RecordBatchSeconds observes one batch's wall time.
+func (r *Recorder) RecordBatchSeconds(serviceID domain.ServiceID, n int, d time.Duration) {
+	r.batchSeconds.WithLabelValues(r.services.serviceValue(serviceID), batchSize(n)).Observe(d.Seconds())
+}
+
+// batchSize is the payload-count bucket batch metrics are labelled with.
+func batchSize(n int) string {
+	switch {
+	case n <= 32:
+		return "le32"
+	case n <= 128:
+		return "le128"
+	case n <= 512:
+		return "le512"
+	}
+	return "gt512"
 }
 
 // AddBatchSubRelays moves the batch sub-relays in flight gauge.
