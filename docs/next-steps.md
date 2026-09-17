@@ -37,26 +37,14 @@ PATH `origin/main` at `4606957a`, 2026-08-25; new work is on
   - Metrics: limit and reserved bytes (gauges), waits and wait seconds,
     rejections, overdraw bytes.
 
-  **Gap found 2026-09-17 (pod jhql5, 274M → 901M in one 15 s sample): neither
-  `max_batch_concurrency` nor this design bounds what a batch HOLDS.** The cap
-  limits concurrent reads per batch. The batch still keeps every finished item
-  until it merges, N × item size, and the merge peaks at about twice that
-  (results plus a preallocated output). An eth batch of 500 items at 1.6MiB is
-  about 800MiB held and 1.6GiB at merge. Releasing the reservation when
-  SendRelay returns leaves that unbounded, and holding it until the merge lets
-  one batch take the whole budget and starve its own later items.
-  Proposed, to decide with D:
-  - Streaming merge (about half a day). Items are written in order as they
-    complete, and each body is released once written. A window W applies
-    back-pressure so item k does not start while k − next_to_write > W. Held
-    bytes stay under (32 in flight + W) × item size whatever N is. The response
-    commits at the first byte: batches already always answer 200, but
-    X-Degraded has to be dropped for batches or sent as a trailer. The router
-    writes a streaming body.
-  - A per-batch held-bytes cap (fail-fast, client-visible), only if streaming
-    is not wanted.
-  - A cheaper intermediate, writev segments (about 1h), removes the merge's 2×
-    but leaves N × size.
+  **Built 2026-09-17: batches stream.** A batch writes each answer in order as
+  it and every earlier one are ready, and releases it once written. An item
+  does not start while `max_batch_concurrency` + `max_batch_window` started
+  items are still unwritten, so one batch holds at most that many answers
+  (defaults 32 + 32), whatever its payload count. The merge copy is gone too.
+  What D still needs to cover is single requests and the 3-4× transient of
+  in-flight reads. The reservation should be held until the item is written,
+  not released when SendRelay returns.
 - **Multi-supplier quorum: agreement between live operators is unproven.**
   Built 2026-09-16 behind the `quorum` flag (off); decisions in
   `docs/design/specs/2026-08-31-multi-supplier-quorum-design.md` under "Built".

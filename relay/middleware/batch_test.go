@@ -767,7 +767,7 @@ func TestBatch_SubRelaysCarryBatchSize(t *testing.T) {
 
 // fixedLimits is a BatchLimits that never changes.
 func fixedLimits(maxConcurrentRelays, maxPayloads int) BatchLimits {
-	return func() (int, int, int) { return maxConcurrentRelays, maxPayloads, 0 }
+	return func() (int, int, int, int) { return maxConcurrentRelays, maxPayloads, 0, 0 }
 }
 
 // Both bounds are read per batch, so an apply that lowers or raises them
@@ -776,7 +776,7 @@ func TestBatch_LimitsChangeOnARunningMiddleware(t *testing.T) {
 	var maxRelays, maxPayloads atomic.Int32
 	maxRelays.Store(1)
 	maxPayloads.Store(2)
-	limits := func() (int, int, int) { return int(maxRelays.Load()), int(maxPayloads.Load()), 0 }
+	limits := func() (int, int, int, int) { return int(maxRelays.Load()), int(maxPayloads.Load()), 0, 0 }
 
 	var active, peak atomic.Int32
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
@@ -815,11 +815,14 @@ type batchGauges struct {
 	timed              atomic.Int64
 	timedPayloads      atomic.Int64
 	timedNanos         atomic.Int64
+	disconnects        atomic.Int64
 }
 
 func (g *batchGauges) RecordBatchPayloads(_ domain.ServiceID, n int) { g.payloads.Add(int64(n)) }
 
 func (g *batchGauges) RecordBatchConcurrencyCapped(domain.ServiceID, int) { g.capped.Add(1) }
+
+func (g *batchGauges) RecordBatchClientDisconnect(domain.ServiceID) { g.disconnects.Add(1) }
 
 func (g *batchGauges) RecordBatchSeconds(_ domain.ServiceID, n int, d time.Duration) {
 	g.timed.Add(1)
@@ -885,7 +888,7 @@ func TestBatch_PerBatchConcurrencyCap(t *testing.T) {
 		return out
 	}
 	g := &batchGauges{}
-	handler := Batch(func() (int, int, int) { return 1000, 100, 3 }, nil, nil, g)(inner)
+	handler := Batch(func() (int, int, int, int) { return 1000, 100, 3, 0 }, nil, nil, g)(inner)
 
 	require.NoError(t, handler.HandleRelay(makeMultiPayloadCtx(payloads(3))))
 	assert.Zero(t, g.capped.Load(), "a batch at the ceiling is not capped")

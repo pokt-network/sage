@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"errors"
 	"net/http"
 	"sync"
 )
@@ -33,6 +34,15 @@ type ResponseWriter interface {
 	SetShadow(shadow bool)
 }
 
+// StreamWriter is a ResponseWriter that can send a body in pieces. The first
+// WriteStream commits the staged headers and status; later ones append to the
+// body. A Write after WriteStream is a no-op, like any Write after the first.
+// The batch middleware streams its answers through it so a large batch never
+// holds all of them at once.
+type StreamWriter interface {
+	WriteStream(p []byte) error
+}
+
 // HTTPResponseWriter wraps a standard http.ResponseWriter.
 // Pending headers are a small slice, not a map: a relay sets at most a couple
 // of headers (X-Request-ID, X-Degraded), so a linear scan beats a per-request
@@ -47,11 +57,12 @@ type ResponseWriter interface {
 type HTTPResponseWriter struct {
 	w http.ResponseWriter
 
-	mu      sync.Mutex
-	headers []headerKV
-	status  int
-	written bool
-	shadow  bool
+	mu        sync.Mutex
+	headers   []headerKV
+	status    int
+	written   bool
+	streaming bool
+	shadow    bool
 }
 
 type headerKV struct{ key, value string }
@@ -119,6 +130,38 @@ func (w *HTTPResponseWriter) Write(body []byte) error {
 	_, err := w.w.Write(body)
 	return err
 }
+
+// WriteStream writes p as the next piece of the body, committing headers and
+// status on the first call. The network write happens outside the lock: a
+// slow client blocks the streaming goroutine, which is the back-pressure the
+// batch window relies on, and must not block SetHeader from anyone else. A
+// shadowed writer discards the body, as Write does. After a Write, WriteStream
+// reports an error rather than appending to a finished response.
+func (w *HTTPResponseWriter) WriteStream(p []byte) error {
+	w.mu.Lock()
+	if w.shadow {
+		w.mu.Unlock()
+		return nil
+	}
+	if w.written && !w.streaming {
+		w.mu.Unlock()
+		return errResponseWritten
+	}
+	if !w.written {
+		w.written = true
+		w.streaming = true
+		for _, h := range w.headers {
+			w.w.Header().Set(h.key, h.value)
+		}
+		w.w.WriteHeader(w.status)
+	}
+	w.mu.Unlock()
+	_, err := w.w.Write(p)
+	return err
+}
+
+// errResponseWritten is WriteStream on a response already written whole.
+var errResponseWritten = errors.New("relay: response already written")
 
 // SetShadow suppresses the response body. A shadowed relay still runs the full
 // chain and is still sent to the supplier — it is scored, observed and metered

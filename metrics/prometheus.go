@@ -67,6 +67,7 @@ type Recorder struct {
 	batchPayloads         *prometheus.HistogramVec
 	batchCapped           *prometheus.CounterVec
 	batchSeconds          *prometheus.HistogramVec
+	batchDisconnects      *prometheus.CounterVec
 	quorumRequests        *prometheus.CounterVec
 	selectionTiers        *prometheus.CounterVec
 	reputationWriteDrops  *prometheus.CounterVec
@@ -316,10 +317,18 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.HistogramOpts{
 				Namespace: "sage",
 				Name:      "batch_seconds",
-				Help:      "Wall time of a batch request, by service and payload-count bucket (size: le32, le128, le512, gt512 payloads, counted before any cap), from the batch middleware's entry to its merged response, merge included; the router's write is in sage_stage_seconds_total{stage=\"router_write\"}. A batch refused over max_batch_payloads is not observed (sage_batch_payloads counts it). This is the evidence for tuning concurrency_config.max_batch_concurrency: a lower cap bounds memory and shows up here as latency on the larger sizes.",
+				Help:      "Wall time of a batch request, by service and payload-count bucket (size: le32, le128, le512, gt512 payloads, counted before any cap), from the batch middleware's entry to the last byte of its answer written. Batches are streamed to the client, so this includes writing and any time a slow client held the stream back; a batch whose client disconnected is observed up to the disconnect (sage_batch_client_disconnects_total). A batch refused over max_batch_payloads is not observed (sage_batch_payloads counts it). This is the evidence for tuning concurrency_config.max_batch_concurrency: a lower cap bounds memory and shows up here as latency on the larger sizes.",
 				Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30},
 			},
 			[]string{"service_id", "size"},
+		),
+		batchDisconnects: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "batch_client_disconnects_total",
+				Help:      "Streamed batch requests whose client went away before the last answer was written, by service. The batch stops starting payloads, cancels the ones in flight and releases what it held; the answers already written reached a client that did not read the rest.",
+			},
+			[]string{"service_id"},
 		),
 		batchSubRelays: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "sage",
@@ -329,7 +338,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		batchResponseBytes: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "sage",
 			Name:      "batch_response_bytes_in_flight",
-			Help:      "Sub-relay response bytes held by batches that have not yet returned, across every service. Nothing bounds this but max_batch_payloads × the response ceiling, and the merged response each batch builds at the end is not counted, so the heap cost at a batch's completion is about twice its share of this.",
+			Help:      "Sub-relay answer bytes finished and not yet written to the client, across every service. A streamed batch releases each answer as it is written, so one batch holds at most (concurrency_config.max_batch_concurrency + max_batch_window) answers here. A batch whose writer cannot stream (none in production) keeps every answer until it merges, and that merged copy is not counted.",
 		}),
 		codespaces: cappedLabel(maxCodespaceLabels),
 		// No domain label on purpose: the gauge above names the host, and a
@@ -466,6 +475,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.batchPayloads,
 		r.batchCapped,
 		r.batchSeconds,
+		r.batchDisconnects,
 		r.quorumRequests,
 		r.selectionTiers,
 		r.reputationWriteDrops,
@@ -620,6 +630,11 @@ func (r *Recorder) RecordBatchConcurrencyCapped(serviceID domain.ServiceID, n in
 // RecordBatchSeconds observes one batch's wall time.
 func (r *Recorder) RecordBatchSeconds(serviceID domain.ServiceID, n int, d time.Duration) {
 	r.batchSeconds.WithLabelValues(r.services.serviceValue(serviceID), batchSize(n)).Observe(d.Seconds())
+}
+
+// RecordBatchClientDisconnect counts a streamed batch cut short by its client.
+func (r *Recorder) RecordBatchClientDisconnect(serviceID domain.ServiceID) {
+	r.batchDisconnects.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // batchSize is the payload-count bucket batch metrics are labelled with.

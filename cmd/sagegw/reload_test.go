@@ -707,6 +707,7 @@ func TestReload_TuningLeversApply(t *testing.T) {
   max_concurrent_relays: 50
   max_batch_payloads: 5
   max_batch_concurrency: 4
+  max_batch_window: 2
 router_config:
   max_request_body_bytes: 1048576
 websocket_config:
@@ -730,6 +731,7 @@ websocket_config:
 		"concurrency_config.max_concurrent_relays",
 		"concurrency_config.max_batch_payloads",
 		"concurrency_config.max_batch_concurrency",
+		"concurrency_config.max_batch_window",
 		"router_config.max_request_body_bytes",
 		"gateway_config.reputation_config.signal_impacts",
 		"gateway_config.reputation_config.tiered_selection",
