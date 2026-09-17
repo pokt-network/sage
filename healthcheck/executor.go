@@ -94,6 +94,11 @@ type Executor struct {
 	// warmReleased latches the deadline having fired, so the line that says
 	// readiness was released short of the threshold is logged once.
 	warmReleased bool
+	// warmUnprobeable is how many probeable services the last denominator pass
+	// left OUT of the threshold for having no endpoint to probe. Reported, not
+	// acted on: it is the difference between a threshold that shrank for a
+	// reason and one that shrank mysteriously.
+	warmUnprobeable int
 
 	// flags gates traffic-informed probing; skipper holds its per-cycle state.
 	// Both nil unless SetTrafficSkip wired them, and a nil skipper means every
@@ -405,6 +410,9 @@ func (e *Executor) Start(ctx context.Context) {
 				start := e.now()
 				safego.Run(e.logger, "healthcheck.cycle", func() { e.runOnce(ctx) })
 				e.recordCycle(e.now().Sub(start), tick)
+				// After the cycle, so a service whose suppliers appeared during
+				// it re-enters the denominator now rather than a tick later.
+				safego.Run(e.logger, "healthcheck.warm.denominator", func() { e.refreshWarmDenominator(ctx) })
 				e.logWarmProgress()
 				if t := e.tick(); t != tick {
 					tick = t
@@ -415,6 +423,14 @@ func (e *Executor) Start(ctx context.Context) {
 			}
 		}
 	}()
+
+	// Once immediately, off the boot path: the first cycle is a whole tick away
+	// and readiness is asked within seconds of the server listening, so waiting
+	// for the tick would make every pod sit out the warm-up deadline for a
+	// threshold that the first pass usually turns into a met one. Not
+	// synchronous, because it asks the session layer about every service and a
+	// service with no session would pay for that on the boot path.
+	safego.Go(e.logger, "healthcheck.warm.denominator", func() { e.refreshWarmDenominator(ctx) })
 
 	// The feed of other replicas' probe results.
 	if e.source != nil {
@@ -1033,6 +1049,7 @@ func (e *Executor) Warm() bool {
 		e.logger.Error("health checks: readiness released on the warm-up deadline, short of the coverage threshold",
 			"covered", len(e.coveredServices),
 			"needed", e.warmThreshold,
+			"unprobeable", e.warmUnprobeable,
 			"waited", warmDeadline.String(),
 		)
 	}
@@ -1083,6 +1100,74 @@ func (e *Executor) probeableServices() int {
 	return n
 }
 
+// hasProbeableEndpoint reports whether a service has an endpoint any of its
+// checks could actually be sent to.
+//
+// Endpoints are staked per RPC type and a check carries its own type, so the
+// question is per type and the answer is yes at the first type that has one —
+// the same pairing the cycle probes on, so a service this says yes about is a
+// service the cycle will send something to. An error is a no: the protocol
+// reports the cause itself, and for this the distinction between "no suppliers"
+// and "could not ask" does not change the arithmetic.
+func (e *Executor) hasProbeableEndpoint(ctx context.Context, serviceID domain.ServiceID, configured *ConfiguredChecks) bool {
+	all := slices.Concat(pluginChecks(e.qosRegistry.Get(serviceID)), configured.For(serviceID))
+	for rpcType := range checksByRPCType(all) {
+		eps, err := e.endpoints.AvailableEndpoints(ctx, serviceID, rpcType)
+		if err == nil && len(eps) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// refreshWarmDenominator recomputes what the warm threshold is 75% OF: the
+// services that can be probed AND have an endpoint to probe.
+//
+// A service can hold a session, declare checks, and still have no endpoint
+// staked for any of their RPC types. It is probeable in the sense that it has
+// checks, so it counted towards the threshold, and it can never be covered,
+// because no probe is ever sent and no result ever arrives. 24 of 64 services
+// were in that state on mainnet on 2026-09-17: coverage settled at 40 against a
+// threshold of 48 and every pod in the fleet then waited out the full warm-up
+// deadline, on every roll, for a threshold that was never reachable.
+//
+// Counting against what is knowable makes the threshold meetable: the same 40
+// covered services now answer a threshold of 30. The deadline stays as the
+// backstop for the other way coverage stalls — an endpoint that exists and
+// never answers.
+//
+// Recomputed every cycle rather than latched, so a service whose suppliers
+// appear later re-enters the denominator at the next cycle instead of being
+// written off for the life of the process. It stops as soon as the pod is warm,
+// since warm is latched and the number can no longer change anything.
+func (e *Executor) refreshWarmDenominator(ctx context.Context) {
+	if e.warm.Load() {
+		return
+	}
+	configured := e.configured.Load()
+	coverable, unprobeable := 0, 0
+	for serviceID := range e.sessions.ConfiguredServices() {
+		if !e.probeable(serviceID, configured) {
+			continue
+		}
+		if e.hasProbeableEndpoint(ctx, serviceID, configured) {
+			coverable++
+			continue
+		}
+		unprobeable++
+	}
+
+	e.warmMu.Lock()
+	e.warmThreshold = warmThresholdFor(coverable)
+	e.warmThresholdSet = true
+	e.warmUnprobeable = unprobeable
+	warm := e.warmThreshold == 0 || len(e.coveredServices) >= e.warmThreshold
+	e.warmMu.Unlock()
+	if warm {
+		e.warm.Store(true)
+	}
+}
+
 // ensureWarmThresholdLocked computes the warm threshold once, from the
 // count of services that can be probed at all. Called under warmMu.
 //
@@ -1090,15 +1175,22 @@ func (e *Executor) probeableServices() int {
 // readiness at 503 forever on a config with more than a quarter of its
 // services on the passthrough: those never mark themselves covered, and
 // 75% of everything was more than 100% of the rest.
+// Since 2026-09-17 it is a FALLBACK: refreshWarmDenominator replaces the value
+// with one that also excludes services with no endpoint to probe, and does so
+// every cycle. This is what the first readiness read sees, before any pass has
+// reported — deliberately the more conservative of the two, since a service
+// whose endpoints have not been looked up yet should not be written off.
 func (e *Executor) ensureWarmThresholdLocked() {
 	if e.warmThresholdSet {
 		return
 	}
-	n := e.probeableServices()
-	// ceil(0.75 * n); 0 stays 0 (warm immediately).
-	e.warmThreshold = (n*3 + 3) / 4
+	e.warmThreshold = warmThresholdFor(e.probeableServices())
 	e.warmThresholdSet = true
 }
+
+// warmThresholdFor is ceil(0.75 * n), the share of coverable services the gate
+// waits for. Zero stays zero: nothing to wait for reads warm immediately.
+func warmThresholdFor(n int) int { return (n*3 + 3) / 4 }
 
 // WarmProgress reports how many services the warm gate has covered and how
 // many it needs. Equal or above means readiness is no longer waiting on
@@ -1107,11 +1199,11 @@ func (e *Executor) ensureWarmThresholdLocked() {
 // It exists because the reason was otherwise unreadable: the gate explains
 // itself in a WARN that production log levels drop, so an operator holding a
 // 503 pod had a bare status code and a goroutine dump to work from.
-func (e *Executor) WarmProgress() (covered, needed int) {
+func (e *Executor) WarmProgress() (covered, needed, unprobeable int) {
 	e.warmMu.Lock()
 	defer e.warmMu.Unlock()
 	e.ensureWarmThresholdLocked()
-	return len(e.coveredServices), e.warmThreshold
+	return len(e.coveredServices), e.warmThreshold, e.warmUnprobeable
 }
 
 // SeedCoverage credits services whose reputation was loaded from shared
@@ -1140,18 +1232,17 @@ const maxUnwarmedServicesLogged = 10
 // warmDeadline bounds how long the warm gate may hold readiness at 503. Past
 // it the gate releases with whatever coverage it has, and says so.
 //
-// The threshold is 75% of the services that can be probed, and there are two
-// ways for coverage to stop short of it and stay there. A service can hold a
-// session and still never produce a probe result, because it has no endpoints
-// to probe — the count of probeable services includes it, the coverage it
-// would contribute never arrives. And a pod inherits coverage from the warm-up
-// read, whose reach is whatever the fleet wrote in the last idle TTL, so a
-// service quiet for an hour is absent from storage and has to be probed for.
-// Either way the arithmetic settles below the threshold and never moves, and a
-// pod with a store full of usable state sits out of rotation until something
-// kills it. A rolled mainnet pod did exactly that on 2026-09-17: 40 services
-// credited against a threshold of 48, eleven minutes of 503, and the only
-// explanation anywhere was a WARN the production log level drops.
+// The threshold is 75% of the services that can produce coverage at all, and
+// coverage can still stop short of it and stay there: an endpoint that exists
+// and never answers is probed every cycle and credits nothing.
+//
+// A rolled mainnet pod hit the version of this that refreshWarmDenominator has
+// since fixed. The threshold counted 24 services that declared checks and had
+// no endpoint staked for any of their RPC types, so coverage settled at 40
+// against a threshold of 48 and could not move: the pod spent eleven minutes at
+// 503, with the only explanation anywhere being a WARN the production log level
+// drops. Excluding them from the denominator makes that case reachable. This
+// bounds the rest, including the ones not yet seen.
 //
 // The release is logged at ERROR, not WARN. A fleet running at log level error
 // drops every WARN, including the gate's own per-cycle explanation, and that is
@@ -1215,7 +1306,7 @@ func (e *Executor) logWarmProgress() {
 
 	e.warmMu.Lock()
 	e.ensureWarmThresholdLocked()
-	covered, threshold := len(e.coveredServices), e.warmThreshold
+	covered, threshold, unprobeable := len(e.coveredServices), e.warmThreshold, e.warmUnprobeable
 	missing := make([]string, 0, maxUnwarmedServicesLogged)
 	truncated := 0
 	configured := e.configured.Load()
@@ -1244,6 +1335,7 @@ func (e *Executor) logWarmProgress() {
 	e.logger.Warn("health checks: not warm, readiness is 503",
 		"covered", covered,
 		"needed", threshold,
+		"unprobeable", unprobeable,
 		"awaiting", missing,
 		"awaiting_not_listed", truncated,
 	)
