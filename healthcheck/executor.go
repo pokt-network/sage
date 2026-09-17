@@ -87,6 +87,13 @@ type Executor struct {
 	warm             atomic.Bool
 	warmThresholdSet bool
 	warmThreshold    int
+	// warmStartedAt is when Start ran, and the clock the warm-up deadline is
+	// measured from. Zero until then, which is why the deadline cannot fire on
+	// an executor nothing started.
+	warmStartedAt time.Time
+	// warmReleased latches the deadline having fired, so the line that says
+	// readiness was released short of the threshold is logged once.
+	warmReleased bool
 
 	// flags gates traffic-informed probing; skipper holds its per-cycle state.
 	// Both nil unless SetTrafficSkip wired them, and a nil skipper means every
@@ -994,6 +1001,10 @@ func (e *Executor) probe(ctx context.Context, serviceID domain.ServiceID, ep dom
 // suppliers on the network (which never produce a result) cannot hold
 // readiness down forever. With no configured services there is nothing to wait
 // for and it reads warm immediately.
+//
+// It is also bounded in time: coverage that settles short of the threshold and
+// stops moving would otherwise hold a pod out of rotation for its whole life,
+// so past warmDeadline the gate releases with what it has and logs why.
 func (e *Executor) Warm() bool {
 	if e.warm.Load() {
 		return true
@@ -1005,7 +1016,22 @@ func (e *Executor) Warm() bool {
 		e.warm.Store(true)
 		return true
 	}
-	return false
+	if e.warmStartedAt.IsZero() {
+		e.warmStartedAt = e.now()
+	}
+	if e.now().Sub(e.warmStartedAt) < warmDeadline {
+		return false
+	}
+	if !e.warmReleased {
+		e.warmReleased = true
+		e.logger.Warn("health checks: readiness released on the warm-up deadline, short of the coverage threshold",
+			"covered", len(e.coveredServices),
+			"needed", e.warmThreshold,
+			"waited", warmDeadline.String(),
+		)
+	}
+	e.warm.Store(true)
+	return true
 }
 
 // errProbeAnsweredNothing grades a 2xx that carried none of the facts an
@@ -1068,6 +1094,20 @@ func (e *Executor) ensureWarmThresholdLocked() {
 	e.warmThresholdSet = true
 }
 
+// WarmProgress reports how many services the warm gate has covered and how
+// many it needs. Equal or above means readiness is no longer waiting on
+// coverage; below means /ready is 503 and this pair is the reason.
+//
+// It exists because the reason was otherwise unreadable: the gate explains
+// itself in a WARN that production log levels drop, so an operator holding a
+// 503 pod had a bare status code and a goroutine dump to work from.
+func (e *Executor) WarmProgress() (covered, needed int) {
+	e.warmMu.Lock()
+	defer e.warmMu.Unlock()
+	e.ensureWarmThresholdLocked()
+	return len(e.coveredServices), e.warmThreshold
+}
+
 // SeedCoverage credits services whose reputation was loaded from shared
 // storage at startup, so readiness does not wait for this pod to re-probe what
 // it already knows.
@@ -1090,6 +1130,31 @@ func (e *Executor) SeedCoverage(services []domain.ServiceID) {
 // missing, not all of them; a handful names the pattern without turning one
 // log line into a page.
 const maxUnwarmedServicesLogged = 10
+
+// warmDeadline bounds how long the warm gate may hold readiness at 503. Past
+// it the gate releases with whatever coverage it has, and says so.
+//
+// The threshold is 75% of the services that can be probed, and there are two
+// ways for coverage to stop short of it and stay there. A service can hold a
+// session and still never produce a probe result, because it has no endpoints
+// to probe — the count of probeable services includes it, the coverage it
+// would contribute never arrives. And a pod inherits coverage from the warm-up
+// read, whose reach is whatever the fleet wrote in the last idle TTL, so a
+// service quiet for an hour is absent from storage and has to be probed for.
+// Either way the arithmetic settles below the threshold and never moves, and a
+// pod with a store full of usable state sits out of rotation until something
+// kills it. A rolled mainnet pod did exactly that on 2026-09-17: 40 services
+// credited against a threshold of 48, eleven minutes of 503, and the only
+// explanation anywhere was a WARN the production log level drops.
+//
+// Two minutes is long enough that a pod which is merely slow to warm still
+// warms on its own evidence, and well inside a startup probe's budget. What it
+// buys is that readiness is eventually true for a reason an operator can read,
+// rather than never true for a reason nobody can see. Selection is not blind
+// when it fires: the session layer is ready by then (readiness gates on that
+// separately) and the hydrated services are scored, while the rest start at
+// InitialScore and are graded by the traffic they take.
+const warmDeadline = 2 * time.Minute
 
 // recordCycle reports how long a cycle took and says so when it overran the
 // tick it was scheduled on.

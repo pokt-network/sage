@@ -898,6 +898,43 @@ func (r *Recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	promhttp.Handler().ServeHTTP(w, req)
 }
 
+// NewWarmGauges exposes the health-check warm gate, the half of readiness that
+// is not the session layer:
+//
+//	sage_health_check_warm_services_covered <count>
+//	sage_health_check_warm_services_needed <count>
+//
+// Covered below needed is a pod answering /ready with 503, and the pair says
+// how far short it is. Read at scrape time, so covered climbs as coverage
+// arrives; both are flat once the pod is warm, because the gate latches.
+//
+// It exists because a held pod was undiagnosable from outside. /ready returns a
+// bare status code, the gate's own explanation is a WARN that production log
+// levels drop, and the path that usually causes it logs at DEBUG — so a mainnet
+// pod that sat at 503 for eleven minutes on 2026-09-17 was read from a
+// goroutine dump instead. Needed is 75% of the probeable services; covered is
+// what the startup warm-up read credited (sage_reputation_hydrated_services)
+// plus what probes have landed since. Covered flat and short is the shape to
+// alert on: coverage that has stopped moving, which the warm-up deadline now
+// releases rather than waiting out.
+//
+// Name and Help are literals per gauge because internal/docgen reads them from
+// the AST; a metric named by a variable is one docs/metrics.md omits.
+func NewWarmGauges(progress func() (covered, needed int)) []prometheus.Collector {
+	return []prometheus.Collector{
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "health_check_warm_services_covered",
+			Help:      "Services the health-check warm gate has applied a result for, from the startup warm-up read or from probes since. Below sage_health_check_warm_services_needed the pod answers /ready with 503 and takes no traffic.",
+		}, func() float64 { covered, _ := progress(); return float64(covered) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "health_check_warm_services_needed",
+			Help:      "Services the warm gate needs covered before readiness: 75% of the services that can be probed at all, computed once at the first readiness read. A service with a session but no endpoint to probe counts here and can never be covered, which is why the gate also releases on a deadline.",
+		}, func() float64 { _, needed := progress(); return float64(needed) }),
+	}
+}
+
 // NewPanicCollector exposes safego's recovered-panic count as
 // sage_recovered_panics_total.
 //

@@ -962,6 +962,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	} else {
 		healthExe.Start(ctx)
 	}
+	// The warm gate is half of /ready, and until now the only account of it was
+	// a log line an operator could not see.
+	prometheus.MustRegister(metrics.NewWarmGauges(healthExe.WarmProgress)...)
 	app.HealthExe = healthExe
 
 	// 13. External block height fetchers. A trusted outside height is a
