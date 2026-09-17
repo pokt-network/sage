@@ -338,6 +338,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		shannonProto.StartBlockPoller(ctx)
 		app.Protocol = shannonProto
 		proto = shannonProto
+		// The protocol half of /ready. Its failure was a WARN, which the log
+		// level a fleet runs at drops, so a pod held out of rotation by an
+		// unreachable full node looked identical to one held by anything else.
+		prometheus.MustRegister(metrics.NewSessionLayerGauges(
+			shannonProto.SessionLayerReady, shannonProto.LatestBlockHeight)...)
 		// Per-URL reputation keys name the host a face is dialed from, so
 		// an operator staking one host per type is scored per face (see
 		// protocol.URLResolver). Installed before the server listens.

@@ -935,6 +935,46 @@ func NewWarmGauges(progress func() (covered, needed int)) []prometheus.Collector
 	}
 }
 
+// NewSessionLayerGauges exposes the other half of readiness, the one the warm
+// gate is ANDed with:
+//
+//	sage_session_layer_ready <0|1>
+//	sage_full_node_block_height <height>
+//
+// Ready is the verdict of the last readiness read — the full node answered a
+// block height above zero — and it reads 0 before the first read, which is also
+// how a pod nothing has probed reads. It costs no gRPC call: the readiness path
+// records its verdict and this reports it.
+//
+// Together the two say which half of a 503 is failing, and a frozen height
+// beside ready 0 separates a full node that is unreachable from one that is
+// merely behind. Against the warm gauges, the four cover every way /ready can
+// answer 503: a mainnet pod held for eleven minutes on 2026-09-17 with nothing
+// to distinguish them, because both halves explain themselves in a WARN and the
+// fleet runs at log level error.
+//
+// Name and Help are literals per gauge because internal/docgen reads them from
+// the AST; a metric named by a variable is one docs/metrics.md omits.
+func NewSessionLayerGauges(ready func() bool, height func() int64) []prometheus.Collector {
+	return []prometheus.Collector{
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "session_layer_ready",
+			Help:      "Whether the last readiness read found the full node answering a block height above zero: 1 ready, 0 not. Readiness is this ANDed with the health-check warm gate (sage_health_check_warm_services_covered against _needed), so 0 here is a pod answering /ready with 503 for the protocol half rather than the coverage half. Reads 0 until the first readiness probe. A transition to 0 is also logged at ERROR; the recovery is only here, which is why it is a gauge.",
+		}, func() float64 {
+			if ready() {
+				return 1
+			}
+			return 0
+		}),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "full_node_block_height",
+			Help:      "Newest chain head the background block poller has seen, or 0 before its first successful poll. A failed poll leaves the previous height in place, so this freezing rather than dropping is how an unreachable full node reads. Beside sage_session_layer_ready it separates a full node that cannot be reached from one that answers but is behind; it is also what session expiry is judged against, so a frozen height means sessions are being kept past their end.",
+		}, func() float64 { return float64(height()) }),
+	}
+}
+
 // NewPanicCollector exposes safego's recovered-panic count as
 // sage_recovered_panics_total.
 //

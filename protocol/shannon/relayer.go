@@ -625,6 +625,16 @@ func (p *Protocol) IsReady(ctx context.Context) bool {
 	return p.sessions.IsReady(ctx)
 }
 
+// SessionLayerReady reports the verdict of the last readiness read without
+// asking the full node again, for the gauge that carries it. False with no
+// session manager wired, the same way LatestBlockHeight reads 0.
+func (p *Protocol) SessionLayerReady() bool {
+	if p.sessions == nil {
+		return false
+	}
+	return p.sessions.SessionLayerReady()
+}
+
 // BlacklistSupplier adds a supplier to the blacklist for a service.
 func (p *Protocol) BlacklistSupplier(serviceID domain.ServiceID, addr string) {
 	p.logger.Debug("blacklisting supplier",

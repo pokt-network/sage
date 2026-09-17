@@ -434,3 +434,37 @@ func TestGetSession_AtEndBlockServesCurrentNoRefresh(t *testing.T) {
 		t.Fatalf("no refresh should fire at the end block; got %d GetSession calls", calls)
 	}
 }
+
+// The protocol half of readiness has to be readable without the log, because
+// the level a fleet runs at drops the line that used to be the only account of
+// it. The verdict is recorded for the gauge, and it flips both ways.
+func TestIsReady_RecordsTheVerdictForTheGauge(t *testing.T) {
+	fn := &stubFullNode{height: 1000}
+	sm := newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+
+	if sm.SessionLayerReady() {
+		t.Fatal("precondition: unread must not report ready, so an unprobed pod reads 0")
+	}
+	if !sm.IsReady(context.Background()) || !sm.SessionLayerReady() {
+		t.Fatal("a full node answering a height above zero is ready")
+	}
+
+	fn.heightErr = errors.New("connection refused")
+	if sm.IsReady(context.Background()) || sm.SessionLayerReady() {
+		t.Error("an unreachable full node is not ready")
+	}
+
+	// A height of zero is the other way to be unready, and used to be the one
+	// that logged nothing at all.
+	fn.heightErr = nil
+	fn.height = 0
+	_ = sm.IsReady(context.Background())
+	if sm.SessionLayerReady() {
+		t.Error("a zero height is not ready")
+	}
+
+	fn.height = 1001
+	if !sm.IsReady(context.Background()) || !sm.SessionLayerReady() {
+		t.Error("the verdict must flip back when the full node answers again")
+	}
+}
