@@ -56,6 +56,12 @@ type sessionManager struct {
 	latestBlockHeight atomic.Int64
 	stopPoller        chan struct{}
 
+	// readyState is the verdict of the last readiness read (readyUnknown,
+	// readyYes, readyNo). It is what the readiness gauge reads, so a scrape
+	// does not cost a call to the full node, and what recordReadiness compares
+	// against to log a transition rather than a line per probe.
+	readyState atomic.Int32
+
 	// graceBlocks is the protocol grace period (GracePeriodEndOffsetBlocks from
 	// on-chain shared params): the number of blocks after a session's end
 	// during which relays for it are still valid. SAGE keeps serving a session
@@ -434,13 +440,62 @@ func (sm *sessionManager) ConfiguredServices() map[domain.ServiceID]struct{} {
 // IsReady returns true if the full node is reachable (block height > 0).
 func (sm *sessionManager) IsReady(ctx context.Context) bool {
 	height, err := sm.fullNode.GetCurrentBlockHeight(ctx)
-	if err != nil {
-		sm.logger.Warn("IsReady: failed to get block height",
-			"error", err,
-		)
-		return false
+	ready := err == nil && height > 0
+	sm.recordReadiness(ready, err)
+	return ready
+}
+
+// Verdicts of the last readiness read, held in readyState.
+const (
+	readyUnknown int32 = iota
+	readyYes
+	readyNo
+)
+
+// SessionLayerReady reports the verdict of the last readiness read, without
+// asking the full node again. It is the value behind sage_session_layer_ready,
+// so a scrape costs no gRPC call; it is false before the first read, which is
+// also how a pod that has never been probed reads.
+func (sm *sessionManager) SessionLayerReady() bool {
+	return sm.readyState.Load() == readyYes
+}
+
+// recordReadiness stores the verdict and logs the transitions, once each.
+//
+// The loss is ERROR because it is half of what /ready answers with and the
+// fleet runs at log level error, where the WARN this used to be is dropped.
+// That cost a rollout on 2026-09-17: a pod answered 503 for eleven minutes with
+// nothing in the log to say which half was failing, and the answer came from a
+// goroutine dump. Per transition rather than per read, because the readiness
+// probe calls this every few seconds and an unreachable full node would
+// otherwise write a line per probe for as long as it stayed down.
+//
+// The recovery is WARN, and invisible at error level on purpose: an operator
+// should not have to read the log to know the gateway came back, and a
+// recovery logged at ERROR would count as one in every dashboard that counts
+// errors. sage_session_layer_ready is the signal that flips back, which is why
+// it is a gauge and not a counter of failures.
+func (sm *sessionManager) recordReadiness(ready bool, err error) {
+	next := readyNo
+	if ready {
+		next = readyYes
 	}
-	return height > 0
+	prev := sm.readyState.Load()
+	if prev == next || !sm.readyState.CompareAndSwap(prev, next) {
+		return
+	}
+	if next == readyNo {
+		sm.logger.Error("session layer not ready: the full node is not answering a usable block height, so /ready is 503 and this pod takes no traffic",
+			"error", err,
+			"last_polled_height", sm.latestBlockHeight.Load(),
+		)
+		return
+	}
+	// Nothing to announce about a pod that was ready the first time it was
+	// asked, which is every healthy boot.
+	if prev == readyNo {
+		sm.logger.Warn("session layer ready: the full node is answering a block height again")
+	}
 }
 
 // lookupEndpoint returns the cached endpoint for an address from any current
