@@ -69,6 +69,7 @@ type Recorder struct {
 	batchSeconds          *prometheus.HistogramVec
 	quorumRequests        *prometheus.CounterVec
 	selectionTiers        *prometheus.CounterVec
+	reputationWriteDrops  *prometheus.CounterVec
 	quorumDissent         *prometheus.CounterVec
 	batchSubRelays        prometheus.Gauge
 	batchResponseBytes    prometheus.Gauge
@@ -271,6 +272,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id"},
 		),
+		reputationWriteDrops: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "reputation_writes_dropped_total",
+				Help:      "Reputation state writes that never reached storage, by reason: queue_full (the write-behind queue, sized 4096, had no room) or storage_error (storage refused the write, e.g. Redis unreachable). A dropped write leaves storage one signal behind this replica and, if it keeps happening, lets a key's stored stamp age past the 1h idle TTL, so the next pod's warm-up skips it as stale. A follower's writes are discarded by storage by design, since only the leader writes, and are not counted; a queue_full on a follower lost nothing persistent but shows the same queue pressure. Compare with sage_reputation_write_queue_depth.",
+			},
+			[]string{"reason"},
+		),
 		selectionTiers: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -459,6 +468,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.batchSeconds,
 		r.quorumRequests,
 		r.selectionTiers,
+		r.reputationWriteDrops,
 		r.quorumDissent,
 		r.batchSubRelays,
 		r.batchResponseBytes,
@@ -565,6 +575,12 @@ func (r *Recorder) RecordResponseSize(serviceID domain.ServiceID, bytes int) {
 // middleware.BatchRecorder.
 func (r *Recorder) RecordBatchPayloads(serviceID domain.ServiceID, n int) {
 	r.batchPayloads.WithLabelValues(r.services.serviceValue(serviceID)).Observe(float64(n))
+}
+
+// RecordReputationWriteDropped counts one reputation write that never reached
+// storage. Wire installs it as the reputation service's write drop hook.
+func (r *Recorder) RecordReputationWriteDropped(reason string) {
+	r.reputationWriteDrops.WithLabelValues(reason).Inc()
 }
 
 // RecordSelectionTier counts one endpoint selection by its height tier. Tiers

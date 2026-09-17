@@ -191,8 +191,11 @@ type serviceImpl struct {
 
 	// Async write queue.
 	writeCh chan writeOp
-	stopCh  chan struct{}
-	wg      sync.WaitGroup
+	// dropHook, when set, is told of each write that never reached storage.
+	// Atomic because wire installs it after Start.
+	dropHook atomic.Pointer[func(reason string)]
+	stopCh   chan struct{}
+	wg       sync.WaitGroup
 }
 
 // NewService creates a new reputation service with the given storage backend
@@ -370,10 +373,7 @@ func (s *serviceImpl) RebaseAfterDrain(serviceID domain.ServiceID, endpoints dom
 			st.Score = floor
 			states[key] = st
 			n++
-			select {
-			case s.writeCh <- writeOp{key: scoreKey(serviceID, key), state: st}:
-			default:
-			}
+			s.enqueue(writeOp{key: scoreKey(serviceID, key), state: st})
 		}
 		sh.mu.Unlock()
 	}
@@ -788,10 +788,7 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	}
 
 	// Enqueue async write (non-blocking: drop if queue full).
-	select {
-	case s.writeCh <- writeOp{key: key, state: st}:
-	default:
-	}
+	s.enqueue(writeOp{key: key, state: st})
 
 	if s.signalHook != nil {
 		s.signalHook(serviceID, rpcType, endpoint, signal.Type, signal.Probe)
@@ -1029,9 +1026,7 @@ func (s *serviceImpl) ResetMatching(_ context.Context, serviceID domain.ServiceI
 			}
 			sh.cache[serviceID][key] = fresh
 			reset = append(reset, key)
-			select {
-			case s.writeCh <- writeOp{key: scoreKey(serviceID, key), state: fresh, force: true}:
-			default:
+			if !s.enqueue(writeOp{key: scoreKey(serviceID, key), state: fresh, force: true}) {
 				dropped = true
 			}
 		}
@@ -1208,18 +1203,65 @@ func (s *serviceImpl) flushOperatorStats(store OperatorStatStore, now time.Time)
 	}
 }
 
+// Write-behind drop reasons, the reason label of
+// sage_reputation_writes_dropped_total. A follower's write that
+// LeaderOnlyStorage discards is not a drop: only the leader writes, by design.
+const (
+	// WriteDropQueueFull is a write the full queue had no room for.
+	WriteDropQueueFull = "queue_full"
+	// WriteDropStorageError is a write storage refused, a Redis error.
+	WriteDropStorageError = "storage_error"
+)
+
+// SetWriteDropHook installs fn, called once per write-behind write that never
+// reached storage, with its reason. Nil clears it.
+func (s *serviceImpl) SetWriteDropHook(fn func(reason string)) {
+	if fn == nil {
+		s.dropHook.Store(nil)
+		return
+	}
+	s.dropHook.Store(&fn)
+}
+
+// WriteQueueDepth is how many writes are waiting in the write-behind queue,
+// whose capacity is ServiceConfig.WriteQueueSize.
+func (s *serviceImpl) WriteQueueDepth() int { return len(s.writeCh) }
+
+// enqueue hands a write to the write-behind without blocking the caller,
+// reporting whether it was queued. Every write goes through here so every
+// drop is counted: a full queue used to lose writes with nothing to show for
+// it, and a hydrating pod then read the loss as keys gone stale.
+func (s *serviceImpl) enqueue(op writeOp) bool {
+	select {
+	case s.writeCh <- op:
+		return true
+	default:
+		s.dropped(WriteDropQueueFull)
+		return false
+	}
+}
+
+// dropped reports one lost write to the hook, if any.
+func (s *serviceImpl) dropped(reason string) {
+	if fn := s.dropHook.Load(); fn != nil {
+		(*fn)(reason)
+	}
+}
+
 // write stamps the state and hands it to storage. The stamp is what the
 // sweep keys on; it is set here, at write time, rather than at enqueue, so
 // it says when storage last heard about the key.
 func (s *serviceImpl) write(op writeOp) {
 	op.state.UpdatedAt = time.Now().Unix()
-	if op.force {
-		if f, ok := s.storage.(forcedWriter); ok {
-			_ = f.ForceSetState(context.Background(), op.key, op.state)
-			return
-		}
+	var err error
+	if f, ok := s.storage.(forcedWriter); ok && op.force {
+		err = f.ForceSetState(context.Background(), op.key, op.state)
+	} else {
+		err = s.storage.SetState(context.Background(), op.key, op.state)
 	}
-	_ = s.storage.SetState(context.Background(), op.key, op.state)
+	if err != nil {
+		s.dropped(WriteDropStorageError)
+	}
 }
 
 // forcedWriter is a storage that can be told to write regardless of its
