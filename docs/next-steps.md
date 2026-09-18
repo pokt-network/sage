@@ -14,8 +14,20 @@ PATH `origin/main` at `4606957a`, 2026-08-25; new work is on
 
 ## Open (2026-09-15)
 
-- **Pod-wide response byte budget (D): plan of record, on hold until a day of
-  `48081c0` data.** The 2026-09-16 23:44Z OOM was about 514 batch sub-relays
+- **Pod-wide response byte budget (D): CLOSED 2026-09-18, not built.** The
+  design below stays as the plan of record and the numbers that closed it are
+  at the end of this entry. It was designed for the batch fan-out OOMs, and
+  those are gone by measurement rather than by inference, so the remaining
+  scope did not justify half a day of hot-path work whose failure mode is a
+  503 a client cannot retry. Re-open it if
+  `sage_batch_response_bytes_in_flight` or the working set climbs again; both
+  are alerted.
+
+  The original entry, kept because the design is still the one to build if it
+  ever comes back:
+
+- **(historical) Pod-wide response byte budget (D): plan of record, on hold
+  until a day of `48081c0` data.** The 2026-09-16 23:44Z OOM was about 514 batch sub-relays
   reading at once, each body held three to four times over while it is read and
   decoded. `max_batch_concurrency` (32) and the copy-free merge shipped first.
   Decide on D after reading `sage_batch_concurrency_capped_total`, the OOMs, and
@@ -42,9 +54,26 @@ PATH `origin/main` at `4606957a`, 2026-08-25; new work is on
   does not start while `max_batch_concurrency` + `max_batch_window` started
   items are still unwritten, so one batch holds at most that many answers
   (defaults 32 + 32), whatever its payload count. The merge copy is gone too.
-  What D still needs to cover is single requests and the 3-4× transient of
-  in-flight reads. The reservation should be held until the item is written,
-  not released when SendRelay returns.
+  What D still needed to cover was single requests and the 3-4× transient of
+  in-flight reads. The reservation would have been held until the item is
+  written, not released when SendRelay returns.
+
+  **Closed 2026-09-18, on a 24h read.** Against `a7f22b1` (the last build
+  without streaming), `584c4ed` holds 1.8-4.4MiB of batch answers where the old
+  build held 907MiB, and its working set is 315-320Mi against peaks of 2427Mi
+  and 944Mi. Sub-relays in flight are 62-105 against 137. One restart in 24
+  hours, the 23:44Z OOM on the pre-streaming build, and none since. Client
+  latency matches the `57ca3a0` baseline within noise on every service
+  measured. At ~160-320Mi against a 2560MiB `GOMEMLIMIT` the 3-4× transient on
+  a single response has around 2.4GB of headroom to work in, which is more than
+  `max_response_mb` can produce.
+
+  **`max_batch_concurrency` stays at 32**, decided on the same read. Batches
+  above 512 payloads are the only slow class — p95 4.9-7.1s, p99 9.2-16.1s —
+  and they are 1,461 of 3.7M batches, 0.04%. The 128-payload class, 340k
+  batches, sits at p95 0.46-0.98s, so the cap is not hurting the common case.
+  Raising it would cost a roll or a full-document `PUT /admin/config` for 0.04%
+  of traffic.
 - **Multi-supplier quorum: agreement between live operators is unproven.**
   Built 2026-09-16 behind the `quorum` flag (off); decisions in
   `docs/design/specs/2026-08-31-multi-supplier-quorum-design.md` under "Built".
