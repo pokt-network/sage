@@ -37,6 +37,25 @@ func (s *LeaderOnlyStorage) SetState(ctx context.Context, key string, st State) 
 	return s.inner.SetState(ctx, key, st)
 }
 
+// SetStates writes the batch through on the leader and drops it elsewhere, the
+// same rule SetState follows. Without it the service's type assertion would
+// fail on this wrapper and every leader would be back to one round trip per
+// write, which is the whole point of the batch.
+func (s *LeaderOnlyStorage) SetStates(ctx context.Context, states map[string]State) error {
+	if s.isLeader != nil && !s.isLeader() {
+		return nil
+	}
+	if bw, ok := s.inner.(BatchWriter); ok {
+		return bw.SetStates(ctx, states)
+	}
+	for key, st := range states {
+		if err := s.inner.SetState(ctx, key, st); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ForceSetState writes through whether or not this replica leads. It is for
 // an operator's decision (a reset), which is about the fleet's view and not
 // this replica's.

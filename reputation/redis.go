@@ -150,6 +150,26 @@ func (r *RedisStorage) SetState(ctx context.Context, key string, st State) error
 	return nil
 }
 
+// SetStates writes every state in one HSET.
+//
+// The whole store is one hash and a state is one field in it, so a batch needs
+// no MULTI and no pipeline: HSET takes field/value pairs variadically and Redis
+// applies them atomically as one command. That turns the write-behind's ceiling
+// from one round trip per write into one per batch.
+func (r *RedisStorage) SetStates(ctx context.Context, states map[string]State) error {
+	if len(states) == 0 {
+		return nil
+	}
+	pairs := make([]any, 0, len(states)*2)
+	for key, st := range states {
+		pairs = append(pairs, ScoreField(key), encodeState(st))
+	}
+	if err := r.client.HSet(ctx, r.hashKey, pairs...).Err(); err != nil {
+		return fmt.Errorf("redis HSet %d fields: %w", len(states), err)
+	}
+	return nil
+}
+
 // GetStates retrieves all states from the Redis HASH whose field names begin
 // with the given prefix. Fields that fail to decode are skipped.
 func (r *RedisStorage) GetStates(ctx context.Context, prefix string) (map[string]State, error) {

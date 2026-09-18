@@ -27,6 +27,25 @@ type Storage interface {
 	DeleteState(ctx context.Context, key string) error
 }
 
+// BatchWriter is the optional half of Storage that writes many states in one
+// round trip.
+//
+// Without it the write-behind is one round trip per write on one goroutine, so
+// its ceiling is 1/RTT — about 2,650 writes a second against a Redis 0.38ms
+// away. Mainnet asked for 3,119 on 2026-09-18 and lost 472 a second to a full
+// queue for as long as the traffic lasted, which no queue size fixes: the
+// deficit is a rate. A batch of K makes the ceiling K/RTT and moves the limit
+// off the drain entirely.
+//
+// A backend that cannot batch simply does not implement it, and the service
+// falls back to SetState per key.
+type BatchWriter interface {
+	// SetStates writes every state in one operation. The map is the caller's
+	// and must not be retained. An error means none of them landed, which is
+	// how the caller counts the loss.
+	SetStates(ctx context.Context, states map[string]State) error
+}
+
 // StaleDeleter is the optional half of Storage that bounds it. Storage is
 // write-behind that nothing reads back, so without it the backing store holds
 // one entry per key ever scored — at per-supplier granularity, every staked

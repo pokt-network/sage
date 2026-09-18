@@ -1161,10 +1161,13 @@ func (s *serviceImpl) drainWrites() {
 		defer ticker.Stop()
 		flush = ticker.C
 	}
+	// One batch map, reused: only this goroutine touches it, and a fresh map
+	// per pass would allocate thousands a second under load.
+	batch := make(map[string]State, 256)
 	for {
 		select {
 		case op := <-s.writeCh:
-			s.write(op)
+			s.writeBatch(op, batch)
 		case now := <-sweep:
 			// Errors are dropped like write errors are: storage is write-behind
 			// that nothing reads back, and a sweep that failed runs again next
@@ -1175,11 +1178,14 @@ func (s *serviceImpl) drainWrites() {
 		case now := <-flush:
 			safego.Run(nil, "reputation.opstats", func() { s.flushOperatorStats(opStore, now) })
 		case <-s.stopCh:
-			// Drain remaining writes.
+			// Drain remaining writes. One batch takes the whole queue, so this
+			// is a round trip or two rather than one per queued write — the
+			// difference between a 10s shutdown budget spent on writes and a
+			// shutdown that loses them.
 			for {
 				select {
 				case op := <-s.writeCh:
-					s.write(op)
+					s.writeBatch(op, batch)
 				default:
 					return
 				}
@@ -1245,6 +1251,85 @@ func (s *serviceImpl) enqueue(op writeOp) bool {
 func (s *serviceImpl) dropped(reason string) {
 	if fn := s.dropHook.Load(); fn != nil {
 		(*fn)(reason)
+	}
+}
+
+// maxWriteBatch bounds one batched write. It is the queue's own capacity, so a
+// single pass can take everything waiting and no more: one HSET of 4,096 fields
+// is around half a megabyte, which is one round trip Redis answers in the time
+// it used to answer one field.
+const maxWriteBatch = 4096
+
+// writeBatch drains one pass: op, plus whatever else is already queued, folded
+// per key and written in one round trip.
+//
+// This is what makes the write-behind keep up. One write per round trip caps it
+// at 1/RTT — about 2,650 a second against a Redis 0.38ms away — and mainnet
+// arrived at 3,119 on 2026-09-18, so a full queue dropped 472 a second for as
+// long as the traffic lasted. A queue cannot fix a rate deficit; it only picks
+// how many seconds pass before the loss starts.
+//
+// The pass is opportunistic rather than timed: it blocks for one write (the
+// caller's select already did), then takes what is waiting without blocking. So
+// a quiet gateway writes immediately, exactly as before, and a saturated one
+// batches thousands — the batch grows precisely when it needs to, with no tick
+// to tune and no durability traded away.
+//
+// Folding per key is the second saving and it is free: the map keeps the last
+// state per key, and a hot endpoint written many times in one pass costs one
+// field. Last-in-the-channel wins, which is the same rule storage applied
+// before, since concurrent writers for one key were already last-writer-wins.
+//
+// A forced write is not batched: ForceSetState bypasses the leader gate on
+// purpose, so putting one in a batch would carry every ordinary write in it
+// through the gate as well. They are rare (an operator's reset) and go alone.
+func (s *serviceImpl) writeBatch(first writeOp, batch map[string]State) {
+	clear(batch)
+	s.collect(first, batch)
+	for len(batch) < maxWriteBatch {
+		select {
+		case op := <-s.writeCh:
+			s.collect(op, batch)
+		default:
+			// Nothing waiting: write what we have rather than idling for more.
+			s.flush(batch)
+			return
+		}
+	}
+	s.flush(batch)
+}
+
+// collect stamps one write and folds it into the batch. A forced write goes
+// straight through instead, for the reason writeBatch gives.
+func (s *serviceImpl) collect(op writeOp, batch map[string]State) {
+	if op.force {
+		s.write(op)
+		return
+	}
+	op.state.UpdatedAt = time.Now().Unix()
+	batch[op.key] = op.state
+}
+
+// flush hands the batch to storage in one operation where storage can, and one
+// per key where it cannot. A failed batch is counted per key it carried: the
+// drop counter says how many signals storage never heard, not how many calls
+// failed.
+func (s *serviceImpl) flush(batch map[string]State) {
+	if len(batch) == 0 {
+		return
+	}
+	if bw, ok := s.storage.(BatchWriter); ok {
+		if err := bw.SetStates(context.Background(), batch); err != nil {
+			for range batch {
+				s.dropped(WriteDropStorageError)
+			}
+		}
+		return
+	}
+	for key, st := range batch {
+		if err := s.storage.SetState(context.Background(), key, st); err != nil {
+			s.dropped(WriteDropStorageError)
+		}
 	}
 }
 
