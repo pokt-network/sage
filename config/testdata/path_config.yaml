@@ -15,6 +15,7 @@ redis_config:
   address: "redis.invalid:6379"
   password: "fixture-password"
   db: 7
+  key_prefix: "fixture:"
   pool_size: 42
   dial_timeout: 6s
   read_timeout: 4s

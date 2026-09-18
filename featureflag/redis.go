@@ -38,6 +38,9 @@ type cacheEntry struct {
 
 // RedisStore is a Redis-backed FlagStore with a local cache.
 type RedisStore struct {
+	// prefix namespaces this store's keys. Empty means keyPrefix, the literal
+	// every release before the prefix was configurable used.
+	prefix   string
 	client   RedisClient
 	cacheTTL time.Duration
 
@@ -68,6 +71,20 @@ type RedisStore struct {
 
 // RedisStoreOption configures a RedisStore.
 type RedisStoreOption func(*RedisStore)
+
+// WithKeyPrefix namespaces the store's keys, for a deployment sharing a Redis
+// database with another. Empty keeps the historical "sage:flags:".
+func WithKeyPrefix(prefix string) RedisStoreOption {
+	return func(s *RedisStore) { s.prefix = prefix }
+}
+
+// prefixOr is the store's prefix, or the historical default.
+func (s *RedisStore) prefixOr() string {
+	if s.prefix == "" {
+		return keyPrefix
+	}
+	return s.prefix
+}
 
 // NewRedisStore creates a Redis-backed flag store.
 // If client is nil, all reads fall back to defaults.
@@ -112,13 +129,13 @@ func (s *RedisStore) configOverride(flag string) (bool, bool) {
 func (s *RedisStore) IsEnabled(ctx context.Context, flag string, serviceID domain.ServiceID) bool {
 	// Try per-service override first.
 	if serviceID != "" {
-		if val, ok := s.get(ctx, serviceKey(flag, serviceID)); ok {
+		if val, ok := s.get(ctx, s.serviceKey(flag, serviceID)); ok {
 			return val
 		}
 	}
 
 	// Try global.
-	if val, ok := s.get(ctx, globalKey(flag)); ok {
+	if val, ok := s.get(ctx, s.globalKey(flag)); ok {
 		return val
 	}
 
@@ -133,13 +150,13 @@ func (s *RedisStore) IsEnabled(ctx context.Context, flag string, serviceID domai
 // local cache is updated first, so the calling instance sees the change even if
 // the write fails; peers pick it up within their own cache TTL.
 func (s *RedisStore) Set(ctx context.Context, flag string, enabled bool) error {
-	return s.set(ctx, globalKey(flag), enabled)
+	return s.set(ctx, s.globalKey(flag), enabled)
 }
 
 // SetForService overrides a flag for one service, taking precedence over the
 // global key for that service only.
 func (s *RedisStore) SetForService(ctx context.Context, flag string, serviceID domain.ServiceID, enabled bool) error {
-	return s.set(ctx, serviceKey(flag, serviceID), enabled)
+	return s.set(ctx, s.serviceKey(flag, serviceID), enabled)
 }
 
 // GetAll returns the effective state of every known flag, layering the Redis
@@ -178,7 +195,7 @@ func (s *RedisStore) GetAll(ctx context.Context) (map[string]FlagState, error) {
 			continue
 		}
 		enabled := val == "1"
-		flag, svcID := parseKey(key)
+		flag, svcID := s.parseKey(key)
 		if flag == "" {
 			continue
 		}
@@ -215,7 +232,7 @@ func (s *RedisStore) scanKeys(ctx context.Context) ([]string, error) {
 		cursor uint64
 	)
 	for {
-		page, next, err := s.client.Scan(ctx, cursor, keyPrefix+"*", scanCount).Result()
+		page, next, err := s.client.Scan(ctx, cursor, s.prefixOr()+"*", scanCount).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -242,9 +259,9 @@ func (s *RedisStore) scanKeys(ctx context.Context) ([]string, error) {
 func (s *RedisStore) Delete(ctx context.Context, flag string, serviceID domain.ServiceID) error {
 	var key string
 	if serviceID != "" {
-		key = serviceKey(flag, serviceID)
+		key = s.serviceKey(flag, serviceID)
 	} else {
-		key = globalKey(flag)
+		key = s.globalKey(flag)
 	}
 
 	s.mu.Lock()
@@ -283,7 +300,7 @@ func (s *RedisStore) DeleteGlobal(ctx context.Context, flag string) error {
 		}
 	}
 
-	key := globalKey(flag)
+	key := s.globalKey(flag)
 	s.mu.Lock()
 	delete(s.cache, key)
 	s.mu.Unlock()
@@ -422,21 +439,21 @@ func (s *RedisStore) refresh(ctx context.Context) {
 	s.snapshot.Store(&next)
 }
 
-func globalKey(flag string) string {
-	return keyPrefix + flag
+func (s *RedisStore) globalKey(flag string) string {
+	return s.prefixOr() + flag
 }
 
-func serviceKey(flag string, serviceID domain.ServiceID) string {
-	return keyPrefix + flag + ":" + string(serviceID)
+func (s *RedisStore) serviceKey(flag string, serviceID domain.ServiceID) string {
+	return s.prefixOr() + flag + ":" + string(serviceID)
 }
 
 // parseKey extracts flag name and optional serviceID from a Redis key.
 // Key format: "sage:flags:{flag}" or "sage:flags:{flag}:{serviceID}"
-func parseKey(key string) (flag string, serviceID string) {
-	if len(key) <= len(keyPrefix) {
+func (s *RedisStore) parseKey(key string) (flag string, serviceID string) {
+	if len(key) <= len(s.prefixOr()) {
 		return "", ""
 	}
-	rest := key[len(keyPrefix):]
+	rest := key[len(s.prefixOr()):]
 	// Find the first colon which separates flag from serviceID.
 	for i := 0; i < len(rest); i++ {
 		if rest[i] == ':' {

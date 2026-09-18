@@ -88,7 +88,7 @@ func (f *fakeRedis) Scan(_ context.Context, _ uint64, match string, _ int64) *re
 
 func TestRedisStore_PrefixesKeysAndLists(t *testing.T) {
 	r := &fakeRedis{m: map[string]string{}}
-	s := NewRedisStore(r)
+	s := NewRedisStore(r, "")
 	ctx := context.Background()
 	if err := s.Set(ctx, "external_sources/sui", `{"sources":[]}`); err != nil {
 		t.Fatal(err)

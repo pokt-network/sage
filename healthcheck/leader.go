@@ -34,12 +34,23 @@ type LeaderElector struct {
 	cancel   context.CancelFunc
 }
 
-// NewLeaderElector creates a LeaderElector. Pass nil for redisClient to run
-// in local-only mode (always leader).
-func NewLeaderElector(redisClient *redis.Client, logger *slog.Logger) *LeaderElector {
+// NewLeaderElector creates a LeaderElector holding the lock named key. Pass nil
+// for redisClient to run in local-only mode (always leader). An
+// empty key means leaderKey, the literal every release before the Redis key
+// prefix was configurable used.
+//
+// The key is what scopes the election. Two deployments sharing a Redis database
+// and this key elect ONE leader between them, so a neighbour's pod can hold
+// this fleet's leadership and probe on its behalf while every pod here sends
+// nothing. Mainnet spent at least four hours in exactly that state on
+// 2026-09-18.
+func NewLeaderElector(redisClient *redis.Client, logger *slog.Logger, key string) *LeaderElector {
+	if key == "" {
+		key = leaderKey
+	}
 	return &LeaderElector{
 		redis:  redisClient,
-		key:    leaderKey,
+		key:    key,
 		id:     instanceID(),
 		ttl:    leaderTTL,
 		logger: logger,

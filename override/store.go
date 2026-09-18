@@ -104,6 +104,15 @@ func (s *MemoryStore) Shared() bool { return false }
 // "sage:flags:".
 const keyPrefix = "sage:overrides:"
 
+// prefixOr returns the store's prefix, or the historical default when it was
+// built without one.
+func (s *RedisStore) prefixOr() string {
+	if s.prefix == "" {
+		return keyPrefix
+	}
+	return s.prefix
+}
+
 // RedisClient is the slice of go-redis the RedisStore uses; *redis.Client
 // satisfies it, and so does a fake in tests.
 type RedisClient interface {
@@ -118,14 +127,19 @@ type RedisClient interface {
 // stands until an operator deletes it, which is the point.
 type RedisStore struct {
 	client RedisClient
+	// prefix namespaces this store's keys. Empty means keyPrefix, the literal
+	// every release before the prefix was configurable used.
+	prefix string
 }
 
 // NewRedisStore wraps a client.
-func NewRedisStore(client RedisClient) *RedisStore { return &RedisStore{client: client} }
+func NewRedisStore(client RedisClient, prefix string) *RedisStore {
+	return &RedisStore{client: client, prefix: prefix}
+}
 
 // Get implements Store.
 func (s *RedisStore) Get(ctx context.Context, key string) (string, bool, error) {
-	v, err := s.client.Get(ctx, keyPrefix+key).Result()
+	v, err := s.client.Get(ctx, s.prefixOr()+key).Result()
 	if errors.Is(err, redis.Nil) {
 		return "", false, nil
 	}
@@ -137,12 +151,12 @@ func (s *RedisStore) Get(ctx context.Context, key string) (string, bool, error) 
 
 // Set implements Store.
 func (s *RedisStore) Set(ctx context.Context, key, value string) error {
-	return s.client.Set(ctx, keyPrefix+key, value, 0).Err()
+	return s.client.Set(ctx, s.prefixOr()+key, value, 0).Err()
 }
 
 // Delete implements Store.
 func (s *RedisStore) Delete(ctx context.Context, key string) error {
-	return s.client.Del(ctx, keyPrefix+key).Err()
+	return s.client.Del(ctx, s.prefixOr()+key).Err()
 }
 
 // List implements Store. A SCAN over the prefix, then one GET per key; the
@@ -151,7 +165,7 @@ func (s *RedisStore) List(ctx context.Context, prefix string) (map[string]string
 	out := make(map[string]string)
 	var cursor uint64
 	for {
-		keys, next, err := s.client.Scan(ctx, cursor, keyPrefix+prefix+"*", 100).Result()
+		keys, next, err := s.client.Scan(ctx, cursor, s.prefixOr()+prefix+"*", 100).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -163,7 +177,7 @@ func (s *RedisStore) List(ctx context.Context, prefix string) (map[string]string
 			if err != nil {
 				return nil, err
 			}
-			out[strings.TrimPrefix(k, keyPrefix)] = v
+			out[strings.TrimPrefix(k, s.prefixOr())] = v
 		}
 		if next == 0 {
 			return out, nil

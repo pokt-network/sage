@@ -43,6 +43,7 @@ func TestConfigCompatibility_GlobalSections(t *testing.T) {
 			Address:      "redis.invalid:6379",
 			Password:     "fixture-password",
 			DB:           7,
+			KeyPrefix:    "fixture:",
 			PoolSize:     42,
 			DialTimeout:  6 * time.Second,
 			ReadTimeout:  4 * time.Second,

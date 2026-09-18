@@ -40,6 +40,7 @@ working gateway. Nothing on the relay path may hard-require it.
 |---|---|---|
 | `address` | string | The Redis host:port. **Empty disables Redis entirely** — the gateway runs local-only rather than failing to start. |
 | `password` | string | Authenticates to Redis. Empty means no AUTH. |
+| `key_prefix` | string | Namespaces every Redis key SAGE writes: reputation scores, the health-check leader lock and probe stream, feature-flag and admin overrides, drains, auto-drain events, blocked domains and circuit breakers. Default: "sage:", which reproduces the keys every release before 2026-09-18 used, so leaving it unset changes nothing. Set it when two SAGE deployments share one Redis database. They otherwise share all of it: one deployment's pod can hold the other's health-check leadership and probe on its behalf, which mainnet spent at least four hours doing on 2026-09-18 while its own three pods sent no probes at all and inherited a neighbour's reputation scores. Separate databases are still the cleaner split; this is for when they cannot be. |
 | `db` | integer | The Redis logical database number. Default: 0. |
 | `pool_size` | integer | Caps pooled connections to Redis. Default: 10. |
 | `dial_timeout` | duration | Bounds establishing a Redis connection. Default: 5s. |

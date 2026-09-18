@@ -28,12 +28,12 @@ func TestRedisStore_KeyFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.serviceID == "" {
-				got := globalKey(tt.flag)
+				got := (&RedisStore{}).globalKey(tt.flag)
 				if got != tt.wantKey {
 					t.Errorf("globalKey(%q) = %q, want %q", tt.flag, got, tt.wantKey)
 				}
 			} else {
-				got := serviceKey(tt.flag, domain.ServiceID(tt.serviceID))
+				got := (&RedisStore{}).serviceKey(tt.flag, domain.ServiceID(tt.serviceID))
 				if got != tt.wantKey {
 					t.Errorf("serviceKey(%q, %q) = %q, want %q", tt.flag, tt.serviceID, got, tt.wantKey)
 				}
@@ -57,7 +57,7 @@ func TestRedisStore_ParseKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
-			flag, svcID := parseKey(tt.key)
+			flag, svcID := (&RedisStore{}).parseKey(tt.key)
 			if flag != tt.wantFlag || svcID != tt.wantSvcID {
 				t.Errorf("parseKey(%q) = (%q, %q), want (%q, %q)", tt.key, flag, svcID, tt.wantFlag, tt.wantSvcID)
 			}
@@ -225,11 +225,11 @@ func (f *fakeFlagRedis) Scan(ctx context.Context, cursor uint64, match string, _
 // ignoring a key the walk repeats.
 func TestRedisStore_GetAllScansTheNamespace(t *testing.T) {
 	fake := &fakeFlagRedis{data: map[string]string{
-		globalKey(FlagHedge):          "0",
-		globalKey(FlagCache):          "1",
-		serviceKey(FlagHedge, "eth"):  "1",
-		serviceKey(FlagRetry, "poly"): "0",
-		"sage:other:namespace":        "1",
+		(&RedisStore{}).globalKey(FlagHedge):          "0",
+		(&RedisStore{}).globalKey(FlagCache):          "1",
+		(&RedisStore{}).serviceKey(FlagHedge, "eth"):  "1",
+		(&RedisStore{}).serviceKey(FlagRetry, "poly"): "0",
+		"sage:other:namespace":                        "1",
 	}}
 	store := NewRedisStore(fake, nil)
 
