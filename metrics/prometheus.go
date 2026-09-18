@@ -987,6 +987,33 @@ func NewSessionLayerGauges(ready func() bool, height func() int64) []prometheus.
 	}
 }
 
+// NewLeaderGauge exposes whether this pod holds the health-check leadership as
+// sage_health_check_is_leader.
+//
+// Probing is the leader's job, and exactly one pod in a fleet should read 1. A
+// fleet where every pod reads 0 is a fleet that sends no probes at all, which
+// is what mainnet did for at least four hours on 2026-09-18: another deployment
+// sharing the same Redis database held the lock, so mainnet's own pods never
+// probed, and the only trace was sage_health_check_last_cycle_probes sitting at
+// zero everywhere — indistinguishable from a config that asks for nothing.
+// Summed across a deployment this answers "is anyone leading" in one query.
+//
+// Two pods reading 1 at once is a split lease, not a tie: the lock is held with
+// a TTL and renewed, so it means renewal is losing and results are being
+// published twice.
+func NewLeaderGauge(isLeader func() bool) prometheus.Collector {
+	return prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace: "sage",
+		Name:      "health_check_is_leader",
+		Help:      "Whether this pod currently holds the health-check leader lock: 1 leader, 0 follower. Probing is the leader's job, so exactly one pod per deployment should read 1 — sum it across the deployment and 0 means nobody is probing, which looks identical to an idle config in every other metric. With no Redis every pod is its own leader and reads 1. Two pods at 1 means the lease is splitting and probe results are being published twice.",
+	}, func() float64 {
+		if isLeader() {
+			return 1
+		}
+		return 0
+	})
+}
+
 // NewPanicCollector exposes safego's recovered-panic count as
 // sage_recovered_panics_total.
 //

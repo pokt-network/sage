@@ -261,7 +261,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	var flags featureflag.FlagStore
 	flags = featureflag.NewMemoryStore(cfg.FeatureFlags)
 	if redisClient != nil {
-		rs := featureflag.NewRedisStore(redisClient, cfg.FeatureFlags)
+		rs := featureflag.NewRedisStore(redisClient, cfg.FeatureFlags, featureflag.WithKeyPrefix(cfg.Redis.Key("flags:")))
 		// Poll the flag keys into a snapshot so the relay path never waits
 		// on Redis; changes from any replica land within one cache TTL.
 		rs.Start(ctx)
@@ -275,7 +275,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// admin route that writes here says which.
 	var overrides override.Store = override.NewMemoryStore()
 	if redisClient != nil {
-		overrides = override.NewRedisStore(redisClient)
+		overrides = override.NewRedisStore(redisClient, cfg.Redis.Key("overrides:"))
 	}
 	app.Overrides = overrides
 
@@ -285,7 +285,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	repStorage = reputation.NewMemoryStorage()
 	if redisClient != nil {
 		var err error
-		repStorage, err = reputation.NewRedisStorage(redisClient, "sage:reputation:")
+		repStorage, err = reputation.NewRedisStorage(redisClient, cfg.Redis.Key("reputation:"))
 		if err != nil {
 			logger.Warn("Redis reputation storage failed, using memory", "error", err)
 			repStorage = reputation.NewMemoryStorage()
@@ -357,7 +357,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		var backend blocklist.Backend = blocklist.NewMemoryBackend()
 		var blOpts []blocklist.Option
 		if redisClient != nil {
-			backend = blocklist.NewRedisBackend(redisClient)
+			backend = blocklist.NewRedisBackend(redisClient, cfg.Redis.Key("blocked_domains"))
 			blOpts = append(blOpts, blocklist.WithPollInterval(blocklistPollInterval), blocklist.WithShared(true))
 		}
 		blocked := blocklist.New(shannonProto, backend, cfg.Gateway.BlockedDomains, blOpts...)
@@ -415,7 +415,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	prometheus.MustRegister(metrics.NewChainViewCollector(qosReg, serviceIDsFrom(cfg)))
 
 	// 6. Circuit breaker
-	cb := circuitbreaker.New(circuitbreaker.WithRedis(redisClient), circuitbreaker.WithLogger(logger))
+	cb := circuitbreaker.New(circuitbreaker.WithRedis(redisClient), circuitbreaker.WithLogger(logger),
+		circuitbreaker.WithKeyPrefix(cfg.Redis.Key("circuit:")))
 
 	// Circuit-breaker state is derived at scrape time rather than pushed: breaks
 	// expire lazily, so there is no event a gauge could hang off. See
@@ -460,7 +461,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	var drainStore drain.Store
 	if app.Protocol != nil {
 		if redisClient != nil {
-			redisDrains := drain.NewRedisStore(redisClient, drain.WithLogger(logger))
+			redisDrains := drain.NewRedisStore(redisClient, drain.WithLogger(logger),
+				drain.WithHashKey(cfg.Redis.Key("drain")))
 			redisDrains.Start(ctx)
 			drainStore = redisDrains
 			// Following a peer's probe stream means following its auto drains:
@@ -514,7 +516,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	if following := cfg.Gateway.HealthChecks.PeerProbeStream.Enabled && redisClient != nil; drainStore != nil && !following {
 		autoDrainEvents = &autodrain.MemoryLog{}
 		if redisClient != nil {
-			autoDrainEvents = autodrain.RedisLog{Client: redisClient}
+			autoDrainEvents = autodrain.RedisLog{Client: redisClient, Stream: cfg.Redis.Key("auto_drain:events")}
 		}
 		autoDrain = autodrain.New(autodrain.Deps{
 			Drains:    drainStore,
@@ -785,9 +787,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 
 	// 12. Health checks
-	leader = healthcheck.NewLeaderElector(redisClient, logger)
+	leader = healthcheck.NewLeaderElector(redisClient, logger, cfg.Redis.Key("leader:healthcheck"))
 	leader.Start(ctx)
 	app.Leader = leader
+	// Probing is the leader's job, and nothing said who leads. A fleet whose
+	// pods all read 0 sends no probes at all, which is what mainnet did for
+	// four hours on 2026-09-18 while another deployment held its lock.
+	prometheus.MustRegister(metrics.NewLeaderGauge(leader.IsLeader))
 	if autoDrain != nil {
 		autoDrain.Start(ctx)
 	}
@@ -855,7 +861,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		SampleRate: cfg.Gateway.ObservationPipeline.SampleRate,
 	})
 	if redisClient != nil {
-		probeStream := healthcheck.NewRedisProbeStream(redisClient, leader.ID(), 2*healthCheckInterval)
+		probeStream := healthcheck.NewRedisProbeStream(redisClient, leader.ID(), 2*healthCheckInterval, cfg.Redis.Key("probes"))
 		healthExe.SetProbeSink(probeStream)
 		healthExe.SetProbeSource(probeStream)
 	}
@@ -871,7 +877,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			// max_age is live through PUT /admin/tuning/health_checks.peer_max_age,
 			// and the skipping itself through the peer_probe_skip flag.
 			peerMaxAge := peer.MaxAge
-			healthExe.SetPeerSource(healthcheck.NewRedisProbeStream(peerClient, "", 2*healthCheckInterval),
+			// The default stream name, not this deployment's: the stream
+			// belongs to the OTHER instance, so its prefix is the peer's and
+			// not ours to compose. A peer that renamed it needs a key of its
+			// own here, which nothing has asked for yet.
+			healthExe.SetPeerSource(healthcheck.NewRedisProbeStream(peerClient, "", 2*healthCheckInterval, ""),
 				func(svc domain.ServiceID) time.Duration {
 					return tuningStore.Duration(tuning.KnobPeerProbeMaxAge, svc, peerMaxAge)
 				})

@@ -76,6 +76,8 @@ var _ RedisClient = (*redis.Client)(nil)
 // Writes go local first and Redis second, so the instance that took the admin
 // request honors the drain even when propagation fails.
 type RedisStore struct {
+	// hash names the HASH the drains live in. Empty means hashKey.
+	hash string
 	*MemoryStore
 
 	client   RedisClient
@@ -121,6 +123,20 @@ type keyState struct {
 
 // RedisOption configures a RedisStore.
 type RedisOption func(*RedisStore)
+
+// WithHashKey names the HASH the drains live in, for a deployment sharing a
+// Redis database with another. Empty keeps the historical "sage:drain".
+func WithHashKey(key string) RedisOption {
+	return func(s *RedisStore) { s.hash = key }
+}
+
+// hashOr is the configured hash name, or the historical default.
+func (s *RedisStore) hashOr() string {
+	if s.hash == "" {
+		return hashKey
+	}
+	return s.hash
+}
 
 // WithCacheTTL sets how often the refresh loop re-reads Redis. It is also the
 // worst-case lag before a change made on another replica takes effect here.
@@ -237,7 +253,7 @@ func (s *RedisStore) propagate(ctx context.Context, e Entry) error {
 	if err != nil {
 		return fmt.Errorf("encoding drain %s: %w", redisField(e.Key), err)
 	}
-	if err := s.client.HSet(ctx, hashKey, redisField(e.Key), value).Err(); err != nil {
+	if err := s.client.HSet(ctx, s.hashOr(), redisField(e.Key), value).Err(); err != nil {
 		return fmt.Errorf("%w: %v", ErrPropagation, err)
 	}
 	return nil
@@ -333,7 +349,7 @@ func (s *RedisStore) finishWrite(ctx context.Context, e Entry, gen uint64, write
 	s.keysMu.Unlock()
 
 	if compensate {
-		if err := s.client.HDel(ctx, hashKey, redisField(e.Key)).Err(); err != nil {
+		if err := s.client.HDel(ctx, s.hashOr(), redisField(e.Key)).Err(); err != nil {
 			s.log().Warn("drain: could not undo a write that raced a release",
 				"key", redisField(e.Key), "error", err)
 		}
@@ -376,7 +392,7 @@ func (s *RedisStore) Release(ctx context.Context, k Key) error {
 }
 
 func (s *RedisStore) del(ctx context.Context, k Key) error {
-	if err := s.client.HDel(ctx, hashKey, redisField(k)).Err(); err != nil {
+	if err := s.client.HDel(ctx, s.hashOr(), redisField(k)).Err(); err != nil {
 		return fmt.Errorf("%w: %v", ErrPropagation, err)
 	}
 	return nil
@@ -407,7 +423,7 @@ func (s *RedisStore) refresh(ctx context.Context) {
 	// Taken before the read: anything Set locally after this instant is newer
 	// than the snapshot and must survive the replace below.
 	began := time.Now()
-	all, err := s.client.HGetAll(ctx, hashKey).Result()
+	all, err := s.client.HGetAll(ctx, s.hashOr()).Result()
 	if err != nil {
 		s.log().Warn("drain refresh: reading redis failed, keeping local drains", "error", err)
 		return
@@ -439,7 +455,7 @@ func (s *RedisStore) refresh(ctx context.Context) {
 	s.replaceAll(next, began)
 
 	if len(expired) > 0 && s.follow == "" {
-		if err := s.client.HDel(ctx, hashKey, expired...).Err(); err != nil {
+		if err := s.client.HDel(ctx, s.hashOr(), expired...).Err(); err != nil {
 			s.log().Debug("drain refresh: could not delete expired fields", "count", len(expired), "error", err)
 		}
 	}

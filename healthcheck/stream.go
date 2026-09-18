@@ -43,6 +43,9 @@ var _ StreamRedisClient = (*redis.Client)(nil)
 // them a second time? No — see Run: entries this instance wrote are
 // skipped by instance id).
 type RedisProbeStream struct {
+	// stream names the Redis Stream results go to. Empty means
+	// s.streamOr(), the literal every release before the prefix used.
+	stream     string
 	client     StreamRedisClient
 	instanceID string
 	// replay is how far back a fresh reader looks before blocking on new
@@ -50,11 +53,20 @@ type RedisProbeStream struct {
 	replay time.Duration
 }
 
+// streamOr is the configured stream name, or the historical default.
+func (s *RedisProbeStream) streamOr() string {
+	if s.stream == "" {
+		return probeStreamKey
+	}
+	return s.stream
+}
+
 // NewRedisProbeStream returns a stream over client. replay is the window of
 // recent history a new reader applies first; two health-check intervals is
-// the sensible value.
-func NewRedisProbeStream(client StreamRedisClient, instanceID string, replay time.Duration) *RedisProbeStream {
-	return &RedisProbeStream{client: client, instanceID: instanceID, replay: replay}
+// the sensible value. An empty stream name means probeStreamKey, the literal
+// every release before the Redis key prefix was configurable used.
+func NewRedisProbeStream(client StreamRedisClient, instanceID string, replay time.Duration, stream string) *RedisProbeStream {
+	return &RedisProbeStream{client: client, instanceID: instanceID, replay: replay, stream: stream}
 }
 
 // streamEntry is the on-wire envelope: the result plus who produced it, so
@@ -72,7 +84,7 @@ func (s *RedisProbeStream) Publish(ctx context.Context, r ProbeResult) error {
 		return fmt.Errorf("encode probe result: %w", err)
 	}
 	return s.client.XAdd(ctx, &redis.XAddArgs{
-		Stream: probeStreamKey,
+		Stream: s.streamOr(),
 		MaxLen: probeStreamMaxLen,
 		Approx: true,
 		Values: map[string]interface{}{probeStreamField: b},
@@ -86,7 +98,7 @@ func (s *RedisProbeStream) Publish(ctx context.Context, r ProbeResult) error {
 func (s *RedisProbeStream) Run(ctx context.Context, apply func(ProbeResult)) error {
 	lastID := s.replayID()
 	// Replay: everything from the window start to now.
-	msgs, err := s.client.XRange(ctx, probeStreamKey, lastID, "+").Result()
+	msgs, err := s.client.XRange(ctx, s.streamOr(), lastID, "+").Result()
 	if err != nil {
 		return fmt.Errorf("probe stream replay: %w", err)
 	}
@@ -102,7 +114,7 @@ func (s *RedisProbeStream) Run(ctx context.Context, apply func(ProbeResult)) err
 
 	for ctx.Err() == nil {
 		streams, err := s.client.XRead(ctx, &redis.XReadArgs{
-			Streams: []string{probeStreamKey, lastID},
+			Streams: []string{s.streamOr(), lastID},
 			Count:   probeReadCount,
 			Block:   probeReadBlock,
 		}).Result()

@@ -151,6 +151,19 @@ type RedisConfig struct {
 	Address string `yaml:"address"`
 	// Password authenticates to Redis. Empty means no AUTH.
 	Password string `yaml:"password"`
+	// KeyPrefix namespaces every Redis key SAGE writes: reputation scores, the
+	// health-check leader lock and probe stream, feature-flag and admin
+	// overrides, drains, auto-drain events, blocked domains and circuit
+	// breakers. Default: "sage:", which reproduces the keys every release
+	// before 2026-09-18 used, so leaving it unset changes nothing.
+	//
+	// Set it when two SAGE deployments share one Redis database. They otherwise
+	// share all of it: one deployment's pod can hold the other's health-check
+	// leadership and probe on its behalf, which mainnet spent at least four
+	// hours doing on 2026-09-18 while its own three pods sent no probes at all
+	// and inherited a neighbour's reputation scores. Separate databases are
+	// still the cleaner split; this is for when they cannot be.
+	KeyPrefix string `yaml:"key_prefix"`
 	// DB is the Redis logical database number. Default: 0.
 	DB int `yaml:"db"`
 	// PoolSize caps pooled connections to Redis. Default: 10.
@@ -161,6 +174,21 @@ type RedisConfig struct {
 	ReadTimeout time.Duration `yaml:"read_timeout"`
 	// WriteTimeout bounds a single Redis write. Zero takes the client default.
 	WriteTimeout time.Duration `yaml:"write_timeout"`
+}
+
+// DefaultRedisKeyPrefix is the namespace every Redis key sits under when
+// RedisConfig.KeyPrefix is unset. It is the literal every key was hard-coded
+// with before the prefix existed, so the default composes byte-identical keys.
+const DefaultRedisKeyPrefix = "sage:"
+
+// Key composes a Redis key name under the configured prefix. The name is the
+// part that identifies the family ("reputation:", "drain", ...); callers pass
+// the same name a release without the prefix hard-coded after "sage:".
+func (c RedisConfig) Key(name string) string {
+	if c.KeyPrefix == "" {
+		return DefaultRedisKeyPrefix + name
+	}
+	return c.KeyPrefix + name
 }
 
 // RouterConfig controls the HTTP server.

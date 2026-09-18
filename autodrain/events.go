@@ -65,7 +65,20 @@ var _ RedisClient = (*redis.Client)(nil)
 
 // RedisLog appends decisions to a capped Redis stream, so they survive a
 // restart or a leader change and read the same from every replica.
-type RedisLog struct{ Client RedisClient }
+type RedisLog struct {
+	Client RedisClient
+	// Stream names the Redis stream the decisions go to. Empty means
+	// StreamKey, the literal every release before the prefix used.
+	Stream string
+}
+
+// stream is the configured stream name, or the historical default.
+func (r RedisLog) stream() string {
+	if r.Stream == "" {
+		return StreamKey
+	}
+	return r.Stream
+}
 
 // Append adds ev to the stream, trimmed to about maxEvents entries.
 func (r RedisLog) Append(ctx context.Context, ev Event) error {
@@ -74,7 +87,7 @@ func (r RedisLog) Append(ctx context.Context, ev Event) error {
 		return err
 	}
 	return r.Client.XAdd(ctx, &redis.XAddArgs{
-		Stream: StreamKey,
+		Stream: r.stream(),
 		MaxLen: maxEvents,
 		Approx: true,
 		Values: map[string]any{"event": string(b)},
@@ -84,7 +97,7 @@ func (r RedisLog) Append(ctx context.Context, ev Event) error {
 // Recent reads newest first. A service filter scans the whole capped stream,
 // which is maxEvents entries at most.
 func (r RedisLog) Recent(ctx context.Context, svc domain.ServiceID, limit int) ([]Event, error) {
-	msgs, err := r.Client.XRevRangeN(ctx, StreamKey, "+", "-", maxEvents).Result()
+	msgs, err := r.Client.XRevRangeN(ctx, r.stream(), "+", "-", maxEvents).Result()
 	if err != nil {
 		return nil, err
 	}

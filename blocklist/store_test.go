@@ -217,7 +217,7 @@ func (f *fakeHash) HGetAll(_ context.Context, _ string) *redis.MapStringStringCm
 
 func TestRedisBackend_RoundTripAndSkipsGarbage(t *testing.T) {
 	fake := &fakeHash{fields: map[string]string{}}
-	be := NewRedisBackend(fake)
+	be := NewRedisBackend(fake, "")
 	ctx := context.Background()
 	since := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
@@ -237,7 +237,7 @@ func TestRedisBackend_RoundTripAndSkipsGarbage(t *testing.T) {
 
 func TestRedisBackend_ErrorsSurface(t *testing.T) {
 	fake := &fakeHash{fields: map[string]string{}, err: fmt.Errorf("connection refused")}
-	be := NewRedisBackend(fake)
+	be := NewRedisBackend(fake, "")
 	ctx := context.Background()
 	assert.Error(t, be.Save(ctx, Entry{Domain: "a.example"}))
 	assert.Error(t, be.Delete(ctx, "a.example"))

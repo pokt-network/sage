@@ -8,7 +8,7 @@ import (
 )
 
 func TestLeaderElector_LocalOnlyMode_AlwaysLeader(t *testing.T) {
-	le := NewLeaderElector(nil, slog.Default())
+	le := NewLeaderElector(nil, slog.Default(), "")
 	le.Start(context.Background())
 
 	if !le.IsLeader() {
@@ -21,7 +21,7 @@ func TestLeaderElector_LocalOnlyMode_AlwaysLeader(t *testing.T) {
 }
 
 func TestLeaderElector_Stop_CancelsContext(t *testing.T) {
-	le := NewLeaderElector(nil, slog.Default())
+	le := NewLeaderElector(nil, slog.Default(), "")
 	ctx, cancel := context.WithCancel(context.Background())
 	le.Start(ctx)
 	cancel()
@@ -48,7 +48,7 @@ func TestLeaderElector_ID_IsUnique(t *testing.T) {
 }
 
 func TestLeaderElector_IsLeader_Default(t *testing.T) {
-	le := NewLeaderElector(nil, slog.Default())
+	le := NewLeaderElector(nil, slog.Default(), "")
 	// Before Start: not yet set.
 	if le.IsLeader() {
 		t.Error("expected IsLeader=false before Start")
