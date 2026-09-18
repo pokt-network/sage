@@ -1106,14 +1106,24 @@ func (e *Executor) probeableServices() int {
 // Endpoints are staked per RPC type and a check carries its own type, so the
 // question is per type and the answer is yes at the first type that has one —
 // the same pairing the cycle probes on, so a service this says yes about is a
-// service the cycle will send something to. An error is a no: the protocol
-// reports the cause itself, and for this the distinction between "no suppliers"
-// and "could not ask" does not change the arithmetic.
+// service the cycle will send something to.
+//
+// It asks whether an endpoint exists NOW, not whether one has ever answered. A
+// service whose suppliers are staked and silent stays in the denominator and is
+// probed every cycle, crediting nothing; that case belongs to the warm-up
+// deadline, not here.
+//
+// An error counts as YES, which is the conservative direction. Not being able
+// to ask is not evidence of absence, and the first pass runs seconds after
+// startup, when a service whose session has not been fetched yet would answer
+// with an error — excluding it would shrink the threshold on a transient and
+// let a pod go ready on less coverage than it should. Erring the other way
+// costs at most one cycle of waiting, since the pass runs again every cycle.
 func (e *Executor) hasProbeableEndpoint(ctx context.Context, serviceID domain.ServiceID, configured *ConfiguredChecks) bool {
 	all := slices.Concat(pluginChecks(e.qosRegistry.Get(serviceID)), configured.For(serviceID))
 	for rpcType := range checksByRPCType(all) {
 		eps, err := e.endpoints.AvailableEndpoints(ctx, serviceID, rpcType)
-		if err == nil && len(eps) > 0 {
+		if err != nil || len(eps) > 0 {
 			return true
 		}
 	}
