@@ -1644,3 +1644,34 @@ func TestRefreshWarmDenominator_ServiceRejoinsWhenEndpointsAppear(t *testing.T) 
 		t.Errorf("needed=%d unprobeable=%d, want 3/0 once every service has endpoints", needed, unprobeable)
 	}
 }
+
+// erroringEndpoints fails the lookup, standing in for a service whose session
+// has not been fetched yet.
+type erroringEndpoints struct{}
+
+func (erroringEndpoints) AvailableEndpoints(context.Context, domain.ServiceID, domain.RPCType) (domain.EndpointAddrList, error) {
+	return nil, errors.New("no session")
+}
+
+// A lookup that fails is not evidence that a service has no endpoints. The
+// first denominator pass runs seconds after startup, when a service whose
+// session is not fetched yet answers with an error, and excluding it would
+// shrink the threshold on a transient and let the pod go ready on less
+// coverage than it should.
+func TestRefreshWarmDenominator_LookupErrorKeepsTheServiceInTheDenominator(t *testing.T) {
+	sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{
+		"eth": {}, "poly": {}, "kava": {}, "sei": {},
+	}}
+	exec := NewExecutor(&stubRelayer{}, erroringEndpoints{}, sessions,
+		probeableRegistry(t, "eth", "poly", "kava", "sei"), &stubRepService{}, nil, defaultInterval, 4, slog.Default())
+
+	exec.refreshWarmDenominator(context.Background())
+
+	covered, needed, unprobeable := exec.WarmProgress()
+	if needed != 3 || unprobeable != 0 {
+		t.Errorf("needed=%d unprobeable=%d, want 3/0: an unanswerable lookup must not shrink the threshold", needed, unprobeable)
+	}
+	if covered != 0 || exec.Warm() {
+		t.Error("nothing is covered, so the pod must not be warm")
+	}
+}
