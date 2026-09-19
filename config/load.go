@@ -37,6 +37,14 @@ func LoadFromEnv() (*Config, error) {
 func LoadFromBytes(data []byte) (*Config, error) { return parse(data) }
 
 func parse(data []byte) (*Config, error) {
+	// Before anything reads the document: ${VAR} carries a secret in from the
+	// environment, so the file in git holds a placeholder. See expandEnv for
+	// why an unset variable is an error rather than an empty value.
+	data, err := expandEnv(data)
+	if err != nil {
+		return nil, err
+	}
+
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config YAML: %w", err)

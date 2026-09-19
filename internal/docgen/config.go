@@ -33,6 +33,20 @@ asked to lose — the field says what zero resolves to, and a negative value is
 the way to ask for "actually none".
 
 Durations are Go duration strings: ` + "`30s`" + `, ` + "`2m`" + `, ` + "`1h30m`" + `.
+
+**Any value may be ` + "`${VAR}`" + `**, expanded from the environment before the YAML is
+parsed, so the structure of a config can live in git while its secrets come from
+the environment: ` + "`gateway_private_key_hex: \"${SAGE_GATEWAY_KEY}\"`" + `. A variable
+that is unset, or set to the empty string, fails startup naming the variable and
+the line — an empty signing key, Redis password or admin token would otherwise
+start a gateway that looks configured. A bare ` + "`$`" + ` is left alone and so is a
+` + "`$$`" + ` that is not in front of a brace, so a password keeps its dollars;
+` + "`$${VAR}`" + ` is the escape for a literal ` + "`${VAR}`" + `. There is no
+` + "`${VAR:-default}`" + `. Quote the placeholder when the
+value may contain a colon, a ` + "`#`" + ` or a quote. Expansion applies wherever a config
+is read: the file, ` + "`GATEWAY_CONFIG`" + `, ` + "`PUT /admin/config`" + ` and every reload — so an
+uploaded config holds placeholders in the override store rather than secrets, and
+each replica expands from its own environment.
 `
 
 // GenerateConfigReference walks the Config struct in configDir and renders the
