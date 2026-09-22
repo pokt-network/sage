@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
 
@@ -69,6 +70,23 @@ func payloadURL(supplierURL string, payload domain.Payload) string {
 		path = "/" + path
 	}
 	return strings.TrimSuffix(supplierURL, "/") + path
+}
+
+// newRelayClient is the client every relay goes out on.
+//
+// It never follows a redirect, as PATH never did: the 3xx comes back as the
+// response, which SendRelay grades as a retryable endpoint error. A relay is
+// always a POST, so a 301/302/303 could not have worked anyway (Go re-sends it
+// as a bodyless GET), and a 307/308 re-sends the signed relay, body and all, to
+// wherever the supplier points — including this pod's own loopback, where the
+// admin API may take a POST with no token. A supplier could reset its own
+// reputation that way.
+func newRelayClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		Transport:     newRelayTransport(),
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 
 // newRelayTransport is http.DefaultTransport with its pool sized for a gateway.
