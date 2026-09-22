@@ -124,7 +124,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 		relayTimeout = 30 * time.Second
 	}
 
-	httpClient := &http.Client{Timeout: relayTimeout}
+	httpClient := &http.Client{Timeout: relayTimeout, Transport: newRelayTransport()}
 
 	blockedDomains, err := newDomainBlocklist(cfg.Gateway.BlockedDomains)
 	if err != nil {

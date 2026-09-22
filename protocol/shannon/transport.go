@@ -3,6 +3,7 @@ package shannon
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/http/httptrace"
@@ -68,6 +69,22 @@ func payloadURL(supplierURL string, payload domain.Payload) string {
 		path = "/" + path
 	}
 	return strings.TrimSuffix(supplierURL, "/") + path
+}
+
+// newRelayTransport is http.DefaultTransport with its pool sized for a gateway.
+//
+// The default keeps 2 idle connections per host and 100 in all, so at mainnet
+// rates a busy supplier's connections were closed as fast as they came back
+// and nearly every relay paid a fresh TLS handshake: a 2026-09-22 profile put
+// 31% of CPU in client handshakes, 24% in verifying supplier certificates.
+// The pool sizes are PATH's. The session cache lets a connection that does
+// have to be opened resume instead of verifying the chain again.
+func newRelayTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 10000
+	t.MaxIdleConnsPerHost = 500
+	t.TLSClientConfig = &tls.Config{ClientSessionCache: tls.NewLRUClientSessionCache(1024)}
+	return t
 }
 
 // sendHTTP sends an HTTP POST request to the given URL with the provided body.
