@@ -1,6 +1,7 @@
 package shannon
 
 import (
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -8,8 +9,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/pokt-network/sage/domain"
 )
 
 // A burst wider than http.DefaultTransport's 2 idle connections per host must
@@ -73,4 +77,27 @@ func TestRelayTransportReusesABurstAndResumesTLS(t *testing.T) {
 	require.NotNil(t, resp)
 	require.EqualValues(t, n+1, opened.Load())
 	require.True(t, resp.TLS.DidResume, "a new connection must resume the TLS session, not verify the chain again")
+}
+
+// A supplier's 307 must come back as the response, not be followed: following
+// it re-sends the signed relay to wherever the supplier points, this pod's own
+// loopback admin API included.
+func TestRelayClientDoesNotFollowRedirects(t *testing.T) {
+	var reached atomic.Int32
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached.Add(1)
+	}))
+	defer elsewhere.Close()
+	supplier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/admin/reputation/reset/svc/ep", http.StatusTemporaryRedirect)
+	}))
+	defer supplier.Close()
+
+	p := &Protocol{httpClient: newRelayClient(5 * time.Second)}
+	resp, err := p.sendHTTP(context.Background(), supplier.URL, []byte("relay"), domain.RPCTypeJSONRPC)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
+	require.Zero(t, reached.Load(), "the redirect target must never be contacted")
 }
