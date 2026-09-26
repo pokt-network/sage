@@ -96,7 +96,7 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "websocket_probes_total",
-				Help:      "WebSocket recovery probes, by service and result: ok, dial_failed (the upgrade was refused or never completed), no_answer (connected, no valid answer in time), invalid (the answer failed relay validation), error_response (a valid relay carrying a JSON-RPC error or no result), unresolved (nothing to sign with; not graded). Probes go only to WebSocket endpoints below full reputation, which a connection-only signal gave no way back.",
+				Help:      "WebSocket recovery probes, by service and result: ok, other_dialect (answered -32601 method not found: alive but serving another API on that socket, e.g. a Cosmos EVM chain's EVM surface; graded ok), dial_failed (the upgrade was refused or never completed), no_answer (connected, no valid answer in time), invalid (the answer failed relay validation), error_response (a valid relay carrying a JSON-RPC error or no result), unresolved (nothing to sign with; not graded). Probes go only to WebSocket endpoints below full reputation, which a connection-only signal gave no way back.",
 			},
 			[]string{"service_id", "result"},
 		),

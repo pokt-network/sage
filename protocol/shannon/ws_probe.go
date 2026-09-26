@@ -44,12 +44,16 @@ const (
 // Probe results, the closed set sage_websocket_probes_total is labelled by.
 const (
 	wsProbeOK            = "ok"
+	wsProbeOtherDialect  = "other_dialect"  // answered -32601: alive, speaks another API on this socket; graded ok
 	wsProbeUnresolved    = "unresolved"     // no session, URL or app to sign with: not the supplier's fault, not graded
 	wsProbeDialFailed    = "dial_failed"    // the upgrade was refused or never completed
 	wsProbeNoAnswer      = "no_answer"      // connected, but no valid answer in time
 	wsProbeInvalid       = "invalid"        // the answer failed relay validation
 	wsProbeErrorResponse = "error_response" // a valid relay whose payload is a JSON-RPC error or no result
 )
+
+// jsonRPCMethodNotFound is the JSON-RPC 2.0 "method not found" error code.
+const jsonRPCMethodNotFound = -32601
 
 // ProbeWebSockets runs recovery probes for services until ctx ends. Call it
 // once, on its own goroutine.
@@ -156,8 +160,8 @@ func (r *WSRelayer) probeEndpoint(ctx context.Context, t wsProbeTarget) {
 	if result == wsProbeUnresolved {
 		return
 	}
-	sig := reputation.NewSuccessSignal("ws_probe_ok", 0)
-	if result != wsProbeOK {
+	sig := reputation.NewSuccessSignal("ws_probe_"+result, 0)
+	if result != wsProbeOK && result != wsProbeOtherDialect {
 		sig = reputation.NewMajorErrorSignal("ws_probe_"+result, 0)
 	}
 	sig.Probe = true
@@ -219,7 +223,18 @@ func (r *WSRelayer) runProbe(ctx context.Context, t wsProbeTarget) string {
 		if qos.JSONRPCRequestID(payload) != "1" {
 			continue
 		}
-		if qos.JSONRPCHasError(payload) || !gjson.GetBytes(payload, "result").Exists() {
+		// "Method not found" is a live backend that speaks another dialect
+		// on this socket, and that is all a probe asks. Cosmos EVM chains
+		// stake their EVM surface as WebSocket: the plugin's CometBFT
+		// status probe gets -32601 from every healthy supplier there, and
+		// grading that as a failure held sei's WebSocket keys down.
+		if qos.JSONRPCHasError(payload) {
+			if gjson.GetBytes(payload, "error.code").Int() == jsonRPCMethodNotFound {
+				return wsProbeOtherDialect
+			}
+			return wsProbeErrorResponse
+		}
+		if !gjson.GetBytes(payload, "result").Exists() {
 			return wsProbeErrorResponse
 		}
 		_ = conn.WriteControl(websocket.CloseMessage,

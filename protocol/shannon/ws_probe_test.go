@@ -90,7 +90,10 @@ func TestWSProbe_GradesADemotedKey(t *testing.T) {
 		signal reputation.SignalType
 	}{
 		{"a real answer recovers", `{"jsonrpc":"2.0","id":1,"result":"0x10"}`, wsProbeOK, reputation.SignalSuccess},
-		{"a JSON-RPC error is a failure", `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"not found"}}`, wsProbeErrorResponse, reputation.SignalMajorError},
+		{"a JSON-RPC error is a failure", `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"internal error"}}`, wsProbeErrorResponse, reputation.SignalMajorError},
+		// sei stakes its EVM surface as WebSocket; the cosmos probe's status
+		// call gets method-not-found from every healthy supplier there.
+		{"method not found is a live backend", `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"the method status does not exist/is not available"}}`, wsProbeOtherDialect, reputation.SignalSuccess},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, rep, m := probeFixture(t, wsURL(supplier), 40, tc.answer, enabled)
