@@ -124,6 +124,9 @@ type WSMetrics interface {
 type WSRelayer struct {
 	deps WSRelayerDeps
 
+	// probeBackoff spaces out recovery probes of URLs that keep failing.
+	probeBackoff wsProbeBackoff
+
 	// activeLoad tracks the number of open bridges per endpoint, feeding
 	// into reputation.SelectSpread to bias away from hot endpoints.
 	//

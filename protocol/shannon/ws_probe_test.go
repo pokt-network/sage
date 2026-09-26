@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	apptypes "github.com/pokt-network/poktroll/x/application/types"
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
@@ -136,5 +137,37 @@ func TestWSProbe_SkipsFullScoreAndFlagOff(t *testing.T) {
 	r.probeCycle(context.Background(), []domain.ServiceID{"eth"})
 	if len(m.probes) != 0 || len(rep.calls) != 0 {
 		t.Errorf("flag off: probes=%v signals=%d, want none", m.probes, len(rep.calls))
+	}
+}
+
+// A URL that keeps failing is probed less and less often, up to the cap, and
+// at the normal cadence again once it answers. On mainnet (2026-09-26) the
+// same dead URLs were redialled every minute, ~1,600 paid dial failures an
+// hour.
+func TestWSProbeBackoff_DoublesToTheCapAndResetsOnSuccess(t *testing.T) {
+	var b wsProbeBackoff
+	now := time.Unix(0, 0)
+	const key = "eth|wss://dead.test"
+	if !b.due(key, now) {
+		t.Fatal("a URL never probed must be due")
+	}
+	var waits []time.Duration
+	for i := 0; i < 8; i++ {
+		b.record(key, true, now)
+		wait := b.next[key].at.Sub(now)
+		if b.due(key, now.Add(wait-time.Second)) || !b.due(key, now.Add(wait)) {
+			t.Fatalf("failure %d: due before its %v wait, or not after it", i+1, wait)
+		}
+		waits = append(waits, wait)
+	}
+	want := []time.Duration{1, 2, 4, 8, 16, 32, 32, 32}
+	for i, w := range want {
+		if waits[i] != w*time.Minute {
+			t.Fatalf("waits = %v, want %v minutes", waits, want)
+		}
+	}
+	b.record(key, false, now)
+	if !b.due(key, now) {
+		t.Fatal("a success must clear the backoff")
 	}
 }

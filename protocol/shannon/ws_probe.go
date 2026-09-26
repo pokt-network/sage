@@ -39,7 +39,53 @@ const (
 	wsProbeTimeout     = 10 * time.Second
 	wsProbeMaxPerCycle = 32
 	wsProbeWorkers     = 4
+	// wsProbeMaxBackoff caps the wait between probes of a URL that keeps
+	// failing. Every probe is two paid relays (the signed request and its
+	// answer's claim); on mainnet (2026-09-26) the same dead URLs were
+	// redialled every minute, ~1,600 dial failures an hour. Doubling from
+	// the interval reaches the cap after six straight failures.
+	wsProbeMaxBackoff = 32 * time.Minute
 )
+
+// wsProbeBackoff holds, per probed URL, when it may be probed again. A URL
+// is dropped from it on its first success.
+// ponytail: grows with every WebSocket URL that ever failed a probe; staked
+// URLs number in the hundreds, prune by age if that stops holding.
+type wsProbeBackoff struct {
+	mu   sync.Mutex
+	next map[string]wsProbeRetry
+}
+
+type wsProbeRetry struct {
+	at    time.Time
+	fails int
+}
+
+// due reports whether key may be probed at now.
+func (b *wsProbeBackoff) due(key string, now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return !now.Before(b.next[key].at)
+}
+
+// record books key's next probe: none pending after a success, an
+// exponentially later one after each consecutive failure.
+func (b *wsProbeBackoff) record(key string, failed bool, now time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !failed {
+		delete(b.next, key)
+		return
+	}
+	if b.next == nil {
+		b.next = make(map[string]wsProbeRetry)
+	}
+	r := b.next[key]
+	wait := wsProbeInterval << min(r.fails, 5)
+	r.fails++
+	r.at = now.Add(min(wait, wsProbeMaxBackoff))
+	b.next[key] = r
+}
 
 // Probe results, the closed set sage_websocket_probes_total is labelled by.
 const (
@@ -77,6 +123,7 @@ func (r *WSRelayer) ProbeWebSockets(ctx context.Context, services []domain.Servi
 type wsProbeTarget struct {
 	serviceID domain.ServiceID
 	addr      domain.EndpointAddr
+	url       string
 	score     float64
 	frame     []byte
 }
@@ -141,11 +188,14 @@ func (r *WSRelayer) probeTargets(ctx context.Context, serviceID domain.ServiceID
 			continue
 		}
 		seen[url] = true
+		if !r.probeBackoff.due(string(serviceID)+"|"+url, time.Now()) {
+			continue
+		}
 		score, err := r.deps.Reputation.GetScore(ctx, serviceID, addr, domain.RPCTypeWebSocket)
 		if err != nil || score >= 100 {
 			continue
 		}
-		out = append(out, wsProbeTarget{serviceID: serviceID, addr: addr, score: score, frame: frame})
+		out = append(out, wsProbeTarget{serviceID: serviceID, addr: addr, url: url, score: score, frame: frame})
 	}
 	return out
 }
@@ -160,8 +210,10 @@ func (r *WSRelayer) probeEndpoint(ctx context.Context, t wsProbeTarget) {
 	if result == wsProbeUnresolved {
 		return
 	}
+	failed := result != wsProbeOK && result != wsProbeOtherDialect
+	r.probeBackoff.record(string(t.serviceID)+"|"+t.url, failed, time.Now())
 	sig := reputation.NewSuccessSignal("ws_probe_"+result, 0)
-	if result != wsProbeOK && result != wsProbeOtherDialect {
+	if failed {
 		sig = reputation.NewMajorErrorSignal("ws_probe_"+result, 0)
 	}
 	sig.Probe = true
