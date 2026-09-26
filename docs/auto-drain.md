@@ -103,6 +103,19 @@ is long enough that one burst does not act. **All** of the following must hold:
    moonriver and poly-zkevm, at 92% and 100% client failure, are gated on
    having no vouched alternative, not on the client bar.
 
+   **Severity path** (added 2026-09-26): the bar does not apply to an
+   operator whose own success rate in the window is at or below 60% over at
+   least 200 attempts. Retry and hedge keep such an operator off the
+   client-facing error rate, not off the client — every failed attempt is a
+   paid relay and a slice of the caller's deadline. On mainnet base one
+   owner's two operators answered 51% of their attempts while clients saw
+   4.8% failures; the gate stood the engine down on about fifteen services
+   while base served ~6 client 504s a second, all of them that owner's. The
+   event records `severe: true`. Every other condition here still holds; in
+   particular the vouched alternative must be another provider, which since
+   the same day means neither the drained operator nor any owner of its
+   endpoints (`domain.Affiliates`).
+
 **Second trigger — the operator the collapse share cannot see.** Conditions 2
 and 3 are blind to an operator that spreads one service over many keys: its
 picks never concentrate and it answers most requests, while each key's failure

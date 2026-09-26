@@ -52,6 +52,20 @@ const (
 	minClientFailure  = 0.05
 	minClientRequests = 50
 
+	// The severity path past the client gate. Retry and hedge keep an
+	// operator's failures off the client-facing error rate, not off the
+	// client: each failed attempt is a paid relay and a slice of the caller's
+	// deadline, and enough of them still end in a 504. On mainnet base
+	// (2026-09-26) one owner's two operators answered 51% of their attempts
+	// while clients saw 4.8% failures; the gate stood the engine down on
+	// about fifteen services while base served ~6 client 504s a second, all of
+	// them that owner's. An operator failing this badly on this much evidence
+	// is an incident whatever the error rate shows, so the gate yields to it.
+	// Every other guard — a vouched alternative, the caps, the rate limits,
+	// suppression — still applies.
+	severeMaxSuccess  = 0.60
+	severeMinAttempts = 200
+
 	// opRateTrigger is the second way in, for the case collapse share cannot
 	// see: an operator whose corrected chronic rate is this high over
 	// minAttempts attempts, however its picks are spread. An operator holding
@@ -119,6 +133,9 @@ type Event struct {
 	// evidence the gate reads.
 	ClientFailure  float64 `json:"client_failure"`
 	ClientRequests int     `json:"client_requests"`
+	// Severe marks an operator failing badly enough (severeMaxSuccess over
+	// severeMinAttempts) that the client gate did not apply to it.
+	Severe bool `json:"severe,omitempty"`
 }
 
 // EndpointProvider lists a service's current endpoints for one RPC type.
@@ -537,7 +554,8 @@ func (e *Engine) decide(ctx context.Context, k drain.Key, now time.Time, act boo
 	if ev.ClientRequests < minClientRequests {
 		return OutcomeNoClientEvidence
 	}
-	if ev.ClientFailure < minClientFailure {
+	ev.Severe = ev.Attempts >= severeMinAttempts && ev.SuccessRate <= severeMaxSuccess
+	if ev.ClientFailure < minClientFailure && !ev.Severe {
 		return OutcomeBelowClient
 	}
 	eps, _ := e.d.Endpoints.AvailableEndpoints(ctx, k.ServiceID, k.RPCType)

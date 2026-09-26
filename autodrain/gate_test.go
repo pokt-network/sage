@@ -39,6 +39,62 @@ func TestEngine_ClientGateStopsADrainNobodyNeeds(t *testing.T) {
 	}
 }
 
+// Retry and hedge keep a failing operator off the client error rate, not off
+// the client. An operator answering half of hundreds of attempts is drained
+// even while clients see under 5% failures (mainnet base, 2026-09-26: 51%
+// success, 4.8% client failure, ~6 client 504s a second).
+func TestEngine_SevereOperatorPassesTheClientGate(t *testing.T) {
+	h := newHarnessWith(t, fakeVouch{opb: true}, true, fakeRates{"opa.example": 0.25})
+	for i := 0; i < 10; i++ {
+		h.e.OnCollapse(sei, jsonrpc, domain.EndpointAddrList{opa})
+	}
+	for i := 0; i < 40; i++ {
+		h.e.OnCollapse(sei, jsonrpc, domain.EndpointAddrList{opb})
+	}
+	for i := 0; i < 300; i++ {
+		st := reputation.SignalSuccess
+		if i%2 == 0 {
+			st = reputation.SignalMajorError
+		}
+		h.e.OnSignal(sei, jsonrpc, opa, st, false)
+	}
+	h.clients(200, 8) // 4%: under the bar
+
+	h.e.Evaluate(context.Background())
+
+	active := h.drains.Active(context.Background(), sei)
+	if len(active) != 1 || active[0].Operator != "opa.example" {
+		t.Fatalf("active = %+v, want the severe operator drained past the client gate", active)
+	}
+	evs, _ := h.log.Recent(context.Background(), "", 10)
+	if len(evs) != 1 || !evs[0].Severe || evs[0].Outcome != OutcomeDrained {
+		t.Fatalf("events = %+v, want one drained event marked severe", evs)
+	}
+}
+
+// The gate still holds for everything short of severe: 90% success on 100
+// attempts, with clients fine, is a routing inefficiency.
+func TestEngine_MildOperatorStillMeetsTheClientGate(t *testing.T) {
+	h := newHarnessWith(t, fakeVouch{opb: true}, true, fakeRates{"opa.example": 0.09})
+	for i := 0; i < 100; i++ {
+		st := reputation.SignalSuccess
+		if i%10 == 0 {
+			st = reputation.SignalMajorError
+		}
+		h.e.OnSignal(sei, jsonrpc, opa, st, false)
+	}
+	h.clients(200, 1)
+
+	h.e.Evaluate(context.Background())
+
+	if active := h.drains.Active(context.Background(), sei); len(active) != 0 {
+		t.Fatalf("drained a mild operator while clients were fine: %+v", active)
+	}
+	if o := h.outcomes(t); len(o) != 1 || o[0] != "opa.example:"+OutcomeBelowClient {
+		t.Fatalf("events = %v, want the client gate", o)
+	}
+}
+
 // Ten answers, all failed, is not enough to judge a service either way — and
 // it says so in its own outcome, rather than reading as "callers are fine".
 func TestEngine_TooFewClientAnswersIsItsOwnOutcome(t *testing.T) {
