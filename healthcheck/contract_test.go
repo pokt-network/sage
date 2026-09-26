@@ -180,4 +180,6 @@ func TestRPCTypeCoverageGaps(t *testing.T) {
 
 type wsProbingPlugin struct{ checkOnlyPlugin }
 
-func (wsProbingPlugin) WebSocketProbe() []byte { return []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`) }
+func (wsProbingPlugin) WebSocketProbe() []byte {
+	return []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`)
+}
