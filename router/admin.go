@@ -36,6 +36,7 @@ type AdminAPI struct {
 	reloader     Reloader
 	sampler      *traffic.Sampler
 	wsRebinder   WSRebinder
+	wsClients    WSClients
 	blocklist    Blocklist
 	logger       *slog.Logger
 	logLevel     *slog.LevelVar
@@ -61,6 +62,15 @@ type WSRebinder interface {
 // SetWebSocketRebinder installs the relayer the WebSocket rebind route acts
 // through. Without one the route answers 501.
 func (a *AdminAPI) SetWebSocketRebinder(r WSRebinder) { a.wsRebinder = r }
+
+// WSClients reports per-client WebSocket activity for a service ("" = all),
+// at most limit clients, as a JSON-encodable value. shannon.WSRelayer.Clients
+// is adapted to it at wire time.
+type WSClients func(serviceID domain.ServiceID, limit int) any
+
+// SetWebSocketClients installs the report the WebSocket clients route serves.
+// Without one the route answers 501.
+func (a *AdminAPI) SetWebSocketClients(c WSClients) { a.wsClients = c }
 
 // NewAdminAPI constructs an AdminAPI.
 //
@@ -176,6 +186,7 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 
 	// WebSocket
 	mux.HandleFunc("POST /admin/websocket/rebind/{serviceID}", a.handleWebSocketRebind)
+	mux.HandleFunc("GET /admin/websocket/clients", a.handleWebSocketClients)
 
 	// Request-shape sampler
 	mux.HandleFunc("GET /admin/request-sample", a.handleListRequestSamples)

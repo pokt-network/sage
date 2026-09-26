@@ -2,10 +2,12 @@ package metrics
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/websockets"
 )
 
@@ -22,12 +24,32 @@ import (
 //	sage_websocket_rebinds_total{service_id,result}        lost suppliers replaced under a live client
 //	sage_websocket_stalls_total{service_id}                subscriptions with no data for the stall timeout
 //
+// and, per supplier, keyed by operator (the endpoint's registrable domain) and
+// owner (its on-chain owner address):
+//
+//	sage_websocket_supplier_frames_total{service_id,operator,owner,direction}
+//	sage_websocket_supplier_notifications_total{service_id,operator,owner,topic,grade}
+//	sage_websocket_supplier_connections{service_id,operator,owner}
+//	sage_websocket_supplier_tenure_seconds{service_id,operator,owner}
+//
+// The per-service series cannot say who is paid for the traffic: every frame
+// a supplier pushes is a relay it claims, so a supplier can earn out of all
+// proportion to its stake by holding long connections and pushing more
+// notifications than its peers. The supplier series are what that is judged
+// from, owner included because it is the one identity an operator cannot
+// rotate.
+//
 // Every label is a closed set: service_id is bounded by the configured
 // services (as everywhere else), direction and side are the two ends of a
 // bridge, initiator is the three parties that can end one, reason is the
 // gateway's own refusal reasons, and code is folded by closeCodeLabel.
+// operator, owner and topic come from the chain and from clients, so each is
+// capped first-seen.
 type WebSocketMetrics struct {
 	services     *labelPolicy
+	operators    *labelPolicy
+	owners       *labelPolicy
+	topics       *labelPolicy
 	connections  *prometheus.GaugeVec
 	frames       *prometheus.CounterVec
 	bytes        *prometheus.CounterVec
@@ -36,19 +58,72 @@ type WebSocketMetrics struct {
 	rejected     *prometheus.CounterVec
 	rebinds      *prometheus.CounterVec
 	stalls       *prometheus.CounterVec
+
+	supplierFrames        *prometheus.CounterVec
+	supplierNotifications *prometheus.CounterVec
+	supplierConnections   *prometheus.GaugeVec
+	supplierTenure        *prometheus.HistogramVec
 }
+
+// Caps for the supplier labels. Operators serving WebSocket number in the
+// tens and owners a little more; the caps are headroom. Topics are chosen by
+// clients (an EVM subscribe names any string it likes), so that cap is a
+// defence, not an estimate.
+const (
+	maxWSOperatorLabels = 64
+	maxWSOwnerLabels    = 128
+	maxWSTopicLabels    = 32
+)
 
 // NewWebSocketMetrics builds and registers the WebSocket metrics on the
 // default registry. knownServices bounds the service_id label.
 func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
-	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls)
+	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
+		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure)
 	return m
 }
 
 func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
+	supplierLabels := []string{"service_id", "operator", "owner"}
 	return &WebSocketMetrics{
-		services: allowedLabel(knownServices),
+		services:  allowedLabel(knownServices),
+		operators: cappedLabel(maxWSOperatorLabels),
+		owners:    cappedLabel(maxWSOwnerLabels),
+		topics:    cappedLabel(maxWSTopicLabels),
+		supplierFrames: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_supplier_frames_total",
+				Help:      "Data frames exchanged with a supplier over WebSocket, by service, operator (the endpoint's registrable domain), owner (its on-chain owner address) and direction. Each is a relay the supplier can claim: client_to_endpoint frames are the requests SAGE signed, endpoint_to_client frames the responses and notifications the supplier signed. Frames that failed validation are not counted.",
+			},
+			append(append([]string(nil), supplierLabels...), "direction"),
+		),
+		supplierNotifications: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_supplier_notifications_total",
+				Help:      "Subscription notifications a supplier pushed, by service, operator, owner, topic (what the subscription is for: newHeads, logs, slotSubscribe, …) and grade: ok (for a subscription open on the connection), duplicate (byte-for-byte repeat of one of the subscription's last 8 notifications from that supplier), unsolicited (for a subscription never opened with that supplier). Every notification is a paid relay no client asked for frame by frame; duplicate and unsolicited ones are padding. Graded, never dropped: the client still receives them.",
+			},
+			append(append([]string(nil), supplierLabels...), "topic", "grade"),
+		),
+		supplierConnections: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "sage",
+				Name:      "websocket_supplier_connections",
+				Help:      "Client WebSocket connections a supplier is currently serving, by service, operator and owner.",
+			},
+			supplierLabels,
+		),
+		supplierTenure: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "websocket_supplier_tenure_seconds",
+				Help:      "How long a supplier served one client WebSocket connection, from bind to rebind or close, by service, operator and owner. The count is connections served. A supplier whose tenures run long relative to its peers on the same service holds more of the frame volume than its selection share explains.",
+				Buckets:   []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200},
+			},
+			supplierLabels,
+		),
 		connections: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: "sage",
@@ -187,4 +262,60 @@ func (o *webSocketServiceObserver) Rebound(result websockets.RebindResult) {
 // Stalled counts one stall-watchdog verdict.
 func (o *webSocketServiceObserver) Stalled() {
 	o.m.stalls.WithLabelValues(o.sid).Inc()
+}
+
+// supplierValues resolves the capped supplier label values.
+func (m *WebSocketMetrics) supplierValues(serviceID domain.ServiceID, operator, owner string) (string, string, string) {
+	if owner == "" {
+		owner = unknownLabel
+	}
+	return m.services.serviceValue(serviceID), m.operators.value(operator), m.owners.value(owner)
+}
+
+// SupplierBound counts a supplier taking over a client connection: at open,
+// or at a rebind onto it.
+func (m *WebSocketMetrics) SupplierBound(serviceID domain.ServiceID, operator, owner string) {
+	sid, op, own := m.supplierValues(serviceID, operator, owner)
+	m.supplierConnections.WithLabelValues(sid, op, own).Inc()
+}
+
+// SupplierReleased records the end of a supplier's tenure on a client
+// connection: a rebind away from it, or the close.
+func (m *WebSocketMetrics) SupplierReleased(serviceID domain.ServiceID, operator, owner string, tenure time.Duration) {
+	sid, op, own := m.supplierValues(serviceID, operator, owner)
+	m.supplierConnections.WithLabelValues(sid, op, own).Dec()
+	m.supplierTenure.WithLabelValues(sid, op, own).Observe(tenure.Seconds())
+}
+
+// SupplierFrame counts one data frame exchanged with a supplier.
+func (m *WebSocketMetrics) SupplierFrame(serviceID domain.ServiceID, operator, owner string, source websockets.MessageSource) {
+	sid, op, own := m.supplierValues(serviceID, operator, owner)
+	m.supplierFrames.WithLabelValues(sid, op, own, directionLabel(source)).Inc()
+}
+
+// SupplierNotification counts one graded notification. NotificationNone is
+// not recorded.
+func (m *WebSocketMetrics) SupplierNotification(serviceID domain.ServiceID, operator, owner string, note qos.Notification) {
+	grade := notificationGrade(note.Kind)
+	if grade == "" {
+		return
+	}
+	topic := note.Topic
+	if topic == "" {
+		topic = unknownLabel
+	}
+	sid, op, own := m.supplierValues(serviceID, operator, owner)
+	m.supplierNotifications.WithLabelValues(sid, op, own, m.topics.value(topic), grade).Inc()
+}
+
+func notificationGrade(k qos.NotificationKind) string {
+	switch k {
+	case qos.NotificationOK:
+		return "ok"
+	case qos.NotificationDuplicate:
+		return "duplicate"
+	case qos.NotificationUnsolicited:
+		return "unsolicited"
+	}
+	return ""
 }

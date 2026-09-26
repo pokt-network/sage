@@ -178,11 +178,29 @@ func parseBlockedDomainsEnv(raw string) []config.BlockedDomain {
 // which is what makes the ban survive session rollover: supplier registrations
 // rotate and one operator holds many, but the URL is the machine.
 func (b *domainBlocklist) IsBlocked(rawURL string, rpcType domain.RPCType) bool {
-	if b == nil || rawURL == "" {
+	return b.IsBlockedEndpoint(rawURL, "", rpcType)
+}
+
+// IsBlockedEndpoint is IsBlocked with the supplier's owner address as a
+// second key. An entry naming an owner ("pokt1…") bans every endpoint that
+// owner stakes, whatever domain it serves from: the URL is the machine, but
+// the owner is the stake, and a ban an operator can step around by
+// registering a new domain has to key on the thing they cannot change without
+// unstaking. An owner entry is checked before the URL, so it wins.
+func (b *domainBlocklist) IsBlockedEndpoint(rawURL, owner string, rpcType domain.RPCType) bool {
+	if b == nil {
 		return false
 	}
 
-	key := b.matchKey(rawURL)
+	key := ""
+	if owner != "" {
+		if _, ok := b.blocked[owner]; ok {
+			key = owner
+		}
+	}
+	if key == "" && rawURL != "" {
+		key = b.matchKey(rawURL)
+	}
 	if key == "" {
 		return false
 	}

@@ -2,6 +2,7 @@ package qos
 
 import (
 	"fmt"
+	"hash/maphash"
 	"sync"
 	"time"
 
@@ -42,6 +43,10 @@ type ClientFrameInfo struct {
 	RequestID string
 	// Method is the subscribe/unsubscribe method name, for reporting.
 	Method string
+	// Topic is what a subscribe asks to be told about — "newHeads", "logs",
+	// "logsSubscribe" — for per-topic reporting. Chains differ in how a
+	// topic is named, so the classifier decides; "" reports as the method.
+	Topic string
 	// SubscriptionID is the raw id of the subscription an unsubscribe
 	// targets, and SubscriptionIDSpan where it sits in the frame.
 	SubscriptionID     string
@@ -113,6 +118,8 @@ type Subscription struct {
 	EndpointID string
 	// Method is the method that opened it.
 	Method string
+	// Topic is what it is for; see ClientFrameInfo.Topic.
+	Topic string
 	// Request is the client's original subscribe frame, verbatim, so a
 	// rebind can replay it to a different endpoint.
 	Request []byte
@@ -162,12 +169,82 @@ type SubscriptionRegistry struct {
 	toClient map[string]string
 	replay   map[string]string
 	replays  int
+
+	// Notification grading. recent is keyed by the client-facing id; closed
+	// holds endpoint ids unsubscribed recently; seed hashes frames.
+	recent map[string]*dupRing
+	closed map[string]struct{}
+	seed   maphash.Seed
 }
 
 type pendingSubscription struct {
 	method  string
+	topic   string
 	request []byte
 }
+
+// NotificationKind grades one endpoint→client notification against the
+// subscriptions the connection actually holds.
+//
+// Every notification a supplier pushes is a relay it is paid for, and the
+// client never asked for it frame by frame. So the frame itself is the only
+// place padding can be seen: a supplier that repeats a notification, or
+// pushes one for a subscription nobody opened, is claiming relays no client
+// wanted.
+type NotificationKind int
+
+// The grades a notification can get.
+const (
+	// NotificationNone: not a notification, or one the registry cannot
+	// judge (no classifier, or subscriptions past the tracking cap).
+	NotificationNone NotificationKind = iota
+	// NotificationOK is data for a subscription open on this connection.
+	NotificationOK
+	// NotificationDuplicate repeats, byte for byte, one of the last
+	// dupWindow notifications for the same subscription from the same
+	// supplier.
+	NotificationDuplicate
+	// NotificationUnsolicited names a subscription this connection never
+	// opened with the current supplier.
+	NotificationUnsolicited
+)
+
+// Notification is TranslateEndpointFrameNote's grade for one frame.
+type Notification struct {
+	Kind NotificationKind
+	// Topic is the subscription's topic; "" when unknown (unsolicited).
+	Topic string
+}
+
+// dupWindow is how many recent notifications per subscription are
+// remembered for duplicate detection. A duplicate that matters is an
+// immediate repeat; eight covers a supplier that interleaves a few.
+const dupWindow = 8
+
+// dupRing remembers the hashes of a subscription's last dupWindow
+// notifications.
+type dupRing struct {
+	hashes [dupWindow]uint64
+	n      int
+}
+
+// seen reports whether h is in the ring, then records it.
+func (d *dupRing) seen(h uint64) bool {
+	for i := 0; i < min(d.n, dupWindow); i++ {
+		if d.hashes[i] == h {
+			return true
+		}
+	}
+	d.hashes[d.n%dupWindow] = h
+	d.n++
+	return false
+}
+
+// maxClosedIDs bounds the ids remembered after an unsubscribe, so a
+// notification already in flight when the client unsubscribed is not graded
+// unsolicited. A wholesale clear past the cap costs, at worst, a late frame
+// graded as none.
+const maxClosedIDs = 64
 
 // NewSubscriptionRegistry returns a registry driven by classifier. nil is
 // allowed and yields an inert registry.
@@ -178,6 +255,9 @@ func NewSubscriptionRegistry(classifier SubscriptionClassifier) *SubscriptionReg
 		active:     make(map[string]Subscription),
 		toClient:   make(map[string]string),
 		replay:     make(map[string]string),
+		recent:     make(map[string]*dupRing),
+		closed:     make(map[string]struct{}),
+		seed:       maphash.MakeSeed(),
 	}
 }
 
@@ -205,6 +285,7 @@ func (r *SubscriptionRegistry) TranslateClientFrame(data []byte) []byte {
 		}
 		r.pending[info.RequestID] = pendingSubscription{
 			method:  info.Method,
+			topic:   info.Topic,
 			request: append([]byte(nil), data...),
 		}
 	case SubscriptionUnsubscribe:
@@ -217,8 +298,12 @@ func (r *SubscriptionRegistry) TranslateClientFrame(data []byte) []byte {
 			return spliceSpan(data, info.SubscriptionIDSpan, sub.EndpointID)
 		}
 	case SubscriptionUnsubscribeAll:
+		for _, sub := range r.active {
+			r.markClosed(sub.EndpointID)
+		}
 		clear(r.active)
 		clear(r.toClient)
+		clear(r.recent)
 	}
 	return data
 }
@@ -229,12 +314,22 @@ func (r *SubscriptionRegistry) TranslateClientFrame(data []byte) []byte {
 // subscription the current supplier knows by a different id is rewritten to
 // the id the client knows.
 func (r *SubscriptionRegistry) TranslateEndpointFrame(data []byte) (out []byte, forward bool) {
+	out, forward, _ = r.TranslateEndpointFrameNote(data)
+	return out, forward
+}
+
+// TranslateEndpointFrameNote is TranslateEndpointFrame that also grades a
+// notification (see NotificationKind). The grade never changes what is
+// forwarded: a duplicate or unsolicited frame still reaches the client,
+// because deciding a supplier is padding is for whoever reads the counts,
+// not for a per-frame check that might be wrong about one frame.
+func (r *SubscriptionRegistry) TranslateEndpointFrameNote(data []byte) (out []byte, forward bool, note Notification) {
 	if r == nil || r.classifier == nil {
-		return data, true
+		return data, true, note
 	}
 	info := r.classifier.ClassifyEndpointFrame(data)
 	if info.Kind == EndpointFrameOther {
-		return data, true
+		return data, true, note
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -243,42 +338,73 @@ func (r *SubscriptionRegistry) TranslateEndpointFrame(data []byte) (out []byte, 
 		if clientID, replayed := r.replay[info.RequestID]; replayed {
 			delete(r.replay, info.RequestID)
 			r.completeReplay(clientID, info)
-			return nil, false
+			return nil, false, note
 		}
 		p, ok := r.pending[info.RequestID]
 		if !ok {
-			return data, true // A response to something that was not a subscribe.
+			return data, true, note // A response to something that was not a subscribe.
 		}
 		delete(r.pending, info.RequestID)
 		if info.IsError || info.SubscriptionID == "" {
-			return data, true
+			return data, true, note
 		}
 		if len(r.active) >= maxTrackedSubscriptions {
 			r.dropped++
-			return data, true
+			return data, true, note
 		}
 		now := time.Now()
 		r.active[info.SubscriptionID] = Subscription{
 			ID:         info.SubscriptionID,
 			EndpointID: info.SubscriptionID,
 			Method:     p.method,
+			Topic:      p.topic,
 			Request:    p.request,
 			Since:      now,
 		}
+		delete(r.closed, info.SubscriptionID)
 		r.lastActivity = now
-		return data, true
+		return data, true, note
 	case EndpointFrameNotification:
 		if clientID, mapped := r.toClient[info.SubscriptionID]; mapped {
 			r.lastData = time.Now()
 			r.lastActivity = r.lastData
-			return spliceSpan(data, info.SubscriptionIDSpan, clientID), true
+			return spliceSpan(data, info.SubscriptionIDSpan, clientID), true, r.grade(clientID, data)
 		}
 		if sub, live := r.active[info.SubscriptionID]; live && sub.EndpointID == sub.ID {
 			r.lastData = time.Now()
 			r.lastActivity = r.lastData
+			return data, true, r.grade(sub.ID, data)
 		}
+		if _, late := r.closed[info.SubscriptionID]; late || r.dropped > 0 {
+			return data, true, note // In flight past an unsubscribe, or past the cap: not judged.
+		}
+		note.Kind = NotificationUnsolicited
 	}
-	return data, true
+	return data, true, note
+}
+
+// grade classifies a notification for the live subscription clientID.
+// Caller holds mu.
+func (r *SubscriptionRegistry) grade(clientID string, data []byte) Notification {
+	note := Notification{Kind: NotificationOK, Topic: r.active[clientID].Topic}
+	ring := r.recent[clientID]
+	if ring == nil {
+		ring = &dupRing{}
+		r.recent[clientID] = ring
+	}
+	if ring.seen(maphash.Bytes(r.seed, data)) {
+		note.Kind = NotificationDuplicate
+	}
+	return note
+}
+
+// markClosed remembers an endpoint id that was just unsubscribed. Caller
+// holds mu.
+func (r *SubscriptionRegistry) markClosed(endpointID string) {
+	if len(r.closed) >= maxClosedIDs {
+		clear(r.closed)
+	}
+	r.closed[endpointID] = struct{}{}
 }
 
 // completeReplay applies a replay ack. Caller holds mu.
@@ -299,12 +425,17 @@ func (r *SubscriptionRegistry) completeReplay(clientID string, info EndpointFram
 		r.toClient[sub.EndpointID] = sub.ID
 	}
 	r.active[clientID] = sub
+	// A new supplier: its first notification may legitimately repeat the old
+	// one's last (and on chains with small integer ids, byte for byte).
+	delete(r.recent, clientID)
 	r.lastActivity = time.Now()
 }
 
 // forget drops one subscription and its id mapping. Caller holds mu.
 func (r *SubscriptionRegistry) forget(sub Subscription) {
 	delete(r.active, sub.ID)
+	delete(r.recent, sub.ID)
+	r.markClosed(sub.EndpointID)
 	if sub.EndpointID != sub.ID {
 		delete(r.toClient, sub.EndpointID)
 	}

@@ -1011,6 +1011,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// Requires the concrete Shannon protocol (per-frame signing); in mock mode
 	// it stays nil and the router answers WS upgrades with 503.
 	var wsRelayer router.WebSocketOpener
+	var wsClients router.WSClients
 	if app.Protocol != nil {
 		// Each field resolves its own default. The struct-wide check this
 		// replaced applied defaults only when *nothing* was set, so tuning one
@@ -1028,8 +1029,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			MaxConcurrentConnections:   wsCfg.EffectiveMaxConcurrentConnections(),
 			Metrics:                    metrics.NewWebSocketMetrics(serviceIDsFrom(cfg)),
 			QoS:                        qosReg,
+			ClientIP:                   middleware.RequestClientIP(trustedProxies),
 		})
 		wsRelayer = relayer
+		wsClients = func(serviceID domain.ServiceID, limit int) any { return relayer.Clients(serviceID, limit) }
 		app.wsConnections = relayer
 	}
 
@@ -1050,6 +1053,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// under the mock backend, and the rebinder is the same object.
 	if rb, ok := wsRelayer.(router.WSRebinder); ok {
 		app.Admin.SetWebSocketRebinder(rb)
+	}
+	if wsClients != nil {
+		app.Admin.SetWebSocketClients(wsClients)
 	}
 	if app.blocklist != nil {
 		app.Admin.SetBlocklist(app.blocklist)

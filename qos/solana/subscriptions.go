@@ -18,7 +18,8 @@ func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 		id, span := qos.JSONRPCFirstParam(data)
 		return qos.ClientFrameInfo{Action: qos.SubscriptionUnsubscribe, SubscriptionID: id, SubscriptionIDSpan: span, Method: method}
 	case strings.HasSuffix(method, "Subscribe"):
-		return qos.ClientFrameInfo{Action: qos.SubscriptionSubscribe, RequestID: qos.JSONRPCRequestID(data), Method: method}
+		// Each Solana feed has its own method, so the method is the topic.
+		return qos.ClientFrameInfo{Action: qos.SubscriptionSubscribe, RequestID: qos.JSONRPCRequestID(data), Method: method, Topic: method}
 	}
 	return qos.ClientFrameInfo{}
 }

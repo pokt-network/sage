@@ -2,6 +2,7 @@ package router
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -37,4 +38,33 @@ func (a *AdminAPI) handleWebSocketRebind(w http.ResponseWriter, req *http.Reques
 		"service_id": string(serviceID),
 		"bridges":    n,
 	})
+}
+
+// handleWebSocketClients reports which clients drive WebSocket traffic and
+// which suppliers served them, over the last one to two hours: per client
+// address, the connections it opened, how many supplier tenures it ended
+// itself within 30s (quick_client_closes), and per supplier — service,
+// operator, owner — the tenures, their total seconds and the frames that
+// supplier pushed. Busiest clients first.
+//
+// A client address cannot be a metric label, and this is what the supplier
+// metrics cannot show: a client that reconnects until it lands on one owner,
+// then holds that connection, is steering paid relays to that owner. Query:
+// service (optional) narrows to one service, limit (default 50) caps the
+// clients returned. 501 when this build has no WebSocket relayer wired.
+func (a *AdminAPI) handleWebSocketClients(w http.ResponseWriter, req *http.Request) {
+	if a.wsClients == nil {
+		writeJSONError(w, http.StatusNotImplemented, "websocket client report is not available in this build")
+		return
+	}
+	limit := 0
+	if raw := req.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			writeJSONError(w, http.StatusBadRequest, "limit must be a non-negative integer")
+			return
+		}
+		limit = n
+	}
+	writeJSON(w, http.StatusOK, a.wsClients(domain.ServiceID(req.URL.Query().Get("service")), limit))
 }

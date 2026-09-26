@@ -13,6 +13,7 @@ import (
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
+	"github.com/pokt-network/sage/websockets"
 )
 
 // ErrSessionExpired is returned by wsMessageProcessor.ProcessClientMessage
@@ -52,6 +53,24 @@ type wsMessageProcessor struct {
 	// subs tracks the connection's subscriptions from the frames that cross
 	// it. Nil-safe; set by withSubscriptions.
 	subs *qos.SubscriptionRegistry
+
+	// metrics, owner and operator attribute every frame to the supplier
+	// that signed it; endpointFrames counts this supplier's frames to the
+	// client for its tenure. Set by withSupplier; metrics is nil-safe.
+	metrics        WSMetrics
+	owner          string
+	operator       string
+	boundAt        time.Time
+	endpointFrames atomic.Int64
+}
+
+// withSupplier attaches the per-supplier accounting.
+func (p *wsMessageProcessor) withSupplier(m WSMetrics, owner string) *wsMessageProcessor {
+	p.metrics = m
+	p.owner = owner
+	p.operator = p.endpointAddr.Operator()
+	p.boundAt = time.Now()
+	return p
 }
 
 // withSubscriptions attaches the subscription registry the frames feed.
@@ -126,6 +145,9 @@ func (p *wsMessageProcessor) ProcessClientMessage(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ws ProcessClientMessage: marshal: %w", err)
 	}
+	if p.metrics != nil {
+		p.metrics.SupplierFrame(domain.ServiceID(p.sessionHeader.ServiceId), p.operator, p.owner, websockets.SourceClient)
+	}
 	return wire, nil
 }
 
@@ -194,7 +216,12 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	// After validation, before the client: a replay ack is consumed here
 	// (nil, nil — the bridge forwards nothing), a notification may be
 	// rewritten to the subscription id the client holds.
-	out, forward := p.subs.TranslateEndpointFrame(payload)
+	out, forward, note := p.subs.TranslateEndpointFrameNote(payload)
+	p.endpointFrames.Add(1)
+	if p.metrics != nil {
+		p.metrics.SupplierFrame(serviceID, p.operator, p.owner, websockets.SourceEndpoint)
+		p.metrics.SupplierNotification(serviceID, p.operator, p.owner, note)
+	}
 	if !forward {
 		return nil, nil
 	}

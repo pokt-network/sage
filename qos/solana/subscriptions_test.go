@@ -11,7 +11,7 @@ func TestSubscriptions_SolanaRoundTrip(t *testing.T) {
 	r := qos.NewSubscriptionRegistry(&Plugin{})
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"slotSubscribe"}`))
 	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","result":23784,"id":1}`))
-	if a := r.Active(); len(a) != 1 || a[0].ID != "23784" || a[0].Method != "slotSubscribe" {
+	if a := r.Active(); len(a) != 1 || a[0].ID != "23784" || a[0].Method != "slotSubscribe" || a[0].Topic != "slotSubscribe" {
 		t.Fatalf("Active = %+v", a)
 	}
 	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","method":"slotNotification","params":{"result":{"slot":75},"subscription":23784}}`))

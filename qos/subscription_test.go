@@ -16,7 +16,7 @@ func (fakeClassifier) ClassifyClientFrame(data []byte) ClientFrameInfo {
 	f := string(data)
 	switch {
 	case strings.HasPrefix(f, "sub:"):
-		return ClientFrameInfo{Action: SubscriptionSubscribe, RequestID: f[4:], Method: "subscribe"}
+		return ClientFrameInfo{Action: SubscriptionSubscribe, RequestID: f[4:], Method: "subscribe", Topic: "heads"}
 	case strings.HasPrefix(f, "unsub:"):
 		return ClientFrameInfo{Action: SubscriptionUnsubscribe, SubscriptionID: f[6:]}
 	case f == "unsuball":
@@ -35,7 +35,7 @@ func (fakeClassifier) ClassifyEndpointFrame(data []byte) EndpointFrameInfo {
 		return EndpointFrameInfo{Kind: EndpointFrameResponse, RequestID: parts[1], SubscriptionID: parts[2]}
 	case parts[0] == "err" && len(parts) == 2:
 		return EndpointFrameInfo{Kind: EndpointFrameResponse, RequestID: parts[1], IsError: true}
-	case parts[0] == "data" && len(parts) == 2:
+	case parts[0] == "data" && (len(parts) == 2 || len(parts) == 3):
 		return EndpointFrameInfo{Kind: EndpointFrameNotification, SubscriptionID: parts[1]}
 	}
 	return EndpointFrameInfo{}
@@ -160,5 +160,81 @@ func TestSubscriptionRegistry_LastActivity(t *testing.T) {
 	r.TranslateEndpointFrame([]byte("data:s1"))
 	if !r.LastActivity().After(established) {
 		t.Fatal("a notification must move LastActivity forward")
+	}
+}
+
+// Frames are "data:<subid>:<payload>"; the payload is what makes two
+// notifications for one subscription the same or different.
+func TestSubscriptionRegistry_GradesNotifications(t *testing.T) {
+	r := NewSubscriptionRegistry(fakeClassifier{})
+	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateEndpointFrame([]byte("ok:1:s1"))
+
+	grade := func(frame string) Notification {
+		t.Helper()
+		out, fwd, note := r.TranslateEndpointFrameNote([]byte(frame))
+		if !fwd || string(out) != frame {
+			t.Fatalf("%q: a graded notification must still be forwarded unchanged, got %q fwd=%v", frame, out, fwd)
+		}
+		return note
+	}
+
+	if n := grade("data:s1:block100"); n.Kind != NotificationOK || n.Topic != "heads" {
+		t.Errorf("first notification = %+v, want ok with the subscription's topic", n)
+	}
+	if n := grade("data:s1:block101"); n.Kind != NotificationOK {
+		t.Errorf("a new payload = %+v, want ok", n)
+	}
+	if n := grade("data:s1:block100"); n.Kind != NotificationDuplicate {
+		t.Errorf("a repeated payload = %+v, want duplicate", n)
+	}
+	if n := grade("data:nobody:block100"); n.Kind != NotificationUnsolicited {
+		t.Errorf("a notification for a subscription never opened = %+v, want unsolicited", n)
+	}
+	if _, _, n := r.TranslateEndpointFrameNote([]byte("ok:9:s9")); n.Kind != NotificationNone {
+		t.Errorf("a response is not a notification, got %+v", n)
+	}
+
+	// A frame still in flight when the client unsubscribed is the client's
+	// timing, not the supplier pushing something unasked.
+	r.TranslateClientFrame([]byte("unsub:s1"))
+	if n := grade("data:s1:block102"); n.Kind != NotificationNone {
+		t.Errorf("a notification after unsubscribe = %+v, want none (not judged)", n)
+	}
+}
+
+// After a rebind the new supplier re-sends current state, and on chains
+// with small integer ids that can be the old supplier's last frame byte for
+// byte. That is not padding.
+func TestSubscriptionRegistry_DuplicateWindowResetsOnReplay(t *testing.T) {
+	r := NewSubscriptionRegistry(spanClassifier{})
+	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateEndpointFrame([]byte("ok:1:s1"))
+	r.TranslateEndpointFrameNote([]byte("data:s1:block100"))
+
+	replay := r.ReplayFrames()
+	if len(replay) != 1 {
+		t.Fatalf("ReplayFrames = %d frames, want 1", len(replay))
+	}
+	replayID := strings.TrimPrefix(string(replay[0]), "sub:")
+	r.TranslateEndpointFrame([]byte("ok:" + replayID + ":s1"))
+
+	if _, _, n := r.TranslateEndpointFrameNote([]byte("data:s1:block100")); n.Kind != NotificationOK {
+		t.Errorf("the new supplier's first frame = %+v, want ok", n)
+	}
+}
+
+// A subscription past the tracking cap is forwarded but unknown to the
+// registry; its notifications must not read as unsolicited.
+func TestSubscriptionRegistry_UntrackedSubscriptionsAreNotUnsolicited(t *testing.T) {
+	r := NewSubscriptionRegistry(fakeClassifier{})
+	for i := 0; i <= maxTrackedSubscriptions; i++ {
+		r.TranslateClientFrame([]byte(fmt.Sprintf("sub:%d", i)))
+	}
+	if r.Dropped() == 0 {
+		t.Fatal("expected the pending table to overflow")
+	}
+	if _, _, n := r.TranslateEndpointFrameNote([]byte("data:untracked:x")); n.Kind != NotificationNone {
+		t.Errorf("notification on a connection past the cap = %+v, want none", n)
 	}
 }

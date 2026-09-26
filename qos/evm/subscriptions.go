@@ -1,6 +1,8 @@
 package evm
 
 import (
+	"github.com/tidwall/gjson"
+
 	"github.com/pokt-network/sage/qos"
 )
 
@@ -9,7 +11,16 @@ import (
 func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 	switch method := qos.JSONRPCMethod(data); method {
 	case "eth_subscribe":
-		return qos.ClientFrameInfo{Action: qos.SubscriptionSubscribe, RequestID: qos.JSONRPCRequestID(data), Method: method}
+		// The topic is params[0]: newHeads, logs, newPendingTransactions.
+		// Which one matters for accounting — a pending-transactions feed is
+		// as chatty as the supplier's mempool, a heads feed is one frame a
+		// block — so it is reported, verbatim; the metric bounds it.
+		return qos.ClientFrameInfo{
+			Action:    qos.SubscriptionSubscribe,
+			RequestID: qos.JSONRPCRequestID(data),
+			Method:    method,
+			Topic:     gjson.GetBytes(data, "params.0").String(),
+		}
 	case "eth_unsubscribe":
 		id, span := qos.JSONRPCFirstParam(data)
 		return qos.ClientFrameInfo{Action: qos.SubscriptionUnsubscribe, SubscriptionID: id, SubscriptionIDSpan: span, Method: method}

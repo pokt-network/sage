@@ -466,6 +466,7 @@ func TestAvailableEndpoints_ExcludesBlockedDomain(t *testing.T) {
 	defer server.Close()
 
 	session := buildRelayTestSession("pokt1supplier", server.URL)
+	session.Suppliers[0].OwnerAddress = "pokt1owner"
 	fnMock := &mockRelayFullNode{session: session}
 
 	newProtocol := func(t *testing.T, entries ...config.BlockedDomain) *Protocol {
@@ -529,6 +530,27 @@ func TestAvailableEndpoints_ExcludesBlockedDomain(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "blocked domain") {
 		t.Errorf("SendRelay error = %v, want it to name the blocked domain", err)
+	}
+
+	// An owner entry bans the endpoint whatever domain it serves from: the
+	// session names the owner, and neither the URL nor the operator address
+	// has to match anything.
+	byOwner := newProtocol(t, config.BlockedDomain{Domain: "pokt1owner", RPCTypes: []string{"json_rpc"}})
+	ownerBanned, err := byOwner.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
+	if err != nil {
+		t.Fatalf("AvailableEndpoints: %v", err)
+	}
+	if len(ownerBanned) != 0 {
+		t.Errorf("expected 0 endpoints staked by a blocked owner, got %d", len(ownerBanned))
+	}
+	if _, err := byOwner.SendRelay(context.Background(), "eth", endpointAddr,
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "")); err == nil {
+		t.Fatal("SendRelay to an endpoint of a blocked owner succeeded")
+	}
+
+	otherOwner := newProtocol(t, config.BlockedDomain{Domain: "pokt1someoneelse"})
+	if kept, _ := otherOwner.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC); len(kept) != len(before) {
+		t.Errorf("a ban on another owner removed %d endpoints", len(before)-len(kept))
 	}
 }
 

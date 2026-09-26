@@ -364,6 +364,11 @@ func (b *Bridge) route(msg message) {
 	}
 }
 
+// ClosedBy reports who ended the bridge. Meaningful once Done is closed.
+func (b *Bridge) ClosedBy() CloseInitiator {
+	return b.closeInitiator()
+}
+
 // closeInitiator reports who ended the bridge: a peer that sent a close
 // frame, else the gateway (a deadline, a processing error, a shutdown).
 func (b *Bridge) closeInitiator() CloseInitiator {

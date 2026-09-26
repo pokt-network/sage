@@ -15,14 +15,24 @@ import (
 // Each endpoint belongs to a single supplier and may support multiple RPC types.
 type endpoint struct {
 	supplierAddr string
-	urls         map[domain.RPCType]string // rpc type → URL
-	session      *sessiontypes.Session
-	isFallback   bool
+	// ownerAddr is the supplier's on-chain owner, from the session. Operators
+	// rotate operator addresses and domains freely; the owner is the stake
+	// they cannot move without unstaking, so it is what a ban and a per-owner
+	// metric key on. Empty when the session did not carry it.
+	ownerAddr  string
+	urls       map[domain.RPCType]string // rpc type → URL
+	session    *sessiontypes.Session
+	isFallback bool
 }
 
 // Supplier returns the supplier's operator address.
 func (e *endpoint) Supplier() string {
 	return e.supplierAddr
+}
+
+// Owner returns the supplier's owner address, or "" when unknown.
+func (e *endpoint) Owner() string {
+	return e.ownerAddr
 }
 
 // GetURL returns the URL for the given RPC type.
@@ -113,14 +123,23 @@ func endpointsFromSession(session *sessiontypes.Session) map[domain.EndpointAddr
 		return nil
 	}
 
+	owners := make(map[string]string, len(session.Suppliers))
+	for _, s := range session.Suppliers {
+		if s != nil {
+			owners[s.OperatorAddress] = s.OwnerAddress
+		}
+	}
+
 	result := make(map[domain.EndpointAddr]*endpoint)
 	for _, supplierEndpoints := range allEndpoints {
 		if len(supplierEndpoints) == 0 {
 			continue
 		}
 
+		supplier := string(supplierEndpoints[0].Supplier())
 		ep := &endpoint{
-			supplierAddr: string(supplierEndpoints[0].Supplier()),
+			supplierAddr: supplier,
+			ownerAddr:    owners[supplier],
 			urls:         make(map[domain.RPCType]string),
 			session:      session,
 		}

@@ -278,7 +278,7 @@ func (p *Protocol) SendRelay(
 	// endpoint address from before the ban, or reaching SendRelay by a path
 	// that never consulted AvailableEndpoints, still cannot send to it. Not
 	// retryable: another attempt at the same endpoint has the same answer.
-	if p.blockedDomains.Load().IsBlocked(url, payload.RPCType()) {
+	if p.blockedDomains.Load().IsBlockedEndpoint(url, ep.Owner(), payload.RPCType()) {
 		p.logger.Warn("SendRelay: refusing a blocked domain",
 			"component", "shannon",
 			"service_id", serviceID,
@@ -562,7 +562,7 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 			result = append(result, addr)
 			continue
 		}
-		if blockedDomains.IsBlocked(url, rpcType) {
+		if blockedDomains.IsBlockedEndpoint(url, ep.Owner(), rpcType) {
 			blocked++
 			continue
 		}

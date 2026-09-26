@@ -60,8 +60,9 @@ type GatewayConfig struct {
 	// in the chain at all.
 	MiddlewareChain []string `yaml:"middleware_chain"`
 
-	// BlockedDomains permanently excludes every endpoint at a domain from the
-	// listed RPC types, on every service. See BlockedDomain.
+	// BlockedDomains permanently excludes every endpoint at a domain, or staked
+	// by an owner, from the listed RPC types, on every service. See
+	// BlockedDomain.
 	BlockedDomains []BlockedDomain `yaml:"blocked_domains"`
 
 	// MethodBlocks tunes the per-host, per-method memory consulted at
@@ -98,10 +99,11 @@ type EndpointPolicy struct {
 // Every endpoint whose URL is at Domain is excluded from the listed RPC types
 // on every service, everywhere endpoints are handed out: relay selection and
 // therefore retry, hedge and batch; WebSocket bind; and health checks. It is
-// matched on the endpoint's URL, never on a supplier address, so the ban
-// survives session rollover by construction — a supplier rotated into a new
-// session at a blocked domain is banned the moment it appears, without anyone
-// re-applying anything.
+// matched on the endpoint's URL or its owner, never on a supplier's operator
+// address, so the ban survives session rollover by construction — a supplier
+// rotated into a new session at a blocked domain, or staked by a blocked
+// owner, is banned the moment it appears, without anyone re-applying
+// anything.
 //
 // This is the blunt instrument, and deliberately unlike the two things next to
 // it. The supplier blacklist is earned: a supplier fails validation and is
@@ -112,9 +114,11 @@ type EndpointPolicy struct {
 // infrastructure an operator banned is not.
 type BlockedDomain struct {
 	// Domain is a registrable domain ("op-alpha.example", matching every host
-	// under it) or an exact hostname ("s019.op-alpha.example", matching only
-	// that host). Case-insensitive. An empty value is a startup error rather
-	// than a no-op.
+	// under it), an exact hostname ("s019.op-alpha.example", matching only
+	// that host), or a supplier owner address ("pokt1…", matching every
+	// endpoint that owner stakes, on any domain — the ban an operator cannot
+	// step around by registering a new one). Case-insensitive. An empty value
+	// is a startup error rather than a no-op.
 	Domain string `yaml:"domain"`
 
 	// RPCTypes lists the banned protocols ("json_rpc", "rest", "comet_bft",

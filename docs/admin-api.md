@@ -137,6 +137,7 @@ failureThreshold) here.
 | `PUT` | `/admin/health-checks/{serviceID}` | Replaces a service's configured health checks (its active_health_checks.local block) on the running gateway. |
 | `DELETE` | `/admin/health-checks/{serviceID}` | Clears a service's admin block; the file's block runs again. |
 | `POST` | `/admin/websocket/rebind/{serviceID}` | Replaces the supplier under every live WebSocket connection of a service, without closing any client. |
+| `GET` | `/admin/websocket/clients` | Reports which clients drive WebSocket traffic and which suppliers served them, over the last one to two hours: per client address, the connections it opened, how many supplier tenures it ended itself within 30s (quick_client_closes), and per supplier — service, operator, owner — the tenures, their total seconds and the frames that supplier pushed. |
 | `GET` | `/admin/request-sample` | Returns every service the request-shape sampler has observed, each with its most recently completed traffic summary. |
 | `GET` | `/admin/request-sample/{serviceID}` | Returns one service's request-shape summary plus its top fingerprints for a single window. |
 | `GET` | `/admin/ui` | Serves the admin dashboard. |
@@ -338,7 +339,8 @@ shared across replicas.
 ### `PUT /admin/blocked-domains/{domain}`
 
 Bans a domain on every service, for every RPC type or
-only the listed ones, without a redeploy. The ban is permanent until released,
+only the listed ones, without a redeploy. The domain may also be a supplier
+owner address ("pokt1…"), which bans every endpoint that owner stakes. The ban is permanent until released,
 applies on this replica immediately and, with Redis, reaches every replica
 within its poll interval and survives restarts. Body: {"rpc_types":
 ["websocket"], "reason": "..."}; an empty rpc_types bans every type. A
@@ -600,6 +602,21 @@ only; existing sockets stay where they are until this is called).
 Answers `{"service_id", "bridges"}` with how many live bridges were asked;
 zero is a valid answer for a service with no WebSocket clients. 501 when
 this build has no WebSocket relayer wired.
+
+### `GET /admin/websocket/clients`
+
+Reports which clients drive WebSocket traffic and
+which suppliers served them, over the last one to two hours: per client
+address, the connections it opened, how many supplier tenures it ended
+itself within 30s (quick_client_closes), and per supplier — service,
+operator, owner — the tenures, their total seconds and the frames that
+supplier pushed. Busiest clients first.
+
+A client address cannot be a metric label, and this is what the supplier
+metrics cannot show: a client that reconnects until it lands on one owner,
+then holds that connection, is steering paid relays to that owner. Query:
+service (optional) narrows to one service, limit (default 50) caps the
+clients returned. 501 when this build has no WebSocket relayer wired.
 
 ### `GET /admin/request-sample`
 

@@ -174,3 +174,55 @@ func TestWSProcessor_FeedsSubscriptionRegistry(t *testing.T) {
 		t.Fatalf("registry did not see both directions: %+v", a)
 	}
 }
+
+// Every frame is attributed to the supplier that signed it — operator and
+// owner — and every notification is graded against the subscriptions the
+// connection holds. This is the supplier-side accounting a padded feed is
+// caught by, so it is asserted through the processor, not the registry alone.
+func TestWSProcessor_AttributesFramesAndGradesNotifications(t *testing.T) {
+	p, _, _, fn := buildProcessorFixture()
+	proc := newWSMessageProcessor(context.Background(), p,
+		&sessiontypes.SessionHeader{ServiceId: "eth", SessionId: "s-1", SessionEndBlockHeight: 200},
+		"pokt1supplier", "pokt1supplier-https://rel001.op-alpha.example",
+		&apptypes.Application{Address: "pokt1app"}, nil)
+	spy := &spyWSMetrics{}
+	proc.withSubscriptions(qos.NewSubscriptionRegistry(&evm.Plugin{})).withSupplier(spy, "pokt1owner")
+
+	endpoint := func(payload string) {
+		t.Helper()
+		fn.validateResponse = &servicetypes.RelayResponse{Payload: []byte(payload)}
+		if _, err := proc.ProcessEndpointMessage([]byte(`wire`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := proc.ProcessClientMessage([]byte(`{"jsonrpc":"2.0","id":9,"method":"eth_subscribe","params":["newHeads"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	endpoint(`{"jsonrpc":"2.0","id":9,"result":"0xsub"}`)
+	head := `{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0xsub","result":{"number":"0x1"}}}`
+	endpoint(head)
+	endpoint(head)
+	endpoint(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0xnobody","result":{"number":"0x1"}}}`)
+
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	const who = "op-alpha.example|pokt1owner"
+	if got := spy.frames[who+"|client"]; got != 1 {
+		t.Errorf("client→endpoint frames = %d, want 1 (frames: %v)", got, spy.frames)
+	}
+	if got := spy.frames[who+"|endpoint"]; got != 4 {
+		t.Errorf("endpoint→client frames = %d, want 4 (frames: %v)", got, spy.frames)
+	}
+	for key, want := range map[string]int{
+		fmt.Sprintf("%s|newHeads|%d", who, qos.NotificationOK):        1,
+		fmt.Sprintf("%s|newHeads|%d", who, qos.NotificationDuplicate): 1,
+		fmt.Sprintf("%s||%d", who, qos.NotificationUnsolicited):       1,
+	} {
+		if spy.notifications[key] != want {
+			t.Errorf("notifications[%s] = %d, want %d (all: %v)", key, spy.notifications[key], want, spy.notifications)
+		}
+	}
+	if n := proc.endpointFrames.Load(); n != 4 {
+		t.Errorf("tenure frame count = %d, want 4", n)
+	}
+}

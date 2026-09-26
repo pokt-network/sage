@@ -310,12 +310,13 @@ Retry at gateway level (gateway_config.retry_config in production config)
 
 ### `gateway_config.blocked_domains[]`
 
-BlockedDomains permanently excludes every endpoint at a domain from the
-listed RPC types, on every service. See BlockedDomain.
+BlockedDomains permanently excludes every endpoint at a domain, or staked
+by an owner, from the listed RPC types, on every service. See
+BlockedDomain.
 
 | Key | Type | Description |
 |---|---|---|
-| `domain` | string | A registrable domain ("op-alpha.example", matching every host under it) or an exact hostname ("s019.op-alpha.example", matching only that host). Case-insensitive. An empty value is a startup error rather than a no-op. |
+| `domain` | string | A registrable domain ("op-alpha.example", matching every host under it), an exact hostname ("s019.op-alpha.example", matching only that host), or a supplier owner address ("pokt1…", matching every endpoint that owner stakes, on any domain — the ban an operator cannot step around by registering a new one). Case-insensitive. An empty value is a startup error rather than a no-op. |
 | `rpc_types` | list of string | Lists the banned protocols ("json_rpc", "rest", "comet_bft", "websocket", "grpc"). Empty bans every one of them. An unrecognized value is a startup error: a typo here silently narrows a ban, which is the one failure mode this feature cannot have. |
 
 ### `gateway_config.method_blocks`

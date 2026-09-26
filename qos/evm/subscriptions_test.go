@@ -11,12 +11,18 @@ func TestSubscriptions_EVMRoundTrip(t *testing.T) {
 	r := qos.NewSubscriptionRegistry(&Plugin{})
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":7,"method":"eth_subscribe","params":["newHeads"]}`))
 	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":7,"result":"0xcd0c3e8af590364c09d0fa6a1210faf5"}`))
-	if a := r.Active(); len(a) != 1 || a[0].ID != `"0xcd0c3e8af590364c09d0fa6a1210faf5"` || a[0].Method != "eth_subscribe" {
+	if a := r.Active(); len(a) != 1 || a[0].ID != `"0xcd0c3e8af590364c09d0fa6a1210faf5"` || a[0].Method != "eth_subscribe" || a[0].Topic != "newHeads" {
 		t.Fatalf("Active = %+v", a)
 	}
-	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0xcd0c3e8af590364c09d0fa6a1210faf5","result":{"number":"0x1"}}}`))
+	head := []byte(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0xcd0c3e8af590364c09d0fa6a1210faf5","result":{"number":"0x1"}}}`)
+	if _, _, n := r.TranslateEndpointFrameNote(head); n.Kind != qos.NotificationOK || n.Topic != "newHeads" {
+		t.Fatalf("first head = %+v, want ok on newHeads", n)
+	}
 	if r.LastData().IsZero() {
 		t.Fatal("newHeads notification must count as data")
+	}
+	if _, _, n := r.TranslateEndpointFrameNote(head); n.Kind != qos.NotificationDuplicate {
+		t.Fatalf("the same head again = %+v, want duplicate", n)
 	}
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":8,"method":"eth_unsubscribe","params":["0xcd0c3e8af590364c09d0fa6a1210faf5"]}`))
 	if r.HasActive() {

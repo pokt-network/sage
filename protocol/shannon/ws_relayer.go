@@ -9,7 +9,9 @@ import (
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -81,14 +83,25 @@ type WSRelayerDeps struct {
 	// the knowledge a rebind and a stall watchdog need. Optional: nil, or a
 	// plugin without the interface, means no tracking.
 	QoS *qos.Registry
+
+	// ClientIP attributes an upgrade request to a client, the same way the
+	// HTTP chain's client_ip middleware does (trusted-proxy aware). Optional:
+	// nil takes the direct peer, which behind a proxy is the proxy.
+	ClientIP func(*http.Request) netip.Addr
 }
 
 // WSMetrics is what the relayer needs from the metrics package: a per-service
-// observer for each bridge, and a counter for the upgrades it refuses before
-// a bridge exists. metrics.WebSocketMetrics satisfies it.
+// observer for each bridge, a counter for the upgrades it refuses before a
+// bridge exists, and per-supplier accounting — which supplier served which
+// connection for how long, and what it pushed. metrics.WebSocketMetrics
+// satisfies it.
 type WSMetrics interface {
 	ForService(serviceID domain.ServiceID) websockets.Observer
 	Rejected(serviceID domain.ServiceID, reason string)
+	SupplierBound(serviceID domain.ServiceID, operator, owner string)
+	SupplierReleased(serviceID domain.ServiceID, operator, owner string, tenure time.Duration)
+	SupplierFrame(serviceID domain.ServiceID, operator, owner string, source websockets.MessageSource)
+	SupplierNotification(serviceID domain.ServiceID, operator, owner string, note qos.Notification)
 }
 
 // WSRelayer is the only public entry point for opening WebSocket bridges in
@@ -135,6 +148,10 @@ type WSRelayer struct {
 	// live tracks every open bridge by service, for RebindService.
 	live sync.Map // *websockets.Bridge → domain.ServiceID
 
+	// clients records which supplier served each client connection for how
+	// long, for the admin clients route. See ws_clients.go.
+	clients *wsClientLedger
+
 	// connLimiter caps concurrent live bridges. Nil means no cap; every method
 	// on it is nil-safe.
 	//
@@ -179,7 +196,50 @@ func NewWSRelayer(deps WSRelayerDeps) *WSRelayer {
 		stallTimeout: wsStallTimeout,
 		stallCheck:   wsStallCheckInterval,
 		connLimiter:  websockets.NewConnectionLimiter(deps.MaxConcurrentConnections),
+		clients:      newWSClientLedger(nil),
 	}
+}
+
+// Clients reports, per client address, which suppliers served its WebSocket
+// connections over the last one to two hours, busiest first. serviceID ""
+// covers every service. It is the admin clients route.
+func (r *WSRelayer) Clients(serviceID domain.ServiceID, limit int) WSClientsSnapshot {
+	return r.clients.snapshot(serviceID, limit)
+}
+
+// clientIP resolves the address an upgrade is attributed to.
+func (r *WSRelayer) clientIP(req *http.Request) string {
+	if r.deps.ClientIP != nil {
+		if a := r.deps.ClientIP(req); a.IsValid() {
+			return a.String()
+		}
+		return ""
+	}
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		return req.RemoteAddr
+	}
+	return host
+}
+
+// bindSupplier starts the accounting for a supplier taking over a client
+// connection.
+func (r *WSRelayer) bindSupplier(serviceID domain.ServiceID, p *wsMessageProcessor) {
+	if r.deps.Metrics != nil {
+		r.deps.Metrics.SupplierBound(serviceID, p.operator, p.owner)
+	}
+}
+
+// releaseSupplier ends it: the tenure, its frames, and whether the client
+// was the one who ended it.
+func (r *WSRelayer) releaseSupplier(serviceID domain.ServiceID, clientIP string, p *wsMessageProcessor, clientQuit bool) {
+	tenure := time.Since(p.boundAt)
+	if r.deps.Metrics != nil {
+		r.deps.Metrics.SupplierReleased(serviceID, p.operator, p.owner, tenure)
+	}
+	r.clients.tenure(clientIP,
+		wsSupplierKey{service: serviceID, operator: p.operator, owner: p.owner},
+		tenure, p.endpointFrames.Load(), clientQuit)
 }
 
 // SetMaxConcurrentConnections moves the live-bridge cap on a running relayer.
@@ -235,6 +295,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		return fmt.Errorf("ws open: %w", err)
 	}
 	endpointAddr, ep, url, session, appAddr := target.addr, target.ep, target.url, target.session, target.appAddr
+	clientIP := r.clientIP(req)
 
 	// Increment load counter; guarantee decrement on return — for whichever
 	// endpoint is current by then, since a rebind moves it.
@@ -277,7 +338,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 				default:
 				}
 			},
-		).withSubscriptions(subs)
+		).withSubscriptions(subs).withSupplier(r.deps.Metrics, t.ep.Owner())
 	}
 	processor := newProcessor(target)
 	currentProc.Store(processor)
@@ -334,7 +395,9 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		r.incLoad(next.addr)
 		addr := next.addr
 		current.Store(&addr)
+		r.releaseSupplier(serviceID, clientIP, currentProc.Load(), false)
 		proc := newProcessor(next)
+		r.bindSupplier(serviceID, proc)
 		currentProc.Store(proc)
 		sessionEnd.Store(next.session.Header.SessionEndBlockHeight)
 		logger.Info("ws rebind: endpoint replaced",
@@ -356,6 +419,8 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		return fmt.Errorf("ws open: start bridge: %w", err)
 	}
 
+	r.clients.opened(clientIP)
+	r.bindSupplier(serviceID, processor)
 	r.live.Store(bridge, serviceID)
 	defer r.live.Delete(bridge)
 
@@ -371,6 +436,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 
 	<-bridge.Done()
 
+	r.releaseSupplier(serviceID, clientIP, currentProc.Load(), bridge.ClosedBy() == websockets.InitiatorClient)
 	r.handleBridgeClose(serviceID, *current.Load())
 	logger.Info("ws open: bridge shut down",
 		"active_subscriptions", len(subs.Active()),

@@ -3,6 +3,7 @@ package shannon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/observe"
+	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/reputation"
 	"github.com/pokt-network/sage/websockets"
 )
@@ -499,11 +501,41 @@ func TestWSRelayer_NoCapConfigured(t *testing.T) {
 }
 
 type spyWSMetrics struct {
-	mu       sync.Mutex
-	rejected []string
+	mu            sync.Mutex
+	rejected      []string
+	bound         []string // operator|owner
+	released      []string
+	frames        map[string]int // operator|owner|direction
+	notifications map[string]int // operator|owner|topic|kind
 }
 
 func (s *spyWSMetrics) ForService(domain.ServiceID) websockets.Observer { return nil }
+func (s *spyWSMetrics) SupplierBound(_ domain.ServiceID, operator, owner string) {
+	s.mu.Lock()
+	s.bound = append(s.bound, operator+"|"+owner)
+	s.mu.Unlock()
+}
+func (s *spyWSMetrics) SupplierReleased(_ domain.ServiceID, operator, owner string, _ time.Duration) {
+	s.mu.Lock()
+	s.released = append(s.released, operator+"|"+owner)
+	s.mu.Unlock()
+}
+func (s *spyWSMetrics) SupplierFrame(_ domain.ServiceID, operator, owner string, src websockets.MessageSource) {
+	s.mu.Lock()
+	if s.frames == nil {
+		s.frames = map[string]int{}
+	}
+	s.frames[operator+"|"+owner+"|"+src.String()]++
+	s.mu.Unlock()
+}
+func (s *spyWSMetrics) SupplierNotification(_ domain.ServiceID, operator, owner string, n qos.Notification) {
+	s.mu.Lock()
+	if s.notifications == nil {
+		s.notifications = map[string]int{}
+	}
+	s.notifications[fmt.Sprintf("%s|%s|%s|%d", operator, owner, n.Topic, n.Kind)]++
+	s.mu.Unlock()
+}
 func (s *spyWSMetrics) Rejected(sid domain.ServiceID, reason string) {
 	s.mu.Lock()
 	s.rejected = append(s.rejected, string(sid)+":"+reason)

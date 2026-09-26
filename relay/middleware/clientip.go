@@ -3,6 +3,7 @@ package middleware
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"strings"
 
@@ -28,17 +29,24 @@ const forwardedForHeader = "X-Forwarded-For"
 // keys a decision on the client — which is the point of resolving it here rather
 // than leaving each module to guess.
 func ClientIP(trustedProxies []netip.Prefix) relay.Middleware {
+	resolve := RequestClientIP(trustedProxies)
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			if ctx.HTTPRequest != nil {
-				ctx.ClientIP = resolveClientIP(
-					ctx.HTTPRequest.RemoteAddr,
-					ctx.HTTPRequest.Header.Values(forwardedForHeader),
-					trustedProxies,
-				)
+				ctx.ClientIP = resolve(ctx.HTTPRequest)
 			}
 			return next.HandleRelay(ctx)
 		})
+	}
+}
+
+// RequestClientIP returns the same attribution ClientIP stores on the relay
+// context, for a path that never enters the chain: the WebSocket upgrade goes
+// straight from the router to the WS relayer, and a per-client decision there
+// must agree with the one the HTTP path makes about the same client.
+func RequestClientIP(trustedProxies []netip.Prefix) func(*http.Request) netip.Addr {
+	return func(req *http.Request) netip.Addr {
+		return resolveClientIP(req.RemoteAddr, req.Header.Values(forwardedForHeader), trustedProxies)
 	}
 }
 

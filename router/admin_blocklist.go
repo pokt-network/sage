@@ -74,7 +74,8 @@ func (a *AdminAPI) handleListBlockedDomains(w http.ResponseWriter, _ *http.Reque
 }
 
 // handleSetBlockedDomain bans a domain on every service, for every RPC type or
-// only the listed ones, without a redeploy. The ban is permanent until released,
+// only the listed ones, without a redeploy. The domain may also be a supplier
+// owner address ("pokt1…"), which bans every endpoint that owner stakes. The ban is permanent until released,
 // applies on this replica immediately and, with Redis, reaches every replica
 // within its poll interval and survives restarts. Body: {"rpc_types":
 // ["websocket"], "reason": "..."}; an empty rpc_types bans every type. A
