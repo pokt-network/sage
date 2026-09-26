@@ -50,6 +50,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 	for _, opt := range opts {
 		opt(&o)
 	}
+	probation, _ := o.repSvc.(reputation.ProbationChecker)
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) (retErr error) {
 			if ctx.QuorumArm || !flags.IsEnabled(ctx.Ctx, featureflag.FlagRetry, ctx.ServiceID) {
@@ -60,6 +61,16 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			if cfg.MaxRetries == 0 {
 				return next.HandleRelay(ctx)
 			}
+
+			// The attempt trail, kept only once an attempt has failed: the
+			// router logs it with a client-facing error, so a failure says
+			// which hosts it went through and how each answered.
+			var trail []string
+			defer func() {
+				if trail != nil {
+					ctx.Attempts = trail
+				}
+			}()
 
 			// Allocated lazily — the no-retry success path (the overwhelming
 			// majority) never needs it.
@@ -145,6 +156,9 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 				ctx.Ctx = attemptCtx
 				err := next.HandleRelay(ctx)
 				ctx.Ctx = saved
+				if err != nil || trail != nil {
+					trail = append(trail, attemptNote(ctx, err, probation))
+				}
 				return err
 			}
 
@@ -379,6 +393,23 @@ func retryCause(ctx *relay.Context, err error) string {
 		return ctx.HeuristicResult.Reason
 	}
 	return retryReason(err)
+}
+
+// attemptNote is one entry of the attempt trail: the host that answered,
+// whether reputation had it on probation, and how it answered.
+func attemptNote(ctx *relay.Context, err error, probation reputation.ProbationChecker) string {
+	host := ctx.Endpoint.Domain()
+	if host == "" {
+		host = "-"
+	}
+	if probation != nil && ctx.Endpoint != "" &&
+		probation.OnProbation(ctx.Ctx, ctx.ServiceID, ctx.Endpoint, ctx.RPCType) {
+		host += ":probation"
+	}
+	if err == nil {
+		return host + ":ok"
+	}
+	return host + ":" + retryCause(ctx, err)
 }
 
 // limiterVerdict reports whether a retry cause is a rate limit, which belongs

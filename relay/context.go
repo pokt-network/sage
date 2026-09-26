@@ -68,6 +68,12 @@ type Context struct {
 
 	// Endpoint is the pick for this attempt: written by select_endpoint only.
 	Endpoint domain.EndpointAddr
+	// Attempts is the trail of a relay that failed at least once, one entry
+	// per attempt: "host[:probation]:outcome". Written by retry only, as a
+	// slice it built itself (never appended to in place, so a clone that
+	// shares the header cannot race it); read by the router for the error
+	// log. Nil for a relay whose first attempt succeeded.
+	Attempts []string
 	// Endpoints is the candidate list select_endpoint chooses from. It is
 	// filled by select_endpoint (from the protocol) and PRUNED, in chain
 	// order, by supplier_affinity (reordered), circuit_break (broken domains

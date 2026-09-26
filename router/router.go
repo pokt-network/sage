@@ -388,7 +388,7 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 			r.logger.Info("relay: delivering the last upstream response after a retry verdict",
 				"service", ctx.ServiceID, "endpoint", ctx.Endpoint, "verdict", err)
 		} else {
-			r.logger.Error("relay chain error", "service", ctx.ServiceID, "endpoint", ctx.Endpoint, "error", err)
+			r.logger.Error("relay chain error", "service", ctx.ServiceID, "endpoint", ctx.Endpoint, "error", err, "attempts", ctx.Attempts)
 			r.writeRelayError(rw, ctx, err)
 			return
 		}

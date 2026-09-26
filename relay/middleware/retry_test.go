@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -703,5 +704,49 @@ func TestRetry_TreatsAnOwnersBrandsAsOneProvider(t *testing.T) {
 
 	if len(seen) != 2 || seen[1] != "supplierZ-https://n1.independent.net" {
 		t.Fatalf("attempts = %v, want the retry on the independent provider", seen)
+	}
+}
+
+// probationOnly marks one host as on probation.
+type probationOnly struct{ host string }
+
+func (p probationOnly) OnProbation(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType) bool {
+	return ep.Domain() == p.host
+}
+
+// A failed relay carries its attempt trail for the router's error log: each
+// host, whether it was on probation, and how it answered. A relay whose
+// first attempt succeeded carries none.
+func TestRetry_RecordsTheAttemptTrail(t *testing.T) {
+	var seen []domain.EndpointAddr
+	h := Retry(newFlags("retry"), retryCfg(1, 0))(firstEndpointHandler(&seen))
+	ctx := baseContext()
+	ctx.Endpoints = multiOperatorEndpoints()
+	_ = h.HandleRelay(ctx)
+	if len(ctx.Attempts) != 2 {
+		t.Fatalf("trail = %v, want both failed attempts", ctx.Attempts)
+	}
+	for i, note := range ctx.Attempts {
+		if !strings.HasPrefix(note, seen[i].Domain()+":") {
+			t.Errorf("trail[%d] = %q, want it to name %s", i, note, seen[i].Domain())
+		}
+	}
+
+	ok := baseContext()
+	okHandler := newMockHandler(nil)
+	_ = Retry(newFlags("retry"), retryCfg(1, 0))(okHandler).HandleRelay(ok)
+	if ok.Attempts != nil {
+		t.Errorf("a first-try success carries trail %v, want none", ok.Attempts)
+	}
+}
+
+func TestAttemptNote_MarksProbation(t *testing.T) {
+	ctx := baseContext()
+	ctx.Endpoint = "s1-https://slow.example"
+	if got := attemptNote(ctx, retryableErr("boom"), probationOnly{"slow.example"}); !strings.HasPrefix(got, "slow.example:probation:") {
+		t.Errorf("note = %q, want the probation mark", got)
+	}
+	if got := attemptNote(ctx, nil, nil); got != "slow.example:ok" {
+		t.Errorf("note = %q, want slow.example:ok", got)
 	}
 }
