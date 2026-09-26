@@ -98,6 +98,10 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middle
 
 			ctx.HeuristicResult = &result
 
+			if result.ShouldRetry && result.Attribution == heuristic.AttrBlockchain {
+				observeAttempt(registry, ctx)
+			}
+
 			if result.ShouldRetry {
 				relayErr := domain.NewRelayError(
 					domain.ErrEndpoint,
@@ -111,6 +115,29 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middle
 
 			return nil
 		})
+	}
+}
+
+// observeAttempt hands the plugin an attempt whose answer the chain state
+// explains, so an endpoint saying it does not keep the state asked for is
+// remembered (qos.DataExtractor).
+//
+// The observation pipeline sees only the final attempt: it sits outside Retry.
+// A pruned node answering first is retried away, the archival node that serves
+// the retry is what gets observed, and the pruned node is never marked. On
+// mainnet base (2026-09-26) one such node took the first attempt of numbered
+// eth_getBalance calls two years back, around 1,000 times in five minutes, on
+// every pod, answering "historical state is not available" each time.
+func observeAttempt(registry *qos.Registry, ctx *relay.Context) {
+	if len(ctx.Payloads) == 0 {
+		return
+	}
+	plugin := ctx.Plugin
+	if plugin == nil && registry != nil {
+		plugin = registry.Get(ctx.ServiceID)
+	}
+	if x, ok := plugin.(qos.DataExtractor); ok {
+		_, _ = x.ExtractData(ctx.Endpoint, ctx.Payloads[0].Bytes(), ctx.Response.Body)
 	}
 }
 

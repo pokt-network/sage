@@ -170,6 +170,13 @@ func classifyJSONRPCError(code int64, message string) AnalysisResult {
 	case code == codeInternalError:
 		return classifyInternalError(lowerMsg)
 
+	// A code outside the spec saying the state is gone is still the node
+	// answering: a proxy in front of pruned nodes answers 4444 "pruned history
+	// unavailable" (mainnet base, 2026-09-26), and grading that by its code
+	// penalized it for the truth and never marked it non-archival.
+	case ReportsMissingHistoricalState(message):
+		return classifyServerError(code, lowerMsg)
+
 	// Unknown error codes — default handling.
 	default:
 		return AnalysisResult{
@@ -230,6 +237,7 @@ var capabilityLimitationPatterns = []string{
 	"state has been pruned",
 	"block has been pruned",
 	"is pruned",
+	"pruned history",
 	"height is not available",
 	"haven't been fully indexed",
 	"not been fully indexed",
