@@ -14,8 +14,18 @@ import (
 // dedicated domains), and one operator hosts many owners (one provider hosted
 // 86). So neither identity subsumes the other, and grouping by both
 // transitively would chain most of the network into one group through owners
-// staked with several providers. Owner is used pairwise instead: two endpoints
-// are affiliated when they share an operator OR an owner (see Affiliates).
+// staked with several providers.
+//
+// So an owner links two operators only where it IS the operator: a domain
+// counts as dedicated to an owner when that owner holds at least
+// dedicatedShare of the registrations seen on it (and at least
+// dedicatedMinSeen of them). Two endpoints are affiliated when they share an
+// operator, or when both sit on domains dedicated to the same owner - one
+// owner's own brands. A provider hosting many owners is never dedicated, so an
+// owner staked with two such providers keeps them independent: they are two
+// infrastructures, and a retry, a hedge or a vote that treated them as one
+// would lose real diversity (on mainnet, 2026-09-26, 12 owners were staked
+// across two independent providers; one owner ran two brands of its own).
 //
 // The owner is not in an EndpointAddr ("supplier-url"). The protocol layer,
 // which reads it from each session's supplier list, records it here, and
@@ -28,15 +38,30 @@ import (
 
 const ownerCacheMax = 16384
 
+// A domain is dedicated to an owner holding at least this share of the
+// registrations seen on it, once at least dedicatedMinSeen have been seen.
+const (
+	dedicatedShare   = 0.9
+	dedicatedMinSeen = 5
+)
+
 var (
 	// ownerBySupplier maps a supplier operator address to its owner address.
 	ownerBySupplier    sync.Map
 	ownerBySupplierLen atomic.Int64
+
+	// tenancy counts, per operator, the owner of every supplier seen staking
+	// on it; dedicatedTo is the result read on the relay path, one map load.
+	tenancyMu   sync.Mutex
+	tenancy     = map[string]map[string]string{} // operator -> supplier -> owner
+	tenancyLen  int
+	dedicatedTo sync.Map // operator -> owner, only for dedicated domains
 )
 
-// RecordOwner records that supplier is owned by owner. An empty owner is
-// ignored.
-func RecordOwner(supplier, owner string) {
+// RecordOwner records that supplier, staking on operator, is owned by owner.
+// An empty supplier or owner is ignored; an empty operator records the owner
+// without counting toward any domain's tenancy.
+func RecordOwner(supplier, owner, operator string) {
 	if supplier == "" || owner == "" {
 		return
 	}
@@ -44,6 +69,53 @@ func RecordOwner(supplier, owner string) {
 		ownerBySupplier.Clear()
 		ownerBySupplierLen.Store(0)
 	}
+	if operator == "" {
+		return
+	}
+	tenancyMu.Lock()
+	defer tenancyMu.Unlock()
+	sups := tenancy[operator]
+	if sups == nil {
+		sups = map[string]string{}
+		tenancy[operator] = sups
+	}
+	if prev, seen := sups[supplier]; seen && prev == owner {
+		return
+	} else if !seen {
+		if tenancyLen++; tenancyLen > ownerCacheMax {
+			clear(tenancy)
+			dedicatedTo.Clear()
+			tenancyLen = 1
+			sups = map[string]string{}
+			tenancy[operator] = sups
+		}
+	}
+	sups[supplier] = owner
+	refreshDedicated(operator, sups)
+}
+
+// refreshDedicated recomputes whether operator is dedicated to one owner.
+// Caller holds tenancyMu. Runs per session read, not per relay.
+func refreshDedicated(operator string, sups map[string]string) {
+	counts := map[string]int{}
+	for _, owner := range sups {
+		counts[owner]++
+	}
+	for owner, n := range counts {
+		if len(sups) >= dedicatedMinSeen && float64(n) >= dedicatedShare*float64(len(sups)) {
+			dedicatedTo.Store(operator, owner)
+			return
+		}
+	}
+	dedicatedTo.Delete(operator)
+}
+
+// dedicatedOwner is the owner operator is dedicated to, or "".
+func dedicatedOwner(operator string) string {
+	if v, ok := dedicatedTo.Load(operator); ok {
+		return v.(string)
+	}
+	return ""
 }
 
 // Owner returns the on-chain owner of the endpoint's supplier, or "" when no
@@ -73,26 +145,30 @@ func AffiliatesOf(eps ...EndpointAddr) Affiliates {
 	return a
 }
 
-// Add adds one endpoint's operator and owner.
+// Add adds one endpoint's operator, and its owner when the endpoint's domain
+// is dedicated to that owner.
 func (a *Affiliates) Add(ep EndpointAddr) {
 	if a.operators == nil {
 		a.operators, a.owners = map[string]bool{}, map[string]bool{}
 	}
-	if op := ep.Operator(); op != "" {
+	op := ep.Operator()
+	if op != "" {
 		a.operators[op] = true
 	}
-	if owner := ep.Owner(); owner != "" {
+	if owner := dedicatedOwner(op); owner != "" && owner == ep.Owner() {
 		a.owners[owner] = true
 	}
 }
 
-// Contains reports whether ep shares an operator or an owner with the set.
+// Contains reports whether ep shares an operator with the set, or sits on a
+// domain dedicated to an owner whose dedicated domain is already in the set.
 func (a Affiliates) Contains(ep EndpointAddr) bool {
-	if a.operators[ep.Operator()] {
+	op := ep.Operator()
+	if a.operators[op] {
 		return true
 	}
-	owner := ep.Owner()
-	return owner != "" && a.owners[owner]
+	owner := dedicatedOwner(op)
+	return owner != "" && a.owners[owner] && owner == ep.Owner()
 }
 
 // ExcludeAffiliates returns the list without any endpoint affiliated with a.

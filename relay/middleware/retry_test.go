@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -688,9 +689,15 @@ func TestRetryOverHedge_RecoversAfterBlackhole(t *testing.T) {
 // after one fails, the retry prefers an independent provider over the same
 // owner's other domain, even when that domain comes first in the list.
 func TestRetry_TreatsAnOwnersBrandsAsOneProvider(t *testing.T) {
-	domain.RecordOwner("supplierQ1", "pokt1ownerQ")
-	domain.RecordOwner("supplierQ2", "pokt1ownerQ")
-	domain.RecordOwner("supplierZ", "pokt1ownerZ")
+	// Each brand domain is dedicated to the owner: several registrations, all
+	// its own.
+	for i := 0; i < 5; i++ {
+		domain.RecordOwner(fmt.Sprintf("supplierQ1-%d", i), "pokt1ownerQ", "brand-q1.net")
+		domain.RecordOwner(fmt.Sprintf("supplierQ2-%d", i), "pokt1ownerQ", "brand-q2.net")
+	}
+	domain.RecordOwner("supplierQ1", "pokt1ownerQ", "brand-q1.net")
+	domain.RecordOwner("supplierQ2", "pokt1ownerQ", "brand-q2.net")
+	domain.RecordOwner("supplierZ", "pokt1ownerZ", "independent.net")
 
 	var seen []domain.EndpointAddr
 	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0))(firstEndpointHandler(&seen))

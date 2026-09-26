@@ -2,6 +2,7 @@ package autodrain
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -13,11 +14,11 @@ import (
 )
 
 const (
-	opa   = domain.EndpointAddr("pokt1a-https://r001.opa.example")
-	opa2  = domain.EndpointAddr("pokt1c-https://s029.opa.example")
-	opb = domain.EndpointAddr("pokt1b-https://node1.opb.example")
-	sei       = domain.ServiceID("sei")
-	jsonrpc   = domain.RPCTypeJSONRPC
+	opa     = domain.EndpointAddr("pokt1a-https://r001.opa.example")
+	opa2    = domain.EndpointAddr("pokt1c-https://s029.opa.example")
+	opb     = domain.EndpointAddr("pokt1b-https://node1.opb.example")
+	sei     = domain.ServiceID("sei")
+	jsonrpc = domain.RPCTypeJSONRPC
 )
 
 type fakeEndpoints map[domain.ServiceID]domain.EndpointAddrList
@@ -266,5 +267,28 @@ func TestEngine_NotLeaderNeitherCountsNorActs(t *testing.T) {
 
 	if o := h.outcomes(t); len(o) != 0 {
 		t.Fatalf("events = %v: a non-leader's traffic was counted", o)
+	}
+}
+
+// An owner staked with two providers that host many owners does not make them
+// one provider: the drained provider's alternative may be the other one even
+// though the same owner stakes on both (mainnet, 2026-09-26: 12 owners staked
+// across two independent providers). Only a domain dedicated to one owner
+// links through that owner (domain.Affiliates).
+func TestEngine_SharedOwnerAcrossMultiTenantProvidersStillLeavesAnAlternative(t *testing.T) {
+	domain.RecordOwner("pokt1a", "pokt1sharedowner", "opa.example")
+	domain.RecordOwner("pokt1b", "pokt1sharedowner", "opb.example")
+	for i := 0; i < 6; i++ {
+		domain.RecordOwner(fmt.Sprintf("pokt1tenantA%d", i), fmt.Sprintf("pokt1ownerA%d", i), "opa.example")
+		domain.RecordOwner(fmt.Sprintf("pokt1tenantB%d", i), fmt.Sprintf("pokt1ownerB%d", i), "opb.example")
+	}
+
+	h := newHarness(t, fakeVouch{opb: true}, true)
+	h.feed(0, 60)
+	h.e.Evaluate(context.Background())
+
+	active := h.drains.Active(context.Background(), sei)
+	if len(active) != 1 || active[0].Operator != "opa.example" {
+		t.Fatalf("active drains = %+v, want opa.example drained with opb.example as the alternative", active)
 	}
 }
