@@ -359,6 +359,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		// an operator staking one host per type is scored per face (see
 		// protocol.URLResolver). Installed before the server listens.
 		repSvc.SetURLResolver(shannonProto.EndpointURLFor)
+		// rpc_type_fallbacks also covers stakes reputation has ranked out.
+		shannonProto.SetRuledOut(repSvc.RuledOut)
 
 		// The domain ban's swap point is the blocklist manager, not the
 		// protocol: it owns the union of the config list and the admin-set

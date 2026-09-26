@@ -550,7 +550,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 		// reaches JSON-RPC-staked suppliers exactly as before — that behaviour
 		// lives there and is not something this loop has to arrange.
 		for rpcType, checks := range checksByRPCType(all) {
-			eps, err := e.endpoints.AvailableEndpoints(ctx, serviceID, rpcType)
+			eps, err := e.probeEndpoints(ctx, serviceID, rpcType)
 			if err != nil {
 				// Debug: the protocol reports the cause once when it changes; a
 				// service with no suppliers would otherwise say so every cycle.
@@ -1100,6 +1100,15 @@ func (e *Executor) probeableServices() int {
 	return n
 }
 
+// probeEndpoints is the pool a health check runs against: the provider's
+// probe pool when it has one (protocol.ProbeEndpointProvider).
+func (e *Executor) probeEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error) {
+	if p, ok := e.endpoints.(protocol.ProbeEndpointProvider); ok {
+		return p.ProbeEndpoints(ctx, serviceID, rpcType)
+	}
+	return e.endpoints.AvailableEndpoints(ctx, serviceID, rpcType)
+}
+
 // hasProbeableEndpoint reports whether a service has an endpoint any of its
 // checks could actually be sent to.
 //
@@ -1122,7 +1131,7 @@ func (e *Executor) probeableServices() int {
 func (e *Executor) hasProbeableEndpoint(ctx context.Context, serviceID domain.ServiceID, configured *ConfiguredChecks) bool {
 	all := slices.Concat(pluginChecks(e.qosRegistry.Get(serviceID)), configured.For(serviceID))
 	for rpcType := range checksByRPCType(all) {
-		eps, err := e.endpoints.AvailableEndpoints(ctx, serviceID, rpcType)
+		eps, err := e.probeEndpoints(ctx, serviceID, rpcType)
 		if err != nil || len(eps) > 0 {
 			return true
 		}

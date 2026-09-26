@@ -18,6 +18,13 @@ type EndpointProvider interface {
 	AvailableEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error)
 }
 
+// ProbeEndpointProvider is implemented by a provider whose relay pool can
+// leave out endpoints a health check must still reach: stakes reputation has
+// ranked out, which only a probe can bring back.
+type ProbeEndpointProvider interface {
+	ProbeEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error)
+}
+
 // URLResolver answers which URL a relay to an endpoint actually dials for an
 // RPC type. An endpoint address carries the supplier's public URL, one per
 // supplier whatever the type; an operator that stakes one host per type

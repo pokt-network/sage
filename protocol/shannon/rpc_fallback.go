@@ -74,3 +74,28 @@ func (p *Protocol) endpointURL(serviceID domain.ServiceID, ep *endpoint, rpcType
 	}
 	return "", err
 }
+
+// SetRuledOut installs the reputation check the rpc_type fallback reads: it
+// reports an endpoint whose recorded score for the RPC type has fallen below
+// the floor selection considers at all. Call once at wire time.
+func (p *Protocol) SetRuledOut(f func(domain.ServiceID, domain.EndpointAddr, domain.RPCType) bool) {
+	p.ruledOut = f
+}
+
+// unusable reports whether a pool of the requested type cannot serve: empty
+// after exclusions, or — when byReputation — every member ruled out by
+// reputation.
+func (p *Protocol) unusable(serviceID domain.ServiceID, rpcType domain.RPCType, pool domain.EndpointAddrList, byReputation bool) bool {
+	if len(pool) == 0 {
+		return true
+	}
+	if !byReputation || p.ruledOut == nil {
+		return false
+	}
+	for _, ep := range pool {
+		if !p.ruledOut(serviceID, ep, rpcType) {
+			return false
+		}
+	}
+	return true
+}

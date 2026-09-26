@@ -66,7 +66,7 @@ func (e *Executor) applyPeerResult(ctx context.Context, r ProbeResult) {
 	if rpcType == "" {
 		rpcType = domain.RPCTypeJSONRPC
 	}
-	eps, err := e.endpoints.AvailableEndpoints(ctx, r.ServiceID, rpcType)
+	eps, err := e.probeEndpoints(ctx, r.ServiceID, rpcType)
 	if err != nil {
 		return
 	}

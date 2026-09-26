@@ -97,6 +97,61 @@ func TestAvailableEndpoints_RPCTypeFallbackIsPoolLevel(t *testing.T) {
 	}
 }
 
+// The fallback also covers stakes that exist but cannot serve. On mainnet
+// persistence (2026-09-26) the only comet_bft stakes answered 503 to every
+// request for at least 48h while the json_rpc stakes served the same CometBFT
+// calls; a pool-level switch that only asked "did anyone stake it" kept every
+// request on the broken ones.
+func TestAvailableEndpoints_RPCTypeFallbackCoversUnusableStakes(t *testing.T) {
+	table := rpcFallbackTable{"eth": {domain.RPCTypeCometBFT: domain.RPCTypeJSONRPC}}
+	session := func() *sessiontypes.Session {
+		return typedSession(map[string][]sharedtypes.RPCType{
+			"pokt1comet": {sharedtypes.RPCType_COMET_BFT, sharedtypes.RPCType_JSON_RPC},
+			"pokt1json":  {sharedtypes.RPCType_JSON_RPC},
+		})
+	}
+	pool := func(p *Protocol) []string {
+		got, err := p.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeCometBFT)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, ep := range got {
+			out = append(out, ep.Supplier())
+		}
+		return out
+	}
+
+	p := fallbackProtocol(session(), table)
+	if got := pool(p); len(got) != 1 || got[0] != "pokt1comet" {
+		t.Fatalf("unscored comet_bft stake must be served, got %v", got)
+	}
+
+	p = fallbackProtocol(session(), table)
+	p.SetRuledOut(func(_ domain.ServiceID, ep domain.EndpointAddr, rt domain.RPCType) bool {
+		return ep.Supplier() == "pokt1comet" && rt == domain.RPCTypeCometBFT
+	})
+	if got := pool(p); len(got) != 1 || got[0] != "pokt1json" {
+		t.Fatalf("every comet_bft stake ranked out: want the json_rpc stake without the ranked-out supplier, got %v", got)
+	}
+	// Health checks still reach the ranked-out stake: a probe is its only way back.
+	if got, _ := p.ProbeEndpoints(context.Background(), "eth", domain.RPCTypeCometBFT); len(got) != 1 || got[0].Supplier() != "pokt1comet" {
+		t.Fatalf("probe pool must keep the ranked-out comet_bft stake, got %v", got)
+	}
+
+	p = fallbackProtocol(session(), table)
+	p.bl.BlacklistSupplier("eth", "pokt1comet")
+	if got := pool(p); len(got) != 1 || got[0] != "pokt1json" {
+		t.Fatalf("every comet_bft stake excluded: want the json_rpc stake, got %v", got)
+	}
+
+	p = fallbackProtocol(session(), nil)
+	p.SetRuledOut(func(domain.ServiceID, domain.EndpointAddr, domain.RPCType) bool { return true })
+	if got := pool(p); len(got) != 1 || got[0] != "pokt1comet" {
+		t.Fatalf("without a mapping the ranked-out pool is still the pool, got %v", got)
+	}
+}
+
 func TestSendRelay_RPCTypeFallbackUsesFallbackURL(t *testing.T) {
 	respBz, err := buildSerializedRelayResponse([]byte(`{"result":{}}`), http.StatusOK)
 	if err != nil {

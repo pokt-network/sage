@@ -87,6 +87,9 @@ type Protocol struct {
 	// rpcFallbacks is the per-service rpc_type_fallbacks mapping, consulted by
 	// endpointURL wherever a relay is addressed. Nil when no service sets one.
 	rpcFallbacks rpcFallbackTable
+	// ruledOut reports an endpoint reputation has ranked out for an RPC type;
+	// nil means nothing is. See SetRuledOut.
+	ruledOut func(domain.ServiceID, domain.EndpointAddr, domain.RPCType) bool
 	// blockedSuppliers and endpointPolicy are operator selection constraints
 	// applied alongside the blacklist/drain/domain-ban in endpoints().
 	blockedSuppliers blockedSupplierTable
@@ -484,7 +487,15 @@ func (p *Protocol) StopBlockPoller() {
 // type, minus the operator domain ban, the operator drain and the supplier
 // blacklist.
 func (p *Protocol) AvailableEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error) {
-	return p.endpoints(ctx, serviceID, rpcType, true)
+	return p.endpoints(ctx, serviceID, rpcType, true, true)
+}
+
+// ProbeEndpoints is AvailableEndpoints for health checks: the same exclusions,
+// without the reputation half of the rpc_type fallback. A stake ranked out is
+// exactly what a probe must keep reaching, or it could never earn its way
+// back and the fallback it triggered would never end.
+func (p *Protocol) ProbeEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error) {
+	return p.endpoints(ctx, serviceID, rpcType, true, false)
 }
 
 // RegisteredEndpoints returns every registration for the service/rpcType
@@ -493,12 +504,12 @@ func (p *Protocol) AvailableEndpoints(ctx context.Context, serviceID domain.Serv
 // operator already excluded for another reason would otherwise report zero
 // matches, which reads as "no such operator" rather than "already out".
 func (p *Protocol) RegisteredEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error) {
-	return p.endpoints(ctx, serviceID, rpcType, false)
+	return p.endpoints(ctx, serviceID, rpcType, false, false)
 }
 
 // endpoints is AvailableEndpoints and RegisteredEndpoints: the session's
 // registrations for the RPC type, with the exclusions applied when filtered.
-func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType, filtered bool) (domain.EndpointAddrList, error) {
+func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType, filtered, byReputation bool) (domain.EndpointAddrList, error) {
 	appAddr, err := p.pickApp(serviceID)
 	if err != nil {
 		p.logger.Error("AvailableEndpoints: no app for service",
@@ -536,54 +547,85 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 	// one. Applied per supplier it would add REST-only suppliers to a
 	// json_rpc pool that has plenty of json_rpc ones — which on mainnet
 	// answered tron JSON-RPC with 405 from their REST root.
+	var fallback domain.RPCType
+	if rpcType != domain.RPCTypeUnknown {
+		fallback = p.rpcFallbacks.resolve(serviceID, rpcType)
+	}
 	lookupType := rpcType
-	if rpcType != domain.RPCTypeUnknown && !anyStakes(endpoints, rpcType) {
-		if fallback := p.rpcFallbacks.resolve(serviceID, rpcType); fallback != "" {
-			lookupType = fallback
-		}
+	if fallback != "" && !anyStakes(endpoints, rpcType) {
+		lookupType = fallback
 	}
 
 	blockedDomains := p.blockedDomains.Load()
-	result := make(domain.EndpointAddrList, 0, len(endpoints))
 	var blacklisted, blocked, drained, supplierBlocked, policyRejected int
-	var benched domain.EndpointAddrList
-	for addr, ep := range endpoints {
-		url := ""
-		if rpcType != domain.RPCTypeUnknown {
-			u, err := ep.GetURL(lookupType)
-			if err != nil {
+	// collect is one pass over the session for lookupType. skipStakers leaves
+	// out the suppliers that staked the requested type, for the fallback pool
+	// built when those are all unusable: their own URL is what endpointURL
+	// would dial, and it is the one that failed.
+	collect := func(lookupType domain.RPCType, skipStakers bool) (result, benched domain.EndpointAddrList) {
+		blacklisted, blocked, drained, supplierBlocked, policyRejected = 0, 0, 0, 0, 0
+		result = make(domain.EndpointAddrList, 0, len(endpoints))
+		for addr, ep := range endpoints {
+			url := ""
+			if rpcType != domain.RPCTypeUnknown {
+				if skipStakers {
+					if _, err := ep.GetURL(rpcType); err == nil {
+						continue
+					}
+				}
+				u, err := ep.GetURL(lookupType)
+				if err != nil {
+					continue
+				}
+				url = u
+			} else {
+				url = ep.PublicURL()
+			}
+			if !filtered {
+				result = append(result, addr)
 				continue
 			}
-			url = u
-		} else {
-			url = ep.PublicURL()
-		}
-		if !filtered {
+			if blockedDomains.IsBlockedEndpoint(url, ep.Owner(), rpcType) {
+				blocked++
+				continue
+			}
+			if d := p.drains; d != nil && d.Drained(serviceID, operatorOf(url), rpcType) {
+				drained++
+				continue
+			}
+			if p.blockedSuppliers.blocked(serviceID, ep.Supplier()) {
+				supplierBlocked++
+				continue
+			}
+			if p.endpointPolicy.rejects(url) {
+				policyRejected++
+				continue
+			}
+			if p.bl.IsBlacklisted(serviceID, ep.Supplier()) {
+				blacklisted++
+				benched = append(benched, addr)
+				continue
+			}
 			result = append(result, addr)
-			continue
 		}
-		if blockedDomains.IsBlockedEndpoint(url, ep.Owner(), rpcType) {
-			blocked++
-			continue
+		return result, benched
+	}
+	result, benched := collect(lookupType, false)
+
+	// The fallback also covers stakes that exist but cannot serve: every one
+	// excluded (drained, banned, blacklisted) or ranked out by reputation. On
+	// mainnet persistence (2026-09-26) the only comet_bft stakes answered 503
+	// to every request for at least 48h — 55% of the service's requests
+	// failed — while the json_rpc stakes serve the same CometBFT calls, which
+	// is where PATH sent them. Decided only from exclusions and recorded
+	// scores: an endpoint nothing has scored yet is not ruled out, or a pod
+	// fresh from boot would divert a healthy pool.
+	if filtered && fallback != "" && lookupType == rpcType && p.unusable(serviceID, rpcType, result, byReputation) {
+		if fb, fbBenched := collect(fallback, true); len(fb) > 0 {
+			result, benched = fb, fbBenched
+		} else {
+			result, benched = collect(lookupType, false)
 		}
-		if d := p.drains; d != nil && d.Drained(serviceID, operatorOf(url), rpcType) {
-			drained++
-			continue
-		}
-		if p.blockedSuppliers.blocked(serviceID, ep.Supplier()) {
-			supplierBlocked++
-			continue
-		}
-		if p.endpointPolicy.rejects(url) {
-			policyRejected++
-			continue
-		}
-		if p.bl.IsBlacklisted(serviceID, ep.Supplier()) {
-			blacklisted++
-			benched = append(benched, addr)
-			continue
-		}
-		result = append(result, addr)
 	}
 
 	// The blacklist ranks a supplier out; it must not empty the pool. On

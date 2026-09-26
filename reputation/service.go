@@ -1147,6 +1147,18 @@ func (s *serviceImpl) Vouched(_ context.Context, serviceID domain.ServiceID, end
 	return ok && s.effectiveFor(serviceID, key, st) >= s.selector.cfg.Load().ProbationThreshold
 }
 
+// RuledOut reports whether an endpoint has a recorded score for the RPC type
+// below the selector's MinThreshold: ranked out, not merely unproven. An
+// endpoint with no score is not ruled out.
+func (s *serviceImpl) RuledOut(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool {
+	key := s.keyOf(endpoint, rpcType)
+	sh := s.shard(key)
+	sh.mu.RLock()
+	st, ok := sh.cache[serviceID][key]
+	sh.mu.RUnlock()
+	return ok && s.effectiveFor(serviceID, key, st) < s.selector.cfg.Load().MinThreshold
+}
+
 // clamp constrains a score to [0, MaxScore].
 func (s *serviceImpl) clamp(score float64) float64 {
 	if score < 0 {
