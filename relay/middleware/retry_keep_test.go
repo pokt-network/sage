@@ -99,3 +99,42 @@ func TestRetry_ALaterAnswerReplacesTheKeptOne(t *testing.T) {
 		t.Fatalf("response = %s, want the last attempt's own answer", ctx.Response.Body)
 	}
 }
+
+// A relay miner's 408 is not "no answer" in practice: it comes back as a
+// response, with a supplier-attributed verdict, and the router drops it and
+// writes a 504. The node's own answer from the earlier attempt must still
+// stand. mainnet base, 2026-09-26: blockchain_error on attempt 1, http_408
+// on attempt 2, a client 504 every time.
+func TestRetry_KeepsTheLastUpstreamAnswerOverASuppliers408Page(t *testing.T) {
+	eps := testEndpoints(2)
+	answer := &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"block not found"}}`)}
+	page := &domain.Response{HTTPStatusCode: 408, Body: []byte(`request timeout`)}
+	attempt := 0
+	h := relay.HandlerFunc(func(ctx *relay.Context) error {
+		attempt++
+		ctx.Endpoint = eps[attempt-1]
+		if attempt == 1 {
+			ctx.Response = answer
+			ctx.HeuristicResult = &heuristic.AnalysisResult{ShouldRetry: true, Attribution: heuristic.AttrBlockchain, Reason: "blockchain_error"}
+		} else {
+			ctx.Response = page
+			ctx.HeuristicResult = &heuristic.AnalysisResult{ShouldRetry: true, Attribution: heuristic.AttrSupplier, Reason: "http_408"}
+		}
+		ctx.Err = domain.NewRelayError(domain.ErrEndpoint, "heuristic analysis suggests retry", domain.ErrRetryVerdict, true)
+		return ctx.Err
+	})
+
+	ctx := baseContext()
+	ctx.Endpoints = eps
+	err := Retry(newFlags("retry"), retryCfg(1, 0))(h).HandleRelay(ctx)
+
+	if attempt != 2 {
+		t.Fatalf("attempts = %d, want the retry to have run", attempt)
+	}
+	if !errors.Is(err, domain.ErrRetryVerdict) {
+		t.Fatalf("err = %v, want the kept answer's retry verdict so the router delivers it", err)
+	}
+	if ctx.Response != answer || ctx.Endpoint != eps[0] || ctx.HeuristicResult.Attribution != heuristic.AttrBlockchain {
+		t.Fatalf("response = %q from %s, want the first attempt's answer from %s", ctx.Response.Body, ctx.Endpoint, eps[0])
+	}
+}

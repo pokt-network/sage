@@ -104,8 +104,14 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// unless a later attempt produced one of its own.
 			var keptResp = ctx.Response
 			keptEndpoint, keptVerdict, keptErr := ctx.Endpoint, ctx.HeuristicResult, error(nil)
+			//
+			// "No answer" includes a supplier's own page: a relay miner's 408
+			// comes back as a response, with a supplier-attributed verdict, and
+			// is not an answer at all (the router drops it and writes a 504).
+			// On mainnet base (2026-09-26) that turned every "block not found"
+			// retried onto a timing-out operator into a client 504.
 			defer func() {
-				if retErr != nil && ctx.Response == nil && keptResp != nil {
+				if retErr != nil && keptResp != nil && (ctx.Response == nil || supplierAttributed(ctx)) {
 					ctx.Response, ctx.Endpoint, ctx.HeuristicResult = keptResp, keptEndpoint, keptVerdict
 					ctx.Err, retErr = keptErr, keptErr
 				}
@@ -393,6 +399,13 @@ func retryCause(ctx *relay.Context, err error) string {
 		return ctx.HeuristicResult.Reason
 	}
 	return retryReason(err)
+}
+
+// supplierAttributed reports whether the current attempt's verdict blames the
+// supplier: its response, if any, is the relay miner's front door speaking,
+// not the node.
+func supplierAttributed(ctx *relay.Context) bool {
+	return ctx.HeuristicResult != nil && ctx.HeuristicResult.Attribution == heuristic.AttrSupplier
 }
 
 // attemptNote is one entry of the attempt trail: the host that answered,
