@@ -193,7 +193,7 @@ func TestWSRelayer_ControlFrameRecordsNoSignal(t *testing.T) {
 	})
 
 	r.handleEndpointFrame("eth", "ep1", []byte(`{"error":"session expired"}`),
-		ErrEndpointControlFrame, 10*time.Millisecond)
+		ErrEndpointControlFrame, 10*time.Millisecond, nil)
 
 	if len(rep.calls) != 0 {
 		t.Fatalf("recorded %d signals for a control frame, want 0 (got %q)",
@@ -211,7 +211,7 @@ func TestWSRelayer_ControlFrameBranchDoesNotSwallowRealErrors(t *testing.T) {
 	})
 
 	// A validation failure is still the supplier's, and still major.
-	r.handleEndpointFrame("eth", "ep1", nil, errors.New("bad signature"), 0)
+	r.handleEndpointFrame("eth", "ep1", nil, errors.New("bad signature"), 0, nil)
 	if len(rep.calls) != 1 || rep.calls[0].signal.Type != reputation.SignalMajorError {
 		t.Fatalf("validation failure: got %+v, want one major error", rep.calls)
 	}

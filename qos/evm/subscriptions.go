@@ -15,11 +15,15 @@ func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 		// Which one matters for accounting — a pending-transactions feed is
 		// as chatty as the supplier's mempool, a heads feed is one frame a
 		// block — so it is reported, verbatim; the metric bounds it.
+		topic := gjson.GetBytes(data, "params.0").String()
 		return qos.ClientFrameInfo{
 			Action:    qos.SubscriptionSubscribe,
 			RequestID: qos.JSONRPCRequestID(data),
 			Method:    method,
-			Topic:     gjson.GetBytes(data, "params.0").String(),
+			Topic:     topic,
+			// One header per block, always. logs and pendingTransactions
+			// deliver only what matches, so their silence proves nothing.
+			Periodic: topic == "newHeads",
 		}
 	case "eth_unsubscribe":
 		id, span := qos.JSONRPCFirstParam(data)

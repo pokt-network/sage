@@ -52,3 +52,23 @@ func TestSubscriptions_CometBFTRebindRewritesEventID(t *testing.T) {
 		t.Fatalf("event = %q", out)
 	}
 }
+
+// Only the block events fire on every block; a Tx query fires on matches and
+// its silence proves nothing about the supplier.
+func TestSubscriptions_CometBFTPeriodicTopics(t *testing.T) {
+	p := &Plugin{}
+	for frame, want := range map[string]struct {
+		topic    string
+		periodic bool
+	}{
+		`{"jsonrpc":"2.0","id":1,"method":"subscribe","params":{"query":"tm.event='NewBlock'"}}`:                         {"NewBlock", true},
+		`{"jsonrpc":"2.0","id":1,"method":"subscribe","params":["tm.event = 'NewBlockHeader'"]}`:                         {"NewBlockHeader", true},
+		`{"jsonrpc":"2.0","id":1,"method":"subscribe","params":{"query":"tm.event='Tx' AND message.sender='pokt1x'"}}`: {"Tx", false},
+		`{"jsonrpc":"2.0","id":1,"method":"subscribe","params":{"query":"message.sender='pokt1x'"}}`:                    {"", false},
+	} {
+		info := p.ClassifyClientFrame([]byte(frame))
+		if info.Topic != want.topic || info.Periodic != want.periodic {
+			t.Errorf("%s: topic=%q periodic=%v, want %q %v", frame, info.Topic, info.Periodic, want.topic, want.periodic)
+		}
+	}
+}

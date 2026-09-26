@@ -50,3 +50,12 @@ func TestSubscriptions_SolanaRebindTranslation(t *testing.T) {
 		t.Fatalf("unsubscribe = %q", got)
 	}
 }
+
+func TestSubscriptions_SolanaPeriodicTopics(t *testing.T) {
+	p := &Plugin{}
+	for method, want := range map[string]bool{"slotSubscribe": true, "rootSubscribe": true, "logsSubscribe": false, "accountSubscribe": false} {
+		if info := p.ClassifyClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `"}`)); info.Periodic != want {
+			t.Errorf("%s: periodic=%v, want %v", method, info.Periodic, want)
+		}
+	}
+}

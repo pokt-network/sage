@@ -19,7 +19,16 @@ func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 		return qos.ClientFrameInfo{Action: qos.SubscriptionUnsubscribe, SubscriptionID: id, SubscriptionIDSpan: span, Method: method}
 	case strings.HasSuffix(method, "Subscribe"):
 		// Each Solana feed has its own method, so the method is the topic.
-		return qos.ClientFrameInfo{Action: qos.SubscriptionSubscribe, RequestID: qos.JSONRPCRequestID(data), Method: method, Topic: method}
+		// slot and root advance several times a second whatever happens on
+		// chain; every other feed (account, logs, program, signature, block
+		// with a filter) delivers only what matches.
+		return qos.ClientFrameInfo{
+			Action:    qos.SubscriptionSubscribe,
+			RequestID: qos.JSONRPCRequestID(data),
+			Method:    method,
+			Topic:     method,
+			Periodic:  method == "slotSubscribe" || method == "rootSubscribe",
+		}
 	}
 	return qos.ClientFrameInfo{}
 }

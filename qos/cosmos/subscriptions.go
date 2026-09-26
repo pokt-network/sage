@@ -1,6 +1,8 @@
 package cosmos
 
 import (
+	"strings"
+
 	"github.com/tidwall/gjson"
 
 	"github.com/pokt-network/sage/qos"
@@ -19,7 +21,16 @@ import (
 func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 	switch method := qos.JSONRPCMethod(data); method {
 	case "subscribe":
-		return qos.ClientFrameInfo{Action: qos.SubscriptionSubscribe, RequestID: qos.JSONRPCRequestID(data), Method: method}
+		// The topic is the query's tm.event ("NewBlock", "Tx", …). Only the
+		// block events fire on every block; a Tx query fires on matches.
+		event := cometEvent(data)
+		return qos.ClientFrameInfo{
+			Action:    qos.SubscriptionSubscribe,
+			RequestID: qos.JSONRPCRequestID(data),
+			Method:    method,
+			Topic:     event,
+			Periodic:  event == "NewBlock" || event == "NewBlockHeader",
+		}
 	case "unsubscribe", "unsubscribe_all":
 		return qos.ClientFrameInfo{Action: qos.SubscriptionUnsubscribeAll, Method: method}
 	}
@@ -51,6 +62,26 @@ func (p *Plugin) ClassifyEndpointFrame(data []byte) qos.EndpointFrameInfo {
 	// has a pending subscribe for, so an empty-object result to some other
 	// call opens nothing.
 	return qos.EndpointFrameInfo{Kind: qos.EndpointFrameResponse, RequestID: id, SubscriptionID: id}
+}
+
+// cometEvent returns the tm.event a subscribe query names ("" when it names
+// none). The query is params.query, or params[0] in the positional form, and
+// reads like "tm.event='NewBlock' AND …".
+func cometEvent(data []byte) string {
+	query := gjson.GetBytes(data, "params.query").String()
+	if query == "" {
+		query = gjson.GetBytes(data, "params.0").String()
+	}
+	_, rest, ok := strings.Cut(query, "tm.event")
+	if !ok {
+		return ""
+	}
+	rest = strings.TrimLeft(rest, " =")
+	if len(rest) == 0 || (rest[0] != '\'' && rest[0] != '"') {
+		return ""
+	}
+	event, _, _ := strings.Cut(rest[1:], rest[:1])
+	return event
 }
 
 var _ qos.SubscriptionClassifier = (*Plugin)(nil)

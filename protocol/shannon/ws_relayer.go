@@ -29,14 +29,26 @@ import (
 )
 
 const (
-	// wsStallTimeout is how long a connection with established subscriptions
-	// may receive nothing before its supplier is replaced. A minute: longer
-	// than any chain's block time by a wide margin, so a quiet-but-honest
-	// subscription (a logs filter that rarely matches) is not what fires it
-	// — a supplier whose feed silently stopped is. wsStallCheckInterval is
-	// the poll.
+	// wsStallTimeout is how long a periodic subscription (newHeads,
+	// slotSubscribe, NewBlock — one delivery per block whatever the client
+	// filters) may go without one before its supplier is replaced. A minute:
+	// longer than any chain's block time by a wide margin. Only periodic
+	// feeds are judged (qos.SubscriptionRegistry.Heartbeat): a logs filter
+	// that matches nothing for minutes is a quiet feed, and judging it used
+	// to cost an honest supplier a major penalty and the client a rebind
+	// every minute, then a 1012 when the rebinds ran out.
+	// wsStallCheckInterval is the poll.
 	wsStallTimeout       = 60 * time.Second
 	wsStallCheckInterval = 5 * time.Second
+
+	// wsSuccessSignalInterval is the least time between two success signals
+	// a bridge records for its supplier. A subscription frame is not a
+	// request: grading each one as a success let a supplier's score follow
+	// its feed's chattiness, so a chatty feed erased any penalty within two
+	// frames and a supplier could buy immunity from demotion by pushing more.
+	// One success per interval grades what reputation is for — the
+	// connection kept working — and failures are still recorded every time.
+	wsSuccessSignalInterval = 30 * time.Second
 
 	// wsExpiryCheckInterval is how often a bridge asks whether its own session
 	// has ended. The block poller only refreshes the height every
@@ -364,11 +376,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	// pings are still answered. Handled exactly like a dead socket — the
 	// rebind below — so the same replay and the same limit apply.
 	bridgeOpts = append(bridgeOpts, websockets.WithStallDetector(func() bool {
-		if !subs.HasActive() {
-			return false
-		}
-		last := subs.LastActivity()
-		return !last.IsZero() && time.Since(last) > r.stallTimeout
+		return stalled(subs, r.stallTimeout)
 	}, r.stallCheck))
 
 	// Endpoint loss is a rebind, not a close: pick another supplier this
@@ -443,6 +451,14 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		"untracked_subscribes", subs.Dropped(),
 	)
 	return nil
+}
+
+// stalled reports whether a connection's periodic feed has gone silent for
+// longer than timeout. A connection with no periodic subscription is never
+// stalled; see wsStallTimeout.
+func stalled(subs *qos.SubscriptionRegistry, timeout time.Duration) bool {
+	periodic, last := subs.Heartbeat()
+	return periodic && !last.IsZero() && time.Since(last) > timeout
 }
 
 // subscriptionRegistry builds the registry for one bridge from the service's
@@ -557,27 +573,50 @@ type wsFrameEvent struct {
 }
 
 // drainFrameEvents consumes frame events until the bridge closes, then drains
-// whatever is still buffered and exits.
+// whatever is still buffered and exits. It is the bridge's only frame grader,
+// so the success-signal gate lives here, one per bridge.
 func (r *WSRelayer) drainFrameEvents(
 	serviceID domain.ServiceID,
 	ch <-chan wsFrameEvent,
 	done <-chan struct{},
 ) {
+	var gate wsSuccessGate
 	for {
 		select {
 		case evt := <-ch:
-			r.handleEndpointFrame(serviceID, evt.endpoint, evt.payload, evt.err, evt.latency)
+			r.handleEndpointFrame(serviceID, evt.endpoint, evt.payload, evt.err, evt.latency, &gate)
 		case <-done:
 			for {
 				select {
 				case evt := <-ch:
-					r.handleEndpointFrame(serviceID, evt.endpoint, evt.payload, evt.err, evt.latency)
+					r.handleEndpointFrame(serviceID, evt.endpoint, evt.payload, evt.err, evt.latency, &gate)
 				default:
 					return
 				}
 			}
 		}
 	}
+}
+
+// wsSuccessGate admits one success signal per supplier per
+// wsSuccessSignalInterval. A rebind moves the bridge to another supplier,
+// whose first success is admitted at once.
+type wsSuccessGate struct {
+	endpoint domain.EndpointAddr
+	last     time.Time
+}
+
+// admit reports whether a success for endpoint at now should be recorded. A
+// nil gate admits everything.
+func (g *wsSuccessGate) admit(endpoint domain.EndpointAddr, now time.Time) bool {
+	if g == nil {
+		return true
+	}
+	if endpoint == g.endpoint && now.Sub(g.last) < wsSuccessSignalInterval {
+		return false
+	}
+	g.endpoint, g.last = endpoint, now
+	return true
 }
 
 // handleEndpointFrame runs per-frame heuristic, records a reputation signal,
@@ -591,6 +630,7 @@ func (r *WSRelayer) handleEndpointFrame(
 	payload []byte,
 	frameErr error,
 	latency time.Duration,
+	gate *wsSuccessGate,
 ) {
 	// A control frame is the miner reporting a condition — a session expiry,
 	// most often — not the supplier answering badly. It is the one frame that
@@ -614,8 +654,12 @@ func (r *WSRelayer) handleEndpointFrame(
 	}
 
 	res := heuristic.AnalyzeFrame(payload, domain.RPCTypeWebSocket)
-	sig := frameSeverityToSignal(res, latency)
-	_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket, sig)
+	// A penalty is always recorded; a success only through the gate (see
+	// wsSuccessSignalInterval). The observation below is sampled either way.
+	if res.ShouldPenalize || gate.admit(endpointAddr, time.Now()) {
+		sig := frameSeverityToSignal(res, latency)
+		_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket, sig)
+	}
 
 	// Always submit if heuristic penalized; otherwise sample.
 	forced := res.ShouldPenalize

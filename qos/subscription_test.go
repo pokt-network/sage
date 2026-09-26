@@ -238,3 +238,48 @@ func TestSubscriptionRegistry_UntrackedSubscriptionsAreNotUnsolicited(t *testing
 		t.Errorf("notification on a connection past the cap = %+v, want none", n)
 	}
 }
+
+// periodicClassifier is fakeClassifier whose "psub:<id>" subscribes are
+// periodic.
+type periodicClassifier struct{ fakeClassifier }
+
+func (periodicClassifier) ClassifyClientFrame(data []byte) ClientFrameInfo {
+	if f := string(data); strings.HasPrefix(f, "psub:") {
+		return ClientFrameInfo{Action: SubscriptionSubscribe, RequestID: f[5:], Method: "subscribe", Topic: "heads", Periodic: true}
+	}
+	return fakeClassifier{}.ClassifyClientFrame(data)
+}
+
+// A stall watchdog may judge only a periodic feed. A connection holding only
+// filtered feeds has no heartbeat, however long it has been silent.
+func TestSubscriptionRegistry_Heartbeat(t *testing.T) {
+	r := NewSubscriptionRegistry(periodicClassifier{})
+	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateEndpointFrame([]byte("ok:1:logs"))
+	r.TranslateEndpointFrame([]byte("data:logs:x"))
+	if periodic, _ := r.Heartbeat(); periodic {
+		t.Fatal("a connection with only a filtered feed must have no heartbeat")
+	}
+
+	r.TranslateClientFrame([]byte("psub:2"))
+	r.TranslateEndpointFrame([]byte("ok:2:heads"))
+	periodic, acked := r.Heartbeat()
+	if !periodic || acked.IsZero() {
+		t.Fatalf("after a periodic subscribe: periodic=%v last=%v, want the ack as the heartbeat", periodic, acked)
+	}
+
+	time.Sleep(time.Millisecond)
+	r.TranslateEndpointFrame([]byte("data:logs:y"))
+	if _, last := r.Heartbeat(); last != acked {
+		t.Fatal("a filtered feed's notification must not move the heartbeat")
+	}
+	r.TranslateEndpointFrame([]byte("data:heads:h1"))
+	if _, last := r.Heartbeat(); !last.After(acked) {
+		t.Fatal("a periodic notification must move the heartbeat")
+	}
+
+	r.TranslateClientFrame([]byte("unsub:heads"))
+	if periodic, _ := r.Heartbeat(); periodic {
+		t.Fatal("after the periodic feed is unsubscribed the connection has no heartbeat")
+	}
+}

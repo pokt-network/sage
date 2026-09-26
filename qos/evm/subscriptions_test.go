@@ -68,3 +68,15 @@ func TestSubscriptions_EVMRebindTranslation(t *testing.T) {
 		t.Fatalf("unsubscribe = %q", got)
 	}
 }
+
+// newHeads delivers on every block; logs and pending transactions deliver
+// only what matches.
+func TestSubscriptions_EVMPeriodicTopics(t *testing.T) {
+	p := &Plugin{}
+	for topic, want := range map[string]bool{"newHeads": true, "logs": false, "newPendingTransactions": false} {
+		info := p.ClassifyClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["` + topic + `"]}`))
+		if info.Topic != topic || info.Periodic != want {
+			t.Errorf("%s: topic=%q periodic=%v, want periodic=%v", topic, info.Topic, info.Periodic, want)
+		}
+	}
+}

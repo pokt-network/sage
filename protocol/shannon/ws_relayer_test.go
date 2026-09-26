@@ -21,6 +21,7 @@ import (
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/observe"
 	"github.com/pokt-network/sage/qos"
+	"github.com/pokt-network/sage/qos/evm"
 	"github.com/pokt-network/sage/reputation"
 	"github.com/pokt-network/sage/websockets"
 )
@@ -155,7 +156,7 @@ func TestWSRelayer_HandleEndpointFrame_Success(t *testing.T) {
 		Protocol: &Protocol{}, Reputation: rep, Observe: newDisabledQueue(),
 		Flags: featureflag.NewMemoryStore(nil), Logger: newTestLogger(),
 	})
-	r.handleEndpointFrame("eth", "ep1", []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`), nil, 10*time.Millisecond)
+	r.handleEndpointFrame("eth", "ep1", []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`), nil, 10*time.Millisecond, nil)
 	if len(rep.calls) != 1 {
 		t.Fatalf("want 1 signal recorded, got %d", len(rep.calls))
 	}
@@ -171,7 +172,7 @@ func TestWSRelayer_HandleEndpointFrame_HeuristicPenalty(t *testing.T) {
 		Flags: featureflag.NewMemoryStore(nil), Logger: newTestLogger(),
 	})
 	// HTML error page → critical heuristic → downgraded to major for per-frame.
-	r.handleEndpointFrame("eth", "ep1", []byte(`<!DOCTYPE html><body>error</body></html>`), nil, 0)
+	r.handleEndpointFrame("eth", "ep1", []byte(`<!DOCTYPE html><body>error</body></html>`), nil, 0, nil)
 	if len(rep.calls) != 1 {
 		t.Fatalf("want 1 signal, got %d", len(rep.calls))
 	}
@@ -595,5 +596,59 @@ func TestUntriedFirst(t *testing.T) {
 	got = untriedFirst(domain.EndpointAddrList{a1, a2}, map[domain.EndpointAddr]bool{a1: true}, true)
 	if len(got) != 1 || got[0] != a2 {
 		t.Fatalf("only the same operator left: want it anyway, got %v", got)
+	}
+}
+
+// Only a periodic feed gone silent is a stall. A logs filter that has matched
+// nothing for minutes is honest; judging it cost the supplier a major penalty
+// and the client a rebind every minute.
+func TestStalled_OnlyPeriodicFeedsAreJudged(t *testing.T) {
+	quiet := qos.NewSubscriptionRegistry(&evm.Plugin{})
+	quiet.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{"address":"0x0"}]}`))
+	quiet.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xlogs"}`))
+	time.Sleep(5 * time.Millisecond)
+	if stalled(quiet, time.Millisecond) {
+		t.Error("a silent logs subscription must not be judged a stall")
+	}
+
+	heads := qos.NewSubscriptionRegistry(&evm.Plugin{})
+	heads.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`))
+	heads.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xheads"}`))
+	if stalled(heads, time.Minute) {
+		t.Error("a newHeads feed acked just now is not stalled")
+	}
+	time.Sleep(5 * time.Millisecond)
+	if !stalled(heads, time.Millisecond) {
+		t.Error("a newHeads feed silent past the timeout is a stall")
+	}
+}
+
+// A chatty feed must not grade its supplier once per frame: one success per
+// interval, while a penalty is recorded every time, and a new supplier after
+// a rebind is graded at once.
+func TestWSRelayer_SuccessSignalsAreGated(t *testing.T) {
+	rep := &spyRepSvc{}
+	r := NewWSRelayer(WSRelayerDeps{
+		Protocol: &Protocol{}, Reputation: rep, Observe: newDisabledQueue(),
+		Flags: featureflag.NewMemoryStore(nil), Logger: newTestLogger(),
+	})
+	var gate wsSuccessGate
+	ok := []byte(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0x1","result":{}}}`)
+	for i := 0; i < 50; i++ {
+		r.handleEndpointFrame("eth", "ep1", ok, nil, time.Millisecond, &gate)
+	}
+	r.handleEndpointFrame("eth", "ep1", []byte(`<!DOCTYPE html><body>error</body></html>`), nil, 0, &gate)
+	r.handleEndpointFrame("eth", "ep2", ok, nil, time.Millisecond, &gate)
+
+	var successes, penalties int
+	for _, c := range rep.calls {
+		if c.signal.Type == reputation.SignalSuccess {
+			successes++
+		} else {
+			penalties++
+		}
+	}
+	if successes != 2 || penalties != 1 {
+		t.Fatalf("successes=%d penalties=%d, want 2 (one per supplier) and 1", successes, penalties)
 	}
 }

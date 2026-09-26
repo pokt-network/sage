@@ -19,7 +19,7 @@ Four things produce `reputation.Signal`s:
 |---|---|---|
 | Relay outcomes | `relay/middleware/score.go` | once per **relay attempt** (with `scoring_v2` on; with it off, `observe.go` instead, once per client request) |
 | Health-check probes | `healthcheck/executor.go` | once per probe, fanned out to every sibling on the same backend URL |
-| WebSocket lifecycle | `protocol/shannon/ws_relayer.go` | on connect failure, on close |
+| WebSocket | `protocol/shannon/ws_relayer.go` | per supplier frame, but a success at most once per bridge per 30 s (`wsSuccessSignalInterval`) while a penalty is recorded every time, so a chatty feed cannot out-vote its failures (principle 4); a major on connect failure, on loss, and on a stall — a *periodic* feed (newHeads, slotSubscribe, NewBlock) silent for 60 s; a quiet filtered feed is never a stall |
 | Configured checks | `healthcheck/configured.go` (`SignalFor`) | overrides the grade of a named check |
 
 A signal carries a type, a latency and a free-text reason. Only the type has

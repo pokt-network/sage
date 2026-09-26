@@ -47,6 +47,12 @@ type ClientFrameInfo struct {
 	// "logsSubscribe" — for per-topic reporting. Chains differ in how a
 	// topic is named, so the classifier decides; "" reports as the method.
 	Topic string
+	// Periodic marks a subscription that must deliver on every block (or
+	// slot) — newHeads, slotSubscribe, NewBlock — whatever the client
+	// filters for. Only a periodic subscription gone silent is evidence that
+	// the supplier stopped: a logs filter that matches nothing for minutes
+	// is a quiet feed, not a dead one. See Heartbeat.
+	Periodic bool
 	// SubscriptionID is the raw id of the subscription an unsubscribe
 	// targets, and SubscriptionIDSpan where it sits in the frame.
 	SubscriptionID     string
@@ -120,6 +126,8 @@ type Subscription struct {
 	Method string
 	// Topic is what it is for; see ClientFrameInfo.Topic.
 	Topic string
+	// Periodic: see ClientFrameInfo.Periodic.
+	Periodic bool
 	// Request is the client's original subscribe frame, verbatim, so a
 	// rebind can replay it to a different endpoint.
 	Request []byte
@@ -161,6 +169,9 @@ type SubscriptionRegistry struct {
 	// from, so a subscription just established is not stalled before its
 	// first event could arrive.
 	lastActivity time.Time
+	// lastPeriodic is lastActivity counted over periodic subscriptions
+	// only: what Heartbeat reports.
+	lastPeriodic time.Time
 	dropped      int // subscribe frames not tracked because a table was full
 
 	// Rebind state. toClient maps the current supplier's id to the client's
@@ -178,9 +189,10 @@ type SubscriptionRegistry struct {
 }
 
 type pendingSubscription struct {
-	method  string
-	topic   string
-	request []byte
+	method   string
+	topic    string
+	periodic bool
+	request  []byte
 }
 
 // NotificationKind grades one endpoint→client notification against the
@@ -284,9 +296,10 @@ func (r *SubscriptionRegistry) TranslateClientFrame(data []byte) []byte {
 			return data
 		}
 		r.pending[info.RequestID] = pendingSubscription{
-			method:  info.Method,
-			topic:   info.Topic,
-			request: append([]byte(nil), data...),
+			method:   info.Method,
+			topic:    info.Topic,
+			periodic: info.Periodic,
+			request:  append([]byte(nil), data...),
 		}
 	case SubscriptionUnsubscribe:
 		sub, ok := r.active[info.SubscriptionID]
@@ -358,21 +371,23 @@ func (r *SubscriptionRegistry) TranslateEndpointFrameNote(data []byte) (out []by
 			EndpointID: info.SubscriptionID,
 			Method:     p.method,
 			Topic:      p.topic,
+			Periodic:   p.periodic,
 			Request:    p.request,
 			Since:      now,
 		}
 		delete(r.closed, info.SubscriptionID)
 		r.lastActivity = now
+		if p.periodic {
+			r.lastPeriodic = now
+		}
 		return data, true, note
 	case EndpointFrameNotification:
 		if clientID, mapped := r.toClient[info.SubscriptionID]; mapped {
-			r.lastData = time.Now()
-			r.lastActivity = r.lastData
+			r.touch(clientID)
 			return spliceSpan(data, info.SubscriptionIDSpan, clientID), true, r.grade(clientID, data)
 		}
 		if sub, live := r.active[info.SubscriptionID]; live && sub.EndpointID == sub.ID {
-			r.lastData = time.Now()
-			r.lastActivity = r.lastData
+			r.touch(sub.ID)
 			return data, true, r.grade(sub.ID, data)
 		}
 		if _, late := r.closed[info.SubscriptionID]; late || r.dropped > 0 {
@@ -381,6 +396,16 @@ func (r *SubscriptionRegistry) TranslateEndpointFrameNote(data []byte) (out []by
 		note.Kind = NotificationUnsolicited
 	}
 	return data, true, note
+}
+
+// touch records a notification for the live subscription clientID. Caller
+// holds mu.
+func (r *SubscriptionRegistry) touch(clientID string) {
+	r.lastData = time.Now()
+	r.lastActivity = r.lastData
+	if r.active[clientID].Periodic {
+		r.lastPeriodic = r.lastData
+	}
 }
 
 // grade classifies a notification for the live subscription clientID.
@@ -429,6 +454,9 @@ func (r *SubscriptionRegistry) completeReplay(clientID string, info EndpointFram
 	// one's last (and on chains with small integer ids, byte for byte).
 	delete(r.recent, clientID)
 	r.lastActivity = time.Now()
+	if sub.Periodic {
+		r.lastPeriodic = r.lastActivity
+	}
 }
 
 // forget drops one subscription and its id mapping. Caller holds mu.
@@ -539,6 +567,27 @@ func (r *SubscriptionRegistry) LastActivity() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.lastActivity
+}
+
+// Heartbeat reports whether the connection holds a periodic subscription and,
+// if so, when one last showed activity (a notification, or the subscribe or
+// replay ack that opened it). It is what a stall watchdog judges: a periodic
+// feed silent for longer than any block time means the supplier stopped
+// delivering. A connection holding only filtered feeds has no heartbeat and
+// can never be judged stalled — its silence is the filter's, not the
+// supplier's.
+func (r *SubscriptionRegistry) Heartbeat() (periodic bool, last time.Time) {
+	if r == nil {
+		return false, time.Time{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, sub := range r.active {
+		if sub.Periodic {
+			return true, r.lastPeriodic
+		}
+	}
+	return false, time.Time{}
 }
 
 // Dropped counts subscribe frames that were forwarded but not tracked because
