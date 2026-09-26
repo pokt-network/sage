@@ -687,9 +687,9 @@ func TestRetryOverHedge_RecoversAfterBlackhole(t *testing.T) {
 // after one fails, the retry prefers an independent provider over the same
 // owner's other domain, even when that domain comes first in the list.
 func TestRetry_TreatsAnOwnersBrandsAsOneProvider(t *testing.T) {
-	domain.RecordOwner("supplierQ1", "pokt1ownerQ", "https://s001.brand-q1.net")
-	domain.RecordOwner("supplierQ2", "pokt1ownerQ", "https://rel001.brand-q2.net")
-	domain.RecordOwner("supplierZ", "pokt1ownerZ", "https://n1.independent.net")
+	domain.RecordOwner("supplierQ1", "pokt1ownerQ")
+	domain.RecordOwner("supplierQ2", "pokt1ownerQ")
+	domain.RecordOwner("supplierZ", "pokt1ownerZ")
 
 	var seen []domain.EndpointAddr
 	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0))(firstEndpointHandler(&seen))

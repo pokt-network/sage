@@ -421,11 +421,7 @@ func (sm *sessionManager) getOrCreateEndpoints(session *sessiontypes.Session) ma
 	if !loaded {
 		for addr, ep := range endpoints {
 			sm.byAddr.Store(addr, ep)
-			urls := make([]string, 0, len(ep.urls))
-			for _, u := range ep.urls {
-				urls = append(urls, u)
-			}
-			domain.RecordOwner(ep.supplierAddr, ep.ownerAddr, urls...)
+			domain.RecordOwner(ep.supplierAddr, ep.ownerAddr)
 		}
 		sm.logger.Debug("endpoints extracted from session",
 			"session_id", session.SessionId,

@@ -478,9 +478,6 @@ func (s *serviceImpl) refreshBaselines() {
 		opOn:     map[domain.ServiceID]bool{},
 	}
 	for id, st := range stats {
-		if isOwnerOp(id.op) {
-			continue // owner evidence is a prior, never an operator of its own
-		}
 		if rate := st.Rate(); rate > 0 {
 			v.byOp[id] = OperatorRateView{Rate: rate, Attempts: uint64(st.Attempts)}
 		}
@@ -502,11 +499,6 @@ func (s *serviceImpl) refreshBaselines() {
 	for _, ks := range keys {
 		rate := ks.rate
 		if v.opOn[ks.id.svc] {
-			// An operator's rate, pulled toward its owner's while the operator
-			// itself has little evidence (a brand SAGE has not measured yet).
-			if charged, ok := ownerPrior(stats, ks.op, ks.id.key); ok {
-				v.byKey[ks.id] = charged
-			}
 			r, ok := v.byOp[ks.op]
 			if !ok {
 				continue
@@ -515,9 +507,7 @@ func (s *serviceImpl) refreshBaselines() {
 			// little traffic that key itself has seen — diluting a rate across
 			// keys is the thing this measures around.
 			rate = r.Rate
-			if _, primed := v.byKey[ks.id]; !primed {
-				v.byKey[ks.id] = r.Rate
-			}
+			v.byKey[ks.id] = r.Rate
 			if seen[ks.op] || r.Attempts < baselineMinAttempts {
 				continue // one vote per operator, and only a well-evidenced one
 			}
@@ -778,11 +768,6 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	if sc.rate.Enabled() && !deferred {
 		if op := endpoint.Operator(); op != "" {
 			s.ops.record(opID{serviceID, op, string(rpcType)}, FailureWeight(signal.Type), ts)
-		}
-		// And to the owner, across every operator it runs: the prior a brand
-		// it has not been measured under yet starts from (ownerPrior).
-		if owner := endpoint.Owner(); owner != "" {
-			s.ops.record(opID{serviceID, ownerOp(owner), string(rpcType)}, FailureWeight(signal.Type), ts)
 		}
 	}
 

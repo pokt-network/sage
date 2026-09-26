@@ -18,9 +18,13 @@ import (
 // are affiliated when they share an operator OR an owner (see Affiliates).
 //
 // The owner is not in an EndpointAddr ("supplier-url"). The protocol layer,
-// which reads it from each session's supplier list, records it here; readers
-// ask by address or by URL. Both tables are bounded the way operatorCache is:
+// which reads it from each session's supplier list, records it here, and
+// readers ask by address. The table is bounded the way operatorCache is:
 // cleared wholesale past the cap, and refilled by the next session read.
+//
+// Owner is identity, not a scoring key: bans, attribution and "is this a
+// different provider". Failure is measured per operator, which catches a new
+// brand within its first few hundred attempts on its own.
 
 const ownerCacheMax = 16384
 
@@ -28,16 +32,11 @@ var (
 	// ownerBySupplier maps a supplier operator address to its owner address.
 	ownerBySupplier    sync.Map
 	ownerBySupplierLen atomic.Int64
-
-	// ownerByURL maps a staked URL to the one owner staking it, or to ""
-	// when more than one owner stakes the same URL (a shared backend).
-	ownerByURL    sync.Map
-	ownerByURLLen atomic.Int64
 )
 
-// RecordOwner records that supplier is owned by owner and stakes urls. An
-// empty owner is ignored.
-func RecordOwner(supplier, owner string, urls ...string) {
+// RecordOwner records that supplier is owned by owner. An empty owner is
+// ignored.
+func RecordOwner(supplier, owner string) {
 	if supplier == "" || owner == "" {
 		return
 	}
@@ -45,36 +44,12 @@ func RecordOwner(supplier, owner string, urls ...string) {
 		ownerBySupplier.Clear()
 		ownerBySupplierLen.Store(0)
 	}
-	for _, url := range urls {
-		if url == "" {
-			continue
-		}
-		prev, loaded := ownerByURL.LoadOrStore(url, owner)
-		switch {
-		case !loaded:
-			if ownerByURLLen.Add(1) > ownerCacheMax {
-				ownerByURL.Clear()
-				ownerByURLLen.Store(0)
-			}
-		case prev != owner:
-			ownerByURL.Store(url, "") // shared by several owners: no single one
-		}
-	}
 }
 
 // Owner returns the on-chain owner of the endpoint's supplier, or "" when no
 // session has named it yet.
 func (e EndpointAddr) Owner() string {
 	if v, ok := ownerBySupplier.Load(e.Supplier()); ok {
-		return v.(string)
-	}
-	return ""
-}
-
-// OwnerOfURL returns the one owner staking url, or "" when none is known or
-// several owners share it.
-func OwnerOfURL(url string) string {
-	if v, ok := ownerByURL.Load(url); ok {
 		return v.(string)
 	}
 	return ""
