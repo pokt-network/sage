@@ -658,3 +658,36 @@ func TestWSRelayer_SuccessSignalsAreGated(t *testing.T) {
 		t.Fatalf("successes=%d penalties=%d, want 2 (one per supplier) and 1", successes, penalties)
 	}
 }
+
+// A WebSocket bind must not go to a node behind the chain head: a newHeads
+// subscriber stays for hours and would stream stale heads the whole time.
+// The filter is the plugin's own, and never narrows to nothing.
+func TestWSRelayer_FreshestDropsLaggingNodes(t *testing.T) {
+	plugin := evm.NewPlugin(nil, evm.Config{SyncAllowance: 5})
+	reg := qos.NewRegistry()
+	if err := reg.Register("eth", plugin); err != nil {
+		t.Fatal(err)
+	}
+	r := NewWSRelayer(WSRelayerDeps{
+		Protocol: &Protocol{}, Reputation: &spyRepSvc{}, Observe: newDisabledQueue(),
+		Flags: featureflag.NewMemoryStore(nil), Logger: newTestLogger(), QoS: reg,
+	})
+	fresh1, fresh2, stale := domain.EndpointAddr("s1-wss://a.example"), domain.EndpointAddr("s2-wss://b.example"), domain.EndpointAddr("s3-wss://c.example")
+	plugin.UpdateBlockHeight(fresh1, 1000)
+	plugin.UpdateBlockHeight(fresh2, 999)
+	plugin.UpdateBlockHeight(stale, 900)
+
+	got := r.freshest("eth", domain.EndpointAddrList{fresh1, fresh2, stale})
+	if got.Contains(stale) || len(got) != 2 {
+		t.Fatalf("freshest = %v, want the two endpoints near the head", got)
+	}
+
+	// Only lagging nodes left: the plugin degrades rather than empty the pool.
+	if got := r.freshest("eth", domain.EndpointAddrList{stale}); len(got) != 1 {
+		t.Fatalf("freshest of one = %v, want it kept", got)
+	}
+	// No plugin for the service: unchanged.
+	if got := r.freshest("unknown", domain.EndpointAddrList{fresh1, stale}); len(got) != 2 {
+		t.Fatalf("no plugin: freshest = %v, want both", got)
+	}
+}

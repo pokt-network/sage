@@ -805,6 +805,7 @@ func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.Servic
 		return nil, "no websocket endpoints available", errors.New("no endpoints for rpc type websocket")
 	}
 	candidates := untriedFirst(endpoints, tried, r.deps.Flags.IsEnabled(ctx, featureflag.FlagOperatorAwareSelection, serviceID))
+	candidates = r.freshest(serviceID, candidates)
 	load := r.snapshotLoad()
 	addr := r.deps.Reputation.SelectSpread(ctx, serviceID, candidates, domain.RPCTypeWebSocket, load)
 	if addr == "" {
@@ -832,6 +833,35 @@ func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.Servic
 		return nil, "app unavailable", fmt.Errorf("fetch app: %w", err)
 	}
 	return &wsTarget{addr: addr, ep: ep, url: url, session: session, appAddr: appAddr, app: app}, "", nil
+}
+
+// freshest narrows WebSocket candidates by the service plugin's block-height
+// filter — the same one HTTP selection applies, with its sync allowance and
+// degradation tiers. A lagging node handed a newHeads subscriber streams
+// stale heads for as long as the connection lives, and a WebSocket
+// connection lives for hours; HTTP relays were the only thing kept off stale
+// nodes. Heights come from the endpoint's JSON-RPC health checks, keyed by the
+// same address the WebSocket path resolves.
+//
+// HTTP's other guard — never narrow onto endpoints reputation does not vouch
+// for — is not applied: most WebSocket keys have never had a connection and
+// are unvouched, so it would keep the stale-but-scored endpoints in exactly
+// the case this exists for. A fresh endpoint that turns out not to serve
+// WebSocket costs a dial failure, a penalty and a rebind, and the probes.
+// Never narrows to nothing.
+func (r *WSRelayer) freshest(serviceID domain.ServiceID, candidates domain.EndpointAddrList) domain.EndpointAddrList {
+	if r.deps.QoS == nil || len(candidates) < 2 {
+		return candidates
+	}
+	plugin := r.deps.QoS.Get(serviceID)
+	if plugin == nil {
+		return candidates
+	}
+	filtered, err := plugin.SelectEndpoints(candidates, nil)
+	if err != nil || len(filtered) == 0 {
+		return candidates
+	}
+	return filtered
 }
 
 // untriedFirst narrows endpoints to the ones not in tried, preferring
