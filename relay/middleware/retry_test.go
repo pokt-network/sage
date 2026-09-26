@@ -682,3 +682,26 @@ func TestRetryOverHedge_RecoversAfterBlackhole(t *testing.T) {
 		t.Fatalf("expected recovery on the retry after a blackholed hedge, got %v", err)
 	}
 }
+
+// Two brands of one owner are not different infrastructure to steer toward:
+// after one fails, the retry prefers an independent provider over the same
+// owner's other domain, even when that domain comes first in the list.
+func TestRetry_TreatsAnOwnersBrandsAsOneProvider(t *testing.T) {
+	domain.RecordOwner("supplierQ1", "pokt1ownerQ", "https://s001.brand-q1.net")
+	domain.RecordOwner("supplierQ2", "pokt1ownerQ", "https://rel001.brand-q2.net")
+	domain.RecordOwner("supplierZ", "pokt1ownerZ", "https://n1.independent.net")
+
+	var seen []domain.EndpointAddr
+	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0))(firstEndpointHandler(&seen))
+	ctx := baseContext()
+	ctx.Endpoints = domain.EndpointAddrList{
+		"supplierQ1-https://s001.brand-q1.net",
+		"supplierQ2-https://rel001.brand-q2.net",
+		"supplierZ-https://n1.independent.net",
+	}
+	_ = h.HandleRelay(ctx)
+
+	if len(seen) != 2 || seen[1] != "supplierZ-https://n1.independent.net" {
+		t.Fatalf("attempts = %v, want the retry on the independent provider", seen)
+	}
+}

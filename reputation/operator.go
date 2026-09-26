@@ -113,3 +113,53 @@ func (s *serviceImpl) OperatorRate(serviceID domain.ServiceID, rpcType domain.RP
 func (s *serviceImpl) SetOperatorChronic(gate func(domain.ServiceID) bool) {
 	s.operatorGate.Store(&gate)
 }
+
+// Owner as a prior.
+//
+// The operator rate is kept per (service, operator) because an operator is
+// infrastructure. That leaves a gap exactly where an owner rotates brands: a
+// new domain starts with no evidence, so its keys are charged nothing and
+// every fresh host enters at the top tier, however badly the same owner's
+// other brand is failing. So the owner is tracked too, across all its
+// operators, and an operator's rate is blended toward its owner's while its
+// own evidence is thin:
+//
+//	charged = (failures_op + ownerRate × ownerPriorWeight) / (attempts_op + ownerPriorWeight)
+//
+// A new brand is charged its owner's rate; an operator with thousands of
+// attempts is charged its own. Owner is never the key: one provider hosts
+// dozens of owners, and an owner-keyed rate would spread one provider's outage
+// across all of them (domain/owner.go).
+
+// ownerPriorWeight is how many attempts the owner's rate counts as.
+const ownerPriorWeight = 500
+
+// ownerOpPrefix marks an owner's counters in the operator tracker, so they
+// persist and decay exactly as an operator's do. Owner addresses carry no
+// "|", which OperatorField relies on.
+const ownerOpPrefix = "owner:"
+
+func ownerOp(owner string) string { return ownerOpPrefix + owner }
+
+func isOwnerOp(op string) bool { return strings.HasPrefix(op, ownerOpPrefix) }
+
+// ownerPrior returns the blended rate for a key of operator op, when the key's
+// URL has a single known owner with enough evidence of its own. ok is false
+// when there is no owner prior to apply, and the operator rate stands as is.
+func ownerPrior(stats map[opID]OperatorStat, op opID, key string) (float64, bool) {
+	i := strings.LastIndexByte(key, '|')
+	if i < 0 {
+		return 0, false
+	}
+	owner := domain.OwnerOfURL(key[:i])
+	if owner == "" {
+		return 0, false
+	}
+	ownerStat, ok := stats[opID{op.svc, ownerOp(owner), op.rpc}]
+	if !ok || ownerStat.Attempts < minOperatorAttempts {
+		return 0, false
+	}
+	own := stats[op]
+	charged := (own.Failures + ownerStat.Rate()*ownerPriorWeight) / (own.Attempts + ownerPriorWeight)
+	return min(charged, 1), true
+}

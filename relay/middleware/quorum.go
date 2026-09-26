@@ -173,6 +173,9 @@ func Quorum(flags featureflag.FlagStore, endpoints protocol.EndpointProvider, re
 			need := len(groups)/2 + 1
 			votes := map[[sha256.Size]byte][]armResult{}
 			voted := map[string]bool{}
+			// voters widens voted by owner: an owner answering through two
+			// brands is one voice, or it could outvote everyone else alone.
+			var voters domain.Affiliates
 			done := make([]*armResult, len(groups))
 			answered := 0
 
@@ -191,10 +194,11 @@ func Quorum(flags featureflag.FlagStore, endpoints protocol.EndpointProvider, re
 						continue
 					}
 					op := r.ctx.Endpoint.Operator()
-					if voted[op] {
+					if voted[op] || voters.Contains(r.ctx.Endpoint) {
 						continue
 					}
 					voted[op] = true
+					voters.Add(r.ctx.Endpoint)
 					digest := answerDigest(r.ctx.Response)
 					votes[digest] = append(votes[digest], r)
 					if len(votes[digest]) < need {

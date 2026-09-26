@@ -65,6 +65,10 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// majority) never needs it.
 			var triedEndpoints map[domain.EndpointAddr]bool
 			var triedOperators map[string]bool
+			// triedAffiliates is triedOperators widened by owner: what the
+			// operator preference below steers away from. An owner running
+			// several brands is one provider however many domains it uses.
+			var triedAffiliates domain.Affiliates
 			// The candidate pool as it stood after the first attempt, before any
 			// per-attempt narrowing. Retries are derived from THIS rather than
 			// from the previous attempt's list: operator preference narrows the
@@ -223,10 +227,12 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					if triedEndpoints == nil {
 						triedEndpoints = make(map[domain.EndpointAddr]bool, maxAttempts)
 						triedOperators = make(map[string]bool, maxAttempts)
+						triedAffiliates = domain.AffiliatesOf()
 						pool = ctx.Endpoints
 					}
 					triedEndpoints[ctx.Endpoint] = true
 					triedOperators[ctx.Endpoint.Operator()] = true
+					triedAffiliates.Add(ctx.Endpoint)
 
 					available := pool.Exclude(triedEndpoints)
 					if len(available) == 0 {
@@ -250,7 +256,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					// fallback sent them the retry while two healthy operators
 					// sat excluded. Same guard as MethodBlocks (anyVouched).
 					if operatorAware {
-						narrowed := available.ExcludeOperators(triedOperators)
+						narrowed := available.ExcludeAffiliates(triedAffiliates)
 						if anyVouched(o.repSvc, ctx, narrowed) || !anyVouched(o.repSvc, ctx, available) {
 							available = narrowed
 						}

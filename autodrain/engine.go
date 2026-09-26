@@ -541,8 +541,17 @@ func (e *Engine) decide(ctx context.Context, k drain.Key, now time.Time, act boo
 		return OutcomeBelowClient
 	}
 	eps, _ := e.d.Endpoints.AvailableEndpoints(ctx, k.ServiceID, k.RPCType)
+	// The alternative must be a different provider, not another brand of the
+	// same owner: an operator's affiliates are its own endpoints' operator
+	// and owners.
+	var drained domain.Affiliates
 	for _, ep := range eps {
-		if op := ep.Operator(); !strings.EqualFold(op, k.Operator) && e.d.Vouch.Vouched(ctx, k.ServiceID, ep, k.RPCType) {
+		if strings.EqualFold(ep.Operator(), k.Operator) {
+			drained.Add(ep)
+		}
+	}
+	for _, ep := range eps {
+		if op := ep.Operator(); !strings.EqualFold(op, k.Operator) && !drained.Contains(ep) && e.d.Vouch.Vouched(ctx, k.ServiceID, ep, k.RPCType) {
 			ev.Alternative = op
 			break
 		}

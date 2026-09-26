@@ -864,9 +864,10 @@ func (r *WSRelayer) freshest(serviceID domain.ServiceID, candidates domain.Endpo
 	return filtered
 }
 
-// untriedFirst narrows endpoints to the ones not in tried, preferring
-// operators not in tried when operatorAware; each narrowing is a
-// preference, dropped when it would leave nothing.
+// untriedFirst narrows endpoints to the ones not in tried, preferring ones
+// affiliated with no tried endpoint — neither its operator nor its owner —
+// when operatorAware; each narrowing is a preference, dropped when it would
+// leave nothing.
 func untriedFirst(endpoints domain.EndpointAddrList, tried map[domain.EndpointAddr]bool, operatorAware bool) domain.EndpointAddrList {
 	if len(tried) == 0 {
 		return endpoints
@@ -878,11 +879,11 @@ func untriedFirst(endpoints domain.EndpointAddrList, tried map[domain.EndpointAd
 	if !operatorAware {
 		return untried
 	}
-	operators := make(map[string]bool, len(tried))
+	var affiliates domain.Affiliates
 	for ep := range tried {
-		operators[ep.Operator()] = true
+		affiliates.Add(ep)
 	}
-	return untried.ExcludeOperators(operators)
+	return untried.ExcludeAffiliates(affiliates)
 }
 
 // RebindService asks every live bridge for serviceID to replace its supplier,

@@ -143,9 +143,9 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					map[domain.EndpointAddr]bool{*primary: true},
 				)
 				if flags.IsEnabled(ctx.Ctx, featureflag.FlagOperatorAwareSelection, ctx.ServiceID) {
-					hedgeCtx.Endpoints = hedgeCtx.Endpoints.ExcludeOperators(
-						map[string]bool{primary.Operator(): true},
-					)
+					// Operator or owner: two brands of one owner are not
+					// an independent path either.
+					hedgeCtx.Endpoints = hedgeCtx.Endpoints.ExcludeAffiliates(domain.AffiliatesOf(*primary))
 				}
 			}
 			// Force endpoint re-selection for the hedge.
