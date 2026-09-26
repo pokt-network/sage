@@ -13,7 +13,7 @@ All common tasks go through `make`:
 - `make test_unit` — `go test ./... -short -count=1 -race` (the canonical unit test run)
 - `make test_all` — drop `-short`; includes slower/integration-flavored tests
 - `make test_cover` — coverage report
-- `make go_lint` — `golangci-lint run --timeout 5m`
+- `make go_lint` — `golangci-lint run --timeout 5m`, then `make deadcode`
 - `make e2e_test` — runs `./e2e/...` with `-tags e2e` against `SAGE_URL` (default `http://localhost:3069`); requires a running gateway
 - `make integration_test` — `./protocol/shannon/... -tags integration`; requires a live fullnode and `SAGE_CONFIG`
 - `make docker_build` / `make docker_run CONFIG_PATH=…`
@@ -53,7 +53,7 @@ silently upgrade past it.
 ## Rules of engagement
 
 The contract with PATH and with operators is in `docs/path-compat.md`, and
-since 2026-09-04 each of its rules is held by a test. The short form:
+each of its rules is held by a test. The short form:
 
 - **Built is not shipped.** A feature exists when `wire.go` constructs it and
   a test drives it through config or the admin API. `deadcode` runs in
@@ -99,7 +99,7 @@ Non-zero means a bug was contained, not that nothing happened.
 
 One field exists purely because of that discipline: `SelectedEndpoint` is an `*atomic.Pointer[domain.EndpointAddr]` that `SelectEndpoint` publishes its pick into, and it is non-nil only on hedge arms. Hedge waits out the hedge delay and then needs the primary arm's endpoint to steer the hedge elsewhere — reading `ctx.Endpoint` for that is a data race, because the arm writes it from its own goroutine with nothing ordering the write against the read. Hedge allocates a fresh slot per arm so the shallow `Clone()` cannot alias two arms onto one.
 
-It is a flat struct of typed fields; there is no generic `values` bag, so carrying new state means adding a field. Before you do: **`Clone()` is a shallow copy**. Hedge racers and batch sub-relays each run on a clone, so any pointer, slice, or map field is *shared* between them — a field that looks per-request is per-request-tree, and writing to it from a sub-relay is a data race the `-race` suite will only catch if a test actually fans out. Scalars are safe; anything else needs an atomic (see `Degraded` merging in `middleware/batch.go`) or must be treated as read-only.
+It is a flat struct of typed fields; there is no generic `values` bag, so carrying new state means adding a field. Before you do: **`Clone()` is a shallow copy**. Hedge racers and batch sub-relays each run on a clone, so any pointer, slice, or map field is *shared* between them — a field that looks per-request is per-request-tree, and writing to it from a sub-relay is a data race the `-race` suite will only catch if a test actually fans out. Scalars are safe; anything else needs an atomic (see `Degraded` merging in `relay/middleware/batch.go`) or must be treated as read-only.
 
 ## Adding a Middleware Module
 
