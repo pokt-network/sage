@@ -171,9 +171,15 @@ const maxTrackedSubscriptions = 1024
 type SubscriptionRegistry struct {
 	classifier SubscriptionClassifier
 
-	mu       sync.Mutex
-	pending  map[string]pendingSubscription // request id → the subscribe awaiting its response
-	active   map[string]Subscription        // client-facing subscription id → live subscription
+	mu sync.Mutex
+	// pending is request id → the subscribes awaiting their response, oldest
+	// first. A list, not one entry: a client may reuse a request id, and a
+	// second subscribe sent before the first is answered would otherwise
+	// overwrite it, leaving one of the two subscriptions untracked — graded
+	// unsolicited, and never replayed on a rebind.
+	pending  map[string][]pendingSubscription
+	npending int                     // total entries across pending, for the cap
+	active   map[string]Subscription // client-facing subscription id → live subscription
 	lastData time.Time
 	// lastActivity is the later of the last notification and the last
 	// subscribe ack (including a replay ack): what a stall watchdog measures
@@ -274,7 +280,7 @@ const maxClosedIDs = 64
 func NewSubscriptionRegistry(classifier SubscriptionClassifier) *SubscriptionRegistry {
 	return &SubscriptionRegistry{
 		classifier: classifier,
-		pending:    make(map[string]pendingSubscription),
+		pending:    make(map[string][]pendingSubscription),
 		active:     make(map[string]Subscription),
 		toClient:   make(map[string]string),
 		replay:     make(map[string]string),
@@ -291,6 +297,22 @@ func (r *SubscriptionRegistry) TranslateClientFrame(data []byte) []byte {
 	if r == nil || r.classifier == nil {
 		return data
 	}
+	if isJSONArray(data) {
+		// A batch: each member is tracked as if sent alone, so a subscribe
+		// inside one is replayed and graded like any other. The frame goes
+		// out as sent.
+		// ponytail: an unsubscribe inside a batch is not rewritten to the
+		// supplier's id after a rebind; rewrite per member if clients do it.
+		gjson.ParseBytes(data).ForEach(func(_, member gjson.Result) bool {
+			r.translateClientFrame([]byte(member.Raw))
+			return true
+		})
+		return data
+	}
+	return r.translateClientFrame(data)
+}
+
+func (r *SubscriptionRegistry) translateClientFrame(data []byte) []byte {
 	info := r.classifier.ClassifyClientFrame(data)
 	if info.Action == SubscriptionNone {
 		return data
@@ -302,16 +324,17 @@ func (r *SubscriptionRegistry) TranslateClientFrame(data []byte) []byte {
 		if info.RequestID == "" {
 			return data // A request with no id can never be matched to its answer.
 		}
-		if len(r.pending) >= maxTrackedSubscriptions {
+		if r.npending >= maxTrackedSubscriptions {
 			r.dropped++
 			return data
 		}
-		r.pending[info.RequestID] = pendingSubscription{
+		r.pending[info.RequestID] = append(r.pending[info.RequestID], pendingSubscription{
 			method:   info.Method,
 			topic:    info.Topic,
 			periodic: info.Periodic,
 			request:  append([]byte(nil), data...),
-		}
+		})
+		r.npending++
 	case SubscriptionUnsubscribe:
 		sub, ok := r.active[info.SubscriptionID]
 		if !ok {
@@ -351,6 +374,21 @@ func (r *SubscriptionRegistry) TranslateEndpointFrameNote(data []byte) (out []by
 	if r == nil || r.classifier == nil {
 		return data, true, note
 	}
+	if isJSONArray(data) {
+		// A batch response: its members answer the members of a batch
+		// request. Notifications are never batched, and a replay ack never
+		// is either (replays go one frame each), so only subscribe acks are
+		// read here.
+		gjson.ParseBytes(data).ForEach(func(_, member gjson.Result) bool {
+			r.translateEndpointFrame([]byte(member.Raw))
+			return true
+		})
+		return data, true, note
+	}
+	return r.translateEndpointFrame(data)
+}
+
+func (r *SubscriptionRegistry) translateEndpointFrame(data []byte) (out []byte, forward bool, note Notification) {
 	info := r.classifier.ClassifyEndpointFrame(data)
 	if info.Kind == EndpointFrameOther {
 		return data, true, note
@@ -364,11 +402,17 @@ func (r *SubscriptionRegistry) TranslateEndpointFrameNote(data []byte) (out []by
 			r.completeReplay(clientID, info)
 			return nil, false, note
 		}
-		p, ok := r.pending[info.RequestID]
-		if !ok {
+		queue := r.pending[info.RequestID]
+		if len(queue) == 0 {
 			return data, true, note // A response to something that was not a subscribe.
 		}
-		delete(r.pending, info.RequestID)
+		p := queue[0]
+		if len(queue) == 1 {
+			delete(r.pending, info.RequestID)
+		} else {
+			r.pending[info.RequestID] = queue[1:]
+		}
+		r.npending--
 		if info.IsError || info.SubscriptionID == "" {
 			return data, true, note
 		}
@@ -675,4 +719,18 @@ func rawScalar(res gjson.Result) string {
 		return res.Raw
 	}
 	return ""
+}
+
+// isJSONArray reports whether a frame is a JSON array: a batch.
+func isJSONArray(data []byte) bool {
+	for _, c := range data {
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '[':
+			return true
+		}
+		return false
+	}
+	return false
 }

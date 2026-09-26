@@ -80,3 +80,38 @@ func TestSubscriptions_EVMPeriodicTopics(t *testing.T) {
 		}
 	}
 }
+
+// Mainnet bsc and robinhood, 2026-09-26: ~3% of notifications graded
+// unsolicited, always alongside an ok stream of the same topic from the same
+// supplier at the same rate — one feed under two subscription ids, one of them
+// untracked. A reused request id and a subscribe inside a batch both left a
+// live subscription out of the registry: graded unsolicited, and not replayed
+// when the bridge rebinds, so the client lost that feed on a supplier swap.
+func TestSubscriptions_EVMEverySubscribeIsTracked(t *testing.T) {
+	grade := func(r *qos.SubscriptionRegistry, id string) qos.NotificationKind {
+		_, _, n := r.TranslateEndpointFrameNote([]byte(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"` + id + `","result":"0x1"}}`))
+		return n.Kind
+	}
+
+	reused := qos.NewSubscriptionRegistry(&Plugin{})
+	reused.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions"]}`))
+	reused.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["logs",{}]}`))
+	reused.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xa"}`))
+	reused.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xb"}`))
+	if a, b := grade(reused, "0xa"), grade(reused, "0xb"); a != qos.NotificationOK || b != qos.NotificationOK {
+		t.Fatalf("reused request id: grades = %v, %v, want both ok", a, b)
+	}
+	if n := len(reused.ReplayFrames()); n != 2 {
+		t.Fatalf("reused request id: %d subscriptions replayed on rebind, want 2", n)
+	}
+
+	batch := qos.NewSubscriptionRegistry(&Plugin{})
+	batch.TranslateClientFrame([]byte(`[{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]},{"jsonrpc":"2.0","id":2,"method":"eth_blockNumber"}]`))
+	batch.TranslateEndpointFrame([]byte(`[{"jsonrpc":"2.0","id":1,"result":"0xa"},{"jsonrpc":"2.0","id":2,"result":"0x10"}]`))
+	if g := grade(batch, "0xa"); g != qos.NotificationOK {
+		t.Fatalf("subscribe inside a batch: grade = %v, want ok", g)
+	}
+	if n := len(batch.ReplayFrames()); n != 1 {
+		t.Fatalf("subscribe inside a batch: %d replayed on rebind, want 1", n)
+	}
+}
