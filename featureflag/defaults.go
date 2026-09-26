@@ -18,6 +18,14 @@ const (
 	FlagDebugLog            = "debug_log"
 	FlagShadowMode          = "shadow_mode"
 	FlagWebsocketRelays     = "websocket_relays"
+	// FlagWebsocketProbes gates WebSocket recovery probes: once a minute
+	// each pod dials the WebSocket endpoints of a service whose reputation
+	// is below full, sends one signed request and grades the answer. A
+	// WebSocket key only earns score from connections, and selection gives
+	// connections only to the top tier, so without probes a demoted key has
+	// no way back. A probe success moves only a key traffic is not already
+	// grading. Off: no probes, and a demoted WebSocket key stays demoted.
+	FlagWebsocketProbes = "websocket_probes"
 	// FlagOperatorAwareSelection gates every place endpoint selection reasons
 	// about operator identity (eTLD+1) rather than individual endpoints: the
 	// per-operator concentration cap, and the retry/hedge preference for
@@ -127,6 +135,7 @@ var DefaultFlags = map[string]bool{
 	FlagDebugLog:            false,
 	FlagShadowMode:          false,
 	FlagWebsocketRelays:     true,
+	FlagWebsocketProbes:     true,
 
 	FlagOperatorAwareSelection: true,
 	FlagLatencyTieBreak:        true,

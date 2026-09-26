@@ -47,6 +47,7 @@ type cosmosEndpoint struct {
 //   - qos.ImmutableClassifier
 //   - qos.StateResetter
 //   - qos.SubscriptionClassifier
+//   - qos.WebSocketProber
 type Plugin struct {
 	qos.SelectionTiers
 

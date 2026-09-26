@@ -139,3 +139,16 @@ func TestWebSocketMetrics_SupplierTopicIsBounded(t *testing.T) {
 		t.Errorf("topics past the cap = %v, want 20 folded into %s", got, otherLabel)
 	}
 }
+
+func TestWebSocketMetrics_Probed(t *testing.T) {
+	m, _ := newIsolatedWebSocketMetrics(t)
+	m.Probed("eth", "ok")
+	m.Probed("eth", "dial_failed")
+	m.Probed("unconfigured", "ok")
+	if got := value(t, m.probes.WithLabelValues("eth", "ok")); got != 1 {
+		t.Errorf("probes{eth,ok} = %v, want 1", got)
+	}
+	if got := value(t, m.probes.WithLabelValues(unknownLabel, "ok")); got != 1 {
+		t.Errorf("an unconfigured service must fold into %s, got %v", unknownLabel, got)
+	}
+}

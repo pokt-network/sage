@@ -114,6 +114,7 @@ type WSMetrics interface {
 	SupplierReleased(serviceID domain.ServiceID, operator, owner string, tenure time.Duration)
 	SupplierFrame(serviceID domain.ServiceID, operator, owner string, source websockets.MessageSource)
 	SupplierNotification(serviceID domain.ServiceID, operator, owner string, note qos.Notification)
+	Probed(serviceID domain.ServiceID, result string)
 }
 
 // WSRelayer is the only public entry point for opening WebSocket bridges in
@@ -214,9 +215,16 @@ func NewWSRelayer(deps WSRelayerDeps) *WSRelayer {
 
 // Clients reports, per client address, which suppliers served its WebSocket
 // connections over the last one to two hours, busiest first. serviceID ""
-// covers every service. It is the admin clients route.
-func (r *WSRelayer) Clients(serviceID domain.ServiceID, limit int) WSClientsSnapshot {
-	return r.clients.snapshot(serviceID, limit)
+// covers every service; onlyShopping keeps only clients flagged as shopping.
+// It is the admin clients route.
+func (r *WSRelayer) Clients(serviceID domain.ServiceID, limit int, onlyShopping bool) WSClientsSnapshot {
+	return r.clients.snapshot(serviceID, limit, onlyShopping)
+}
+
+// ShoppingClients counts clients flagged as shopping for a supplier (see
+// ws_clients.go), for the sage_websocket_shopping_clients gauge.
+func (r *WSRelayer) ShoppingClients() int {
+	return r.clients.ShoppingClients()
 }
 
 // clientIP resolves the address an upgrade is attributed to.
@@ -355,16 +363,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	processor := newProcessor(target)
 	currentProc.Store(processor)
 
-	// Pocket relay miners authenticate the WS upgrade via three HTTP headers
-	// set on the initial handshake. Without these the miner treats the
-	// connection as anonymous and rejects the upgrade. See PATH's
-	// protocol/shannon/websocket_context.go:getRelayMinerConnectionHeaders.
-	supplierHeaders := http.Header{}
-	supplierHeaders.Set("Target-Service-Id", string(serviceID))
-	supplierHeaders.Set("App-Address", appAddr)
-	if st, ok := rpcTypeToShared[domain.RPCTypeWebSocket]; ok {
-		supplierHeaders.Set("Rpc-Type", strconv.Itoa(int(st)))
-	}
+	supplierHeaders := relayMinerHeaders(serviceID, appAddr)
 
 	// Start the bridge. After upgrade succeeds, errors surface via close codes.
 	var bridgeOpts []websockets.BridgeOption
@@ -459,6 +458,20 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 func stalled(subs *qos.SubscriptionRegistry, timeout time.Duration) bool {
 	periodic, last := subs.Heartbeat()
 	return periodic && !last.IsZero() && time.Since(last) > timeout
+}
+
+// relayMinerHeaders are the three headers a Pocket relay miner authenticates
+// a WebSocket upgrade by. Without them the miner treats the connection as
+// anonymous and rejects it. See PATH's
+// protocol/shannon/websocket_context.go:getRelayMinerConnectionHeaders.
+func relayMinerHeaders(serviceID domain.ServiceID, appAddr string) http.Header {
+	h := http.Header{}
+	h.Set("Target-Service-Id", string(serviceID))
+	h.Set("App-Address", appAddr)
+	if st, ok := rpcTypeToShared[domain.RPCTypeWebSocket]; ok {
+		h.Set("Rpc-Type", strconv.Itoa(int(st)))
+	}
+	return h
 }
 
 // subscriptionRegistry builds the registry for one bridge from the service's

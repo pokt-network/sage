@@ -508,9 +508,15 @@ type spyWSMetrics struct {
 	released      []string
 	frames        map[string]int // operator|owner|direction
 	notifications map[string]int // operator|owner|topic|kind
+	probes        []string
 }
 
 func (s *spyWSMetrics) ForService(domain.ServiceID) websockets.Observer { return nil }
+func (s *spyWSMetrics) Probed(_ domain.ServiceID, result string) {
+	s.mu.Lock()
+	s.probes = append(s.probes, result)
+	s.mu.Unlock()
+}
 func (s *spyWSMetrics) SupplierBound(_ domain.ServiceID, operator, owner string) {
 	s.mu.Lock()
 	s.bound = append(s.bound, operator+"|"+owner)

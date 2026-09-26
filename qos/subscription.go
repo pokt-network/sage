@@ -102,6 +102,17 @@ type SubscriptionClassifier interface {
 	ClassifyEndpointFrame(data []byte) EndpointFrameInfo
 }
 
+// WebSocketProber is implemented by plugins whose chain answers plain
+// requests over its WebSocket endpoint. WebSocketProbe returns one cheap
+// request frame (a JSON-RPC call with id 1) whose answer proves the
+// supplier's WebSocket path works end to end: the relay miner's bridge and
+// the backend's WebSocket port. The health-check executor only sends
+// one-shot HTTP relays, so without this a WebSocket key that lost its
+// traffic had no evidence to recover by.
+type WebSocketProber interface {
+	WebSocketProbe() []byte
+}
+
 // ReplayIDEncoder is optionally implemented by a classifier whose dialect
 // does not write request ids as JSON strings. The default quotes.
 type ReplayIDEncoder interface {

@@ -166,4 +166,18 @@ func TestRPCTypeCoverageGaps(t *testing.T) {
 	if strings.Contains(joined, `"eth"`) {
 		t.Errorf("eth has no gap (no plugin at all is the QoS-coverage report's business): %v", gaps)
 	}
+
+	// A plugin that can build a WebSocket probe is probed by the WS relayer:
+	// its websocket surface is not a gap.
+	if err := reg.Register("poly", &wsProbingPlugin{checkOnlyPlugin{checks: pluginChecks(reg.Get("tron"))}}); err != nil {
+		t.Fatal(err)
+	}
+	gaps = RPCTypeCoverageGaps([]config.ServiceConfig{{ID: "poly", RPCTypes: []string{"json_rpc", "websocket"}}}, reg, checks)
+	if len(gaps) != 0 {
+		t.Errorf("poly's websocket is probed by the WS relayer, got gaps %v", gaps)
+	}
 }
+
+type wsProbingPlugin struct{ checkOnlyPlugin }
+
+func (wsProbingPlugin) WebSocketProbe() []byte { return []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`) }

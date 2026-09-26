@@ -18,7 +18,9 @@ import (
 // quarter of its traffic, was one such.
 //
 // websocket and grpc are named too, though they cannot be probed by a
-// one-shot relay: the line says which is which.
+// one-shot relay: the line says which is which. websocket is not a gap on a
+// service whose plugin implements qos.WebSocketProber — the WS relayer probes
+// those itself (protocol/shannon/ws_probe.go).
 func RPCTypeCoverageGaps(services []config.ServiceConfig, reg *qos.Registry, configured *ConfiguredChecks) []string {
 	var out []string
 	for _, svc := range services {
@@ -29,6 +31,9 @@ func RPCTypeCoverageGaps(services []config.ServiceConfig, reg *qos.Registry, con
 		}
 		for _, c := range configured.For(id) {
 			probed[c.Payload.RPCType()] = true
+		}
+		if _, ok := reg.Get(id).(qos.WebSocketProber); ok {
+			probed[domain.RPCTypeWebSocket] = true
 		}
 		if len(probed) == 0 {
 			// Nothing probes this service at all. That is the QoS-coverage

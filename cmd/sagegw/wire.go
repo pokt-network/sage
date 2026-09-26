@@ -23,6 +23,7 @@ import (
 	"github.com/pokt-network/sage/drain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/healthcheck"
+	"github.com/pokt-network/sage/internal/safego"
 
 	"github.com/pokt-network/sage/methodblock"
 	"github.com/pokt-network/sage/metrics"
@@ -209,6 +210,17 @@ func serviceIDsFrom(cfg *config.Config) []domain.ServiceID {
 	ids := make([]domain.ServiceID, 0, len(services))
 	for _, svc := range services {
 		ids = append(ids, domain.ServiceID(svc.ID))
+	}
+	return ids
+}
+
+// webSocketServiceIDs lists the services that declare websocket.
+func webSocketServiceIDs(cfg *config.Config) []domain.ServiceID {
+	var ids []domain.ServiceID
+	for _, svc := range cfg.Gateway.AllServices() {
+		if slices.Contains(svc.RPCTypes, string(domain.RPCTypeWebSocket)) {
+			ids = append(ids, domain.ServiceID(svc.ID))
+		}
 	}
 	return ids
 }
@@ -1032,7 +1044,15 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			ClientIP:                   middleware.RequestClientIP(trustedProxies),
 		})
 		wsRelayer = relayer
-		wsClients = func(serviceID domain.ServiceID, limit int) any { return relayer.Clients(serviceID, limit) }
+		wsClients = func(serviceID domain.ServiceID, limit int, onlyShopping bool) any {
+			return relayer.Clients(serviceID, limit, onlyShopping)
+		}
+		prometheus.MustRegister(metrics.NewWebSocketShoppingGauge(relayer.ShoppingClients))
+		// Recovery probes: the only way back for a demoted WebSocket key,
+		// which gets no connections to earn score from (see ws_probe.go).
+		safego.GoCtx(ctx, logger, "websocket.probes", func(ctx context.Context) {
+			relayer.ProbeWebSockets(ctx, webSocketServiceIDs(cfg))
+		})
 		app.wsConnections = relayer
 	}
 

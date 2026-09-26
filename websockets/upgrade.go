@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -26,6 +27,13 @@ func UpgradeClient(logger *slog.Logger, r *http.Request, w http.ResponseWriter) 
 	}
 	return conn, nil
 }
+
+// endpointHandshakeTimeout bounds the dial, TLS and upgrade together. The
+// zero value is no timeout at all, and a supplier that accepted the TCP
+// connection and never answered the upgrade held the caller for as long as
+// it liked: a client's Open, or a rebind with every client frame queued
+// behind it.
+const endpointHandshakeTimeout = 10 * time.Second
 
 // ConnectEndpoint dials a WebSocket endpoint and returns the connection.
 // Returns ErrBridgeEndpointUnavailable (wrapped) on failure.
@@ -51,8 +59,9 @@ func ConnectEndpoint(logger *slog.Logger, rawURL string, headers http.Header) (*
 	}
 
 	dialer := websocket.Dialer{
-		ReadBufferSize:  4096,
-		WriteBufferSize: 4096,
+		ReadBufferSize:   4096,
+		WriteBufferSize:  4096,
+		HandshakeTimeout: endpointHandshakeTimeout,
 	}
 
 	conn, _, err := dialer.Dial(u.String(), headers)

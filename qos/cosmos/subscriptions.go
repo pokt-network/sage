@@ -84,4 +84,12 @@ func cometEvent(data []byte) string {
 	return event
 }
 
-var _ qos.SubscriptionClassifier = (*Plugin)(nil)
+// WebSocketProbe implements qos.WebSocketProber. status: CometBFT serves every RPC method over its WebSocket, and status is the cheapest.
+func (p *Plugin) WebSocketProbe() []byte {
+	return []byte(`{"jsonrpc":"2.0","id":1,"method":"status","params":{}}`)
+}
+
+var (
+	_ qos.SubscriptionClassifier = (*Plugin)(nil)
+	_ qos.WebSocketProber        = (*Plugin)(nil)
+)

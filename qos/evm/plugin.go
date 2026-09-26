@@ -70,6 +70,7 @@ var coalescableMethods = map[string]bool{
 //   - qos.ImmutableClassifier
 //   - qos.StateResetter
 //   - qos.SubscriptionClassifier
+//   - qos.WebSocketProber
 type Plugin struct {
 	qos.SelectionTiers
 

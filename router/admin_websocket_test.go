@@ -44,18 +44,19 @@ func TestAdmin_WebSocketClients(t *testing.T) {
 	admin, mux := newTestAdminWithDrain(t, nil, nil, 0)
 	var gotService domain.ServiceID
 	var gotLimit int
-	admin.SetWebSocketClients(func(s domain.ServiceID, limit int) any {
-		gotService, gotLimit = s, limit
+	var gotShopping bool
+	admin.SetWebSocketClients(func(s domain.ServiceID, limit int, onlyShopping bool) any {
+		gotService, gotLimit, gotShopping = s, limit, onlyShopping
 		return map[string]any{"clients": []map[string]any{{"client_ip": "203.0.113.7", "quick_client_closes": 5}}}
 	})
 
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/websocket/clients?service=robinhood&limit=10", nil))
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/websocket/clients?service=robinhood&limit=10&shopping=true", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"quick_client_closes":5`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if gotService != "robinhood" || gotLimit != 10 {
-		t.Fatalf("report asked for service=%q limit=%d", gotService, gotLimit)
+	if gotService != "robinhood" || gotLimit != 10 || !gotShopping {
+		t.Fatalf("report asked for service=%q limit=%d shopping=%v", gotService, gotLimit, gotShopping)
 	}
 
 	rec = httptest.NewRecorder()

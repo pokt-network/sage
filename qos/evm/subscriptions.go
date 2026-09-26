@@ -53,4 +53,12 @@ func (p *Plugin) ClassifyEndpointFrame(data []byte) qos.EndpointFrameInfo {
 	}
 }
 
-var _ qos.SubscriptionClassifier = (*Plugin)(nil)
+// WebSocketProbe implements qos.WebSocketProber. eth_blockNumber: served by every EVM node over WebSocket, and cheap.
+func (p *Plugin) WebSocketProbe() []byte {
+	return []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
+}
+
+var (
+	_ qos.SubscriptionClassifier = (*Plugin)(nil)
+	_ qos.WebSocketProber        = (*Plugin)(nil)
+)

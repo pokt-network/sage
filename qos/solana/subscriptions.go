@@ -53,4 +53,12 @@ func (p *Plugin) ClassifyEndpointFrame(data []byte) qos.EndpointFrameInfo {
 	}
 }
 
-var _ qos.SubscriptionClassifier = (*Plugin)(nil)
+// WebSocketProbe implements qos.WebSocketProber. getSlot: served over the pub/sub socket by the Solana RPC, and cheap.
+func (p *Plugin) WebSocketProbe() []byte {
+	return []byte(`{"jsonrpc":"2.0","id":1,"method":"getSlot"}`)
+}
+
+var (
+	_ qos.SubscriptionClassifier = (*Plugin)(nil)
+	_ qos.WebSocketProber        = (*Plugin)(nil)
+)

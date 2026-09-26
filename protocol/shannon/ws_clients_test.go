@@ -28,7 +28,7 @@ func TestWSClientLedger_ShowsSupplierShopping(t *testing.T) {
 	l.opened("198.51.100.1")
 	l.tenure("198.51.100.1", wanted, 10*time.Minute, 500, true)
 
-	snap := l.snapshot("", 0)
+	snap := l.snapshot("", 0, false)
 	if len(snap.Clients) != 2 {
 		t.Fatalf("clients = %d, want 2", len(snap.Clients))
 	}
@@ -44,10 +44,10 @@ func TestWSClientLedger_ShowsSupplierShopping(t *testing.T) {
 		t.Errorf("an ordinary client = %+v, want no quick closes", snap.Clients[1])
 	}
 
-	if only := l.snapshot("eth", 0); len(only.Clients) != 0 {
+	if only := l.snapshot("eth", 0, false); len(only.Clients) != 0 {
 		t.Errorf("service filter: want no eth clients, got %+v", only.Clients)
 	}
-	if one := l.snapshot("", 1); len(one.Clients) != 1 {
+	if one := l.snapshot("", 1, false); len(one.Clients) != 1 {
 		t.Errorf("limit 1 returned %d clients", len(one.Clients))
 	}
 }
@@ -62,11 +62,11 @@ func TestWSClientLedger_Windows(t *testing.T) {
 	l.tenure("192.0.2.1", key, time.Minute, 10, false)
 	now = now.Add(wsLedgerWindow)
 	l.tenure("192.0.2.1", key, time.Minute, 20, false)
-	if s := l.snapshot("", 0); len(s.Clients) != 1 || s.Clients[0].Frames != 30 {
+	if s := l.snapshot("", 0, false); len(s.Clients) != 1 || s.Clients[0].Frames != 30 {
 		t.Fatalf("across two windows = %+v, want 30 frames", s.Clients)
 	}
 	now = now.Add(wsLedgerWindow)
-	if s := l.snapshot("", 0); len(s.Clients) != 1 || s.Clients[0].Frames != 20 {
+	if s := l.snapshot("", 0, false); len(s.Clients) != 1 || s.Clients[0].Frames != 20 {
 		t.Fatalf("after a third window = %+v, want only the second window's 20 frames", s.Clients)
 	}
 }
@@ -79,7 +79,7 @@ func TestWSClientLedger_Bounded(t *testing.T) {
 	for i := 0; i < wsLedgerMaxClients+10; i++ {
 		l.tenure(fmt.Sprintf("10.0.%d.%d", i/256, i%256), key, time.Second, 1, false)
 	}
-	s := l.snapshot("", wsLedgerMaxClients+100)
+	s := l.snapshot("", wsLedgerMaxClients+100, false)
 	if len(s.Clients) != wsLedgerMaxClients || s.Dropped != 10 {
 		t.Fatalf("clients=%d dropped=%d, want %d and 10", len(s.Clients), s.Dropped, wsLedgerMaxClients)
 	}
@@ -88,7 +88,7 @@ func TestWSClientLedger_Bounded(t *testing.T) {
 		l2 := wsSupplierKey{service: "eth", operator: fmt.Sprintf("op%d.example", i), owner: "pokt1a"}
 		l.tenure("10.0.0.0", l2, time.Second, 1, false)
 	}
-	for _, c := range l.snapshot("", wsLedgerMaxClients).Clients {
+	for _, c := range l.snapshot("", wsLedgerMaxClients, false).Clients {
 		if c.ClientIP == "10.0.0.0" && len(c.Suppliers) > wsLedgerMaxSuppliers {
 			t.Fatalf("suppliers per client = %d, want at most %d", len(c.Suppliers), wsLedgerMaxSuppliers)
 		}
@@ -117,8 +117,51 @@ func TestWSRelayer_SupplierTenureAccounting(t *testing.T) {
 		t.Fatalf("bound=%v released=%v", spy.bound, spy.released)
 	}
 	spy.mu.Unlock()
-	snap := r.Clients("", 0)
+	snap := r.Clients("", 0, false)
 	if len(snap.Clients) != 1 || snap.Clients[0].Frames != 7 || snap.Clients[0].QuickCloses != 1 {
 		t.Fatalf("ledger = %+v, want the tenure's 7 frames and one quick close", snap.Clients)
+	}
+}
+
+// The flag must pick the shopper and neither of its look-alikes: a script
+// that connects and drops at random (quick closes, no favourite) and a client
+// that simply stays (a favourite, no quick closes elsewhere).
+func TestWSClientLedger_FlagsShopping(t *testing.T) {
+	l := newWSClientLedger(nil)
+	favoured := wsSupplierKey{service: "robinhood", operator: "favoured.example", owner: "pokt1favoured"}
+	peer := func(i int) wsSupplierKey {
+		return wsSupplierKey{service: "robinhood", operator: fmt.Sprintf("peer%d.example", i), owner: fmt.Sprintf("pokt1peer%d", i)}
+	}
+
+	for i := 0; i < 6; i++ {
+		l.tenure("203.0.113.7", peer(i), 3*time.Second, 1, true)
+	}
+	l.tenure("203.0.113.7", favoured, 2*time.Hour, 50000, true)
+
+	for i := 0; i < 10; i++ {
+		l.tenure("198.51.100.2", peer(i%4), 2*time.Second, 1, true)
+	}
+
+	l.tenure("192.0.2.9", favoured, 3*time.Hour, 70000, true)
+
+	snap := l.snapshot("", 0, false)
+	byIP := map[string]WSClientReport{}
+	for _, c := range snap.Clients {
+		byIP[c.ClientIP] = c
+	}
+	if s := byIP["203.0.113.7"].Shopping; s == nil || s.Owner != "pokt1favoured" || s.QuickClosesElsewhere != 6 || s.Share < 0.99 {
+		t.Errorf("shopper: shopping = %+v, want the favoured owner, 6 quick closes elsewhere, share ~1", s)
+	}
+	if s := byIP["198.51.100.2"].Shopping; s != nil {
+		t.Errorf("a random dropper has no favourite, got %+v", s)
+	}
+	if s := byIP["192.0.2.9"].Shopping; s != nil {
+		t.Errorf("a client that just stays is not shopping, got %+v", s)
+	}
+	if snap.ShoppingClients != 1 || l.ShoppingClients() != 1 {
+		t.Errorf("shopping clients = %d / %d, want 1", snap.ShoppingClients, l.ShoppingClients())
+	}
+	if only := l.snapshot("", 0, true); len(only.Clients) != 1 || only.Clients[0].ClientIP != "203.0.113.7" {
+		t.Errorf("shopping-only snapshot = %+v, want the shopper alone", only.Clients)
 	}
 }

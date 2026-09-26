@@ -49,9 +49,13 @@ func (a *AdminAPI) handleWebSocketRebind(w http.ResponseWriter, req *http.Reques
 //
 // A client address cannot be a metric label, and this is what the supplier
 // metrics cannot show: a client that reconnects until it lands on one owner,
-// then holds that connection, is steering paid relays to that owner. Query:
-// service (optional) narrows to one service, limit (default 50) caps the
-// clients returned. 501 when this build has no WebSocket relayer wired.
+// then holds that connection, is steering paid relays to that owner. Such a
+// client carries a "shopping" object naming the owner it settles on: at least
+// 5 tenures with other owners it closed within 30s, and at least 80% (and 10
+// minutes) of its connected time with that one. shopping_clients counts them.
+// Query: service (optional) narrows to one service, limit (default 50) caps
+// the clients returned, shopping=true returns only flagged clients. 501 when
+// this build has no WebSocket relayer wired.
 func (a *AdminAPI) handleWebSocketClients(w http.ResponseWriter, req *http.Request) {
 	if a.wsClients == nil {
 		writeJSONError(w, http.StatusNotImplemented, "websocket client report is not available in this build")
@@ -66,5 +70,6 @@ func (a *AdminAPI) handleWebSocketClients(w http.ResponseWriter, req *http.Reque
 		}
 		limit = n
 	}
-	writeJSON(w, http.StatusOK, a.wsClients(domain.ServiceID(req.URL.Query().Get("service")), limit))
+	onlyShopping := req.URL.Query().Get("shopping") == "true"
+	writeJSON(w, http.StatusOK, a.wsClients(domain.ServiceID(req.URL.Query().Get("service")), limit, onlyShopping))
 }

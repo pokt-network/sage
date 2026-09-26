@@ -64,9 +64,10 @@ type WSRebinder interface {
 func (a *AdminAPI) SetWebSocketRebinder(r WSRebinder) { a.wsRebinder = r }
 
 // WSClients reports per-client WebSocket activity for a service ("" = all),
-// at most limit clients, as a JSON-encodable value. shannon.WSRelayer.Clients
-// is adapted to it at wire time.
-type WSClients func(serviceID domain.ServiceID, limit int) any
+// at most limit clients, only those flagged as shopping when onlyShopping, as
+// a JSON-encodable value. shannon.WSRelayer.Clients is adapted to it at wire
+// time.
+type WSClients func(serviceID domain.ServiceID, limit int, onlyShopping bool) any
 
 // SetWebSocketClients installs the report the WebSocket clients route serves.
 // Without one the route answers 501.

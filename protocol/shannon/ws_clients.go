@@ -28,6 +28,16 @@ const (
 	wsLedgerMaxSuppliers     = 32
 	wsQuickCloseTenure       = 30 * time.Second
 	wsLedgerDefaultSnapshotN = 50
+
+	// A client is flagged as shopping when, over the ledger window, it
+	// quick-closed at least wsShoppingMinQuickCloses tenures with owners
+	// other than one it spent at least wsShoppingMinShare of its connected
+	// time with, and at least wsShoppingMinFavouredTime in all. A script
+	// that connects and drops at random has quick closes but no favourite;
+	// a long-lived client has a favourite but no quick closes elsewhere.
+	wsShoppingMinQuickCloses  = 5
+	wsShoppingMinShare        = 0.8
+	wsShoppingMinFavouredTime = 10 * time.Minute
 )
 
 // wsClientLedger records per-client WebSocket tenures. Safe for concurrent
@@ -54,9 +64,10 @@ type wsSupplierKey struct {
 }
 
 type wsClientSupplier struct {
-	tenures int
-	seconds float64
-	frames  int64
+	tenures     int
+	seconds     float64
+	frames      int64
+	quickCloses int
 }
 
 func newWSClientLedger(now func() time.Time) *wsClientLedger {
@@ -123,7 +134,8 @@ func (l *wsClientLedger) tenure(ip string, key wsSupplierKey, d time.Duration, f
 	if c == nil {
 		return
 	}
-	if clientQuit && d < wsQuickCloseTenure {
+	quick := clientQuit && d < wsQuickCloseTenure
+	if quick {
 		c.quickCloses++
 	}
 	s := c.suppliers[key]
@@ -133,6 +145,9 @@ func (l *wsClientLedger) tenure(ip string, key wsSupplierKey, d time.Duration, f
 		}
 		s = &wsClientSupplier{}
 		c.suppliers[key] = s
+	}
+	if quick {
+		s.quickCloses++
 	}
 	s.tenures++
 	s.seconds += d.Seconds()
@@ -150,6 +165,19 @@ type WSClientReport struct {
 	// Frames is the supplier→client frames across every supplier.
 	Frames    int64                  `json:"frames"`
 	Suppliers []WSClientSupplierStat `json:"suppliers"`
+	// Shopping is set when the client looks like it reconnects until it
+	// lands on one owner, then stays: see wsShoppingMinQuickCloses.
+	Shopping *WSShopping `json:"shopping,omitempty"`
+}
+
+// WSShopping names the owner a shopping client settles on.
+type WSShopping struct {
+	Owner string `json:"owner"`
+	// Share is the fraction of the client's connected time spent with Owner.
+	Share float64 `json:"share"`
+	// QuickClosesElsewhere counts tenures with other owners the client ended
+	// within 30s.
+	QuickClosesElsewhere int `json:"quick_closes_elsewhere"`
 }
 
 // WSClientSupplierStat is one supplier's share of a client's connections.
@@ -160,6 +188,7 @@ type WSClientSupplierStat struct {
 	Tenures       int     `json:"tenures"`
 	TenureSeconds float64 `json:"tenure_seconds"`
 	Frames        int64   `json:"frames"`
+	QuickCloses   int     `json:"quick_client_closes"`
 }
 
 // WSClientsSnapshot is the ledger as the admin API reports it.
@@ -167,13 +196,51 @@ type WSClientsSnapshot struct {
 	// WindowSeconds is the span covered: between one and two ledger windows.
 	WindowSeconds float64 `json:"window_seconds"`
 	// Dropped counts events not recorded because the client table was full.
-	Dropped int              `json:"dropped"`
-	Clients []WSClientReport `json:"clients"`
+	Dropped int `json:"dropped"`
+	// ShoppingClients counts clients flagged as shopping, before limit.
+	ShoppingClients int              `json:"shopping_clients"`
+	Clients         []WSClientReport `json:"clients"`
+}
+
+// shopping judges one client's merged suppliers; nil when it is not shopping.
+func shopping(suppliers []WSClientSupplierStat) *WSShopping {
+	byOwner := map[string]float64{}
+	var total float64
+	for _, s := range suppliers {
+		byOwner[s.Owner] += s.TenureSeconds
+		total += s.TenureSeconds
+	}
+	favoured, best := "", 0.0
+	for owner, secs := range byOwner {
+		if secs > best || (secs == best && owner < favoured) {
+			favoured, best = owner, secs
+		}
+	}
+	if total == 0 || best < wsShoppingMinFavouredTime.Seconds() || best/total < wsShoppingMinShare {
+		return nil
+	}
+	elsewhere := 0
+	for _, s := range suppliers {
+		if s.Owner != favoured {
+			elsewhere += s.QuickCloses
+		}
+	}
+	if elsewhere < wsShoppingMinQuickCloses {
+		return nil
+	}
+	return &WSShopping{Owner: favoured, Share: best / total, QuickClosesElsewhere: elsewhere}
+}
+
+// ShoppingClients counts the clients currently flagged as shopping, across
+// every service. It backs sage_websocket_shopping_clients.
+func (l *wsClientLedger) ShoppingClients() int {
+	return l.snapshot("", 1, false).ShoppingClients
 }
 
 // snapshot merges both windows and returns the top limit clients by frames,
-// restricted to serviceID when it is set.
-func (l *wsClientLedger) snapshot(serviceID domain.ServiceID, limit int) WSClientsSnapshot {
+// restricted to serviceID when it is set and to shopping clients when
+// onlyShopping is.
+func (l *wsClientLedger) snapshot(serviceID domain.ServiceID, limit int, onlyShopping bool) WSClientsSnapshot {
 	if limit <= 0 {
 		limit = wsLedgerDefaultSnapshotN
 	}
@@ -205,6 +272,7 @@ func (l *wsClientLedger) snapshot(serviceID domain.ServiceID, limit int) WSClien
 				st.Tenures += s.tenures
 				st.TenureSeconds += s.seconds
 				st.Frames += s.frames
+				st.QuickCloses += s.quickCloses
 				r.Frames += s.frames
 			}
 		}
@@ -224,6 +292,12 @@ func (l *wsClientLedger) snapshot(serviceID domain.ServiceID, limit int) WSClien
 			r.Suppliers = append(r.Suppliers, *st)
 		}
 		sort.Slice(r.Suppliers, func(i, j int) bool { return r.Suppliers[i].Frames > r.Suppliers[j].Frames })
+		r.Shopping = shopping(r.Suppliers)
+		if r.Shopping != nil {
+			out.ShoppingClients++
+		} else if onlyShopping {
+			continue
+		}
 		out.Clients = append(out.Clients, *r)
 	}
 	sort.Slice(out.Clients, func(i, j int) bool {

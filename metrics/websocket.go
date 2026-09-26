@@ -63,6 +63,7 @@ type WebSocketMetrics struct {
 	supplierNotifications *prometheus.CounterVec
 	supplierConnections   *prometheus.GaugeVec
 	supplierTenure        *prometheus.HistogramVec
+	probes                *prometheus.CounterVec
 }
 
 // Caps for the supplier labels. Operators serving WebSocket number in the
@@ -80,7 +81,7 @@ const (
 func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
 	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
-		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure)
+		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.probes)
 	return m
 }
 
@@ -91,6 +92,14 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 		operators: cappedLabel(maxWSOperatorLabels),
 		owners:    cappedLabel(maxWSOwnerLabels),
 		topics:    cappedLabel(maxWSTopicLabels),
+		probes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_probes_total",
+				Help:      "WebSocket recovery probes, by service and result: ok, dial_failed (the upgrade was refused or never completed), no_answer (connected, no valid answer in time), invalid (the answer failed relay validation), error_response (a valid relay carrying a JSON-RPC error or no result), unresolved (nothing to sign with; not graded). Probes go only to WebSocket endpoints below full reputation, which a connection-only signal gave no way back.",
+			},
+			[]string{"service_id", "result"},
+		),
 		supplierFrames: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -318,4 +327,28 @@ func notificationGrade(k qos.NotificationKind) string {
 		return "unsolicited"
 	}
 	return ""
+}
+
+// Probed counts one WebSocket recovery probe.
+func (m *WebSocketMetrics) Probed(serviceID domain.ServiceID, result string) {
+	m.probes.WithLabelValues(m.services.serviceValue(serviceID), result).Inc()
+}
+
+// NewWebSocketShoppingGauge exposes how many WebSocket clients the relayer's
+// client ledger currently flags as shopping for a supplier — reconnecting
+// until it lands on one owner, then holding that connection:
+//
+//	sage_websocket_shopping_clients <count>
+//
+// A client address cannot be a label; which clients and which owner is in
+// GET /admin/websocket/clients?shopping=true.
+func NewWebSocketShoppingGauge(count func() int) prometheus.GaugeFunc {
+	return prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "websocket_shopping_clients",
+			Help:      "WebSocket clients this replica flags as shopping for a supplier over the last one to two hours: at least 5 tenures with other owners closed by the client within 30s, and at least 80% (and 10 minutes) of its connected time with one owner. Every frame is a relay that owner is paid for; which clients and which owner are in GET /admin/websocket/clients?shopping=true.",
+		},
+		func() float64 { return float64(count()) },
+	)
 }
