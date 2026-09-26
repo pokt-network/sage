@@ -1,8 +1,10 @@
 package middleware_test
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
@@ -187,5 +189,58 @@ func TestSelectEndpoint_EmptyEndpointsIsAnError(t *testing.T) {
 	var relayErr *domain.RelayError
 	if err == nil || domain.IsRetryable(err) || !errors.As(err, &relayErr) || relayErr.Kind != domain.ErrProtocol {
 		t.Fatalf("err = %v, want a non-retryable protocol error", err)
+	}
+}
+
+// probationRepService is mockRepService whose probation band is a set.
+type probationRepService struct {
+	mockRepService
+	onProbation map[domain.EndpointAddr]bool
+}
+
+func (p *probationRepService) OnProbation(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType) bool {
+	return p.onProbation[ep]
+}
+
+// A probation first try is held to a quarter of the attempt's remaining
+// deadline, so a host demoted for timing out cannot spend the client's
+// budget timing out again; a healthy pick keeps the whole deadline, and the
+// caller gets its own context back either way.
+func TestSelectEndpoint_ProbationPickGetsShortDeadline(t *testing.T) {
+	const bad, good = domain.EndpointAddr("s1-https://slow.example"), domain.EndpointAddr("s2-https://ok.example")
+	for _, tc := range []struct {
+		pick     domain.EndpointAddr
+		maxShare float64
+		minShare float64
+	}{
+		{bad, 0.26, 0.2},
+		{good, 1.01, 0.95},
+	} {
+		repSvc := &probationRepService{mockRepService{bestEndpoint: tc.pick}, map[domain.EndpointAddr]bool{bad: true}}
+		mw := middleware.SelectEndpoint(repSvc, nil, qos.NewRegistry(), newMockFlags(nil))
+
+		req := newPOSTRequest("/v1", "")
+		c := newCtx(req)
+		c.ServiceID, c.RPCType, c.Endpoints = "eth", domain.RPCTypeJSONRPC, domain.EndpointAddrList{bad, good}
+		parent, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		c.Ctx = parent
+
+		var budget time.Duration
+		err := mw(relay.HandlerFunc(func(c *relay.Context) error {
+			dl, _ := c.Ctx.Deadline()
+			budget = time.Until(dl)
+			return nil
+		})).HandleRelay(c)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		share := float64(budget) / float64(8*time.Second)
+		if share > tc.maxShare || share < tc.minShare {
+			t.Errorf("pick %s: attempt got %.2f of the deadline, want %.2f–%.2f", tc.pick, share, tc.minShare, tc.maxShare)
+		}
+		if c.Ctx != parent {
+			t.Errorf("pick %s: the caller's context was not restored", tc.pick)
+		}
 	}
 }

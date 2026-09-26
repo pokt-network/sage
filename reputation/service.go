@@ -986,6 +986,24 @@ func (s *serviceImpl) SelectSpread(ctx context.Context, serviceID domain.Service
 	return pickWeightedByInverseLoad(candidates, activeLoad)
 }
 
+// ProbationChecker is the optional half of Service that says whether an
+// endpoint currently sits in the probation band (MinThreshold up to the
+// probation threshold) for an RPC type. SelectEndpoint asks it so a probation
+// first try can be held to a short deadline: a probation pick is there to be
+// measured, and a host demoted for timing out would otherwise spend the
+// client's budget timing out again before Retry or Hedge reaches a healthy one.
+type ProbationChecker interface {
+	OnProbation(ctx context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool
+}
+
+var _ ProbationChecker = (*serviceImpl)(nil)
+
+// OnProbation implements ProbationChecker.
+func (s *serviceImpl) OnProbation(ctx context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool {
+	tier, _ := s.selector.classify(ctx, serviceID, endpoint, rpcType)
+	return tier == probationIdx
+}
+
 // ErrNoScore is returned by a reset that matched no recorded score. Nothing
 // is created for an unmatched target: until 2026-09-14 a reset named by the
 // key string an operator had copied from the listing ("https://host|rest")

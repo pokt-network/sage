@@ -1,6 +1,9 @@
 package middleware
 
 import (
+	"context"
+	"time"
+
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/protocol"
@@ -76,7 +79,33 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 				ctx.SelectedEndpoint.Store(&ep)
 			}
 
+			// A probation pick is sent first on a share of relays so it can
+			// earn its score back, and it is there because it failed. Held to
+			// the attempt's full deadline, a host demoted for timing out
+			// spends the client's budget timing out again: on mainnet base
+			// (2026-09-26) that was every client 504. A quarter of what
+			// remains is ample for a host that has recovered and leaves Retry
+			// and Hedge the rest.
+			if checker, ok := repSvc.(reputation.ProbationChecker); ok &&
+				checker.OnProbation(ctx.Ctx, ctx.ServiceID, ctx.Endpoint, ctx.RPCType) {
+				if dl, has := ctx.Ctx.Deadline(); has {
+					if remaining := time.Until(dl); remaining > 0 {
+						saved := ctx.Ctx
+						short, cancel := context.WithTimeout(saved, remaining/probationBudgetShare)
+						ctx.Ctx = short
+						defer func() {
+							cancel()
+							ctx.Ctx = saved
+						}()
+					}
+				}
+			}
+
 			return next.HandleRelay(ctx)
 		})
 	}
 }
+
+// probationBudgetShare is the fraction (1/n) of an attempt's remaining
+// deadline a probation first try may use.
+const probationBudgetShare = 4
