@@ -20,7 +20,7 @@ type hedgeResult struct {
 }
 
 // HedgeRecorder is notified of the outcome of a hedge race
-// (primary_won, hedge_won, both_failed). metrics.Recorder satisfies it.
+// (primary_before_delay, primary_won, hedge_won, both_failed). metrics.Recorder satisfies it.
 // Nil disables recording.
 type HedgeRecorder interface {
 	RecordHedge(serviceID domain.ServiceID, result string)
@@ -105,9 +105,11 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			select {
 			case res := <-primaryCh:
 				// Primary finished before the hedge delay — return its result.
+				// No hedge was sent, so this is not a race anyone won:
+				// counted apart, so the fired share is readable.
 				mergeContext(ctx, res.ctx)
 				if res.err == nil {
-					recordHedge(ctx, "primary_won")
+					recordHedge(ctx, "primary_before_delay")
 				}
 				return res.err
 

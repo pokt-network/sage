@@ -451,14 +451,14 @@ func (r *recordingHedgeRec) RecordHedge(_ domain.ServiceID, result string) {
 
 func TestHedge_RecordsOutcome(t *testing.T) {
 	rec := &recordingHedgeRec{}
-	// Primary wins before the delay: one primary_won.
+	// Primary answers before the delay: no hedge sent, one primary_before_delay.
 	handler := newMockHandler(nil)
 	mw := HedgeWithRecorder(newFlags("hedge"), hedgeCfg(50*time.Millisecond), rec)
 	if err := mw(handler).HandleRelay(baseContext()); err != nil {
 		t.Fatal(err)
 	}
-	if len(rec.results) != 1 || rec.results[0] != "primary_won" {
-		t.Fatalf("got %v, want one primary_won", rec.results)
+	if len(rec.results) != 1 || rec.results[0] != "primary_before_delay" {
+		t.Fatalf("got %v, want one primary_before_delay", rec.results)
 	}
 }
 
