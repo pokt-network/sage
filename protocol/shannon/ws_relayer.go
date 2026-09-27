@@ -436,7 +436,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 
 	// Watch for session expiry in a goroutine; trigger graceful close.
 	safego.Go(logger, "websocket.session.expiry", func() {
-		r.watchSessionExpiry(&sessionEnd, &currentProc, bridge, logger)
+		r.watchSessionExpiry(&sessionEnd, &currentProc, bridge, logger, r.nextSession(serviceID))
 	})
 
 	// Drain frame events off the bridge loop until the bridge closes.
@@ -487,6 +487,58 @@ func (r *WSRelayer) subscriptionRegistry(serviceID domain.ServiceID) *qos.Subscr
 	return qos.NewSubscriptionRegistry(classifier)
 }
 
+// sessionEndActionKind is what a bridge's expiry watcher does on one tick.
+type sessionEndActionKind int
+
+const (
+	sessionWait sessionEndActionKind = iota
+	sessionRebind
+	sessionClose
+)
+
+// sessionEndAction decides one watcher tick for a bridge whose session ends
+// at end. A rebind needs the next session: through the end block, and through
+// the grace period until a background refresh lands, the session manager still
+// hands out the ended one, and a rebind taken then lands on it and closes the
+// bridge on the next tick. On mainnet (2026-09-27) that closed about half of
+// all WebSocket connections at every session boundary with 1012 — every
+// bridge of a service at once, as they share one app's session — which is why
+// SAGE's connections lived less than half as long as PATH's. So wait while
+// the ended session is still honoured; past the grace period the manager
+// refreshes synchronously, and the rebind is taken regardless.
+func sessionEndAction(height, end, actedOn, graceEnd int64, canRebind, nextReady bool) sessionEndActionKind {
+	switch {
+	case height < end:
+		return sessionWait
+	case end == actedOn || !canRebind:
+		return sessionClose
+	case nextReady || height > graceEnd:
+		return sessionRebind
+	default:
+		return sessionWait
+	}
+}
+
+// nextSession reports, for a bridge of serviceID whose session ends at end,
+// whether the session manager already holds a later session, and the last
+// height the ended one is honoured at. Asking also starts the background
+// refresh once the end is past.
+func (r *WSRelayer) nextSession(serviceID domain.ServiceID) func(end int64) (bool, int64) {
+	return func(end int64) (bool, int64) {
+		p := r.deps.Protocol
+		graceEnd := end + p.sessions.graceBlocks.Load()
+		appAddr, err := p.pickApp(serviceID)
+		if err != nil {
+			return true, graceEnd
+		}
+		session, err := p.sessions.getSession(context.Background(), string(serviceID), appAddr)
+		if err != nil || session == nil || session.Header == nil {
+			return true, graceEnd
+		}
+		return session.Header.SessionEndBlockHeight > end, graceEnd
+	}
+}
+
 // watchSessionExpiry closes the bridge once its own session has ended, so the
 // client reconnects onto a fresh session rather than re-signing a live socket.
 //
@@ -512,6 +564,7 @@ func (r *WSRelayer) watchSessionExpiry(
 	current *atomic.Pointer[wsMessageProcessor],
 	bridge *websockets.Bridge,
 	logger *slog.Logger,
+	next func(end int64) (ready bool, graceEnd int64),
 ) {
 	if r.chainHeight == nil {
 		return
@@ -536,7 +589,15 @@ func (r *WSRelayer) watchSessionExpiry(
 			if height < end {
 				continue
 			}
-			if end != actedOn && bridge.CanRebind() {
+			ready, graceEnd := true, end
+			if next != nil {
+				ready, graceEnd = next(end)
+			}
+			action := sessionEndAction(height, end, actedOn, graceEnd, bridge.CanRebind(), ready)
+			if action == sessionWait {
+				continue
+			}
+			if action == sessionRebind {
 				actedOn = end
 				logger.Info("ws session ended, rebinding onto the next session",
 					"session_end_height", end, "current_height", height,

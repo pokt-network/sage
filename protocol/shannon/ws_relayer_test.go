@@ -258,7 +258,7 @@ func startExpiryBridges(t *testing.T, r *WSRelayer, endHeight int64, procs *sync
 		end.Store(endHeight)
 		var cur atomic.Pointer[wsMessageProcessor]
 		cur.Store(proc)
-		go r.watchSessionExpiry(&end, &cur, bridge, newTestLogger())
+		go r.watchSessionExpiry(&end, &cur, bridge, newTestLogger(), nil)
 		<-bridge.Done()
 	}))
 	t.Cleanup(gw.Close)
@@ -689,5 +689,29 @@ func TestWSRelayer_FreshestDropsLaggingNodes(t *testing.T) {
 	// No plugin for the service: unchanged.
 	if got := r.freshest("unknown", domain.EndpointAddrList{fresh1, stale}); len(got) != 2 {
 		t.Fatalf("no plugin: freshest = %v, want both", got)
+	}
+}
+
+// At a session boundary the manager still serves the ended session until the
+// next is fetched; a rebind taken then lands on it and closes the bridge. The
+// watcher waits for the next session while the ended one is honoured.
+func TestSessionEndAction(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		height, actedOn, grace int64
+		canRebind, ready       bool
+		want                   sessionEndActionKind
+	}{
+		{"before the end", 99, 0, 101, true, false, sessionWait},
+		{"at the end, next session not fetched", 100, 0, 101, true, false, sessionWait},
+		{"in grace, next session not fetched", 101, 0, 101, true, false, sessionWait},
+		{"next session fetched", 100, 0, 101, true, true, sessionRebind},
+		{"past grace", 102, 0, 101, true, false, sessionRebind},
+		{"already rebound for this end", 101, 100, 101, true, true, sessionClose},
+		{"rebind limit spent", 100, 0, 101, false, true, sessionClose},
+	} {
+		if got := sessionEndAction(tc.height, 100, tc.actedOn, tc.grace, tc.canRebind, tc.ready); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
