@@ -24,6 +24,13 @@ type MetricsRecorder interface {
 	RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCType, reason, attribution string)
 }
 
+// OperatorRecorder is implemented by a recorder that also counts attempts per
+// operator: who served the attempt, whose fault the outcome was, and how long
+// it took.
+type OperatorRecorder interface {
+	RecordOperatorAttempt(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution string, latency time.Duration)
+}
+
 // Metrics returns a middleware that records one upstream attempt via recorder
 // after it completes: status, the endpoint the attempt picked, and the
 // attempt's own latency. It belongs inside retry, hedge and batch and outside
@@ -32,6 +39,7 @@ type MetricsRecorder interface {
 // next.HandleRelay; recording is best-effort and never affects the returned
 // error.
 func Metrics(recorder MetricsRecorder) relay.Middleware {
+	operators, _ := recorder.(OperatorRecorder)
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			start := time.Now()
@@ -62,6 +70,9 @@ func Metrics(recorder MetricsRecorder) relay.Middleware {
 			if v := ctx.HeuristicResult; v != nil {
 				recorder.RecordVerdict(ctx.ServiceID, ctx.RPCType, v.Reason, verdictAttribution(v))
 			}
+			if operators != nil && ctx.Endpoint != "" {
+				operators.RecordOperatorAttempt(ctx.ServiceID, ctx.RPCType, ctx.Endpoint, attemptAttribution(ctx.HeuristicResult, err), latency)
+			}
 
 			return err
 		})
@@ -80,3 +91,18 @@ func verdictAttribution(v *heuristic.AnalysisResult) string {
 }
 
 const verdictAttributionNone = "none"
+
+// attemptAttribution is verdictAttribution for an attempt that may have no
+// verdict: the heuristic flag off, or a failure before any answer. A clean
+// return is a good answer, and a failure nothing graded is nobody's known
+// fault.
+func attemptAttribution(v *heuristic.AnalysisResult, err error) string {
+	switch {
+	case v != nil:
+		return verdictAttribution(v)
+	case err == nil:
+		return verdictAttributionNone
+	default:
+		return heuristic.AttrUnknown.String()
+	}
+}

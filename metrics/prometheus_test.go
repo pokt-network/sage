@@ -107,6 +107,15 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "heuristic_verdicts_total"},
 			[]string{"service_id", "rpc_type", "reason", "attribution"},
 		),
+		operatorAttempts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "operator_attempts_total"},
+			[]string{"service_id", "operator", "rpc_type", "attribution"},
+		),
+		operatorLatency: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{Namespace: "sage_test", Name: "operator_attempt_seconds", Buckets: relayLatencyBuckets},
+			[]string{"service_id", "operator", "rpc_type"},
+		),
+		operators: cappedLabel(maxOperatorLabels),
 		externalSourceFails: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "external_block_source_failures_total"},
 			[]string{"service_id"},
@@ -797,5 +806,28 @@ func TestBatchSize(t *testing.T) {
 		if got := batchSize(n); got != want {
 			t.Errorf("batchSize(%d) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+// Attempts are keyed by operator, never by host: two hosts of one operator
+// are one series.
+func TestRecordOperatorAttempt_KeysByOperator(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s1-https://rm01.node.example.com", "none", 100*time.Millisecond)
+	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s2-https://rm02.node.example.com", "none", 300*time.Millisecond)
+	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s2-https://rm02.node.example.com", "supplier", time.Second)
+
+	c, err := r.operatorAttempts.GetMetricWithLabelValues("eth", "example.com", "json_rpc", "none")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 2 {
+		t.Errorf("operator_attempts_total{example.com,none} = %v, want 2", got)
+	}
+	ch := make(chan prometheus.Metric, 8)
+	r.operatorLatency.Collect(ch)
+	close(ch)
+	if n := len(ch); n != 1 {
+		t.Errorf("operator_attempt_seconds has %d series, want 1 (one operator)", n)
 	}
 }

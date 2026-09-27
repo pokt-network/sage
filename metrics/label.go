@@ -41,6 +41,12 @@ const (
 	// single digits; the cap is headroom, not an expected count.
 	maxCodespaceLabels = 32
 
+	// maxOperatorLabels caps the distinct operators the per-operator attempt
+	// metrics admit. Mainnet had a few dozen operators across all services
+	// on 2026-09-27; the cap is headroom against a flood of throwaway
+	// domains, past which they share __other__.
+	maxOperatorLabels = 128
+
 	// unknownLabel replaces a value outside the allowed set, and otherLabel one
 	// beyond a cap. Both collapse rather than drop: the traffic stays visible,
 	// and a rising __unknown__ or __other__ series is itself worth an alert.

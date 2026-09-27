@@ -78,6 +78,8 @@ type Recorder struct {
 	methodBlockEvents     *prometheus.CounterVec
 	reputationAttempts    *prometheus.CounterVec
 	heuristicVerdicts     *prometheus.CounterVec
+	operatorAttempts      *prometheus.CounterVec
+	operatorLatency       *prometheus.HistogramVec
 	externalSourceFails   *prometheus.CounterVec
 	clientLatency         *prometheus.HistogramVec
 	stageSeconds          *prometheus.CounterVec
@@ -90,6 +92,10 @@ type Recorder struct {
 	// codespaces bounds the relay miner error codespace label, which is a
 	// string chosen by the supplier's relay miner.
 	codespaces *labelPolicy
+
+	// operators bounds the operator label: a registrable domain taken from
+	// staked URLs, a set other people choose.
+	operators *labelPolicy
 }
 
 // NewRecorder creates a Recorder and registers all metrics with
@@ -341,6 +347,32 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			Help:      "Sub-relay answer bytes finished and not yet written to the client, across every service. A streamed batch releases each answer as it is written, so one batch holds at most (concurrency_config.max_batch_concurrency + max_batch_window) answers here. A batch whose writer cannot stream (none in production) keeps every answer until it merges, and that merged copy is not counted.",
 		}),
 		codespaces: cappedLabel(maxCodespaceLabels),
+		operators:  cappedLabel(maxOperatorLabels),
+		// Per operator, the registrable domain, never per host: an operator
+		// is a handful of values per service and stays put, where hosts
+		// rotate with every session and are the series growth the
+		// method-block counter below avoids. These two are what a supplier
+		// quality view reads — who carries a service, how often their
+		// answers fail and whose fault that is, and how fast they are —
+		// which no other sage_* series can say: relay_total and
+		// relay_latency_seconds carry no endpoint.
+		operatorAttempts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "operator_attempts_total",
+				Help:      "Client relay attempts, by service, operator (the registrable domain of the endpoint's URL), RPC type and the side the heuristic attributed the outcome to: none (a good answer), blockchain or client (the answer was the chain's or the request's fault, not the supplier's), supplier or unknown (the supplier failed). One per attempt, so retries and hedge arms each count. Operators past the first 128 seen collapse to __other__.",
+			},
+			[]string{"service_id", "operator", "rpc_type", "attribution"},
+		),
+		operatorLatency: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "operator_attempt_seconds",
+				Help:      "Client relay attempt latency in seconds, by service, operator (the registrable domain of the endpoint's URL) and RPC type: selection through response, one observation per attempt, whatever its outcome. Same buckets as relay_latency_seconds.",
+				Buckets:   relayLatencyBuckets,
+			},
+			[]string{"service_id", "operator", "rpc_type"},
+		),
 		// No domain label on purpose: the gauge above names the host, and a
 		// counter keyed on host is the series growth PATH's cardinality
 		// incident was about. method is the plugin catalogue; event is a
@@ -486,6 +518,8 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.methodBlockEvents,
 		r.reputationAttempts,
 		r.heuristicVerdicts,
+		r.operatorAttempts,
+		r.operatorLatency,
 		r.externalSourceFails,
 		r.clientLatency,
 		r.stageSeconds,
@@ -869,6 +903,15 @@ func (r *Recorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCT
 		reason,
 		attribution,
 	).Inc()
+}
+
+// RecordOperatorAttempt counts one client relay attempt against the operator
+// that served it, with the heuristic's attribution and the attempt's latency.
+func (r *Recorder) RecordOperatorAttempt(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution string, latency time.Duration) {
+	svc := r.services.serviceValue(serviceID)
+	op := r.operators.value(endpoint.Operator())
+	r.operatorAttempts.WithLabelValues(svc, op, string(rpcType), attribution).Inc()
+	r.operatorLatency.WithLabelValues(svc, op, string(rpcType)).Observe(latency.Seconds())
 }
 
 // RecordClientLatency satisfies router.ClientMetrics: one client request's

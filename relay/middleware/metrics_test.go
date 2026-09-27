@@ -197,3 +197,47 @@ func TestMetrics_RecordsHeuristicVerdictPerAttempt(t *testing.T) {
 		t.Fatalf("verdicts = %+v, want none when the heuristic left no result", rec.verdicts)
 	}
 }
+
+// operatorRecorder is a fakeRecorder that also takes per-operator attempts.
+type operatorRecorder struct {
+	fakeRecorder
+	attempts []string
+}
+
+func (r *operatorRecorder) RecordOperatorAttempt(_ domain.ServiceID, _ domain.RPCType, endpoint domain.EndpointAddr, attribution string, _ time.Duration) {
+	r.attempts = append(r.attempts, endpoint.Operator()+":"+attribution)
+}
+
+// Every attempt is counted against the operator that served it, with whose
+// fault its outcome was: none for a good answer, the verdict's side for a
+// graded one, unknown for a failure nothing graded.
+func TestMetrics_RecordsOperatorAttemptPerAttempt(t *testing.T) {
+	rec := &operatorRecorder{}
+	outcomes := []struct {
+		verdict *heuristic.AnalysisResult
+		err     error
+	}{
+		{nil, nil},
+		{&heuristic.AnalysisResult{Reason: "blockchain_error", Attribution: heuristic.AttrBlockchain}, errors.New("retry")},
+		{nil, errors.New("dial")},
+	}
+	for _, o := range outcomes {
+		inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+			ctx.Endpoint = "supplierA-https://rm01.node.example.com"
+			ctx.HeuristicResult = o.verdict
+			return o.err
+		})
+		ctx := baseContext()
+		ctx.ServiceID = "eth"
+		_ = Metrics(rec)(inner).HandleRelay(ctx)
+	}
+	want := []string{"example.com:none", "example.com:blockchain", "example.com:unknown"}
+	if len(rec.attempts) != len(want) {
+		t.Fatalf("attempts = %v, want %v", rec.attempts, want)
+	}
+	for i := range want {
+		if rec.attempts[i] != want[i] {
+			t.Fatalf("attempts = %v, want %v", rec.attempts, want)
+		}
+	}
+}
