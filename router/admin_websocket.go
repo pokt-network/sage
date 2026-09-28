@@ -73,3 +73,19 @@ func (a *AdminAPI) handleWebSocketClients(w http.ResponseWriter, req *http.Reque
 	onlyShopping := req.URL.Query().Get("shopping") == "true"
 	writeJSON(w, http.StatusOK, a.wsClients(domain.ServiceID(req.URL.Query().Get("service")), limit, onlyShopping))
 }
+
+// handleWebSocketNotificationSamples returns a sample of the hashes suppliers
+// pushed in WebSocket subscription notifications: one notification in 100 per
+// service, operator, owner and topic, the last 200 of each, on this replica.
+// Each names a transaction (a pending transaction, or the one a log belongs
+// to) or a block (a new head), for checking offline against the chain: every
+// notification is a relay the supplier is paid for, and one that names
+// nothing the chain knows is padding no frame count can reveal. Query: service
+// (optional). 501 when this build has no WebSocket relayer wired.
+func (a *AdminAPI) handleWebSocketNotificationSamples(w http.ResponseWriter, req *http.Request) {
+	if a.wsSamples == nil {
+		writeJSONError(w, http.StatusNotImplemented, "websocket notification samples are not available in this build")
+		return
+	}
+	writeJSON(w, http.StatusOK, a.wsSamples(domain.ServiceID(req.URL.Query().Get("service"))))
+}

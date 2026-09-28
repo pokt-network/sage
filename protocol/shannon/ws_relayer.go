@@ -124,6 +124,9 @@ type WSMetrics interface {
 type WSRelayer struct {
 	deps WSRelayerDeps
 
+	// samples keeps a sample of what each supplier pushed (ws_samples.go).
+	samples *wsNotificationSamples
+
 	// probeBackoff spaces out recovery probes of URLs that keep failing.
 	probeBackoff wsProbeBackoff
 
@@ -213,7 +216,15 @@ func NewWSRelayer(deps WSRelayerDeps) *WSRelayer {
 		stallCheck:   wsStallCheckInterval,
 		connLimiter:  websockets.NewConnectionLimiter(deps.MaxConcurrentConnections),
 		clients:      newWSClientLedger(nil),
+		samples:      newWSNotificationSamples(),
 	}
+}
+
+// NotificationSamples returns the sampled WebSocket notification hashes (see
+// ws_samples.go), for one service or, with serviceID "", every service. It is
+// the admin notification-samples route.
+func (r *WSRelayer) NotificationSamples(serviceID domain.ServiceID) []WSNotificationSample {
+	return r.samples.snapshot(serviceID)
 }
 
 // Clients reports, per client address, which suppliers served its WebSocket
@@ -375,7 +386,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 				default:
 				}
 			},
-		).withSubscriptions(subs).withSupplier(r.deps.Metrics, t.ep.Owner())
+		).withSubscriptions(subs).withSupplier(r.deps.Metrics, t.ep.Owner()).withSamples(r.samples)
 	}
 	processor := newProcessor(target)
 	currentProc.Store(processor)

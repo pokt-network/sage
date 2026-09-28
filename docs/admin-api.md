@@ -138,6 +138,7 @@ failureThreshold) here.
 | `DELETE` | `/admin/health-checks/{serviceID}` | Clears a service's admin block; the file's block runs again. |
 | `POST` | `/admin/websocket/rebind/{serviceID}` | Replaces the supplier under every live WebSocket connection of a service, without closing any client. |
 | `GET` | `/admin/websocket/clients` | Reports which clients drive WebSocket traffic and which suppliers served them, over the last one to two hours: per client address, the connections it opened, how many supplier tenures it ended itself within 30s (quick_client_closes), and per supplier — service, operator, owner — the tenures, their total seconds and the frames that supplier pushed. |
+| `GET` | `/admin/websocket/notification-samples` | Returns a sample of the hashes suppliers pushed in WebSocket subscription notifications: one notification in 100 per service, operator, owner and topic, the last 200 of each, on this replica. |
 | `GET` | `/admin/request-sample` | Returns every service the request-shape sampler has observed, each with its most recently completed traffic summary. |
 | `GET` | `/admin/request-sample/{serviceID}` | Returns one service's request-shape summary plus its top fingerprints for a single window. |
 | `GET` | `/admin/ui` | Serves the admin dashboard. |
@@ -621,6 +622,17 @@ minutes) of its connected time with that one. shopping_clients counts them.
 Query: service (optional) narrows to one service, limit (default 50) caps
 the clients returned, shopping=true returns only flagged clients. 501 when
 this build has no WebSocket relayer wired.
+
+### `GET /admin/websocket/notification-samples`
+
+Returns a sample of the hashes suppliers
+pushed in WebSocket subscription notifications: one notification in 100 per
+service, operator, owner and topic, the last 200 of each, on this replica.
+Each names a transaction (a pending transaction, or the one a log belongs
+to) or a block (a new head), for checking offline against the chain: every
+notification is a relay the supplier is paid for, and one that names
+nothing the chain knows is padding no frame count can reveal. Query: service
+(optional). 501 when this build has no WebSocket relayer wired.
 
 ### `GET /admin/request-sample`
 

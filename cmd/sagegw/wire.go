@@ -1046,6 +1046,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// it stays nil and the router answers WS upgrades with 503.
 	var wsRelayer router.WebSocketOpener
 	var wsClients router.WSClients
+	var wsSamples router.WSNotificationSamples
 	if app.Protocol != nil {
 		// Each field resolves its own default. The struct-wide check this
 		// replaced applied defaults only when *nothing* was set, so tuning one
@@ -1069,6 +1070,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		wsClients = func(serviceID domain.ServiceID, limit int, onlyShopping bool) any {
 			return relayer.Clients(serviceID, limit, onlyShopping)
 		}
+		wsSamples = func(serviceID domain.ServiceID) any { return relayer.NotificationSamples(serviceID) }
 		prometheus.MustRegister(metrics.NewWebSocketShoppingGauge(relayer.ShoppingClients))
 		// Recovery probes: the only way back for a demoted WebSocket key,
 		// which gets no connections to earn score from (see ws_probe.go).
@@ -1098,6 +1100,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 	if wsClients != nil {
 		app.Admin.SetWebSocketClients(wsClients)
+	}
+	if wsSamples != nil {
+		app.Admin.SetWebSocketNotificationSamples(wsSamples)
 	}
 	if app.blocklist != nil {
 		app.Admin.SetBlocklist(app.blocklist)

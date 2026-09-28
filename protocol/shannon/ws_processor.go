@@ -34,6 +34,7 @@ type frameCallback func(payload []byte, err error, latency time.Duration)
 // stable for the bridge's lifetime — v1 closes the bridge at session
 // boundaries instead of rotating the endpoint or refreshing the session.
 type wsMessageProcessor struct {
+	samples       *wsNotificationSamples
 	protocol      *Protocol
 	ctx           context.Context
 	sessionHeader *sessiontypes.SessionHeader
@@ -70,6 +71,12 @@ func (p *wsMessageProcessor) withSupplier(m WSMetrics, owner string) *wsMessageP
 	p.owner = owner
 	p.operator = p.endpointAddr.Operator()
 	p.boundAt = time.Now()
+	return p
+}
+
+// withSamples attaches the notification sampler (ws_samples.go).
+func (p *wsMessageProcessor) withSamples(s *wsNotificationSamples) *wsMessageProcessor {
+	p.samples = s
 	return p
 }
 
@@ -221,6 +228,9 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	if p.metrics != nil {
 		p.metrics.SupplierFrame(serviceID, p.operator, p.owner, websockets.SourceEndpoint)
 		p.metrics.SupplierNotification(serviceID, p.operator, p.owner, note)
+	}
+	if note.Kind == qos.NotificationOK || note.Kind == qos.NotificationDuplicate {
+		p.samples.observe(serviceID, p.operator, p.owner, note.Topic, payload)
 	}
 	if !forward {
 		return nil, nil

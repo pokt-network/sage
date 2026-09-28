@@ -74,3 +74,23 @@ func TestAdmin_WebSocketClients_NotWired(t *testing.T) {
 		t.Fatalf("status=%d, want 501", rec.Code)
 	}
 }
+
+func TestAdmin_WebSocketNotificationSamples(t *testing.T) {
+	admin, mux := newTestAdminWithDrain(t, nil, nil, 0)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/websocket/notification-samples", nil))
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("not wired: status=%d, want 501", rec.Code)
+	}
+
+	var gotService domain.ServiceID
+	admin.SetWebSocketNotificationSamples(func(s domain.ServiceID) any {
+		gotService = s
+		return []map[string]any{{"operator": "op.example", "kind": "tx", "hash": "0xabc"}}
+	})
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/websocket/notification-samples?service=gnosis", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"hash":"0xabc"`) || gotService != "gnosis" {
+		t.Fatalf("status=%d body=%s service=%q", rec.Code, rec.Body.String(), gotService)
+	}
+}

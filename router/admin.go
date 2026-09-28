@@ -37,6 +37,7 @@ type AdminAPI struct {
 	sampler      *traffic.Sampler
 	wsRebinder   WSRebinder
 	wsClients    WSClients
+	wsSamples    WSNotificationSamples
 	blocklist    Blocklist
 	logger       *slog.Logger
 	logLevel     *slog.LevelVar
@@ -68,6 +69,14 @@ func (a *AdminAPI) SetWebSocketRebinder(r WSRebinder) { a.wsRebinder = r }
 // a JSON-encodable value. shannon.WSRelayer.Clients is adapted to it at wire
 // time.
 type WSClients func(serviceID domain.ServiceID, limit int, onlyShopping bool) any
+
+// WSNotificationSamples returns sampled WebSocket notification hashes for a
+// service, or every service for "".
+type WSNotificationSamples func(serviceID domain.ServiceID) any
+
+// SetWebSocketNotificationSamples installs what the notification-samples route
+// serves. Without it the route answers 501.
+func (a *AdminAPI) SetWebSocketNotificationSamples(s WSNotificationSamples) { a.wsSamples = s }
 
 // SetWebSocketClients installs the report the WebSocket clients route serves.
 // Without one the route answers 501.
@@ -188,6 +197,7 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	// WebSocket
 	mux.HandleFunc("POST /admin/websocket/rebind/{serviceID}", a.handleWebSocketRebind)
 	mux.HandleFunc("GET /admin/websocket/clients", a.handleWebSocketClients)
+	mux.HandleFunc("GET /admin/websocket/notification-samples", a.handleWebSocketNotificationSamples)
 
 	// Request-shape sampler
 	mux.HandleFunc("GET /admin/request-sample", a.handleListRequestSamples)
