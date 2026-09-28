@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -121,7 +122,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 				// would make the per-service relay timeout mean nothing
 				// whenever hedging is on. The arm scores itself when it
 				// finishes; there is no winner to merge.
-				return ctxDoneError(ctx.Ctx)
+				return deadlineInFlight(ctx, primaryCtx.SelectedEndpoint.Load())
 
 			case <-timer.C:
 				// Hedge delay elapsed; launch speculative second request.
@@ -178,7 +179,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 				select {
 				case <-ctx.Ctx.Done():
 					// Same as above: stop waiting, let the arms finish detached.
-					return ctxDoneError(ctx.Ctx)
+					return deadlineInFlight(ctx, primaryCtx.SelectedEndpoint.Load(), hedgeCtx.SelectedEndpoint.Load())
 
 				case res := <-primaryCh:
 					primaryRes = res
@@ -282,6 +283,33 @@ func mergeContext(dst, src *relay.Context) {
 	// pointer: the arm has already returned through its channel, so nothing
 	// writes to it any more.
 	dst.HeuristicResult = src.HeuristicResult
+}
+
+// deadlineInFlight is the hedge's answer when the request context ends with
+// arms still running: it names what was in flight. Without it the relay had no
+// endpoint — no arm's context is merged, since there is no winner — so the
+// retry trail and the error log said "-" for every request that timed out
+// while hedged: on mainnet robinhood (2026-09-28) 1,015 of 1,702 failing
+// requests in 15 minutes, with nothing naming the operator behind them. The
+// primary's pick becomes the relay's endpoint, so the trail names it, and the
+// error names every host still in flight.
+func deadlineInFlight(ctx *relay.Context, picks ...*domain.EndpointAddr) error {
+	var hosts []string
+	for _, p := range picks {
+		if p == nil || *p == "" {
+			continue
+		}
+		if ctx.Endpoint == "" {
+			ctx.Endpoint = *p
+		}
+		hosts = append(hosts, p.Domain())
+	}
+	err := ctxDoneError(ctx.Ctx)
+	if len(hosts) == 0 || !errors.Is(ctx.Ctx.Err(), context.DeadlineExceeded) {
+		return err
+	}
+	return domain.NewRelayError(domain.ErrTransport,
+		"hedge: attempt deadline exceeded with "+strings.Join(hosts, ", ")+" in flight", context.DeadlineExceeded, true)
 }
 
 // ctxDoneError turns a finished request context into the error the hedge race

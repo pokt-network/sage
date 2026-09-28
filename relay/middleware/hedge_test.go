@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -699,5 +700,36 @@ func TestHedge_SuppressedForLargeBatchItems(t *testing.T) {
 				t.Fatalf("recorded %v, want one %s", rec.results, tc.wantRec)
 			}
 		})
+	}
+}
+
+// When the request deadline ends a race with both arms still running, the
+// error names both hosts and the relay's endpoint is the primary's pick, so
+// the retry trail and the error log can say who was slow.
+func TestHedge_DeadlineNamesTheArmsInFlight(t *testing.T) {
+	var n atomic.Int32
+	hosts := []domain.EndpointAddr{"sA-https://slow-a.example", "sB-https://slow-b.example"}
+	inner := relay.HandlerFunc(func(c *relay.Context) error {
+		ep := hosts[n.Add(1)-1]
+		c.Endpoint = ep
+		if c.SelectedEndpoint != nil {
+			c.SelectedEndpoint.Store(&ep)
+		}
+		<-c.Ctx.Done()
+		return c.Ctx.Err()
+	})
+	ctx := baseContext()
+	c, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	ctx.Ctx = c
+	err := Hedge(newFlags("hedge"), hedgeCfg(10*time.Millisecond))(inner).HandleRelay(ctx)
+	if err == nil || !strings.Contains(err.Error(), "slow-a.example") || !strings.Contains(err.Error(), "slow-b.example") {
+		t.Fatalf("error %v does not name both arms in flight", err)
+	}
+	if ctx.Endpoint != hosts[0] {
+		t.Fatalf("relay endpoint = %q, want the primary's pick %q", ctx.Endpoint, hosts[0])
+	}
+	if !domain.IsRetryable(err) {
+		t.Fatal("a hedged deadline must stay retryable")
 	}
 }
