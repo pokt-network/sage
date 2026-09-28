@@ -3,6 +3,7 @@ package protocol
 
 import (
 	"context"
+	"errors"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -49,3 +50,16 @@ type SupplierManager interface {
 	UnblacklistSupplier(serviceID domain.ServiceID, addr string) bool
 	IsBlacklisted(serviceID domain.ServiceID, addr string) bool
 }
+
+// Errors the debug probe routes map to HTTP statuses. A probe is evidence
+// gathering on the admin port, so its refusals must be distinguishable from a
+// supplier's failure.
+var (
+	// ErrDebugTargetNotFound: the target names no registration in the
+	// service's current session (or no reference is configured).
+	ErrDebugTargetNotFound = errors.New("debug target not in the current session")
+	// ErrDebugBusy: the probe's rate or concurrency cap is reached.
+	ErrDebugBusy = errors.New("debug probe limit reached")
+	// ErrDebugBadRequest: the payload is not something the probe sends.
+	ErrDebugBadRequest = errors.New("debug probe request not accepted")
+)

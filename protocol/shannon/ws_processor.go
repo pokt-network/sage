@@ -35,7 +35,10 @@ type frameCallback func(payload []byte, err error, latency time.Duration)
 // stable for the bridge's lifetime — v1 closes the bridge at session
 // boundaries instead of rotating the endpoint or refreshing the session.
 type wsMessageProcessor struct {
-	samples *wsNotificationSamples
+	// evidence marks a debug probe's processor: a response that fails
+	// verification is reported, not blacklisted (debug.go).
+	evidence bool
+	samples  *wsNotificationSamples
 	// topicMu guards topics: frames are counted on the bridge goroutine and
 	// read at release by the rebind handler or the close.
 	topicMu       sync.Mutex
@@ -219,6 +222,10 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	p.protocol.trackRelayMinerError(serviceID, p.endpointAddr, p.supplierAddr, relayResp)
 
 	if err != nil {
+		if p.evidence {
+			// A probe reports a failed verification; it does not act on it.
+			return nil, fmt.Errorf("ws ProcessEndpointMessage: validate: %w", err)
+		}
 		validationErr := p.protocol.handleValidationFailure(
 			serviceID, p.endpointAddr, p.supplierAddr, err, "transport", "websocket",
 		)

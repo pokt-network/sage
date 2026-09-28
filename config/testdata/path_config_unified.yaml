@@ -53,6 +53,8 @@ gateway_config:
         type: evm
         rpc_types: ["json_rpc"]
         sync_allowance: 25
+        debug_reference_url: "https://reference.example/rpc"
+        debug_reference_ws_url: "wss://reference.example/ws"
       - id: unified-osmosis
         type: cosmos
         rpc_types: ["json_rpc", "rest", "comet_bft"]

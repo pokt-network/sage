@@ -38,6 +38,8 @@ type AdminAPI struct {
 	wsRebinder   WSRebinder
 	wsClients    WSClients
 	wsSamples    WSNotificationSamples
+	debugRelay   DebugRelayFunc
+	debugSub     DebugSubscribeFunc
 	blocklist    Blocklist
 	logger       *slog.Logger
 	logLevel     *slog.LevelVar
@@ -199,6 +201,10 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/websocket/rebind/{serviceID}", a.handleWebSocketRebind)
 	mux.HandleFunc("GET /admin/websocket/clients", a.handleWebSocketClients)
 	mux.HandleFunc("GET /admin/websocket/notification-samples", a.handleWebSocketNotificationSamples)
+
+	// Pinned-supplier probe (admin_debug.go)
+	mux.HandleFunc("POST /admin/debug/relay", a.handleDebugRelay)
+	mux.HandleFunc("POST /admin/debug/ws-subscribe", a.handleDebugSubscribe)
 
 	// Request-shape sampler
 	mux.HandleFunc("GET /admin/request-sample", a.handleListRequestSamples)

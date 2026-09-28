@@ -324,6 +324,16 @@ type ServiceConfig struct {
 	// per block that starves every endpoint except the one that reported last.
 	// See qos/solana.defaultSyncAllowance.
 	SyncAllowance uint64 `yaml:"sync_allowance"`
+	// DebugReferenceURL is a plain HTTP JSON-RPC endpoint for this chain that
+	// the admin debug probe can name as target "reference" (POST
+	// /admin/debug/relay), to compare suppliers' answers with an independent
+	// node's. Unsigned and outside Pocket: never used for client traffic, and
+	// never logged or returned, since RPC URLs often carry an API key. Empty
+	// means the probe has no reference for this service.
+	DebugReferenceURL string `yaml:"debug_reference_url"`
+	// DebugReferenceWSURL is the WebSocket counterpart of DebugReferenceURL,
+	// for POST /admin/debug/ws-subscribe with target "reference".
+	DebugReferenceWSURL string `yaml:"debug_reference_ws_url"`
 	// LatencyProfile is parsed and not implemented. It names an entry in
 	// gateway_config.latency_profiles, which is itself not wired.
 	LatencyProfile string `yaml:"latency_profile"`

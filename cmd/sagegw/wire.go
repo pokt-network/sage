@@ -216,6 +216,21 @@ func serviceIDsFrom(cfg *config.Config) []domain.ServiceID {
 
 // serviceRPCTypesFrom maps each configured service to the RPC types it
 // declares.
+// debugReferencesFrom collects each service's debug_reference_url and
+// debug_reference_ws_url, the probe's "reference" target.
+func debugReferencesFrom(cfg *config.Config) (httpRefs, wsRefs map[domain.ServiceID]string) {
+	httpRefs, wsRefs = map[domain.ServiceID]string{}, map[domain.ServiceID]string{}
+	for _, svc := range cfg.Gateway.AllServices() {
+		if svc.DebugReferenceURL != "" {
+			httpRefs[domain.ServiceID(svc.ID)] = svc.DebugReferenceURL
+		}
+		if svc.DebugReferenceWSURL != "" {
+			wsRefs[domain.ServiceID(svc.ID)] = svc.DebugReferenceWSURL
+		}
+	}
+	return httpRefs, wsRefs
+}
+
 func serviceRPCTypesFrom(cfg *config.Config) map[domain.ServiceID][]domain.RPCType {
 	out := make(map[domain.ServiceID][]domain.RPCType)
 	for _, svc := range cfg.Gateway.AllServices() {
@@ -1047,6 +1062,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	var wsRelayer router.WebSocketOpener
 	var wsClients router.WSClients
 	var wsSamples router.WSNotificationSamples
+	var debugSub router.DebugSubscribeFunc
 	if app.Protocol != nil {
 		// Each field resolves its own default. The struct-wide check this
 		// replaced applied defaults only when *nothing* was set, so tuning one
@@ -1071,6 +1087,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			return relayer.Clients(serviceID, limit, onlyShopping)
 		}
 		wsSamples = func(serviceID domain.ServiceID) any { return relayer.NotificationSamples(serviceID) }
+		debugSub = func(ctx context.Context, serviceID domain.ServiceID, target string, subscribe []byte, d time.Duration, maxEvents int, withPayload, withSigned bool) (any, error) {
+			return relayer.DebugSubscribe(ctx, serviceID, target, subscribe, shannon.DebugSubscribeOptions{
+				Duration: d, MaxEvents: maxEvents, IncludePayload: withPayload, IncludeSigned: withSigned,
+			})
+		}
 		prometheus.MustRegister(metrics.NewWebSocketShoppingGauge(relayer.ShoppingClients))
 		// Recovery probes: the only way back for a demoted WebSocket key,
 		// which gets no connections to earn score from (see ws_probe.go).
@@ -1103,6 +1124,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 	if wsSamples != nil {
 		app.Admin.SetWebSocketNotificationSamples(wsSamples)
+	}
+	if app.Protocol != nil {
+		refHTTP, refWS := debugReferencesFrom(cfg)
+		app.Protocol.SetDebugReferences(refHTTP, refWS)
+		app.Admin.SetDebugProbe(func(ctx context.Context, serviceID domain.ServiceID, target string, rpcType domain.RPCType, body []byte) (any, error) {
+			return app.Protocol.DebugRelay(ctx, serviceID, target, rpcType, body)
+		}, debugSub)
 	}
 	if app.blocklist != nil {
 		app.Admin.SetBlocklist(app.blocklist)

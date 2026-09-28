@@ -87,6 +87,9 @@ type Protocol struct {
 	// rpcFallbacks is the per-service rpc_type_fallbacks mapping, consulted by
 	// endpointURL wherever a relay is addressed. Nil when no service sets one.
 	rpcFallbacks rpcFallbackTable
+	// Debug probe (debug.go): reference endpoints and the probe's caps.
+	debugRefHTTP, debugRefWS map[domain.ServiceID]string
+	debugLimits              *debugLimits
 	// ruledOut reports an endpoint reputation has ranked out for an RPC type;
 	// nil means nothing is. See SetRuledOut.
 	ruledOut func(domain.ServiceID, domain.EndpointAddr, domain.RPCType) bool
@@ -149,6 +152,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 		grpc:             newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
 		metrics:          noopSupplierMetrics{},
 		rpcFallbacks:     buildRPCFallbacks(cfg.Gateway.AllServices()),
+		debugLimits:      newDebugLimits(),
 		blockedSuppliers: buildBlockedSuppliers(cfg.Gateway.AllServices()),
 		endpointPolicy:   newEndpointPolicy(cfg.Gateway.EndpointPolicy),
 		logger:           logger.With("component", "shannon_protocol"),
@@ -218,6 +222,30 @@ func (p *Protocol) SendRelay(
 	serviceID domain.ServiceID,
 	endpointAddr domain.EndpointAddr,
 	payload domain.Payload,
+) (*domain.Response, error) {
+	return p.sendRelay(ctx, serviceID, endpointAddr, payload, nil)
+}
+
+// relayEvidence collects what a debug relay needs to prove who served what:
+// the signed request and the signed response exactly as they crossed the
+// wire, the session they were signed for, and where they went. A relay that
+// carries it is evidence-gathering, so it changes no routing state: a failed
+// validation is reported, not blacklisted.
+type relayEvidence struct {
+	Request    []byte
+	Response   []byte
+	Session    *sessiontypes.SessionHeader
+	URL        string
+	Supplier   string
+	HTTPStatus int
+}
+
+func (p *Protocol) sendRelay(
+	ctx context.Context,
+	serviceID domain.ServiceID,
+	endpointAddr domain.EndpointAddr,
+	payload domain.Payload,
+	ev *relayEvidence,
 ) (*domain.Response, error) {
 	start := time.Now()
 
@@ -292,6 +320,10 @@ func (p *Protocol) SendRelay(
 			"endpoint is at a blocked domain", nil, false)
 	}
 
+	if ev != nil {
+		ev.Session, ev.URL, ev.Supplier = session.Header, url, ep.Supplier()
+	}
+
 	// Build the HTTP request to embed in the relay payload. The SDK serializes
 	// the URL and verb verbatim, and the relay miner replays both against its
 	// backend — so a REST or CometBFT path dropped here is a request the
@@ -347,6 +379,9 @@ func (p *Protocol) SendRelay(
 	if err != nil {
 		return nil, domain.NewRelayError(domain.ErrProtocol, "failed to marshal relay request", err, false)
 	}
+	if ev != nil {
+		ev.Request = reqBz
+	}
 	tHTTP := time.Now()
 	signDur := tHTTP.Sub(tSign)
 
@@ -390,6 +425,9 @@ func (p *Protocol) SendRelay(
 		if err != nil {
 			return nil, err
 		}
+		if ev != nil {
+			ev.Response, ev.HTTPStatus = respBz, httpStatus
+		}
 
 		// A non-2xx status is the relay MINER erroring before it produced a
 		// signed RelayResponse (overload -> 503, its own 500, payload too large
@@ -423,7 +461,13 @@ func (p *Protocol) SendRelay(
 	// and branching on err would discard it.
 	p.trackRelayMinerError(serviceID, endpointAddr, ep.Supplier(), relayResp)
 
+	if ev != nil && ev.Response == nil {
+		ev.Response = respBz
+	}
 	if err != nil {
+		if ev != nil {
+			return nil, domain.NewRelayError(validationErrorKind(err), "upstream response failed verification", err, true)
+		}
 		return nil, p.handleValidationFailure(serviceID, endpointAddr, ep.Supplier(), err, "http_status", httpStatus)
 	}
 
