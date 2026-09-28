@@ -145,6 +145,18 @@ func AffiliatesOf(eps ...EndpointAddr) Affiliates {
 	return a
 }
 
+// Party is who stands behind an endpoint when counting independent sources:
+// its owner when the endpoint's domain is dedicated to that owner (two brands
+// of one owner are one party, as for Affiliates), otherwise its operator.
+// Empty when the address has no operator.
+func (e EndpointAddr) Party() string {
+	op := e.Operator()
+	if owner := dedicatedOwner(op); owner != "" && owner == e.Owner() {
+		return owner
+	}
+	return op
+}
+
 // Add adds one endpoint's operator, and its owner when the endpoint's domain
 // is dedicated to that owner.
 func (a *Affiliates) Add(ep EndpointAddr) {

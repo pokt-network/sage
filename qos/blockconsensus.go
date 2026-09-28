@@ -2,6 +2,7 @@ package qos
 
 import (
 	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -234,15 +235,7 @@ func (bc *BlockConsensus) computePerceived(now time.Time) uint64 {
 		return bc.applyExternalFloor(0, now)
 	}
 
-	// Collect heights.
-	heights := make([]uint64, len(bc.observations))
-	for i, obs := range bc.observations {
-		heights[i] = obs.Height
-	}
-	sort.Slice(heights, func(i, j int) bool { return heights[i] < heights[j] })
-
-	// Median.
-	median := heights[len(heights)/2]
+	median := partyMedian(bc.observations)
 
 	// Outlier threshold: median + (syncAllowance * 3).
 	//
@@ -259,13 +252,53 @@ func (bc *BlockConsensus) computePerceived(now time.Time) uint64 {
 
 	// Perceived = max of non-outlier heights.
 	var perceived uint64
-	for _, h := range heights {
-		if h <= outlierCap && h > perceived {
+	for _, obs := range bc.observations {
+		if h := obs.Height; h <= outlierCap && h > perceived {
 			perceived = h
 		}
 	}
 
 	return bc.applyExternalFloor(perceived, now)
+}
+
+// partyMedian is the median the outlier cap is measured from: each party
+// casts one vote, the median of its own observations, and the result is the
+// lower median of the votes. A pool of one operator gets exactly the median
+// of every observation, as before.
+//
+// One vote per operator, because the median of every observation weighs an
+// operator by how many endpoints it staked. On mainnet metis (2026-09-28) one
+// operator held 41 of 50 endpoints, all on a node 79,000 blocks behind: the
+// median was that node's height, the in-sync operators sat 79,000 above it and
+// were cut as outliers, and perceived was the stale height — held up only by
+// the external floor, and not at all in the grace minute after each boot,
+// when every stale endpoint passed the height filter.
+//
+// An operator is a party (domain.EndpointAddr.Party): two brands of one owner
+// cast one vote, not two.
+//
+// The lower median across votes, because with one vote each a liar needs only
+// half the parties to reach the upper median: with two, one of them. The lower
+// median makes it a strict majority — and so an even split between parties in
+// sync and parties behind resolves to the ones behind, leaving the external
+// floor as the tiebreaker. Endpoints with no operator (bare test addresses)
+// vote alone.
+func partyMedian(observations []blockObs) uint64 {
+	byOperator := make(map[string][]uint64)
+	for _, obs := range observations {
+		key := obs.Endpoint.Party()
+		if key == "" {
+			key = string(obs.Endpoint)
+		}
+		byOperator[key] = append(byOperator[key], obs.Height)
+	}
+	votes := make([]uint64, 0, len(byOperator))
+	for _, heights := range byOperator {
+		slices.Sort(heights)
+		votes = append(votes, heights[len(heights)/2])
+	}
+	slices.Sort(votes)
+	return votes[(len(votes)-1)/2]
 }
 
 // applyExternalFloor applies the external floor if past the grace period.

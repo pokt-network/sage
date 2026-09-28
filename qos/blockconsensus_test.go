@@ -2,6 +2,7 @@ package qos
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"math"
 	"strings"
@@ -334,5 +335,63 @@ func TestChainView_ReportsTheExternalFloor(t *testing.T) {
 	bc.SetExternalFloor(150)
 	if got := bc.ChainView().ExternalFloor; got != 150 {
 		t.Fatalf("floor = %d, want 150 reported whether or not it has engaged", got)
+	}
+}
+
+// An operator that stakes most of a pool on one lagging node must not become
+// the median and cut the in-sync operators as outliers (mainnet metis,
+// 2026-09-28: 41 of 50 endpoints on one operator 79,000 blocks behind).
+func TestBlockConsensus_OneVotePerOperator(t *testing.T) {
+	bc := NewBlockConsensus(nil, 10)
+	for i := range 41 {
+		bc.AddObservation(domain.EndpointAddr(fmt.Sprintf("s%d-https://n%d.behind.net", i, i%7)), 1000)
+	}
+	for i := range 7 {
+		bc.AddObservation(domain.EndpointAddr(fmt.Sprintf("k%d-https://rm0%d.fresh.tech", i, i%2)), 80_000)
+	}
+	bc.AddObservation("g1-https://s1.other.xyz", 80_001)
+	bc.AddObservation("g2-https://s2.other.xyz", 80_000)
+	if got := bc.PerceivedBlock(); got != 80_001 {
+		t.Fatalf("perceived = %d, want 80001: two in-sync operators outvote one lagging operator however many endpoints it stakes", got)
+	}
+}
+
+// One vote each must not hand the head to a liar: with two operators the
+// lower median is the honest one, so the liar stays an outlier.
+func TestBlockConsensus_TwoOperatorsLiarStaysOutlier(t *testing.T) {
+	bc := NewBlockConsensus(nil, 10)
+	bc.AddObservation("h1-https://a.honest.net", 1000)
+	bc.AddObservation("h2-https://b.honest.net", 1001)
+	bc.AddObservation("x1-https://a.liar.io", 50_000)
+	if got := bc.PerceivedBlock(); got != 1001 {
+		t.Fatalf("perceived = %d, want 1001", got)
+	}
+}
+
+// Two brands of one owner are one party: they cast one vote, so they cannot
+// outvote a single independent operator.
+func TestBlockConsensus_BrandsOfOneOwnerVoteOnce(t *testing.T) {
+	for tag, brand := range map[string]string{"ba": "brand-a.io", "bb": "brand-b.io"} {
+		for i := range 5 {
+			domain.RecordOwner(fmt.Sprintf("pokt1%s%d", tag, i), "pokt1ownerx", brand)
+		}
+	}
+	bc := NewBlockConsensus(nil, 10)
+	bc.AddObservation("pokt1ba0-https://r1.brand-a.io", 50_000)
+	bc.AddObservation("pokt1bb0-https://s1.brand-b.io", 50_000)
+	bc.AddObservation("h1-https://a.honest.net", 1000)
+	if got := bc.PerceivedBlock(); got != 1000 {
+		t.Fatalf("perceived = %d, want 1000: one owner behind two brands is one vote", got)
+	}
+}
+
+// An even split between parties in sync and parties behind resolves to the
+// ones behind; the external floor is the tiebreaker.
+func TestBlockConsensus_EvenSplitFavoursTheLaggingSide(t *testing.T) {
+	bc := NewBlockConsensus(nil, 10)
+	bc.AddObservation("a1-https://n1.behind.net", 1000)
+	bc.AddObservation("b1-https://rm01.fresh.tech", 80_000)
+	if got := bc.PerceivedBlock(); got != 1000 {
+		t.Fatalf("perceived = %d, want 1000", got)
 	}
 }
