@@ -322,3 +322,21 @@ func TestBridge_SessionRolloverDoesNotCountTowardLimit(t *testing.T) {
 	default:
 	}
 }
+
+// The limit counts losses inside rebindWindow only: a connection that lost
+// three suppliers hours ago is not refused its next rollover, while one that
+// lost three in the last few minutes still is.
+func TestBridge_RebindLimitCountsRecentLossesOnly(t *testing.T) {
+	b := &Bridge{
+		endpointLost: func(context.Context, error) (*websocket.Conn, MessageProcessor, [][]byte, error) {
+			return nil, nil, nil, nil
+		},
+		rebindLimit: 3,
+	}
+	now := time.Now()
+	old := now.Add(-2 * rebindWindow)
+	b.losses = []time.Time{old, old, old}
+	require.True(t, b.CanRebind(), "three losses outside the window must not spend the limit")
+	b.losses = []time.Time{now, now, now}
+	require.False(t, b.CanRebind(), "three losses inside the window spend it")
+}

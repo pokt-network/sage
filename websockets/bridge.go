@@ -94,11 +94,11 @@ type Bridge struct {
 	observer Observer
 
 	// endpointLost, when set, is asked for a replacement when the endpoint
-	// side is lost; rebinds counts how many times it succeeded, against
-	// rebindLimit.
+	// side is lost; losses holds when each replacement for a loss succeeded,
+	// and the ones inside rebindWindow count against rebindLimit.
 	endpointLost EndpointLostHandler
 	rebindLimit  int
-	rebinds      int
+	losses       []time.Time
 
 	// stalled, when set, is polled every stallPeriod; true means the
 	// endpoint is delivering nothing the client is waiting for.
@@ -110,6 +110,28 @@ type Bridge struct {
 // through before it is told to reconnect. Three: a pool where the third
 // replacement also dies is not a pool a fourth pick will fix.
 const defaultRebindLimit = 3
+
+// rebindWindow is how far back the limit looks. The limit is there for a
+// pool that keeps dying under one connection, which happens inside minutes;
+// counted over a connection's whole life it instead retired every long-lived
+// connection after three losses spread over hours, at the next session end,
+// where the rollover is refused once the limit is spent. On mainnet
+// (2026-09-28) that was about half of SAGE's own 1012 closes, in bursts at
+// every session boundary.
+const rebindWindow = 10 * time.Minute
+
+// recentLosses is how many loss rebinds fall inside rebindWindow, dropping
+// the older ones. Caller holds endpointMu.
+func (b *Bridge) recentLosses(now time.Time) int {
+	keep := b.losses[:0]
+	for _, t := range b.losses {
+		if now.Sub(t) < rebindWindow {
+			keep = append(keep, t)
+		}
+	}
+	b.losses = keep
+	return len(keep)
+}
 
 // BridgeOption tunes a bridge at StartBridge.
 type BridgeOption func(*Bridge)
@@ -455,9 +477,9 @@ func (b *Bridge) CanRebind() bool {
 	if b.endpointLost == nil {
 		return false
 	}
-	b.endpointMu.RLock()
-	defer b.endpointMu.RUnlock()
-	return b.rebinds < b.rebindLimit
+	b.endpointMu.Lock()
+	defer b.endpointMu.Unlock()
+	return b.recentLosses(time.Now()) < b.rebindLimit
 }
 
 // readLoop continuously reads from conn and sends messages to msgChan.
@@ -536,14 +558,14 @@ func (b *Bridge) rebind(lost *Connection, cause error) {
 		b.endpointMu.Unlock()
 		return // A loop on an endpoint that was already replaced.
 	}
-	if b.rebinds >= b.rebindLimit {
+	if n := b.recentLosses(time.Now()); n >= b.rebindLimit {
 		b.endpointMu.Unlock()
-		b.logger.Warn("websocket: rebind limit reached, closing", "rebinds", b.rebinds, "cause", cause)
+		b.logger.Warn("websocket: rebind limit reached, closing", "rebinds", n, "window", rebindWindow, "cause", cause)
 		b.observe(func(o Observer) { o.Rebound(RebindExhausted) })
 		b.Shutdown(fmt.Errorf("%w: rebind limit %d reached: %w", ErrBridgeEndpointUnavailable, b.rebindLimit, cause))
 		return
 	}
-	b.logger.Warn("websocket: endpoint lost, rebinding", "rebind", b.rebinds+1, "cause", cause)
+	b.logger.Warn("websocket: endpoint lost, rebinding", "rebind", len(b.losses)+1, "cause", cause)
 
 	raw, processor, replay, err := b.endpointLost(b.ctx, cause)
 	if err != nil {
@@ -570,7 +592,7 @@ func (b *Bridge) rebind(lost *Connection, cause error) {
 	if !errors.Is(cause, ErrBridgeSessionExpired) {
 		// A session rollover is a planned move, not evidence of a dying
 		// pool; only losses count toward the limit.
-		b.rebinds++
+		b.losses = append(b.losses, time.Now())
 	}
 	b.endpointMu.Unlock()
 
