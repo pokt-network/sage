@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -15,6 +16,17 @@ import (
 type ScoreLister interface {
 	GetScores(ctx context.Context, serviceID domain.ServiceID) (map[string]float64, error)
 }
+
+// RecentScoreLister reports the scores of keys that received a signal since a
+// time. reputation.Service's implementation satisfies it; the per-operator key
+// count uses it so that count means "recently active", not "ever seen".
+type RecentScoreLister interface {
+	GetScoresSince(ctx context.Context, serviceID domain.ServiceID, since time.Time) map[string]float64
+}
+
+// recentKeyWindow is what "recently active" means for the per-operator key
+// count: about three sessions.
+const recentKeyWindow = time.Hour
 
 // maxScoreSeriesPerService caps how many reputation keys one service may report
 // in a single scrape, after the full-score filter below.
@@ -66,7 +78,6 @@ type ScoreCollector struct {
 	scoreDesc   *prometheus.Desc
 	droppedDesc *prometheus.Desc
 	keysDesc    *prometheus.Desc
-	opMeanDesc  *prometheus.Desc
 	opKeysDesc  *prometheus.Desc
 
 	// operators bounds the operator label of the per-operator families.
@@ -94,18 +105,14 @@ func NewScoreCollector(lister ScoreLister, services []domain.ServiceID, fullScor
 			[]string{"service_id"},
 			nil,
 		),
-		// Per operator, over EVERY key including those at the full score:
-		// the per-key family above leaves those out, so a mean or a share
-		// of low keys cannot be derived from it.
-		opMeanDesc: prometheus.NewDesc(
-			"sage_operator_reputation_mean",
-			"Mean reputation score over every key an operator (the registrable domain of the key's URL) holds for a service and RPC type, keys at the full score included. Only URL-keyed reputation (the default granularity) is aggregated.",
-			[]string{"service_id", "operator", "rpc_type"},
-			nil,
-		),
+		// Per operator, over every recently active key including those at
+		// the full score, which the per-key family above leaves out. At the
+		// default granularity a key is a URL, so this is how many distinct
+		// URLs an operator served from: a layout indicator (one host fronting
+		// many registrations, or one host each), not a quality score.
 		opKeysDesc: prometheus.NewDesc(
 			"sage_operator_reputation_keys",
-			"Reputation keys an operator (the registrable domain of the key's URL) holds for a service and RPC type, keys at the full score included: the denominator for sage_operator_reputation_mean and for any share of low keys.",
+			"Reputation keys that received a signal in the last hour, by service, operator (the registrable domain of the key's URL) and RPC type. At the default per-URL granularity this is how many distinct URLs the operator served from: read it beside sage_session_endpoints as a layout indicator (many registrations behind one host, or one host each), not as a quality score.",
 			[]string{"service_id", "operator", "rpc_type"},
 			nil,
 		),
@@ -124,7 +131,6 @@ func (c *ScoreCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc
 	ch <- c.droppedDesc
 	ch <- c.keysDesc
-	ch <- c.opMeanDesc
 	ch <- c.opKeysDesc
 }
 
@@ -148,25 +154,21 @@ func (c *ScoreCollector) Collect(ch chan<- prometheus.Metric) {
 
 		total := len(scores)
 		keys := make([]string, 0, len(scores))
-		type opKey struct{ op, rpc string }
-		type opSum struct {
-			sum float64
-			n   int
-		}
-		byOp := map[opKey]*opSum{}
 		for k, score := range scores {
 			if score < c.fullScore {
 				keys = append(keys, k)
 			}
+		}
+
+		recent := scores
+		if rl, ok := c.lister.(RecentScoreLister); ok {
+			recent = rl.GetScoresSince(ctx, serviceID, time.Now().Add(-recentKeyWindow))
+		}
+		type opKey struct{ op, rpc string }
+		byOp := map[opKey]int{}
+		for k := range recent {
 			if op, rpc, ok := operatorOfKey(k); ok {
-				ki := opKey{c.operators.value(op), rpc}
-				a := byOp[ki]
-				if a == nil {
-					a = &opSum{}
-					byOp[ki] = a
-				}
-				a.sum += score
-				a.n++
+				byOp[opKey{c.operators.value(op), rpc}]++
 			}
 		}
 
@@ -207,10 +209,8 @@ func (c *ScoreCollector) Collect(ch chan<- prometheus.Metric) {
 			float64(total),
 			sid,
 		)
-		for k, a := range byOp {
-			rpc := sanitizeLabel(k.rpc)
-			ch <- prometheus.MustNewConstMetric(c.opMeanDesc, prometheus.GaugeValue, a.sum/float64(a.n), sid, k.op, rpc)
-			ch <- prometheus.MustNewConstMetric(c.opKeysDesc, prometheus.GaugeValue, float64(a.n), sid, k.op, rpc)
+		for k, n := range byOp {
+			ch <- prometheus.MustNewConstMetric(c.opKeysDesc, prometheus.GaugeValue, float64(n), sid, k.op, sanitizeLabel(k.rpc))
 		}
 	}
 }

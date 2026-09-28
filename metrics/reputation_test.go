@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -243,43 +244,49 @@ func TestNewHydratedGauges(t *testing.T) {
 	}
 }
 
-// The operator mean counts keys at the full score, which the per-key family
-// leaves out; and a non-URL key (per-supplier granularity) is not aggregated.
-func TestScoreCollector_OperatorMeanIncludesFullScoreKeys(t *testing.T) {
-	lister := &fakeScoreLister{scores: map[domain.ServiceID]map[string]float64{
-		"eth": {
-			"https://a.example.com|json_rpc": 100,
-			"https://b.example.com|json_rpc": 100,
-			"https://c.example.com|json_rpc": 40,
-			"https://d.other.net|rest":       70,
-			"pokt1supplier|json_rpc":         10,
-		},
-	}}
+// recentLister is a fakeScoreLister whose recent set is a subset.
+type recentLister struct {
+	fakeScoreLister
+	recent map[string]float64
+}
+
+func (l *recentLister) GetScoresSince(context.Context, domain.ServiceID, time.Time) map[string]float64 {
+	return l.recent
+}
+
+// The per-operator key count covers keys at the full score, only keys active
+// recently, and never a non-URL key (per-supplier granularity).
+func TestScoreCollector_OperatorKeysCountsRecentURLKeys(t *testing.T) {
+	all := map[string]float64{
+		"https://a.example.com|json_rpc": 100,
+		"https://b.example.com|json_rpc": 40,
+		"https://c.example.com|json_rpc": 100,
+		"https://d.other.net|rest":       70,
+		"pokt1supplier|json_rpc":         10,
+	}
+	recent := map[string]float64{
+		"https://a.example.com|json_rpc": 100,
+		"https://b.example.com|json_rpc": 40,
+		"https://d.other.net|rest":       70,
+		"pokt1supplier|json_rpc":         10,
+	}
+	lister := &recentLister{fakeScoreLister{scores: map[domain.ServiceID]map[string]float64{"eth": all}}, recent}
 	mfs := gather(t, NewScoreCollector(lister, []domain.ServiceID{"eth"}, 100))
 
-	values := func(name string) map[string]float64 {
-		out := map[string]float64{}
-		mf := familyByName(mfs, name)
-		if mf == nil {
-			t.Fatalf("%s not reported", name)
+	mf := familyByName(mfs, "sage_operator_reputation_keys")
+	if mf == nil {
+		t.Fatal("sage_operator_reputation_keys not reported")
+	}
+	got := map[string]float64{}
+	for _, m := range mf.GetMetric() {
+		l := map[string]string{}
+		for _, p := range m.GetLabel() {
+			l[p.GetName()] = p.GetValue()
 		}
-		for _, m := range mf.GetMetric() {
-			l := map[string]string{}
-			for _, p := range m.GetLabel() {
-				l[p.GetName()] = p.GetValue()
-			}
-			out[l["operator"]+"|"+l["rpc_type"]] = m.GetGauge().GetValue()
-		}
-		return out
+		got[l["operator"]+"|"+l["rpc_type"]] = m.GetGauge().GetValue()
 	}
-	mean, keys := values("sage_operator_reputation_mean"), values("sage_operator_reputation_keys")
-	if mean["example.com|json_rpc"] != 80 || keys["example.com|json_rpc"] != 3 {
-		t.Errorf("example.com json_rpc: mean %v keys %v, want 80 and 3", mean["example.com|json_rpc"], keys["example.com|json_rpc"])
-	}
-	if mean["other.net|rest"] != 70 || keys["other.net|rest"] != 1 {
-		t.Errorf("other.net rest: mean %v keys %v, want 70 and 1", mean["other.net|rest"], keys["other.net|rest"])
-	}
-	if len(mean) != 2 {
-		t.Errorf("operators = %v, want 2 (the supplier-address key is not an operator)", mean)
+	want := map[string]float64{"example.com|json_rpc": 2, "other.net|rest": 1}
+	if len(got) != len(want) || got["example.com|json_rpc"] != 2 || got["other.net|rest"] != 1 {
+		t.Errorf("keys = %v, want %v", got, want)
 	}
 }

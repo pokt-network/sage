@@ -23,9 +23,10 @@ type State struct {
 	// LastTraffic is the Unix time of the last traffic (non-probe) signal.
 	// While it is recent, a probe success does not move the score.
 	LastTraffic int64 `json:"last_traffic,omitempty"`
-	// UpdatedAt is the Unix time of the write that produced this state. Set by
-	// the write-behind on the way to storage, read by the storage sweep: a
-	// field older than the idle TTL is deleted. Not consulted by scoring.
+	// UpdatedAt is the Unix time of the last signal, stamped again by the
+	// write-behind on the way to storage. Read by the storage sweep (a field
+	// older than the idle TTL is deleted) and by the per-operator key count.
+	// Not consulted by scoring.
 	UpdatedAt int64 `json:"updated_at,omitempty"`
 }
 

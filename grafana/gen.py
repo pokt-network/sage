@@ -157,10 +157,6 @@ PCT_GOOD = ((0, "red"), (80, "yellow"), (95, "green"))
 OA = f'sage_operator_attempts_total{{{S}}}'
 OAB = 'sage_operator_attempt_seconds_bucket{' + S + '}'
 FAULT = 'attribution=~"supplier|unknown"'
-# Registrable domain and RPC type out of a reputation key "https://host[:port][/path]|rpc_type".
-KEY_OPERATOR = ('label_replace(label_replace(sage_endpoint_reputation_score{%s}, "operator", "$1", '
-                '"exported_endpoint", "[a-z]+://(?:[^/|:]*\\\\.)?([^./|:]+\\\\.[^./|:]+)(?::[0-9]+)?(?:/[^|]*)?\\\\|.*"), '
-                '"rpc_type", "$1", "exported_endpoint", ".*\\\\|(.*)")') % S
 
 # ---------------------------------------------------------------------------
 panels.append({
@@ -248,25 +244,30 @@ table(
         ("P50", f'histogram_quantile(0.50, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
         ("P95", f'histogram_quantile(0.95, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
         ("P99", f'histogram_quantile(0.99, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
-        ("KeysLow", f'max by ({by}) (count by ({by}, pod) ({KEY_OPERATOR} < 80))'),
+        ("Eps", f'max by ({by}) (sage_session_endpoints{{{S}}})'),
         ("MeanScore", f'avg by ({by}) (sage_operator_reputation_mean{{{S}}})'),
-        ("Keys", f'max by ({by}) (sage_operator_reputation_keys{{{S}}})'),
+        ("Low", f'max by ({by}) (sage_session_endpoints_low{{{S}}})'),
+        ("URLs", f'max by ({by}) (sage_operator_reputation_keys{{{S}}})'),
         ("Drained", f'max by (service_id, operator, rpc_type) (label_replace(sage_drained_operators{{{S}}}, "operator", "$1", "domain", "(.*)"))'),
     ],
     {"service_id": 1, "operator": 0, "rpc_type": 2, "Value #RPS": 3, "Value #Success": 4, "Value #SupplierErr": 5,
-     "Value #P50": 6, "Value #P95": 7, "Value #P99": 8, "Value #MeanScore": 9, "Value #Keys": 10,
-     "Value #KeysLow": 11, "Value #Drained": 12},
+     "Value #P50": 6, "Value #P95": 7, "Value #P99": 8, "Value #Eps": 9, "Value #MeanScore": 10,
+     "Value #Low": 11, "Value #Drained": 12, "Value #URLs": 13},
     {"operator": "Operator", "service_id": "Service", "rpc_type": "RPC Type", "Value #RPS": "RPS",
      "Value #Success": "Success %", "Value #SupplierErr": "Supplier err/s", "Value #P50": "P50 (ms)",
-     "Value #P95": "P95 (ms)", "Value #P99": "P99 (ms)", "Value #KeysLow": "Keys < 80",
-     "Value #MeanScore": "Mean Score", "Value #Keys": "Keys", "Value #Drained": "Drained"},
+     "Value #P95": "P95 (ms)", "Value #P99": "P99 (ms)", "Value #Eps": "Session eps",
+     "Value #MeanScore": "Mean Score", "Value #Low": "Eps < 80", "Value #Drained": "Drained",
+     "Value #URLs": "URLs (1h)"},
     0, 24, 18, sort="RPS",
     desc="Per operator (registrable domain), service and RPC type, client attempts only. Success % counts a good "
          "answer and a chain or client error the supplier answered honestly; only supplier and unknown "
-         "attributions count against it. Latency is per attempt. Mean Score is the mean over every "
-         "reputation key the operator holds for the service (one per URL and RPC type), averaged across pods; "
-         "Keys is how many keys that is, and Keys < 80 how many of them sit below tier 1 on the worst pod. "
-         "Drained 1 = removed from the pool right now.",
+         "attributions count against it. Latency is per attempt. Session eps is the operator's "
+         "registrations in the current session (PATH's Endpoints); Mean Score is the mean reputation of those "
+         "that have a score, averaged across pods; Eps < 80 is how many of them sit below tier 1. All three "
+         "count registrations, so operators compare whatever their host layout. Drained 1 = removed from the "
+         "pool right now. URLs (1h) is how many distinct URLs the operator served from in the last hour — a "
+         "layout indicator, not a quality score: many registrations behind one host is one failure away from "
+         "losing them all.",
     overrides=[
         col("Success %", unit="percent", mn=0, mx=100, novalue="—", steps=PCT_GOOD, cell=GAUGE, width=120),
         col("RPS", unit="reqps", novalue="0", width=90),
@@ -274,10 +275,11 @@ table(
         col("P50 (ms)", unit="ms", novalue="—", steps=((0, "green"), (500, "yellow"), (1000, "red")), width=90),
         col("P95 (ms)", unit="ms", novalue="—", steps=((0, "green"), (1000, "yellow"), (3000, "red")), width=90),
         col("P99 (ms)", unit="ms", novalue="—", steps=((0, "green"), (2000, "yellow"), (5000, "red")), width=90),
-        col("Keys < 80", novalue="0", steps=((0, "green"), (1, "yellow"), (10, "red")), cell=BG, width=90),
+        col("Session eps", decimals=0, novalue="—", width=100),
+        col("Eps < 80", decimals=0, novalue="0", steps=((0, "green"), (1, "yellow"), (10, "red")), cell=BG, width=90),
+        col("URLs (1h)", decimals=0, novalue="—", width=90),
         col("Mean Score", mn=0, mx=100, decimals=1, novalue="—", steps=((0, "red"), (50, "yellow"), (80, "green")),
             cell={"mode": "lcd", "type": "gauge", "valueDisplayMode": "color"}, width=120),
-        col("Keys", decimals=0, novalue="—", width=70),
         col("Drained", novalue="—", steps=((0, "green"), (1, "red")), cell=BG, width=80),
         col("Operator", width=150), col("Service", width=100), col("RPC Type", width=100),
     ],

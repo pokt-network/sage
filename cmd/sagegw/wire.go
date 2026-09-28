@@ -214,6 +214,18 @@ func serviceIDsFrom(cfg *config.Config) []domain.ServiceID {
 	return ids
 }
 
+// serviceRPCTypesFrom maps each configured service to the RPC types it
+// declares.
+func serviceRPCTypesFrom(cfg *config.Config) map[domain.ServiceID][]domain.RPCType {
+	out := make(map[domain.ServiceID][]domain.RPCType)
+	for _, svc := range cfg.Gateway.AllServices() {
+		for _, t := range svc.RPCTypes {
+			out[domain.ServiceID(svc.ID)] = append(out[domain.ServiceID(svc.ID)], domain.RPCType(t))
+		}
+	}
+	return out
+}
+
 // webSocketServiceIDs lists the services that declare websocket.
 func webSocketServiceIDs(cfg *config.Config) []domain.ServiceID {
 	var ids []domain.ServiceID
@@ -445,6 +457,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// The timeline is bounded by design; this is the gauge that proves it.
 	prometheus.MustRegister(metrics.NewTimelineKeysGauge(timeline.Len))
 	prometheus.MustRegister(metrics.NewOperatorStatsGauge(repSvc.OperatorStatsLen))
+	// What each service's current session holds, per operator: the
+	// registration count PATH's dashboard shows, and the mean score over it.
+	if app.Protocol != nil {
+		prometheus.MustRegister(metrics.NewSessionCollector(app.Protocol, repSvc, serviceRPCTypesFrom(cfg),
+			cfg.Gateway.Reputation.SelectorConfig().Tier1Threshold))
+	}
 
 	// 6b. Method blocks: per-host, per-method memory consulted at selection.
 	// Local memory only — see the methodblock package doc.

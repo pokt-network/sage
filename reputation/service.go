@@ -732,6 +732,10 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 		st.Rate += sc.lambda * (FailureWeight(signal.Type) - st.Rate)
 	}
 	st.Attempts++
+	// When the key last heard anything, probes included: what "active
+	// recently" means to the per-operator key count. The write-behind stamps
+	// it again on the way to storage.
+	st.UpdatedAt = ts.Unix()
 	if !signal.Probe {
 		st.TrafficAttempts++
 		st.LastTraffic = ts.Unix()
@@ -864,6 +868,39 @@ func (s *serviceImpl) GetScore(_ context.Context, serviceID domain.ServiceID, en
 		return s.cfg.InitialScore, nil
 	}
 	return s.effectiveFor(serviceID, key, st), nil
+}
+
+// GetScoresSince is GetScores restricted to keys that received a signal at or
+// after since. The score cache never forgets a key, so without this a count of
+// keys grows with every URL a pod has ever scored.
+func (s *serviceImpl) GetScoresSince(_ context.Context, serviceID domain.ServiceID, since time.Time) map[string]float64 {
+	cut := since.Unix()
+	result := make(map[string]float64)
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for key, st := range sh.cache[serviceID] {
+			if st.UpdatedAt >= cut {
+				result[key] = s.effectiveFor(serviceID, key, st)
+			}
+		}
+		sh.mu.RUnlock()
+	}
+	return result
+}
+
+// ScoreOf is an endpoint's effective score for an RPC type, and whether one
+// has been recorded: an unscored endpoint reports false, not InitialScore.
+func (s *serviceImpl) ScoreOf(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) (float64, bool) {
+	key := s.keyOf(endpoint, rpcType)
+	sh := s.shard(key)
+	sh.mu.RLock()
+	st, ok := sh.cache[serviceID][key]
+	sh.mu.RUnlock()
+	if !ok {
+		return 0, false
+	}
+	return s.effectiveFor(serviceID, key, st), true
 }
 
 // GetScores returns all cached scores for the given service, keyed by

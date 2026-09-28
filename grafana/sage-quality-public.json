@@ -1168,7 +1168,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per operator (registrable domain), service and RPC type, client attempts only. Success % counts a good answer and a chain or client error the supplier answered honestly; only supplier and unknown attributions count against it. Latency is per attempt. Mean Score is the mean over every reputation key the operator holds for the service (one per URL and RPC type), averaged across pods; Keys is how many keys that is, and Keys < 80 how many of them sit below tier 1 on the worst pod. Drained 1 = removed from the pool right now.",
+      "description": "Per operator (registrable domain), service and RPC type, client attempts only. Success % counts a good answer and a chain or client error the supplier answered honestly; only supplier and unknown attributions count against it. Latency is per attempt. Session eps is the operator's registrations in the current session (PATH's Endpoints); Mean Score is the mean reputation of those that have a score, averaged across pods; Eps < 80 is how many of them sit below tier 1. All three count registrations, so operators compare whatever their host layout. Drained 1 = removed from the pool right now. URLs (1h) is how many distinct URLs the operator served from in the last hour \u2014 a layout indicator, not a quality score: many registrations behind one host is one failure away from losing them all.",
       "type": "table",
       "title": "HTTP Supplier Quality \u2014 excludes WebSocket",
       "id": 20,
@@ -1446,12 +1446,36 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Keys < 80"
+              "options": "Session eps"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "\u2014"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Eps < 80"
             },
             "properties": [
               {
                 "id": "noValue",
                 "value": "0"
+              },
+              {
+                "id": "decimals",
+                "value": 0
               },
               {
                 "id": "thresholds",
@@ -1479,6 +1503,26 @@
                   "mode": "gradient",
                   "type": "color-background"
                 }
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "URLs (1h)"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "\u2014"
+              },
+              {
+                "id": "decimals",
+                "value": 0
               },
               {
                 "id": "custom.width",
@@ -1539,26 +1583,6 @@
               {
                 "id": "custom.width",
                 "value": 120
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Keys"
-            },
-            "properties": [
-              {
-                "id": "noValue",
-                "value": "\u2014"
-              },
-              {
-                "id": "decimals",
-                "value": 0
-              },
-              {
-                "id": "custom.width",
-                "value": 70
               }
             ]
           },
@@ -1729,8 +1753,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (service_id, operator, rpc_type) (count by (service_id, operator, rpc_type, pod) (label_replace(label_replace(sage_endpoint_reputation_score{job=\"sage\", environment=\"mainnet-sage\"}, \"operator\", \"$1\", \"exported_endpoint\", \"[a-z]+://(?:[^/|:]*\\\\.)?([^./|:]+\\\\.[^./|:]+)(?::[0-9]+)?(?:/[^|]*)?\\\\|.*\"), \"rpc_type\", \"$1\", \"exported_endpoint\", \".*\\\\|(.*)\") < 80))",
-          "refId": "KeysLow",
+          "expr": "max by (service_id, operator, rpc_type) (sage_session_endpoints{job=\"sage\", environment=\"mainnet-sage\"})",
+          "refId": "Eps",
           "format": "table",
           "instant": true,
           "range": false
@@ -1753,8 +1777,20 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
+          "expr": "max by (service_id, operator, rpc_type) (sage_session_endpoints_low{job=\"sage\", environment=\"mainnet-sage\"})",
+          "refId": "Low",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
           "expr": "max by (service_id, operator, rpc_type) (sage_operator_reputation_keys{job=\"sage\", environment=\"mainnet-sage\"})",
-          "refId": "Keys",
+          "refId": "URLs",
           "format": "table",
           "instant": true,
           "range": false
@@ -1803,10 +1839,11 @@
               "Value #P50": 6,
               "Value #P95": 7,
               "Value #P99": 8,
-              "Value #MeanScore": 9,
-              "Value #Keys": 10,
-              "Value #KeysLow": 11,
-              "Value #Drained": 12
+              "Value #Eps": 9,
+              "Value #MeanScore": 10,
+              "Value #Low": 11,
+              "Value #Drained": 12,
+              "Value #URLs": 13
             },
             "renameByName": {
               "operator": "Operator",
@@ -1818,10 +1855,11 @@
               "Value #P50": "P50 (ms)",
               "Value #P95": "P95 (ms)",
               "Value #P99": "P99 (ms)",
-              "Value #KeysLow": "Keys < 80",
+              "Value #Eps": "Session eps",
               "Value #MeanScore": "Mean Score",
-              "Value #Keys": "Keys",
-              "Value #Drained": "Drained"
+              "Value #Low": "Eps < 80",
+              "Value #Drained": "Drained",
+              "Value #URLs": "URLs (1h)"
             }
           }
         }

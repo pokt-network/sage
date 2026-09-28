@@ -916,3 +916,24 @@ func TestService_Retune(t *testing.T) {
 	}
 	assert.True(t, picked[ep1], "the retuned tier-1 threshold is in force for selection")
 }
+
+// ScoreOf says whether a score was recorded instead of answering InitialScore,
+// and GetScoresSince leaves out keys nothing has signalled since the cut.
+func TestService_ScoreOfAndGetScoresSince(t *testing.T) {
+	svc := NewService(NewMemoryStorage(), nil, DefaultServiceConfig())
+	ctx := context.Background()
+	seen := domain.EndpointAddr("s1-https://seen.example.com")
+	if _, ok := svc.ScoreOf("eth", seen, domain.RPCTypeJSONRPC); ok {
+		t.Fatal("an unscored endpoint must report no score")
+	}
+	_ = svc.RecordSignal(ctx, "eth", seen, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0))
+	if _, ok := svc.ScoreOf("eth", seen, domain.RPCTypeJSONRPC); !ok {
+		t.Fatal("a signalled endpoint must report its score")
+	}
+	if n := len(svc.GetScoresSince(ctx, "eth", time.Now().Add(-time.Minute))); n != 1 {
+		t.Errorf("keys since a minute ago = %d, want 1", n)
+	}
+	if n := len(svc.GetScoresSince(ctx, "eth", time.Now().Add(time.Minute))); n != 0 {
+		t.Errorf("keys since a minute from now = %d, want 0", n)
+	}
+}
