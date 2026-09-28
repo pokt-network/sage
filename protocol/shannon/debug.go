@@ -45,6 +45,9 @@ const (
 	DebugMaxPayload = 64 << 10
 	// debugTargetReference names the configured reference endpoint.
 	debugTargetReference = "reference"
+	// debugReferenceTimeout bounds a reference relay: the admin server sets
+	// no timeouts, so a hung reference would otherwise hold its caller.
+	debugReferenceTimeout = 30 * time.Second
 )
 
 // DebugSession is the session a probe was signed for.
@@ -214,6 +217,8 @@ func (p *Protocol) debugReferenceRelay(ctx context.Context, serviceID domain.Ser
 		return res, fmt.Errorf("%w: no debug_reference_url for %s", protocol.ErrDebugTargetNotFound, serviceID)
 	}
 	res.Target = DebugTarget{Endpoint: debugTargetReference}
+	ctx, cancel := context.WithTimeout(ctx, debugReferenceTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		res.Error = "reference request could not be built"
