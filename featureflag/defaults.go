@@ -88,6 +88,18 @@ const (
 	// for concentrating traffic, so this is its live undo, globally or per
 	// service. Off, a 408 is still retried, just not scored.
 	FlagPenalize408 = "penalize_408"
+	// FlagCircuitBreakUpstream lets a supplier's relay-miner timeout (HTTP
+	// 408) or 5xx count toward the circuit breaker's failure-rate gate, so a
+	// host failing a fifth of its relays within 30s is taken out of selection
+	// for a while instead of being sent traffic through the whole outage.
+	// Without it the gate only sees connect failures and malformed answers,
+	// and an operator whose relay miners answer 408/5xx in bursts keeps its
+	// share until scoring demotes each key one by one. The gate is per
+	// hostname, so an operator's hosts trip one by one; an operator-wide trip
+	// is the upgrade if that proves slow. Off by default: a host that answers
+	// 408 to most relays all the time is removed at every TTL expiry,
+	// escalating to 30 minutes, which is a stronger policy than scoring.
+	FlagCircuitBreakUpstream = "circuit_break_upstream"
 	// FlagRelativeChronic measures a key's chronic-failure penalty from the
 	// best failure rate in its (service, RPC type) pool rather than from zero,
 	// so a timeout tail every operator shares does not floor all of them. On
@@ -148,6 +160,7 @@ var DefaultFlags = map[string]bool{
 	FlagAutoDrain:              false,
 	FlagAutoDrainShadow:        true,
 	FlagPenalize408:            true,
+	FlagCircuitBreakUpstream:   false,
 	FlagRelativeChronic:        true,
 	FlagOperatorChronic:        false,
 	FlagQuorum:                 false,

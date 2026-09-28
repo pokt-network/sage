@@ -236,6 +236,13 @@ in, remembered for 60 minutes past the break's own expiry. `Clear` drops that hi
 along with the break, so undoing a false positive does not leave the domain primed to
 re-break as a repeat offender.
 
+What asks for a break: connect failures, empty/HTML/fabricated answers, and — with
+`circuit_break_upstream` on for the service (default off) — the relay miner's own 408
+and 5xx, so an operator failing in bursts leaves selection within about 30s instead of
+keeping its share for the whole outage. If every domain in a request's pool is broken,
+the filter fails open and hands scoring the whole list: an all-broken pool is more
+likely a chain-wide slowdown than every operator down at once.
+
 ### Feature Flags
 
 `featureflag/` provides runtime toggles without redeployment:
@@ -245,6 +252,7 @@ re-break as a repeat offender.
 | retry | on | Retry with endpoint rotation |
 | hedge | on | Parallel race (primary + delayed secondary) |
 | circuit_breaker | on | Domain-wide broken tracking |
+| circuit_break_upstream | off | A relay miner's 408/5xx counts toward the circuit breaker's rate gate |
 | method_blocks | on | Per-host, per-method memory: a host that timed out on a method stops receiving it for a TTL |
 | latency_tiebreak | on | Inside tier 1 of selection, a faster host is asked more often than a slower equal, by the per-key latency EWMA; scores stay latency-blind |
 | singleflight | on | Coalesce identical concurrent requests |

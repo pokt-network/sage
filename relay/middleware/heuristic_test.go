@@ -59,6 +59,43 @@ func TestHeuristic_Penalize408FlagIsTheUndo(t *testing.T) {
 	}
 }
 
+// circuit_break_upstream hands a relay miner's 408 and 5xx to the circuit
+// breaker; off, neither asks for a break. A backend's own server error never
+// does.
+func TestHeuristic_CircuitBreakUpstreamFlag(t *testing.T) {
+	status408 := func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{Body: []byte(`<html>408</html>`), HTTPStatusCode: 408}
+		return nil
+	}
+	miner502 := func(*relay.Context) error {
+		return domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable", &domain.UpstreamStatusError{Status: 502}, true)
+	}
+	backend500 := func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"server error"}}`), HTTPStatusCode: 500}
+		return nil
+	}
+	for _, tc := range []struct {
+		name  string
+		inner relay.HandlerFunc
+		want  bool
+	}{
+		{"http_408", status408, true},
+		{"upstream_5xx", miner502, true},
+		{"backend 500", backend500, false},
+	} {
+		for _, on := range []bool{true, false} {
+			flags := newMockFlags(map[string]bool{"heuristic": true, "penalize_408": true, "circuit_break_upstream": on})
+			ctx := newCtx(newPOSTRequest("/v1", ""))
+			ctx.ServiceID = "bsc"
+			ctx.RPCType = domain.RPCTypeJSONRPC
+			_ = middleware.Heuristic(flags, nil)(tc.inner).HandleRelay(ctx)
+			if r := ctx.HeuristicResult; r == nil || r.ShouldCircuitBreak != (tc.want && on) {
+				t.Errorf("%s, flag %v: result %+v", tc.name, on, r)
+			}
+		}
+	}
+}
+
 func TestHeuristic_500Response_TriggersRetry(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
 	mw := middleware.Heuristic(flags, nil)

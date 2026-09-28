@@ -50,6 +50,7 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, opts ...Heur
 						ctx.Err = err
 					}
 				}
+				breakUpstream(flags, ctx, &result)
 				ctx.HeuristicResult = &result
 				return err
 			}
@@ -104,6 +105,7 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, opts ...Heur
 				result.ShouldPenalize = false
 			}
 
+			breakUpstream(flags, ctx, &result)
 			ctx.HeuristicResult = &result
 
 			if result.ShouldRetry && result.Attribution == heuristic.AttrBlockchain {
@@ -236,4 +238,14 @@ func refineVerdict(registry *qos.Registry, ctx *relay.Context, result *heuristic
 func namedMethod(registry *qos.Registry, ctx *relay.Context) bool {
 	m := normalizedMethod(registry, ctx)
 	return m != "" && m != qos.MethodOther
+}
+
+// breakUpstream hands a relay miner's own failure answers — its 408 and its
+// 5xx — to the circuit breaker's rate gate while circuit_break_upstream is on
+// for the service (see the flag). A backend's answer never qualifies.
+func breakUpstream(flags featureflag.FlagStore, ctx *relay.Context, result *heuristic.AnalysisResult) {
+	if (result.Reason == "http_408" || result.Reason == "upstream_5xx") && result.Attribution == heuristic.AttrSupplier &&
+		flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagCircuitBreakUpstream, ctx.ServiceID) {
+		result.ShouldCircuitBreak = true
+	}
 }
