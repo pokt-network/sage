@@ -129,6 +129,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 
 			// Build a clone for the hedge with a different endpoint excluded.
 			hedgeCtx := ctx.Clone()
+			hedgeCtx.AttemptKind = relay.AttemptHedge
 			// Exclude the primary's current endpoint so the hedge picks a
 			// different one, and prefer a different OPERATOR: the point of a
 			// hedge is a second, independent path to an answer, and two

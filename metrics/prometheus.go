@@ -46,48 +46,49 @@ type Recorder struct {
 	// what callers saw rather than what one attempt did.
 	clientRequestHook atomic.Pointer[func(domain.ServiceID, int)]
 
-	relayTotal            *prometheus.CounterVec
-	clientRequestsTotal   *prometheus.CounterVec
-	rpcTypeTotal          *prometheus.CounterVec
-	rpcTypeMismatchTotal  *prometheus.CounterVec
-	relayLatency          *prometheus.HistogramVec
-	retryTotal            *prometheus.CounterVec
-	retryResolutionTotal  *prometheus.CounterVec
-	hedgeTotal            *prometheus.CounterVec
-	cacheHits             *prometheus.CounterVec
-	cacheMisses           *prometheus.CounterVec
-	singleflightCoalesced *prometheus.CounterVec
-	degradedTotal         *prometheus.CounterVec
-	circuitBreaks         *prometheus.CounterVec
-	circuitBreakerOutcome *prometheus.CounterVec
-	supplierBlacklists    *prometheus.CounterVec
-	relayMinerErrors      *prometheus.CounterVec
-	oversizedResponses    *prometheus.CounterVec
-	responseBytes         *prometheus.HistogramVec
-	batchPayloads         *prometheus.HistogramVec
-	batchCapped           *prometheus.CounterVec
-	batchSeconds          *prometheus.HistogramVec
-	batchDisconnects      *prometheus.CounterVec
-	quorumRequests        *prometheus.CounterVec
-	selectionTiers        *prometheus.CounterVec
-	reputationWriteDrops  *prometheus.CounterVec
-	quorumDissent         *prometheus.CounterVec
-	batchSubRelays        prometheus.Gauge
-	batchResponseBytes    prometheus.Gauge
-	autoDrains            *prometheus.CounterVec
-	methodBlockEvents     *prometheus.CounterVec
-	reputationAttempts    *prometheus.CounterVec
-	heuristicVerdicts     *prometheus.CounterVec
-	operatorAttempts      *prometheus.CounterVec
-	operatorLatency       *prometheus.HistogramVec
-	externalSourceFails   *prometheus.CounterVec
-	clientLatency         *prometheus.HistogramVec
-	stageSeconds          *prometheus.CounterVec
-	healthCheckResults    *prometheus.CounterVec
-	healthCheckSkipped    *prometheus.CounterVec
-	healthCheckCycle      prometheus.Histogram
-	healthCheckLastCycle  *prometheus.GaugeVec
-	healthCheckOverruns   prometheus.Counter
+	relayTotal             *prometheus.CounterVec
+	clientRequestsTotal    *prometheus.CounterVec
+	rpcTypeTotal           *prometheus.CounterVec
+	rpcTypeMismatchTotal   *prometheus.CounterVec
+	relayLatency           *prometheus.HistogramVec
+	retryTotal             *prometheus.CounterVec
+	retryResolutionTotal   *prometheus.CounterVec
+	hedgeTotal             *prometheus.CounterVec
+	cacheHits              *prometheus.CounterVec
+	cacheMisses            *prometheus.CounterVec
+	singleflightCoalesced  *prometheus.CounterVec
+	degradedTotal          *prometheus.CounterVec
+	circuitBreaks          *prometheus.CounterVec
+	circuitBreakerOutcome  *prometheus.CounterVec
+	supplierBlacklists     *prometheus.CounterVec
+	relayMinerErrors       *prometheus.CounterVec
+	oversizedResponses     *prometheus.CounterVec
+	responseBytes          *prometheus.HistogramVec
+	batchPayloads          *prometheus.HistogramVec
+	batchCapped            *prometheus.CounterVec
+	batchSeconds           *prometheus.HistogramVec
+	batchDisconnects       *prometheus.CounterVec
+	quorumRequests         *prometheus.CounterVec
+	selectionTiers         *prometheus.CounterVec
+	reputationWriteDrops   *prometheus.CounterVec
+	quorumDissent          *prometheus.CounterVec
+	batchSubRelays         prometheus.Gauge
+	batchResponseBytes     prometheus.Gauge
+	autoDrains             *prometheus.CounterVec
+	methodBlockEvents      *prometheus.CounterVec
+	reputationAttempts     *prometheus.CounterVec
+	heuristicVerdicts      *prometheus.CounterVec
+	operatorAttempts       *prometheus.CounterVec
+	operatorMethodAttempts *prometheus.CounterVec
+	operatorLatency        *prometheus.HistogramVec
+	externalSourceFails    *prometheus.CounterVec
+	clientLatency          *prometheus.HistogramVec
+	stageSeconds           *prometheus.CounterVec
+	healthCheckResults     *prometheus.CounterVec
+	healthCheckSkipped     *prometheus.CounterVec
+	healthCheckCycle       prometheus.Histogram
+	healthCheckLastCycle   *prometheus.GaugeVec
+	healthCheckOverruns    prometheus.Counter
 
 	// codespaces bounds the relay miner error codespace label, which is a
 	// string chosen by the supplier's relay miner.
@@ -360,9 +361,17 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "operator_attempts_total",
-				Help:      "Client relay attempts, by service, operator (the registrable domain of the endpoint's URL), RPC type and the side the heuristic attributed the outcome to: none (a good answer), blockchain or client (the answer was the chain's or the request's fault, not the supplier's), supplier or unknown (the supplier failed). One per attempt, so retries and hedge arms each count. Operators past the first 128 seen collapse to __other__.",
+				Help:      "Client relay attempts, by service, operator (the registrable domain of the endpoint's URL), RPC type, the side the heuristic attributed the outcome to (none: a good answer; blockchain or client: the answer was the chain's or the request's fault, not the supplier's; supplier or unknown: the supplier failed) and attempt: first, retry, hedge or probation. Only attempt=\"first\" is a fair sample of an operator: retries arrive with less budget after another host failed, and an operator reputation has demoted is sent mostly those. It is also sent few first attempts, and its probation ones run on a quarter of the budget, so require a minimum count before reading an operator from this, and fall back to health checks where it has none. Operators past the first 128 seen collapse to __other__.",
 			},
-			[]string{"service_id", "operator", "rpc_type", "attribution"},
+			[]string{"service_id", "operator", "rpc_type", "attribution", "attempt"},
+		),
+		operatorMethodAttempts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "operator_method_attempts_total",
+				Help:      "First client relay attempts only, by service, operator, method class (light: heads, chain ids, health; heavy: log scans, calls, traces, program-account scans; standard: the rest) and outcome (good: not the supplier's fault; bad: supplier or unknown). An operator that answers the light calls and stalls the heavy ones shows here and nowhere else.",
+			},
+			[]string{"service_id", "operator", "method_class", "outcome"},
 		),
 		operatorLatency: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -519,6 +528,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.reputationAttempts,
 		r.heuristicVerdicts,
 		r.operatorAttempts,
+		r.operatorMethodAttempts,
 		r.operatorLatency,
 		r.externalSourceFails,
 		r.clientLatency,
@@ -906,12 +916,22 @@ func (r *Recorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCT
 }
 
 // RecordOperatorAttempt counts one client relay attempt against the operator
-// that served it, with the heuristic's attribution and the attempt's latency.
-func (r *Recorder) RecordOperatorAttempt(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution string, latency time.Duration) {
+// that served it, with the heuristic's attribution, the attempt kind and the
+// attempt's latency. A first attempt is also counted by method class and
+// outcome: the fair sample of how an operator answers each kind of call.
+func (r *Recorder) RecordOperatorAttempt(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution, kind, methodClass string, latency time.Duration) {
 	svc := r.services.serviceValue(serviceID)
 	op := r.operators.value(endpoint.Operator())
-	r.operatorAttempts.WithLabelValues(svc, op, string(rpcType), attribution).Inc()
+	r.operatorAttempts.WithLabelValues(svc, op, string(rpcType), attribution, kind).Inc()
 	r.operatorLatency.WithLabelValues(svc, op, string(rpcType)).Observe(latency.Seconds())
+	if kind != "first" {
+		return
+	}
+	outcome := "good"
+	if attribution == "supplier" || attribution == "unknown" {
+		outcome = "bad"
+	}
+	r.operatorMethodAttempts.WithLabelValues(svc, op, methodClass, outcome).Inc()
 }
 
 // RecordClientLatency satisfies router.ClientMetrics: one client request's

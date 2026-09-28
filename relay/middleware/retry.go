@@ -154,8 +154,14 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// runAttempt runs one attempt under a per-attempt deadline (see
 			// perAttemptContext), restoring ctx.Ctx afterwards so retry
 			// bookkeeping and the caller see the original request context.
+			attempts := 0
 			runAttempt := func(attemptsLeft int) error {
 				retriedFor, pendingCause = pendingCause, ""
+				ctx.AttemptKind = ""
+				if attempts > 0 {
+					ctx.AttemptKind = relay.AttemptRetry
+				}
+				attempts++
 				attemptCtx, cancel := perAttemptContext(ctx.Ctx, attemptsLeft)
 				defer cancel()
 				saved := ctx.Ctx

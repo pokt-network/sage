@@ -130,6 +130,14 @@ type Context struct {
 	// answer is not that. A scalar, so the shallow Clone cannot share it.
 	QuorumArm bool
 
+	// AttemptKind says what this attempt is, so per-operator metrics can tell
+	// a fair sample from leftovers: "" for a first attempt, "retry" (written
+	// by retry on every attempt after the first), "hedge" (written by hedge
+	// on its second arm's clone), "probation" (written by select_endpoint when
+	// a first attempt's pick is on probation). A scalar, so a clone cannot
+	// share it.
+	AttemptKind string
+
 	// Degraded means some stage settled for less than it wanted: set by
 	// select_endpoint (a below-floor pick), method_blocks (a blocked host
 	// served anyway) and batch (merged from its sub-relays, atomically). The
@@ -142,6 +150,15 @@ type Context struct {
 	// For writing the final HTTP response
 	Writer ResponseWriter
 }
+
+// AttemptKind values (Context.AttemptKind). A first attempt is the empty
+// string; AttemptFirst is its label.
+const (
+	AttemptFirst     = "first"
+	AttemptRetry     = "retry"
+	AttemptHedge     = "hedge"
+	AttemptProbation = "probation"
+)
 
 // RPCTypeSource says where a request's RPCType came from. It is a metric
 // label (sage_rpc_type_total), so the values are a closed set.

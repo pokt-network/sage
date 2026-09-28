@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -28,7 +29,39 @@ type MetricsRecorder interface {
 // operator: who served the attempt, whose fault the outcome was, and how long
 // it took.
 type OperatorRecorder interface {
-	RecordOperatorAttempt(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution string, latency time.Duration)
+	// kind is the attempt's relay.AttemptKind label (first, retry, hedge,
+	// probation); methodClass is methodClassOf the request's method.
+	RecordOperatorAttempt(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution, kind, methodClass string, latency time.Duration)
+}
+
+// methodClassOf sorts a method into what it costs a node to answer: light
+// (a head, a chain id, a health check), heavy (log scans, calls, traces,
+// program-account scans), or standard. An operator that answers the light ones
+// and stalls the heavy ones looks healthy on a success rate that mixes them;
+// split by class, on first attempts only, it does not.
+func methodClassOf(method string) string {
+	switch {
+	case lightMethods[method]:
+		return "light"
+	case heavyMethods[method],
+		strings.HasPrefix(method, "debug_"), strings.HasPrefix(method, "trace_"):
+		return "heavy"
+	}
+	return "standard"
+}
+
+var lightMethods = map[string]bool{
+	"eth_blockNumber": true, "eth_chainId": true, "net_version": true, "eth_gasPrice": true,
+	"eth_maxPriorityFeePerGas": true, "eth_syncing": true, "web3_clientVersion": true,
+	"getSlot": true, "getBlockHeight": true, "getHealth": true, "getLatestBlockhash": true,
+	"status": true, "health": true, "abci_info": true,
+}
+
+var heavyMethods = map[string]bool{
+	"eth_getLogs": true, "eth_call": true, "eth_estimateGas": true, "eth_getBlockReceipts": true,
+	"eth_getProof": true, "getProgramAccounts": true, "getSignaturesForAddress": true,
+	"getMultipleAccounts": true, "getBlock": true, "abci_query": true, "tx_search": true,
+	"block_results": true,
 }
 
 // Metrics returns a middleware that records one upstream attempt via recorder
@@ -71,7 +104,16 @@ func Metrics(recorder MetricsRecorder) relay.Middleware {
 				recorder.RecordVerdict(ctx.ServiceID, ctx.RPCType, v.Reason, verdictAttribution(v))
 			}
 			if operators != nil && ctx.Endpoint != "" {
-				operators.RecordOperatorAttempt(ctx.ServiceID, ctx.RPCType, ctx.Endpoint, attemptAttribution(ctx.HeuristicResult, err), latency)
+				kind := ctx.AttemptKind
+				if kind == "" {
+					kind = relay.AttemptFirst
+				}
+				method := ""
+				if len(ctx.Payloads) > 0 {
+					method = ctx.Payloads[0].Method()
+				}
+				operators.RecordOperatorAttempt(ctx.ServiceID, ctx.RPCType, ctx.Endpoint,
+					attemptAttribution(ctx.HeuristicResult, err), kind, methodClassOf(method), latency)
 			}
 
 			return err

@@ -23,9 +23,12 @@ import (
 // in two buckets so a snapshot covers between one and two windows and nothing
 // grows for the life of the process.
 const (
-	wsLedgerWindow           = time.Hour
-	wsLedgerMaxClients       = 4096
-	wsLedgerMaxSuppliers     = 32
+	wsLedgerWindow       = time.Hour
+	wsLedgerMaxClients   = 4096
+	wsLedgerMaxSuppliers = 32
+	// wsLedgerMaxTopics caps the topics counted per supplier entry; a topic
+	// is whatever the client subscribed with, and the rest share otherTopic.
+	wsLedgerMaxTopics        = 4
 	wsQuickCloseTenure       = 30 * time.Second
 	wsLedgerDefaultSnapshotN = 50
 
@@ -68,6 +71,34 @@ type wsClientSupplier struct {
 	seconds     float64
 	frames      int64
 	quickCloses int
+	// topics counts the notifications this supplier pushed to the client,
+	// per subscription topic.
+	topics map[string]int64
+}
+
+// otherTopic collects topics past wsLedgerMaxTopics.
+const otherTopic = "__other__"
+
+// addTopics folds counts into dst, capped at wsLedgerMaxTopics named topics;
+// otherTopic does not take a slot, so re-folding a capped map is stable.
+func addTopics(dst map[string]int64, counts map[string]int64) map[string]int64 {
+	for t, n := range counts {
+		if dst == nil {
+			dst = make(map[string]int64, len(counts))
+		}
+		if _, ok := dst[t]; !ok && t != otherTopic && namedTopics(dst) >= wsLedgerMaxTopics {
+			t = otherTopic
+		}
+		dst[t] += n
+	}
+	return dst
+}
+
+func namedTopics(m map[string]int64) int {
+	if _, ok := m[otherTopic]; ok {
+		return len(m) - 1
+	}
+	return len(m)
 }
 
 func newWSClientLedger(now func() time.Time) *wsClientLedger {
@@ -124,7 +155,9 @@ func (l *wsClientLedger) opened(ip string) {
 
 // tenure records one supplier's time serving the client's connection.
 // clientQuit marks a tenure that ended because the client closed.
-func (l *wsClientLedger) tenure(ip string, key wsSupplierKey, d time.Duration, frames int64, clientQuit bool) {
+// topics is the notifications the supplier pushed during the tenure, per
+// subscription topic.
+func (l *wsClientLedger) tenure(ip string, key wsSupplierKey, d time.Duration, frames int64, topics map[string]int64, clientQuit bool) {
 	if l == nil || ip == "" {
 		return
 	}
@@ -152,6 +185,7 @@ func (l *wsClientLedger) tenure(ip string, key wsSupplierKey, d time.Duration, f
 	s.tenures++
 	s.seconds += d.Seconds()
 	s.frames += frames
+	s.topics = addTopics(s.topics, topics)
 }
 
 // WSClientReport is one client's WebSocket activity over the ledger window.
@@ -189,6 +223,12 @@ type WSClientSupplierStat struct {
 	TenureSeconds float64 `json:"tenure_seconds"`
 	Frames        int64   `json:"frames"`
 	QuickCloses   int     `json:"quick_client_closes"`
+	// NotificationsByTopic is the subscription notifications this supplier
+	// pushed to the client, per topic. Divided by TenureSeconds it is the
+	// supplier's rate on the same client's subscriptions — the comparison
+	// across suppliers that frames per connection cannot make, because it
+	// holds the client fixed.
+	NotificationsByTopic map[string]int64 `json:"notifications_by_topic,omitempty"`
 }
 
 // WSClientsSnapshot is the ledger as the admin API reports it.
@@ -273,6 +313,7 @@ func (l *wsClientLedger) snapshot(serviceID domain.ServiceID, limit int, onlySho
 				st.TenureSeconds += s.seconds
 				st.Frames += s.frames
 				st.QuickCloses += s.quickCloses
+				st.NotificationsByTopic = addTopics(st.NotificationsByTopic, s.topics)
 				r.Frames += s.frames
 			}
 		}

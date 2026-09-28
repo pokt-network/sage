@@ -63,6 +63,7 @@ type WebSocketMetrics struct {
 	supplierNotifications *prometheus.CounterVec
 	supplierConnections   *prometheus.GaugeVec
 	supplierTenure        *prometheus.HistogramVec
+	duplicateGap          *prometheus.HistogramVec
 	probes                *prometheus.CounterVec
 }
 
@@ -81,7 +82,7 @@ const (
 func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
 	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
-		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.probes)
+		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes)
 	return m
 }
 
@@ -123,6 +124,17 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 				Help:      "Client WebSocket connections a supplier is currently serving, by service, operator and owner.",
 			},
 			supplierLabels,
+		),
+		// No owner label: the reading is per operator and topic, and owners
+		// multiply the series for no answer the operator does not give.
+		duplicateGap: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "websocket_duplicate_gap_seconds",
+				Help:      "For a subscription notification that repeats one seen on the same subscription in the last 64 notifications and 10 seconds, how long ago it was first seen, by service, operator and topic. A merged mempool feed (a second node relaying the same transaction) repeats 0.1-5s later; an immediate or fixed-period resend is padding. Read it against other operators on the same service and topic before concluding anything.",
+				Buckets:   []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+			},
+			[]string{"service_id", "operator", "topic"},
 		),
 		supplierTenure: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
@@ -314,7 +326,11 @@ func (m *WebSocketMetrics) SupplierNotification(serviceID domain.ServiceID, oper
 		topic = unknownLabel
 	}
 	sid, op, own := m.supplierValues(serviceID, operator, owner)
-	m.supplierNotifications.WithLabelValues(sid, op, own, m.topics.value(topic), grade).Inc()
+	tp := m.topics.value(topic)
+	m.supplierNotifications.WithLabelValues(sid, op, own, tp, grade).Inc()
+	if note.Gap > 0 {
+		m.duplicateGap.WithLabelValues(sid, op, tp).Observe(note.Gap.Seconds())
+	}
 }
 
 func notificationGrade(k qos.NotificationKind) string {

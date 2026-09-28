@@ -109,7 +109,11 @@ func newIsolatedRecorderWithReg(t *testing.T, knownServices ...domain.ServiceID)
 		),
 		operatorAttempts: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "sage_test", Name: "operator_attempts_total"},
-			[]string{"service_id", "operator", "rpc_type", "attribution"},
+			[]string{"service_id", "operator", "rpc_type", "attribution", "attempt"},
+		),
+		operatorMethodAttempts: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "sage_test", Name: "operator_method_attempts_total"},
+			[]string{"service_id", "operator", "method_class", "outcome"},
 		),
 		operatorLatency: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{Namespace: "sage_test", Name: "operator_attempt_seconds", Buckets: relayLatencyBuckets},
@@ -813,16 +817,25 @@ func TestBatchSize(t *testing.T) {
 // are one series.
 func TestRecordOperatorAttempt_KeysByOperator(t *testing.T) {
 	r := newIsolatedRecorder(t)
-	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s1-https://rm01.node.example.com", "none", 100*time.Millisecond)
-	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s2-https://rm02.node.example.com", "none", 300*time.Millisecond)
-	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s2-https://rm02.node.example.com", "supplier", time.Second)
+	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s1-https://rm01.node.example.com", "none", "first", "light", 100*time.Millisecond)
+	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s2-https://rm02.node.example.com", "none", "first", "heavy", 300*time.Millisecond)
+	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s2-https://rm02.node.example.com", "supplier", "first", "heavy", time.Second)
+	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s2-https://rm02.node.example.com", "supplier", "retry", "heavy", time.Second)
 
-	c, err := r.operatorAttempts.GetMetricWithLabelValues("eth", "example.com", "json_rpc", "none")
+	c, err := r.operatorAttempts.GetMetricWithLabelValues("eth", "example.com", "json_rpc", "none", "first")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := value(t, c); got != 2 {
-		t.Errorf("operator_attempts_total{example.com,none} = %v, want 2", got)
+		t.Errorf("operator_attempts_total{example.com,none,first} = %v, want 2", got)
+	}
+	// The method-class counter is first attempts only: the retry is not in it.
+	c, err = r.operatorMethodAttempts.GetMetricWithLabelValues("eth", "example.com", "heavy", "bad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := value(t, c); got != 1 {
+		t.Errorf("operator_method_attempts_total{heavy,bad} = %v, want 1 (the retry excluded)", got)
 	}
 	ch := make(chan prometheus.Metric, 8)
 	r.operatorLatency.Collect(ch)

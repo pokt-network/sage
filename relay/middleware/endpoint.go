@@ -88,6 +88,9 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 			// and Hedge the rest.
 			if checker, ok := repSvc.(reputation.ProbationChecker); ok &&
 				checker.OnProbation(ctx.Ctx, ctx.ServiceID, ctx.Endpoint, ctx.RPCType) {
+				if ctx.AttemptKind == "" {
+					ctx.AttemptKind = relay.AttemptProbation
+				}
 				if dl, has := ctx.Ctx.Deadline(); has {
 					if remaining := time.Until(dl); remaining > 0 {
 						saved := ctx.Ctx

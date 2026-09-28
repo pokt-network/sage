@@ -243,6 +243,48 @@ type Notification struct {
 	Kind NotificationKind
 	// Topic is the subscription's topic; "" when unknown (unsolicited).
 	Topic string
+	// Gap is how long ago the same notification was last seen on this
+	// subscription, when it was inside the gap window; 0 otherwise. Wider
+	// than the duplicate grade on purpose, see gapWindow.
+	Gap time.Duration
+}
+
+// gapWindow and gapMaxAge bound how far back a repeat is looked for when
+// measuring its gap. The duplicate grade looks at the last dupWindow (8)
+// notifications only, which on a feed of 250 a second is about 30ms: a second
+// node's copy of the same transaction half a second later is outside it, so
+// every repeat the grade catches on a busy feed looks like an immediate
+// resend. The gap needs the wider view to tell a merged mempool feed (a copy
+// 0.1-5s later) from padding (an immediate or periodic resend).
+const (
+	gapWindow = 64
+	gapMaxAge = 10 * time.Second
+)
+
+// gapRing remembers when a subscription's last gapWindow notifications were
+// seen.
+type gapRing struct {
+	hashes [gapWindow]uint64
+	at     [gapWindow]int64
+	n      int
+}
+
+// since reports how long ago h was last seen within gapMaxAge, then records h
+// at now.
+func (g *gapRing) since(h uint64, now time.Time) time.Duration {
+	var gap time.Duration
+	cut := now.Add(-gapMaxAge).UnixNano()
+	for i := 0; i < min(g.n, gapWindow); i++ {
+		if g.hashes[i] == h && g.at[i] >= cut {
+			if d := time.Duration(now.UnixNano() - g.at[i]); gap == 0 || d < gap {
+				gap = d
+			}
+		}
+	}
+	g.hashes[g.n%gapWindow] = h
+	g.at[g.n%gapWindow] = now.UnixNano()
+	g.n++
+	return gap
 }
 
 // dupWindow is how many recent notifications per subscription are
@@ -255,6 +297,7 @@ const dupWindow = 8
 type dupRing struct {
 	hashes [dupWindow]uint64
 	n      int
+	gaps   gapRing
 }
 
 // seen reports whether h is in the ring, then records it.
@@ -472,9 +515,11 @@ func (r *SubscriptionRegistry) grade(clientID string, data []byte) Notification 
 		ring = &dupRing{}
 		r.recent[clientID] = ring
 	}
-	if ring.seen(maphash.Bytes(r.seed, data)) {
+	h := maphash.Bytes(r.seed, data)
+	if ring.seen(h) {
 		note.Kind = NotificationDuplicate
 	}
+	note.Gap = ring.gaps.since(h, time.Now())
 	return note
 }
 

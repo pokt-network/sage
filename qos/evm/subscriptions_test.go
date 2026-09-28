@@ -1,7 +1,9 @@
 package evm
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/pokt-network/sage/qos"
 )
@@ -113,5 +115,30 @@ func TestSubscriptions_EVMEverySubscribeIsTracked(t *testing.T) {
 	}
 	if n := len(batch.ReplayFrames()); n != 1 {
 		t.Fatalf("subscribe inside a batch: %d replayed on rebind, want 1", n)
+	}
+}
+
+// The duplicate grade looks back 8 notifications; the gap looks back 64 and
+// 10s, so a copy that arrives after a burst of others is still measured.
+func TestSubscriptions_EVMDuplicateGapSeesPastTheGradeWindow(t *testing.T) {
+	r := qos.NewSubscriptionRegistry(&Plugin{})
+	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions"]}`))
+	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xa"}`))
+	frame := func(tx string) []byte {
+		return []byte(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0xa","result":"` + tx + `"}}`)
+	}
+	if _, _, n := r.TranslateEndpointFrameNote(frame("0x1")); n.Gap != 0 {
+		t.Fatalf("first sight: gap %v, want 0", n.Gap)
+	}
+	for i := 0; i < 20; i++ {
+		r.TranslateEndpointFrameNote(frame(fmt.Sprintf("0x%x", 100+i)))
+	}
+	_, _, late := r.TranslateEndpointFrameNote(frame("0x1"))
+	if late.Kind != qos.NotificationOK || late.Gap <= 0 {
+		t.Fatalf("repeat after 20 others: %+v, want graded ok with a gap", late)
+	}
+	_, _, again := r.TranslateEndpointFrameNote(frame("0x1"))
+	if again.Kind != qos.NotificationDuplicate || again.Gap <= 0 || again.Gap > time.Second {
+		t.Fatalf("immediate repeat: %+v, want duplicate with a small gap", again)
 	}
 }

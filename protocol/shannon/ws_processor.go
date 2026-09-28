@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -34,7 +35,11 @@ type frameCallback func(payload []byte, err error, latency time.Duration)
 // stable for the bridge's lifetime — v1 closes the bridge at session
 // boundaries instead of rotating the endpoint or refreshing the session.
 type wsMessageProcessor struct {
-	samples       *wsNotificationSamples
+	samples *wsNotificationSamples
+	// topicMu guards topics: frames are counted on the bridge goroutine and
+	// read at release by the rebind handler or the close.
+	topicMu       sync.Mutex
+	topics        map[string]int64
 	protocol      *Protocol
 	ctx           context.Context
 	sessionHeader *sessiontypes.SessionHeader
@@ -72,6 +77,37 @@ func (p *wsMessageProcessor) withSupplier(m WSMetrics, owner string) *wsMessageP
 	p.operator = p.endpointAddr.Operator()
 	p.boundAt = time.Now()
 	return p
+}
+
+// countTopic counts one notification this supplier pushed on a topic, capped
+// at wsLedgerMaxTopics topics (the rest under otherTopic).
+func (p *wsMessageProcessor) countTopic(topic string) {
+	if topic == "" {
+		return
+	}
+	if len(topic) > 64 {
+		topic = topic[:64]
+	}
+	p.topicMu.Lock()
+	if p.topics == nil {
+		p.topics = make(map[string]int64, 2)
+	}
+	if _, ok := p.topics[topic]; !ok && namedTopics(p.topics) >= wsLedgerMaxTopics {
+		topic = otherTopic
+	}
+	p.topics[topic]++
+	p.topicMu.Unlock()
+}
+
+// topicCounts is a copy of the per-topic notification counts so far.
+func (p *wsMessageProcessor) topicCounts() map[string]int64 {
+	p.topicMu.Lock()
+	defer p.topicMu.Unlock()
+	out := make(map[string]int64, len(p.topics))
+	for t, n := range p.topics {
+		out[t] = n
+	}
+	return out
 }
 
 // withSamples attaches the notification sampler (ws_samples.go).
@@ -231,6 +267,7 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	}
 	if note.Kind == qos.NotificationOK || note.Kind == qos.NotificationDuplicate {
 		p.samples.observe(serviceID, p.operator, p.owner, note.Topic, payload)
+		p.countTopic(note.Topic)
 	}
 	if !forward {
 		return nil, nil

@@ -20,13 +20,13 @@ func TestWSClientLedger_ShowsSupplierShopping(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		l.opened("203.0.113.7")
 		other := wsSupplierKey{service: "robinhood", operator: fmt.Sprintf("peer%d.example", i), owner: "pokt1peer"}
-		l.tenure("203.0.113.7", other, 2*time.Second, 1, true)
+		l.tenure("203.0.113.7", other, 2*time.Second, 1, nil, true)
 	}
 	l.opened("203.0.113.7")
-	l.tenure("203.0.113.7", wanted, 3*time.Hour, 90000, true)
+	l.tenure("203.0.113.7", wanted, 3*time.Hour, 90000, nil, true)
 
 	l.opened("198.51.100.1")
-	l.tenure("198.51.100.1", wanted, 10*time.Minute, 500, true)
+	l.tenure("198.51.100.1", wanted, 10*time.Minute, 500, nil, true)
 
 	snap := l.snapshot("", 0, false)
 	if len(snap.Clients) != 2 {
@@ -59,9 +59,9 @@ func TestWSClientLedger_Windows(t *testing.T) {
 	l := newWSClientLedger(func() time.Time { return now })
 	key := wsSupplierKey{service: "eth", operator: "a.example", owner: "pokt1a"}
 
-	l.tenure("192.0.2.1", key, time.Minute, 10, false)
+	l.tenure("192.0.2.1", key, time.Minute, 10, nil, false)
 	now = now.Add(wsLedgerWindow)
-	l.tenure("192.0.2.1", key, time.Minute, 20, false)
+	l.tenure("192.0.2.1", key, time.Minute, 20, nil, false)
 	if s := l.snapshot("", 0, false); len(s.Clients) != 1 || s.Clients[0].Frames != 30 {
 		t.Fatalf("across two windows = %+v, want 30 frames", s.Clients)
 	}
@@ -77,7 +77,7 @@ func TestWSClientLedger_Bounded(t *testing.T) {
 	l := newWSClientLedger(nil)
 	key := wsSupplierKey{service: "eth", operator: "a.example", owner: "pokt1a"}
 	for i := 0; i < wsLedgerMaxClients+10; i++ {
-		l.tenure(fmt.Sprintf("10.0.%d.%d", i/256, i%256), key, time.Second, 1, false)
+		l.tenure(fmt.Sprintf("10.0.%d.%d", i/256, i%256), key, time.Second, 1, nil, false)
 	}
 	s := l.snapshot("", wsLedgerMaxClients+100, false)
 	if len(s.Clients) != wsLedgerMaxClients || s.Dropped != 10 {
@@ -86,7 +86,7 @@ func TestWSClientLedger_Bounded(t *testing.T) {
 
 	for i := 0; i < wsLedgerMaxSuppliers+5; i++ {
 		l2 := wsSupplierKey{service: "eth", operator: fmt.Sprintf("op%d.example", i), owner: "pokt1a"}
-		l.tenure("10.0.0.0", l2, time.Second, 1, false)
+		l.tenure("10.0.0.0", l2, time.Second, 1, nil, false)
 	}
 	for _, c := range l.snapshot("", wsLedgerMaxClients, false).Clients {
 		if c.ClientIP == "10.0.0.0" && len(c.Suppliers) > wsLedgerMaxSuppliers {
@@ -134,15 +134,15 @@ func TestWSClientLedger_FlagsShopping(t *testing.T) {
 	}
 
 	for i := 0; i < 6; i++ {
-		l.tenure("203.0.113.7", peer(i), 3*time.Second, 1, true)
+		l.tenure("203.0.113.7", peer(i), 3*time.Second, 1, nil, true)
 	}
-	l.tenure("203.0.113.7", favoured, 2*time.Hour, 50000, true)
+	l.tenure("203.0.113.7", favoured, 2*time.Hour, 50000, nil, true)
 
 	for i := 0; i < 10; i++ {
-		l.tenure("198.51.100.2", peer(i%4), 2*time.Second, 1, true)
+		l.tenure("198.51.100.2", peer(i%4), 2*time.Second, 1, nil, true)
 	}
 
-	l.tenure("192.0.2.9", favoured, 3*time.Hour, 70000, true)
+	l.tenure("192.0.2.9", favoured, 3*time.Hour, 70000, nil, true)
 
 	snap := l.snapshot("", 0, false)
 	byIP := map[string]WSClientReport{}
@@ -163,5 +163,42 @@ func TestWSClientLedger_FlagsShopping(t *testing.T) {
 	}
 	if only := l.snapshot("", 0, true); len(only.Clients) != 1 || only.Clients[0].ClientIP != "203.0.113.7" {
 		t.Errorf("shopping-only snapshot = %+v, want the shopper alone", only.Clients)
+	}
+}
+
+// Per-topic notification counts reach the report per supplier, capped at
+// wsLedgerMaxTopics topics, the rest under otherTopic.
+func TestWSClientLedger_CountsNotificationsByTopic(t *testing.T) {
+	l := newWSClientLedger(nil)
+	key := wsSupplierKey{service: "gnosis", operator: "a.example", owner: "pokt1a"}
+	l.tenure("192.0.2.9", key, time.Minute, 100, map[string]int64{"logs": 60, "newHeads": 5}, false)
+	l.tenure("192.0.2.9", key, time.Minute, 100, map[string]int64{"logs": 40, "t3": 1, "t4": 1, "t5": 1}, false)
+	snap := l.snapshot("gnosis", 10, false)
+	if len(snap.Clients) != 1 || len(snap.Clients[0].Suppliers) != 1 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	got := snap.Clients[0].Suppliers[0].NotificationsByTopic
+	if got["logs"] != 100 || got["newHeads"] != 5 || len(got) != wsLedgerMaxTopics+1 || got[otherTopic] != 1 {
+		t.Fatalf("notifications_by_topic = %v", got)
+	}
+}
+
+// A processor's topic counts are written on the bridge goroutine and read on
+// release from another; the lock is what makes that safe.
+func TestWSMessageProcessor_TopicCountsAreSafeAcrossGoroutines(t *testing.T) {
+	p := &wsMessageProcessor{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			p.countTopic("logs")
+		}
+	}()
+	for i := 0; i < 100; i++ {
+		_ = p.topicCounts()
+	}
+	<-done
+	if n := p.topicCounts()["logs"]; n != 1000 {
+		t.Fatalf("logs = %d, want 1000", n)
 	}
 }

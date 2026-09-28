@@ -3,12 +3,18 @@ package middleware
 import (
 	"errors"
 	"net/http"
+	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/relay"
+	"github.com/pokt-network/sage/reputation"
 )
 
 // fakeRecorder captures the arguments passed to RecordRelay.
@@ -201,25 +207,52 @@ func TestMetrics_RecordsHeuristicVerdictPerAttempt(t *testing.T) {
 // operatorRecorder is a fakeRecorder that also takes per-operator attempts.
 type operatorRecorder struct {
 	fakeRecorder
+	mu       sync.Mutex
 	attempts []string
+	kinds    []string
 }
 
-func (r *operatorRecorder) RecordOperatorAttempt(_ domain.ServiceID, _ domain.RPCType, endpoint domain.EndpointAddr, attribution string, _ time.Duration) {
-	r.attempts = append(r.attempts, endpoint.Operator()+":"+attribution)
+func (r *operatorRecorder) RecordOperatorAttempt(_ domain.ServiceID, _ domain.RPCType, endpoint domain.EndpointAddr, attribution, kind, methodClass string, _ time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.attempts = append(r.attempts, endpoint.Operator()+":"+attribution+":"+kind+":"+methodClass)
+	r.kinds = append(r.kinds, kind)
+}
+
+// RecordRelay and RecordVerdict lock too: hedge arms record concurrently.
+func (r *operatorRecorder) RecordRelay(serviceID domain.ServiceID, endpoint domain.EndpointAddr, statusCode int, latency time.Duration, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fakeRecorder.RecordRelay(serviceID, endpoint, statusCode, latency, err)
+}
+
+func (r *operatorRecorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCType, reason, attribution string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fakeRecorder.RecordVerdict(serviceID, rpcType, reason, attribution)
+}
+
+func (r *operatorRecorder) seenKinds() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.kinds...)
 }
 
 // Every attempt is counted against the operator that served it, with whose
-// fault its outcome was: none for a good answer, the verdict's side for a
-// graded one, unknown for a failure nothing graded.
+// fault its outcome was (none for a good answer, the verdict's side for a
+// graded one, unknown for a failure nothing graded), what kind of attempt it
+// was, and what class of method it carried.
 func TestMetrics_RecordsOperatorAttemptPerAttempt(t *testing.T) {
 	rec := &operatorRecorder{}
 	outcomes := []struct {
 		verdict *heuristic.AnalysisResult
 		err     error
+		kind    string
+		method  string
 	}{
-		{nil, nil},
-		{&heuristic.AnalysisResult{Reason: "blockchain_error", Attribution: heuristic.AttrBlockchain}, errors.New("retry")},
-		{nil, errors.New("dial")},
+		{nil, nil, "", "eth_blockNumber"},
+		{&heuristic.AnalysisResult{Reason: "blockchain_error", Attribution: heuristic.AttrBlockchain}, errors.New("retry"), relay.AttemptRetry, "eth_getLogs"},
+		{nil, errors.New("dial"), relay.AttemptHedge, "eth_getBalance"},
 	}
 	for _, o := range outcomes {
 		inner := relay.HandlerFunc(func(ctx *relay.Context) error {
@@ -229,9 +262,15 @@ func TestMetrics_RecordsOperatorAttemptPerAttempt(t *testing.T) {
 		})
 		ctx := baseContext()
 		ctx.ServiceID = "eth"
+		ctx.AttemptKind = o.kind
+		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, o.method)}
 		_ = Metrics(rec)(inner).HandleRelay(ctx)
 	}
-	want := []string{"example.com:none", "example.com:blockchain", "example.com:unknown"}
+	want := []string{
+		"example.com:none:first:light",
+		"example.com:blockchain:retry:heavy",
+		"example.com:unknown:hedge:standard",
+	}
 	if len(rec.attempts) != len(want) {
 		t.Fatalf("attempts = %v, want %v", rec.attempts, want)
 	}
@@ -239,5 +278,54 @@ func TestMetrics_RecordsOperatorAttemptPerAttempt(t *testing.T) {
 		if rec.attempts[i] != want[i] {
 			t.Fatalf("attempts = %v, want %v", rec.attempts, want)
 		}
+	}
+}
+
+// The attempt label is only a fair sample if the chain writes it: a first
+// attempt reads first, the one after a failure reads retry, and the second arm
+// of a fired hedge reads hedge.
+func TestMetrics_AttemptKindWrittenByTheChain(t *testing.T) {
+	rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.DefaultServiceConfig())
+	flags := newFlags(featureflag.FlagRetry, featureflag.FlagHedge)
+	chain := func(delay time.Duration, rec *operatorRecorder, send relay.HandlerFunc) relay.Handler {
+		cfg := func(domain.ServiceID) config.RetryConfig {
+			return config.RetryConfig{Enabled: true, MaxRetries: 1, HedgeDelay: delay}
+		}
+		return Retry(flags, cfg)(Hedge(flags, cfg)(Metrics(rec)(SelectEndpoint(rep, nil, nil, flags)(send))))
+	}
+
+	// A failed first attempt, then a retry. The hedge delay is long enough
+	// that no hedge fires.
+	var calls atomic.Int32
+	rec := &operatorRecorder{}
+	_ = chain(time.Second, rec, func(c *relay.Context) error {
+		if calls.Add(1) == 1 {
+			return domain.NewRelayError(domain.ErrEndpoint, "first fails", nil, true)
+		}
+		c.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{}`)}
+		return nil
+	}).HandleRelay(baseContext())
+	if got := rec.seenKinds(); len(got) != 2 || got[0] != relay.AttemptFirst || got[1] != relay.AttemptRetry {
+		t.Fatalf("retry: kinds = %v, want [first retry]", got)
+	}
+
+	// A slow primary and a fired hedge.
+	rec = &operatorRecorder{}
+	var arm atomic.Int32
+	_ = chain(10*time.Millisecond, rec, func(c *relay.Context) error {
+		if arm.Add(1) == 1 {
+			time.Sleep(100 * time.Millisecond)
+		}
+		c.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{}`)}
+		return nil
+	}).HandleRelay(baseContext())
+	deadline := time.Now().Add(2 * time.Second)
+	for len(rec.seenKinds()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := rec.seenKinds()
+	sort.Strings(got)
+	if len(got) != 2 || got[0] != relay.AttemptFirst || got[1] != relay.AttemptHedge {
+		t.Fatalf("hedge: kinds = %v, want first and hedge", got)
 	}
 }

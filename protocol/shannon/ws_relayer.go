@@ -273,7 +273,7 @@ func (r *WSRelayer) releaseSupplier(serviceID domain.ServiceID, clientIP string,
 	}
 	r.clients.tenure(clientIP,
 		wsSupplierKey{service: serviceID, operator: p.operator, owner: p.owner},
-		tenure, p.endpointFrames.Load(), clientQuit)
+		tenure, p.endpointFrames.Load(), p.topicCounts(), clientQuit)
 }
 
 // SetMaxConcurrentConnections moves the live-bridge cap on a running relayer.
