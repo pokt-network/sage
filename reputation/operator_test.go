@@ -91,6 +91,92 @@ func TestOperatorStatDecaysByTimeAndKeepsItsRatio(t *testing.T) {
 	}
 }
 
+// An operator that recovered is forgiven once it has answered a clean run:
+// its rate halves every operatorHealHalfLife after that, until it fails again.
+func TestOperatorRateHealsAfterACleanRun(t *testing.T) {
+	tr := newOpTracker(0)
+	id := opID{"eth", "op.example", "json_rpc"}
+	now := time.Now()
+	for i := 0; i < 1000; i++ {
+		tr.record(id, 0, now)
+	}
+	for i := 0; i < 100; i++ { // an outage
+		tr.record(id, 1, now)
+	}
+	st, _ := tr.get(id, now)
+	before := st.RateAt(now)
+	if before < 0.08 {
+		t.Fatalf("rate after the outage = %.4f, want ~0.09", before)
+	}
+	for i := 0; i < operatorHealAfter-1; i++ { // not yet a clean run
+		tr.record(id, 0, now)
+	}
+	st, _ = tr.get(id, now.Add(operatorHealHalfLife))
+	if r := st.RateAt(now.Add(operatorHealHalfLife)); r < before*0.9 {
+		t.Fatalf("forgiven before a clean run: %.4f", r)
+	}
+	tr.record(id, 0, now) // the clean run is complete
+	later := now.Add(operatorHealHalfLife)
+	st, _ = tr.get(id, later)
+	if r := st.RateAt(later); math.Abs(r-before/2) > before*0.1 {
+		t.Fatalf("an hour after healing: %.4f, want about half of %.4f", r, before)
+	}
+
+	// A failure partway through healing starts it over.
+	tr.record(id, 1, later)
+	st, _ = tr.get(id, later.Add(operatorHealHalfLife))
+	if r := st.RateAt(later.Add(operatorHealHalfLife)); r < before*0.9 {
+		t.Fatalf("a failure did not end the forgiveness: %.4f", r)
+	}
+}
+
+// An operator still failing one attempt in five never holds a clean run long
+// enough to be forgiven.
+func TestOperatorRateNotForgivenWhileFailing(t *testing.T) {
+	tr := newOpTracker(0)
+	id := opID{"eth", "bad.example", "json_rpc"}
+	now := time.Now()
+	for i := 0; i < 2000; i++ {
+		failure := 0.0
+		if i%5 == 0 {
+			failure = 1
+		}
+		tr.record(id, failure, now.Add(time.Duration(i)*time.Second))
+	}
+	end := now.Add(2000 * time.Second)
+	st, _ := tr.get(id, end)
+	if st.HealedAt != 0 || math.Abs(st.RateAt(end)-0.2) > 0.02 {
+		t.Fatalf("failing operator: healed_at %d rate %.4f, want never healed at ~0.20", st.HealedAt, st.RateAt(end))
+	}
+}
+
+// An operator reset forgets the evidence in one service for every RPC type,
+// and leaves other services and operators alone.
+func TestOpTrackerResetForgetsOneOperatorInOneService(t *testing.T) {
+	tr := newOpTracker(0)
+	now := time.Now()
+	for _, id := range []opID{
+		{"eth", "op.example", "json_rpc"}, {"eth", "op.example", "websocket"},
+		{"base", "op.example", "json_rpc"}, {"eth", "other.example", "json_rpc"},
+	} {
+		for i := 0; i < 300; i++ {
+			tr.record(id, 1, now)
+		}
+	}
+	if n := tr.reset("eth", "op.example", now); n != 2 {
+		t.Fatalf("reset %d counters, want 2", n)
+	}
+	if st, _ := tr.get(opID{"eth", "op.example", "json_rpc"}, now); st.Rate() != 0 || st.Attempts != 0 {
+		t.Fatalf("reset counter = %+v, want empty", st)
+	}
+	if st, _ := tr.get(opID{"base", "op.example", "json_rpc"}, now); st.Rate() == 0 {
+		t.Fatal("another service's counter was reset")
+	}
+	if st, _ := tr.get(opID{"eth", "other.example", "json_rpc"}, now); st.Rate() == 0 {
+		t.Fatal("another operator's counter was reset")
+	}
+}
+
 // A pod roll must not lose what the fleet learned: the counters are written
 // behind and adopted at startup.
 func TestOperatorStatsPersistAcrossARestart(t *testing.T) {

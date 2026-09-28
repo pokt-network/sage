@@ -136,6 +136,7 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	// Reputation
 	mux.HandleFunc("GET /admin/reputation/{serviceID}", a.handleGetReputation)
 	mux.HandleFunc("POST /admin/reputation/reset/{serviceID}/{endpoint...}", a.handleResetReputation)
+	mux.HandleFunc("POST /admin/reputation/operator-reset/{serviceID}/{operator}", a.handleResetOperator)
 
 	// Chain state
 	mux.HandleFunc("GET /admin/chain-state/{serviceID}", a.handleGetChainState)
@@ -379,6 +380,34 @@ func (a *AdminAPI) handleGetReputation(w http.ResponseWriter, req *http.Request)
 	// Keys are reputation keys at the configured granularity (per-URL by
 	// default), not necessarily endpoint addresses.
 	writeJSON(w, http.StatusOK, scores)
+}
+
+// handleResetOperator forgets an operator's failure evidence (the per-operator
+// counters operator_chronic charges its keys from) in one service, every RPC
+// type. A key reset leaves those counters alone, so an operator that recovered
+// while its keys were floored stays penalised by them; this is the way back
+// without waiting for it to earn a clean run. Per replica: call it on every
+// pod. Answers {"service_id", "operator", "reset"}; 404 when the operator has
+// no counters on that service; 501 when the reputation service cannot.
+func (a *AdminAPI) handleResetOperator(w http.ResponseWriter, req *http.Request) {
+	serviceID := domain.ServiceID(req.PathValue("serviceID"))
+	operator := req.PathValue("operator")
+	if serviceID == "" || operator == "" {
+		writeJSONError(w, http.StatusBadRequest, "serviceID and operator are required")
+		return
+	}
+	r, ok := a.repService.(reputation.OperatorResetter)
+	if !ok {
+		writeJSONError(w, http.StatusNotImplemented, "operator reset is not available in this build")
+		return
+	}
+	n := r.ResetOperator(serviceID, operator)
+	if n == 0 {
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("no operator counters for %q on %s; GET /admin/reputation/%s shows operator_rate per key", operator, serviceID, serviceID))
+		return
+	}
+	a.logger.Warn("admin: operator evidence reset", "service_id", string(serviceID), "operator", operator, "counters", n)
+	writeJSON(w, http.StatusOK, map[string]any{"service_id": string(serviceID), "operator": operator, "reset": n})
 }
 
 // handleResetReputation returns one endpoint's recorded scores to the initial

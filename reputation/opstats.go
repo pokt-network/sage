@@ -54,6 +54,23 @@ import (
 // current one, and still forgets a bad day by the next.
 const DefaultOperatorHalfLife = 6 * time.Hour
 
+// operatorHealAfter is how many successes in a row, with no failure between,
+// mark an operator as recovered; operatorHealHalfLife is how fast its rate is
+// then forgiven.
+//
+// Decay alone cannot do it: time scales Failures and Attempts by the same
+// factor, so the rate, their ratio, only moves with new attempts. An operator
+// that recovered from an outage while floored gets probes and little else,
+// and kept the outage's rate — and its penalty — for as long as it stayed
+// floored (mainnet, 2026-09-28: one operator's relay miners answered 502 for
+// an hour on sixteen services). Relief is earned, not waited for: a quiet
+// operator is not forgiven, one whose probes keep failing is not either, and
+// one answering everything it is sent is forgiven by half every hour.
+const (
+	operatorHealAfter    = 20
+	operatorHealHalfLife = time.Hour
+)
+
 // minOperatorAttempts is the decayed evidence an operator needs before its
 // rate is used at all. Below it the ratio is noise.
 const minOperatorAttempts = 200
@@ -67,6 +84,10 @@ type OperatorStat struct {
 	Attempts  float64 `json:"attempts"`
 	Failures  float64 `json:"failures"`
 	UpdatedAt int64   `json:"updated_at"`
+	// CleanRun counts successes since the last failure; HealedAt is when it
+	// reached operatorHealAfter, zero until then. A failure clears both.
+	CleanRun int   `json:"clean_run,omitempty"`
+	HealedAt int64 `json:"healed_at,omitempty"`
 }
 
 // decayTo returns the stat aged forward to now. Decay is applied on read and
@@ -93,6 +114,22 @@ func (s OperatorStat) Rate() float64 {
 		return 0
 	}
 	return min(s.Failures/s.Attempts, 1)
+}
+
+// RateAt is Rate forgiven for a recovery: once the operator has answered
+// operatorHealAfter times in a row, the rate halves every operatorHealHalfLife
+// since, until its next failure. The discount starts at one, so healing does
+// not jump.
+func (s OperatorStat) RateAt(now time.Time) float64 {
+	r := s.Rate()
+	if s.HealedAt <= 0 || r == 0 {
+		return r
+	}
+	since := now.Sub(time.Unix(s.HealedAt, 0))
+	if since <= 0 {
+		return r
+	}
+	return r * math.Exp(-math.Ln2*since.Seconds()/operatorHealHalfLife.Seconds())
 }
 
 // OperatorStatStore is the optional half of Storage that persists operator
@@ -154,6 +191,11 @@ func (t *opTracker) record(id opID, failure float64, now time.Time) {
 	st := t.stats[id].decayTo(now, t.halfLife)
 	st.Attempts++
 	st.Failures += failure
+	if failure > 0 {
+		st.CleanRun, st.HealedAt = 0, 0
+	} else if st.CleanRun++; st.CleanRun == operatorHealAfter {
+		st.HealedAt = now.Unix()
+	}
 	t.stats[id] = st
 	t.dirty[id] = struct{}{}
 }
@@ -214,6 +256,23 @@ func (t *opTracker) merge(stored map[string]OperatorStat, now time.Time) int {
 		}
 		t.stats[id] = aged
 		n++
+	}
+	return n
+}
+
+// reset forgets an operator's evidence in a service, every RPC type: the
+// counters restart from nothing and are marked for storage. It reports how
+// many were reset.
+func (t *opTracker) reset(serviceID domain.ServiceID, operator string, now time.Time) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := 0
+	for id := range t.stats {
+		if id.svc == serviceID && id.op == operator {
+			t.stats[id] = OperatorStat{UpdatedAt: now.Unix()}
+			t.dirty[id] = struct{}{}
+			n++
+		}
 	}
 	return n
 }

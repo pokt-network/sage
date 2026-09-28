@@ -100,6 +100,7 @@ failureThreshold) here.
 | `DELETE` | `/admin/flags/{flag}/{serviceID}` | Removes a per-service override, so the service follows the global value again. |
 | `GET` | `/admin/reputation/{serviceID}` | Returns every reputation state for a service. |
 | `POST` | `/admin/reputation/reset/{serviceID}/{endpoint...}` | Returns one endpoint's recorded scores to the initial score. |
+| `POST` | `/admin/reputation/operator-reset/{serviceID}/{operator}` | Forgets an operator's failure evidence (the per-operator counters operator_chronic charges its keys from) in one service, every RPC type. |
 | `GET` | `/admin/chain-state/{serviceID}` | Reads what a service's plugin believes about its chain: the perceived head, and the latest height each endpoint reported. |
 | `POST` | `/admin/chain-state/clear/{serviceID}` | Discards the QoS state a service's plugin has learned: block consensus (perceived height, external floor) and its per-endpoint QoS store (block heights, chain-id observations, archival marks — see qos.StateResetter). |
 | `GET` | `/admin/timeline/{serviceID}` | Returns the recent reputation events for every endpoint of a service, newest last. |
@@ -220,6 +221,16 @@ none is a 404, so a typo cannot create a key.
 
 Reach for this when an endpoint was penalised for something since fixed and
 you do not want to wait for probation traffic to rehabilitate it.
+
+### `POST /admin/reputation/operator-reset/{serviceID}/{operator}`
+
+Forgets an operator's failure evidence (the per-operator
+counters operator_chronic charges its keys from) in one service, every RPC
+type. A key reset leaves those counters alone, so an operator that recovered
+while its keys were floored stays penalised by them; this is the way back
+without waiting for it to earn a clean run. Per replica: call it on every
+pod. Answers {"service_id", "operator", "reset"}; 404 when the operator has
+no counters on that service; 501 when the reputation service cannot.
 
 ### `GET /admin/chain-state/{serviceID}`
 

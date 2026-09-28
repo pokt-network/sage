@@ -470,7 +470,8 @@ func (s *serviceImpl) refreshBaselines() {
 
 	// The operator rates come from the tracker, not from these keys: a key
 	// lives one session and an operator does not (opstats.go).
-	stats := s.ops.snapshot(time.Now())
+	now := time.Now()
+	stats := s.ops.snapshot(now)
 	v := chronicView{
 		byOp:     make(map[opID]OperatorRateView, len(stats)),
 		byKey:    map[keyID]float64{},
@@ -478,7 +479,7 @@ func (s *serviceImpl) refreshBaselines() {
 		opOn:     map[domain.ServiceID]bool{},
 	}
 	for id, st := range stats {
-		if rate := st.Rate(); rate > 0 {
+		if rate := st.RateAt(now); rate > 0 {
 			v.byOp[id] = OperatorRateView{Rate: rate, Attempts: uint64(st.Attempts)}
 		}
 	}
@@ -1039,6 +1040,23 @@ var _ ProbationChecker = (*serviceImpl)(nil)
 func (s *serviceImpl) OnProbation(ctx context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool {
 	tier, _ := s.selector.classify(ctx, serviceID, endpoint, rpcType)
 	return tier == probationIdx
+}
+
+// OperatorResetter is the optional half of Service the admin operator-reset
+// route asks for: forget an operator's failure evidence in one service, every
+// RPC type, and report how many counters that touched.
+type OperatorResetter interface {
+	ResetOperator(serviceID domain.ServiceID, operator string) int
+}
+
+var _ OperatorResetter = (*serviceImpl)(nil)
+
+// ResetOperator implements OperatorResetter. Per replica: the counters live in
+// memory and only the leader writes them to storage, so an operator clears
+// them on every pod. The chronic view picks the change up at its next
+// refresh.
+func (s *serviceImpl) ResetOperator(serviceID domain.ServiceID, operator string) int {
+	return s.ops.reset(serviceID, operator, time.Now())
 }
 
 // ErrNoScore is returned by a reset that matched no recorded score. Nothing
