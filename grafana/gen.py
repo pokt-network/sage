@@ -381,6 +381,19 @@ for q in ("0.50", "0.90", "0.95", "0.99"):
 ts("Client-Facing Latency Percentiles", clat, 12, 12, unit="ms", stack=False, fill=0, sort_mean=False,
    desc="What the client waited, retries and hedges included: from the request reaching SAGE to the response written.")
 y[0] += 8
+ts("Slow Attempts by Operator (> 2.5s)",
+   [(f'topk(10, sum by (service_id, operator) (rate(sage_operator_attempt_seconds_count{{{S}}}[{RI}])) - '
+     f'sum by (service_id, operator) (rate(sage_operator_attempt_seconds_bucket{{{S}, le="2.5"}}[{RI}])))',
+     "{{service_id}} {{operator}}")],
+   0, 12, unit="reqps", stack=False, fill=10,
+   desc="Attempts that took longer than 2.5s, by service and operator, top 10. A slow tail is what runs a request out "
+        "of its deadline (a client 504) even when the median is fast: read it beside the 504 panel.")
+ts("Client 504s by Service",
+   [(f'topk(10, sum by (service_id) (rate(sage_client_requests_total{{{S}, status="504"}}[{RI}])))', "{{service_id}}")],
+   12, 12, unit="reqps", stack=False, fill=10,
+   desc="Requests that ran out of their deadline. The error log names the operators in flight for each one "
+        "(\"attempts\" and the hedge deadline message).")
+y[0] += 8
 
 # ---------------------------------------------------------------------------
 row("Health Checks, Selection & Retries")

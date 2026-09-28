@@ -3149,14 +3149,174 @@
       ]
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Attempts that took longer than 2.5s, by service and operator, top 10. A slow tail is what runs a request out of its deadline (a client 504) even when the median is fast: read it beside the 504 panel.",
+      "type": "timeseries",
+      "title": "Slow Attempts by Operator (> 2.5s)",
+      "id": 34,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 93
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "topk(10, sum by (service_id, operator) (rate(sage_operator_attempt_seconds_count{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval])) - sum by (service_id, operator) (rate(sage_operator_attempt_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\", le=\"2.5\"}[$__rate_interval])))",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "{{service_id}} {{operator}}"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Requests that ran out of their deadline. The error log names the operators in flight for each one (\"attempts\" and the hedge deadline message).",
+      "type": "timeseries",
+      "title": "Client 504s by Service",
+      "id": 35,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 93
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "topk(10, sum by (service_id) (rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\", status=\"504\"}[$__rate_interval])))",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "{{service_id}}"
+        }
+      ]
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 93
+        "y": 101
       },
-      "id": 34,
+      "id": 36,
       "panels": [],
       "title": "Health Checks, Selection & Retries",
       "type": "row"
@@ -3169,12 +3329,12 @@
       "description": "Health-check relays by the status the relay miner returned. Only the probe leader sends.",
       "type": "timeseries",
       "title": "Probe Results by Status",
-      "id": 35,
+      "id": 37,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 94
+        "y": 102
       },
       "fieldConfig": {
         "defaults": {
@@ -3249,12 +3409,12 @@
       "description": "Endpoint selections by height tier: 1 within sync allowance of the chain head, 2 within twice it, 3 with the height filter abandoned (least-stale first). A rising tier 3 means a service's pool is behind.",
       "type": "timeseries",
       "title": "Selection Height Tier",
-      "id": 36,
+      "id": 38,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 94
+        "y": 102
       },
       "fieldConfig": {
         "defaults": {
@@ -3329,12 +3489,12 @@
       "description": "",
       "type": "timeseries",
       "title": "Retry Reasons",
-      "id": 37,
+      "id": 39,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 102
+        "y": 110
       },
       "fieldConfig": {
         "defaults": {
@@ -3409,12 +3569,12 @@
       "description": "recovered: a later attempt succeeded. exhausted: the client got the last answer or an error.",
       "type": "timeseries",
       "title": "Retry Outcomes",
-      "id": 38,
+      "id": 40,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 102
+        "y": 110
       },
       "fieldConfig": {
         "defaults": {
@@ -3489,12 +3649,12 @@
       "description": "Retries that ran out, by the verdict that started them. blockchain_error here usually means the chain state asked for exists on no node in the pool.",
       "type": "timeseries",
       "title": "Exhausted Retries by Cause",
-      "id": 39,
+      "id": 41,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 110
+        "y": 118
       },
       "fieldConfig": {
         "defaults": {
@@ -3569,12 +3729,12 @@
       "description": "Requests served in degraded mode: pool collapse (every endpoint below the floor) or an answer sent with X-Degraded.",
       "type": "timeseries",
       "title": "Degraded Responses",
-      "id": 40,
+      "id": 42,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 110
+        "y": 118
       },
       "fieldConfig": {
         "defaults": {
@@ -3647,9 +3807,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 118
+        "y": 126
       },
-      "id": 41,
+      "id": 43,
       "panels": [],
       "title": "Client-Facing Errors by Service",
       "type": "row"
@@ -3662,12 +3822,12 @@
       "description": "What clients saw, per service. A service high here with a clean supplier table usually lacks a supplier that can serve its requests at all (archival state, an RPC type nobody stakes).",
       "type": "table",
       "title": "Worst Services (client 5xx)",
-      "id": 42,
+      "id": 44,
       "gridPos": {
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 119
+        "y": 127
       },
       "fieldConfig": {
         "defaults": {
@@ -3898,9 +4058,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 127
+        "y": 135
       },
-      "id": 43,
+      "id": 45,
       "panels": [],
       "title": "WebSocket Monitoring",
       "type": "row"
@@ -3913,12 +4073,12 @@
       "description": "",
       "type": "timeseries",
       "title": "Active WebSocket Connections",
-      "id": 44,
+      "id": 46,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 128
+        "y": 136
       },
       "fieldConfig": {
         "defaults": {
@@ -3991,12 +4151,12 @@
       "description": "Bridges ended, by who ended them. gateway closes are SAGE's own decision (a deadline, a rebind that found nowhere to go); client and endpoint closes are the peers'.",
       "type": "timeseries",
       "title": "WebSocket Closes by Initiator",
-      "id": 45,
+      "id": 47,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 128
+        "y": 136
       },
       "fieldConfig": {
         "defaults": {
@@ -4069,12 +4229,12 @@
       "description": "",
       "type": "timeseries",
       "title": "WebSocket Frame Rate",
-      "id": 46,
+      "id": 48,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 128
+        "y": 136
       },
       "fieldConfig": {
         "defaults": {
@@ -4147,12 +4307,12 @@
       "description": "rebind:ok is healthy: a supplier was replaced under a live client (session rollover, loss, stall) and subscriptions replayed. rebind:failed means the client was told to reconnect.",
       "type": "timeseries",
       "title": "Rebinds, Stalls & Unresponsive Peers",
-      "id": 47,
+      "id": 49,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 136
+        "y": 144
       },
       "fieldConfig": {
         "defaults": {
@@ -4247,12 +4407,12 @@
       "description": "How long one supplier served one client connection, bind to rebind or close. A connection that rebinds is several tenures, so this is a lower bound on connection lifetime.",
       "type": "timeseries",
       "title": "Supplier Tenure per Connection (p50/p90/p99)",
-      "id": 48,
+      "id": 50,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 136
+        "y": 144
       },
       "fieldConfig": {
         "defaults": {
@@ -4347,12 +4507,12 @@
       "description": "ok: for a subscription open on the connection. duplicate: a byte-for-byte repeat of one of the last 8. unsolicited: for a subscription never opened with that supplier. Both are relays nobody asked for.",
       "type": "timeseries",
       "title": "Subscription Notifications by Grade",
-      "id": 49,
+      "id": 51,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 136
+        "y": 144
       },
       "fieldConfig": {
         "defaults": {
@@ -4425,12 +4585,12 @@
       "description": "Per operator and service. Every frame in either direction is a relay the supplier can claim, and the push rate on a subscription is chosen by the supplier being paid, so Frames /conn is worth comparing across operators on the same service: from inside the gateway a busy feed and an inflated one look alike. Dup+unsolicited % is notifications nobody asked for. Frame columns show only while the operator holds a live connection, so a rate window cannot outlive the connection that produced it.",
       "type": "table",
       "title": "WebSocket Supplier Quality by Operator/Service",
-      "id": 50,
+      "id": 52,
       "gridPos": {
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 144
+        "y": 152
       },
       "fieldConfig": {
         "defaults": {
@@ -4830,12 +4990,12 @@
       "description": "Blast radius: the largest operator's share of each service over the last hour. High share means one operator failing takes most of the service with it. Share only; no operator named.",
       "type": "table",
       "title": "Supplier Concentration \u2014 top operator share per service (HTTP + WS)",
-      "id": 51,
+      "id": 53,
       "gridPos": {
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 154
+        "y": 162
       },
       "fieldConfig": {
         "defaults": {
@@ -5059,9 +5219,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 162
+        "y": 170
       },
-      "id": 52,
+      "id": 54,
       "panels": [],
       "title": "Gateway Internals \u2014 probes, auto-drain, health",
       "type": "row"
@@ -5074,12 +5234,12 @@
       "description": "Probes of demoted WebSocket keys. dial_failed backs off per URL up to 32 min; ok and other_dialect (alive, speaks another API on that socket) earn a key its way back.",
       "type": "timeseries",
       "title": "WebSocket Recovery Probes",
-      "id": 53,
+      "id": 55,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 163
+        "y": 171
       },
       "fieldConfig": {
         "defaults": {
@@ -5152,12 +5312,12 @@
       "description": "The auto-drain engine's decisions. shadow = would have drained (engine in shadow mode).",
       "type": "timeseries",
       "title": "Auto-Drain Decisions",
-      "id": 54,
+      "id": 56,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 163
+        "y": 171
       },
       "fieldConfig": {
         "defaults": {
@@ -5230,12 +5390,12 @@
       "description": "Exactly one pod should lead probing. 0 = nobody probing; >1 = split lease. Session layer 0 = a pod cannot read sessions from the full node.",
       "type": "timeseries",
       "title": "Probe Leader & Session Layer",
-      "id": 55,
+      "id": 57,
       "gridPos": {
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 163
+        "y": 171
       },
       "fieldConfig": {
         "defaults": {
