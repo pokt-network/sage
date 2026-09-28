@@ -283,7 +283,9 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					// sat excluded. Same guard as MethodBlocks (anyVouched).
 					if operatorAware {
 						narrowed := available.ExcludeAffiliates(triedAffiliates)
-						if anyVouched(o.repSvc, ctx, narrowed) || !anyVouched(o.repSvc, ctx, available) {
+						// Nor into a chain head left behind: see qos.StaleChecker.
+						if (anyVouched(o.repSvc, ctx, narrowed) || !anyVouched(o.repSvc, ctx, available)) &&
+							!narrowsIntoStale(ctx, narrowed, available) {
 							available = narrowed
 						}
 					}
@@ -302,7 +304,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 								other = append(other, ep)
 							}
 						}
-						if len(other) == 0 || !anyVouched(o.repSvc, ctx, other) {
+						if len(other) == 0 || !anyVouched(o.repSvc, ctx, other) || narrowsIntoStale(ctx, other, available) {
 							retriedFor, limited = pendingCause, true
 							return lastErr
 						}

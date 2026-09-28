@@ -355,3 +355,26 @@ func TestSelectWithKnownHeights_MixedSetStillPasses(t *testing.T) {
 		t.Fatalf("want tier 1 with a and new, got %+v", got)
 	}
 }
+
+// AllStale says yes only when every endpoint's height is known and below the
+// bound: an unknown height, an empty list or a zero bound is never stale.
+func TestAllStale(t *testing.T) {
+	h := map[domain.EndpointAddr]uint64{"a": 90, "b": 95, "c": 100}
+	get := func(e domain.EndpointAddr) (uint64, bool) { v, ok := h[e]; return v, ok }
+	for _, tc := range []struct {
+		name string
+		eps  domain.EndpointAddrList
+		min  uint64
+		want bool
+	}{
+		{"all below", domain.EndpointAddrList{"a", "b"}, 96, true},
+		{"one at the bound", domain.EndpointAddrList{"a", "c"}, 100, false},
+		{"one unknown", domain.EndpointAddrList{"a", "zz"}, 96, false},
+		{"empty", nil, 96, false},
+		{"zero bound", domain.EndpointAddrList{"a"}, 0, false},
+	} {
+		if got := AllStale(tc.eps, get, tc.min); got != tc.want {
+			t.Errorf("%s: AllStale = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

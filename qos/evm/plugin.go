@@ -544,3 +544,12 @@ func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
 // SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
 // qos.sync_allowance, per service, without a restart.
 func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }
+
+// AllStale reports whether every endpoint in eps is known to sit below the
+// relaxed height bound (qos.StaleChecker).
+func (p *Plugin) AllStale(eps domain.EndpointAddrList) bool {
+	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, p.consensus.Projection())
+	return qos.AllStale(eps, getHeight, qos.MinAllowedHeight(p.consensus.PerceivedBlock(), p.syncAllowance.Load()*2))
+}
+
+var _ qos.StaleChecker = (*Plugin)(nil)

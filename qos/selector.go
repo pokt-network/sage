@@ -234,6 +234,21 @@ func MinAllowedHeight(perceived, allowance uint64) uint64 {
 	return perceived - allowance
 }
 
+// AllStale reports whether every endpoint in eps has a known height below
+// minHeight — the shared body of qos.StaleChecker. An empty list is not stale,
+// and neither is any list when minHeight is 0 (cold start, or no allowance).
+func AllStale(eps domain.EndpointAddrList, getHeight func(domain.EndpointAddr) (uint64, bool), minHeight uint64) bool {
+	if len(eps) == 0 || minHeight == 0 {
+		return false
+	}
+	for _, ep := range eps {
+		if h, ok := getHeight(ep); !ok || h >= minHeight {
+			return false
+		}
+	}
+	return true
+}
+
 // BlockHeightFilter returns a FilterFunc that excludes endpoints below the minimum block height.
 // minHeight is typically perceived - syncAllowance.
 func BlockHeightFilter(getHeight func(domain.EndpointAddr) (uint64, bool), minHeight uint64) FilterFunc {

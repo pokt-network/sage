@@ -142,14 +142,32 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// A nil slot means the primary had not selected yet when the delay
 			// elapsed; there is nothing to steer away from, so the hedge simply
 			// picks from the full list as it would have anyway.
+			//
+			// Neither step may leave only hosts far behind the chain head
+			// while the list held a fresh one (qos.StaleChecker): the operator
+			// preference yields first, and if dropping the primary alone does
+			// that, no hedge is sent — a stale answer that wins the race is
+			// worse than waiting for the primary.
 			if primary := primaryCtx.SelectedEndpoint.Load(); primary != nil && *primary != "" {
-				hedgeCtx.Endpoints = hedgeCtx.Endpoints.Exclude(
-					map[domain.EndpointAddr]bool{*primary: true},
-				)
+				full := hedgeCtx.Endpoints
+				excluded := full.Exclude(map[domain.EndpointAddr]bool{*primary: true})
+				hedgeCtx.Endpoints = excluded
 				if flags.IsEnabled(ctx.Ctx, featureflag.FlagOperatorAwareSelection, ctx.ServiceID) {
 					// Operator or owner: two brands of one owner are not
 					// an independent path either.
-					hedgeCtx.Endpoints = hedgeCtx.Endpoints.ExcludeAffiliates(domain.AffiliatesOf(*primary))
+					if narrowed := excluded.ExcludeAffiliates(domain.AffiliatesOf(*primary)); !narrowsIntoStale(ctx, narrowed, full) {
+						hedgeCtx.Endpoints = narrowed
+					}
+				}
+				if narrowsIntoStale(ctx, hedgeCtx.Endpoints, full) {
+					recordHedge(ctx, "suppressed_stale")
+					select {
+					case res := <-primaryCh:
+						mergeContext(ctx, res.ctx)
+						return res.err
+					case <-ctx.Ctx.Done():
+						return deadlineInFlight(ctx, primary)
+					}
 				}
 			}
 			// Force endpoint re-selection for the hedge.

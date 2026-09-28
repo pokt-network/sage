@@ -109,6 +109,14 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 	}
 }
 
+// narrowsIntoStale reports whether narrowing full to narrowed leaves only
+// endpoints the service's plugin knows to be far behind the chain head while
+// full still held one that is not (qos.StaleChecker).
+func narrowsIntoStale(ctx *relay.Context, narrowed, full domain.EndpointAddrList) bool {
+	c, ok := ctx.Plugin.(qos.StaleChecker)
+	return ok && c.AllStale(narrowed) && !c.AllStale(full)
+}
+
 // probationBudgetShare is the fraction (1/n) of an attempt's remaining
 // deadline a probation first try may use.
 const probationBudgetShare = 4

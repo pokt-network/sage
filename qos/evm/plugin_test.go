@@ -987,3 +987,17 @@ func TestArchivalMemory_SharedAcrossAddressesOfOneHost(t *testing.T) {
 		t.Fatalf("after ResetState the memory must be empty, got %v", selected)
 	}
 }
+
+// AllStale uses the relaxed bound, twice the allowance below perceived.
+func TestAllStale_UsesRelaxedBound(t *testing.T) {
+	p := newTestPlugin(5)
+	p.UpdateBlockHeight("head", 100)
+	p.UpdateBlockHeight("near", 91)   // inside 2×5 of 100
+	p.UpdateBlockHeight("behind", 80) // outside
+	if !p.AllStale(domain.EndpointAddrList{"behind"}) {
+		t.Error("an endpoint 20 blocks behind with allowance 5 must be stale")
+	}
+	if p.AllStale(domain.EndpointAddrList{"behind", "near"}) {
+		t.Error("a list with an endpoint inside the relaxed bound is not all stale")
+	}
+}

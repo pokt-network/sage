@@ -225,6 +225,21 @@ type EndpointHeightLister interface {
 	EndpointHeights() []EndpointHeight
 }
 
+// StaleChecker is implemented by plugins that filter on block height. AllStale
+// reports whether every endpoint in eps is known to sit below the relaxed
+// (tier-2) height bound: a list SelectEndpoints can serve only by abandoning
+// the height filter. An endpoint with no known height is not stale.
+//
+// It exists for the middleware that narrows the pool before the plugin sees
+// it. Retry and hedge each prefer an operator not already tried; the plugin
+// is handed only what is left and cannot know a fresh host was set aside. On
+// mainnet metis (2026-09-28) the operators left after the in-sync ones were
+// tried was one operator 79,000 blocks behind, the plugin fell to tier 3, and
+// ~120 relays an hour were served from it. The narrowing asks first.
+type StaleChecker interface {
+	AllStale(eps domain.EndpointAddrList) bool
+}
+
 // StateResetter is implemented by plugins that hold learned chain state — block
 // consensus, per-endpoint heights, chain-id assertions, archival marks — that an
 // operator may need to discard without a restart.
