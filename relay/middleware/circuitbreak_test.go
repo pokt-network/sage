@@ -380,3 +380,26 @@ func TestCircuitBreak_ConnectFailureFeedsTheBreaker(t *testing.T) {
 		t.Fatal("a refused connection must reach the breaker")
 	}
 }
+
+// A pool whose every domain is broken fails open: the request goes to the
+// whole list and scoring picks, rather than failing for want of endpoints.
+func TestCircuitBreak_AllBrokenFailsOpen(t *testing.T) {
+	breaker := firstErrorBreaker()
+	eps := testEndpoints(3)
+	for _, ep := range eps {
+		breaker.MarkBroken("eth", ep.Domain(), "test")
+	}
+	var seen domain.EndpointAddrList
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		seen = ctx.Endpoints
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+	ctx := baseContext()
+	if err := CircuitBreak(breaker, nil, newFlags("circuit_breaker"), nil)(inner).HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != len(eps) {
+		t.Fatalf("endpoints = %v, want all %d", seen, len(eps))
+	}
+}

@@ -57,11 +57,19 @@ func CircuitBreak(
 				// fetch and surfaces the error.
 			}
 
-			// Pre-relay: remove endpoints whose domain is broken.
+			// Pre-relay: remove endpoints whose domain is broken — unless that
+			// removes every one. With the whole pool broken the request fails
+			// either way, and a pool that is all broken is more likely a
+			// chain-wide slowdown than every operator down at once, so it
+			// fails open and lets scoring pick. sage_circuit_breaker_state
+			// shows the pool while it lasts.
 			if len(ctx.Endpoints) > 0 {
-				ctx.Endpoints = filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool {
+				healthy := filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool {
 					return !breaker.IsBroken(serviceID, ep.Domain())
 				})
+				if len(healthy) > 0 {
+					ctx.Endpoints = healthy
+				}
 			}
 
 			err := next.HandleRelay(ctx)
