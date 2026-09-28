@@ -29,6 +29,11 @@ type Signal struct {
 	// real has graded, and so a future mechanism can be checked for being
 	// driven by synthetic traffic alone (docs/scoring.md §3.5).
 	Probe bool
+	// Leftover is true for a retry or hedge attempt. Which relays reach those
+	// attempts was decided by an earlier failure or slowness, so they are a
+	// skewed sample of an operator's traffic: the per-key score counts them,
+	// the operator counters do not (see RecordSignal).
+	Leftover bool
 }
 
 // NewSuccessSignal creates a signal indicating a successful relay.

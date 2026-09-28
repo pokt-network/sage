@@ -417,6 +417,12 @@ Two more corrections followed the same day, both from mainnet sei:
   startup. With the flag on, every key of an operator is charged that rate and
   the baseline is the best *operator* in the pool, one vote each. A service is
   measured in one basis or the other, never a mix.
+
+  Only first, probation and probe attempts feed those counters. Retries and
+  hedges score their key but not its operator: which relays reach them was
+  decided by another host's failure or slowness, and a demoted operator gets
+  little else, so counting them held its rate up by the demotion itself
+  (mainnet sei and opbnb, 2026-09-28).
 - **A probe cannot outvote traffic.** A probe success on a key that served
   traffic in the last 10 minutes moves neither term. One operator passed
   `eth_blockNumber` every cycle while answering 408 to real calls, and the

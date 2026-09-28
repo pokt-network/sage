@@ -770,7 +770,14 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// what this measures. The pool-collapse fallback keeps feeding floored
 	// keys, and dropping those attempts would make the operator the fallback
 	// is feeding look better the worse it got (mainnet sei, 2026-09-16).
-	if sc.rate.Enabled() && !deferred {
+	// Those fallback picks are first attempts, so they still count here.
+	//
+	// Retries and hedges do not (Signal.Leftover). An operator already
+	// demoted gets mostly those — the relays another host just failed or was
+	// slow on — so counting them held its rate up by the very demotion it
+	// caused (mainnet sei and opbnb, 2026-09-28). Probation attempts are
+	// first attempts on a share of relays, a fair sample, and count.
+	if sc.rate.Enabled() && !deferred && !signal.Leftover {
 		if op := endpoint.Operator(); op != "" {
 			s.ops.record(opID{serviceID, op, string(rpcType)}, FailureWeight(signal.Type), ts)
 		}

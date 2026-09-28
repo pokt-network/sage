@@ -232,3 +232,23 @@ func TestOperatorOfKey(t *testing.T) {
 		}
 	}
 }
+
+// Retries and hedges score the key but stay out of the operator counters: a
+// demoted operator's leftovers are the relays another host just failed, and
+// counting them held its rate up by the demotion itself.
+func TestOperatorRateIgnoresLeftoverAttempts(t *testing.T) {
+	s := opService(t, nil)
+	ep := domain.EndpointAddr("pokt1a-https://r001.opa.example")
+	feedOperator(s, ep, 200, 0)
+	for i := 0; i < 200; i++ {
+		_ = s.RecordSignal(context.Background(), rateSvc, ep, domain.RPCTypeJSONRPC,
+			Signal{Type: SignalCriticalError, Timestamp: time.Now(), Leftover: true})
+	}
+	got, ok := s.OperatorRate(rateSvc, domain.RPCTypeJSONRPC, "opa.example")
+	if ok && got.Rate > 0 {
+		t.Fatalf("operator rate %.4f after leftover failures only, want 0", got.Rate)
+	}
+	if score, _ := s.GetScore(context.Background(), rateSvc, ep, domain.RPCTypeJSONRPC); score >= 100 {
+		t.Fatalf("key score %.1f: leftover failures must still score the key", score)
+	}
+}

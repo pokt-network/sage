@@ -35,6 +35,24 @@ func TestScore_RecordsSuccessForThisAttempt(t *testing.T) {
 	assert.Equal(t, reputation.SignalSuccess, got[0].Signal.Type)
 }
 
+// A retry or hedge attempt is marked as a leftover; a first or probation
+// attempt is not.
+func TestScore_MarksRetryAndHedgeAsLeftovers(t *testing.T) {
+	for kind, want := range map[string]bool{"": false, relay.AttemptProbation: false, relay.AttemptRetry: true, relay.AttemptHedge: true} {
+		rep := &recordingRepService{}
+		inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+			ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`), HTTPStatusCode: 200}
+			return nil
+		})
+		ctx := scoreCtx("pokt1a-https://a")
+		ctx.AttemptKind = kind
+		require.NoError(t, Score(newFlags(featureflag.FlagScoringV2), rep)(inner).HandleRelay(ctx))
+		got := rep.all()
+		require.Len(t, got, 1)
+		assert.Equal(t, want, got[0].Signal.Leftover, "attempt %q", kind)
+	}
+}
+
 func TestScore_UsesHeuristicSeverity(t *testing.T) {
 	rep := &recordingRepService{}
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {

@@ -45,6 +45,7 @@ func Score(flags featureflag.FlagStore, repSvc reputation.Service) relay.Middlew
 				return err
 			}
 			sig := buildSignal(ctx, err, time.Since(start))
+			sig.Leftover = ctx.AttemptKind == relay.AttemptRetry || ctx.AttemptKind == relay.AttemptHedge
 			if sig.Type == "" {
 				// A retried-but-unscored verdict leaves no signal; the timeline
 				// still says which host answered what (reputation.Noter).
