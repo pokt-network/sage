@@ -1,11 +1,13 @@
 package middleware
 
 import (
+	"fmt"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
+	"time"
 )
 
 // Heuristic returns a middleware that analyses the relay outcome after the
@@ -21,9 +23,14 @@ import (
 // "heuristic" feature flag — grading a transport error is attribution, not
 // response analysis, and the circuit breaker, the method blocks and
 // reputation all key on it. The flag gates body analysis only.
-func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middleware {
+func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, opts ...HeuristicOption) relay.Middleware {
+	var o heuristicOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
+			budget, full := o.budget(ctx)
 			// Run the inner chain first.
 			if err := next.HandleRelay(ctx); err != nil {
 				// No body to analyse, but the failure itself is evidence: a
@@ -33,6 +40,7 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middle
 				// The flag gate below is deliberately not applied: grading a
 				// transport error is attribution, not response analysis.
 				result := heuristic.AnalyzeTransportError(err, ctx.Ctx.Err())
+				gradeTimeoutBudget(&result, budget, full)
 				// The plugin may know the route better than the analyzer
 				// (qos.VerdictRefiner): a verdict refined to "deliver" must
 				// also stop Retry, which keys on the error's own flag.
@@ -115,6 +123,66 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry) relay.Middle
 
 			return nil
 		})
+	}
+}
+
+// HeuristicOption tunes the Heuristic middleware.
+type HeuristicOption func(*heuristicOptions)
+
+type heuristicOptions struct {
+	attemptTimeout func(domain.ServiceID) time.Duration
+}
+
+// WithAttemptTimeout gives the middleware each service's per-attempt relay
+// timeout, the budget an attempt is owed. Without it every timeout is graded
+// as the host's own.
+func WithAttemptTimeout(fn func(domain.ServiceID) time.Duration) HeuristicOption {
+	return func(o *heuristicOptions) { o.attemptTimeout = fn }
+}
+
+// budget is the time this attempt has (the smaller of the per-attempt timeout
+// and what is left of the request) and the time it is owed. Zero owed means
+// unknown.
+func (o heuristicOptions) budget(ctx *relay.Context) (have, owed time.Duration) {
+	if o.attemptTimeout == nil {
+		return 0, 0
+	}
+	owed = o.attemptTimeout(ctx.ServiceID)
+	have = owed
+	if dl, ok := ctx.Ctx.Deadline(); ok {
+		if left := time.Until(dl); left < have || have <= 0 {
+			have = left
+		}
+	}
+	return have, owed
+}
+
+// shortBudgetShare: an attempt left with less than 1/shortBudgetShare of the
+// per-attempt timeout did not get a fair chance to answer.
+const shortBudgetShare = 2
+
+// gradeTimeoutBudget stamps a timeout verdict with the budget the attempt had,
+// and takes the penalty off one that had too little of it.
+//
+// A timeout on an attempt that started with a fraction of its budget — a retry
+// after another host used most of the request, a probation try held to a
+// quarter — measures the time others spent, not the host. Graded major, it
+// kept a working operator floored: once its keys were low it was sent mostly
+// such leftovers, they timed out, and the score stayed low. On mainnet sei
+// (2026-09-28) that held one operator's keys at 0-3 while it served 97% of the
+// same service for PATH; a manual reset put them at 99 for good. Still
+// retried, not scored and not method-blocked. A host that is truly dead is
+// still demoted by its health checks, which always run with the full budget.
+func gradeTimeoutBudget(r *heuristic.AnalysisResult, have, owed time.Duration) {
+	if r.Reason != "transport_timeout" || owed <= 0 {
+		return
+	}
+	r.Details += fmt.Sprintf(" (budget %s of %s)", have.Round(time.Millisecond), owed)
+	if have < owed/shortBudgetShare {
+		r.Reason = "short_budget_timeout"
+		r.ShouldPenalize = false
+		r.PenaltySeverity = ""
+		r.MethodBlocking = false
 	}
 }
 
