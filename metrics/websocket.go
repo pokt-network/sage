@@ -65,6 +65,10 @@ type WebSocketMetrics struct {
 	supplierTenure        *prometheus.HistogramVec
 	duplicateGap          *prometheus.HistogramVec
 	probes                *prometheus.CounterVec
+	subscribeAcks         *prometheus.CounterVec
+	headLag               *prometheus.HistogramVec
+	headDelay             *prometheus.HistogramVec
+	headMismatch          *prometheus.CounterVec
 }
 
 // Caps for the supplier labels. Operators serving WebSocket number in the
@@ -82,7 +86,8 @@ const (
 func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
 	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
-		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes)
+		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes,
+		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch)
 	return m
 }
 
@@ -116,6 +121,40 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 				Help:      "Subscription notifications a supplier pushed, by service, operator, owner, topic (what the subscription is for: newHeads, logs, slotSubscribe, …) and grade: ok (for a subscription open on the connection), duplicate (byte-for-byte repeat of one of the subscription's last 8 notifications from that supplier), unsolicited (for a subscription never opened with that supplier). Every notification is a paid relay no client asked for frame by frame; duplicate and unsolicited ones are padding. Graded, never dropped: the client still receives them.",
 			},
 			append(append([]string(nil), supplierLabels...), "topic", "grade"),
+		),
+		subscribeAcks: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_subscribe_acks_total",
+				Help:      "Answers a supplier gave to a subscribe, the client's own or a rebind's replay, by service, operator, owner and outcome: ok (a subscription id), error (a refusal, or an answer with no id: nothing will be delivered). A supplier that accepts connections and refuses subscriptions is paid for the connection and serves nothing.",
+			},
+			append(append([]string(nil), supplierLabels...), "outcome"),
+		),
+		headLag: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "websocket_head_lag_blocks",
+				Help:      "For each new head a supplier pushed on a newHeads subscription, counted once per operator and block on this pod, how many blocks it was behind the head this pod knows: the higher of the service's block consensus and the newest head any supplier pushed over WebSocket. By service, operator and owner. A supplier feeding a stale node pushes real headers late.",
+				Buckets:   []float64{0, 1, 2, 3, 5, 10, 20, 50, 100},
+			},
+			supplierLabels,
+		),
+		headDelay: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "websocket_head_delay_seconds",
+				Help:      "How long after the first supplier on this pod pushed a block's head this supplier pushed the same block, by service, operator and owner; 0 for the first. Observed only for a block at least two operators pushed, so an operator alone on a service has no reading rather than a perfect one.",
+				Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30},
+			},
+			supplierLabels,
+		),
+		headMismatch: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_head_hash_mismatches_total",
+				Help:      "Blocks for which a supplier pushed a head whose hash differs from the one most operators pushed for that number, judged 8 blocks later, by service, operator and owner. A reorg makes honest mismatches, so read it as a rate against other operators on the same service, never alone.",
+			},
+			supplierLabels,
 		),
 		supplierConnections: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -317,6 +356,10 @@ func (m *WebSocketMetrics) SupplierFrame(serviceID domain.ServiceID, operator, o
 // SupplierNotification counts one graded notification. NotificationNone is
 // not recorded.
 func (m *WebSocketMetrics) SupplierNotification(serviceID domain.ServiceID, operator, owner string, note qos.Notification) {
+	if note.Ack != "" {
+		sid, op, own := m.supplierValues(serviceID, operator, owner)
+		m.subscribeAcks.WithLabelValues(sid, op, own, note.Ack).Inc()
+	}
 	grade := notificationGrade(note.Kind)
 	if grade == "" {
 		return
@@ -367,4 +410,21 @@ func NewWebSocketShoppingGauge(count func() int) prometheus.GaugeFunc {
 		},
 		func() float64 { return float64(count()) },
 	)
+}
+
+// SupplierHead records one new head a supplier pushed: its lag behind the
+// known head and, when another operator pushed the same block, its delay.
+func (m *WebSocketMetrics) SupplierHead(serviceID domain.ServiceID, operator, owner string, lagBlocks uint64, delay time.Duration, delayKnown bool) {
+	sid, op, own := m.supplierValues(serviceID, operator, owner)
+	m.headLag.WithLabelValues(sid, op, own).Observe(float64(lagBlocks))
+	if delayKnown {
+		m.headDelay.WithLabelValues(sid, op, own).Observe(delay.Seconds())
+	}
+}
+
+// SupplierHeadMismatch counts one block a supplier pushed with a hash other
+// operators did not.
+func (m *WebSocketMetrics) SupplierHeadMismatch(serviceID domain.ServiceID, operator, owner string) {
+	sid, op, own := m.supplierValues(serviceID, operator, owner)
+	m.headMismatch.WithLabelValues(sid, op, own).Inc()
 }

@@ -39,6 +39,10 @@ type wsMessageProcessor struct {
 	// verification is reported, not blacklisted (debug.go).
 	evidence bool
 	samples  *wsNotificationSamples
+	// heads and consensusHead feed the head signals (ws_heads.go); nil
+	// for a probe.
+	heads         *wsHeadTracker
+	consensusHead func() uint64
 	// topicMu guards topics: frames are counted on the bridge goroutine and
 	// read at release by the rebind handler or the close.
 	topicMu       sync.Mutex
@@ -111,6 +115,13 @@ func (p *wsMessageProcessor) topicCounts() map[string]int64 {
 		out[t] = n
 	}
 	return out
+}
+
+// withHeads attaches the head tracker and the service's consensus head
+// (ws_heads.go).
+func (p *wsMessageProcessor) withHeads(t *wsHeadTracker, consensusHead func() uint64) *wsMessageProcessor {
+	p.heads, p.consensusHead = t, consensusHead
+	return p
 }
 
 // withSamples attaches the notification sampler (ws_samples.go).
@@ -275,6 +286,9 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	if note.Kind == qos.NotificationOK || note.Kind == qos.NotificationDuplicate {
 		p.samples.observe(serviceID, p.operator, p.owner, note.Topic, payload)
 		p.countTopic(note.Topic)
+	}
+	if note.Kind == qos.NotificationOK && note.Topic == "newHeads" {
+		p.observeHead(serviceID, payload)
 	}
 	if !forward {
 		return nil, nil

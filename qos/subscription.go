@@ -247,6 +247,23 @@ type Notification struct {
 	// subscription, when it was inside the gap window; 0 otherwise. Wider
 	// than the duplicate grade on purpose, see gapWindow.
 	Gap time.Duration
+	// Ack is the outcome of a subscribe this frame answers, the client's or
+	// a rebind's replay: AckOK, AckError, or "" for any other frame.
+	Ack string
+}
+
+// Subscribe outcomes, for Notification.Ack. A refusal and an answer with no
+// subscription id are both an error: either way nothing will be delivered.
+const (
+	AckOK    = "ok"
+	AckError = "error"
+)
+
+func ackOf(info EndpointFrameInfo) string {
+	if info.IsError || info.SubscriptionID == "" {
+		return AckError
+	}
+	return AckOK
 }
 
 // gapWindow and gapMaxAge bound how far back a repeat is looked for when
@@ -442,6 +459,8 @@ func (r *SubscriptionRegistry) translateEndpointFrame(data []byte) (out []byte, 
 	case EndpointFrameResponse:
 		if clientID, replayed := r.replay[info.RequestID]; replayed {
 			delete(r.replay, info.RequestID)
+			note.Topic = r.active[clientID].Topic
+			note.Ack = ackOf(info)
 			r.completeReplay(clientID, info)
 			return nil, false, note
 		}
@@ -456,6 +475,7 @@ func (r *SubscriptionRegistry) translateEndpointFrame(data []byte) (out []byte, 
 			r.pending[info.RequestID] = queue[1:]
 		}
 		r.npending--
+		note.Topic, note.Ack = p.topic, ackOf(info)
 		if info.IsError || info.SubscriptionID == "" {
 			return data, true, note
 		}

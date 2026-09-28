@@ -283,3 +283,31 @@ func TestSubscriptionRegistry_Heartbeat(t *testing.T) {
 		t.Fatal("after the periodic feed is unsubscribed the connection has no heartbeat")
 	}
 }
+
+// A subscribe's answer carries its outcome, for the client's subscribe and a
+// rebind's replay alike; any other frame carries none.
+func TestSubscriptionRegistry_AckOutcome(t *testing.T) {
+	r := NewSubscriptionRegistry(spanClassifier{})
+	r.TranslateClientFrame([]byte("sub:1"))
+	if _, _, n := r.TranslateEndpointFrameNote([]byte("ok:1:s1")); n.Ack != AckOK || n.Topic != "heads" {
+		t.Fatalf("subscribe ok: note %+v", n)
+	}
+	r.TranslateClientFrame([]byte("sub:2"))
+	if _, _, n := r.TranslateEndpointFrameNote([]byte("err:2")); n.Ack != AckError {
+		t.Fatalf("subscribe refused: note %+v", n)
+	}
+	if _, _, n := r.TranslateEndpointFrameNote([]byte("data:s1")); n.Ack != "" {
+		t.Fatalf("notification: note %+v", n)
+	}
+	replay := r.ReplayFrames()
+	if len(replay) != 1 {
+		t.Fatalf("ReplayFrames = %d, want 1", len(replay))
+	}
+	replayID := strings.TrimPrefix(string(replay[0]), "sub:")
+	if _, fwd, n := r.TranslateEndpointFrameNote([]byte("err:" + replayID)); fwd || n.Ack != AckError || n.Topic != "heads" {
+		t.Fatalf("replay refused: forward=%v note %+v", fwd, n)
+	}
+	if r.HasActive() {
+		t.Fatal("a refused replay must drop the subscription")
+	}
+}

@@ -114,6 +114,8 @@ type WSMetrics interface {
 	SupplierReleased(serviceID domain.ServiceID, operator, owner string, tenure time.Duration)
 	SupplierFrame(serviceID domain.ServiceID, operator, owner string, source websockets.MessageSource)
 	SupplierNotification(serviceID domain.ServiceID, operator, owner string, note qos.Notification)
+	SupplierHead(serviceID domain.ServiceID, operator, owner string, lagBlocks uint64, delay time.Duration, delayKnown bool)
+	SupplierHeadMismatch(serviceID domain.ServiceID, operator, owner string)
 	Probed(serviceID domain.ServiceID, result string)
 }
 
@@ -126,6 +128,8 @@ type WSRelayer struct {
 
 	// samples keeps a sample of what each supplier pushed (ws_samples.go).
 	samples *wsNotificationSamples
+	// heads compares the operators' newHeads feeds (ws_heads.go).
+	heads *wsHeadTracker
 
 	// probeBackoff spaces out recovery probes of URLs that keep failing.
 	probeBackoff wsProbeBackoff
@@ -217,7 +221,20 @@ func NewWSRelayer(deps WSRelayerDeps) *WSRelayer {
 		connLimiter:  websockets.NewConnectionLimiter(deps.MaxConcurrentConnections),
 		clients:      newWSClientLedger(nil),
 		samples:      newWSNotificationSamples(),
+		heads:        newWSHeadTracker(),
 	}
+}
+
+// consensusHead reads the service's block consensus head, for the head
+// signals; nil when the service's plugin tracks none.
+func (r *WSRelayer) consensusHead(serviceID domain.ServiceID) func() uint64 {
+	if r.deps.QoS == nil {
+		return nil
+	}
+	if bt, ok := r.deps.QoS.Get(serviceID).(qos.BlockHeightTracker); ok {
+		return bt.PerceivedBlockHeight
+	}
+	return nil
 }
 
 // NotificationSamples returns the sampled WebSocket notification hashes (see
@@ -371,6 +388,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	frameCh := make(chan wsFrameEvent, wsFrameEventQueueSize)
 
 	subs := r.subscriptionRegistry(serviceID)
+	consensusHead := r.consensusHead(serviceID)
 	newProcessor := func(t *wsTarget) *wsMessageProcessor {
 		addr := t.addr
 		return newWSMessageProcessor(
@@ -386,7 +404,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 				default:
 				}
 			},
-		).withSubscriptions(subs).withSupplier(r.deps.Metrics, t.ep.Owner()).withSamples(r.samples)
+		).withSubscriptions(subs).withSupplier(r.deps.Metrics, t.ep.Owner()).withSamples(r.samples).withHeads(r.heads, consensusHead)
 	}
 	processor := newProcessor(target)
 	currentProc.Store(processor)

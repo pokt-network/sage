@@ -509,6 +509,20 @@ type spyWSMetrics struct {
 	frames        map[string]int // operator|owner|direction
 	notifications map[string]int // operator|owner|topic|kind
 	probes        []string
+	heads         []string // operator|lag|delayKnown
+	mismatches    []string // operator
+}
+
+func (s *spyWSMetrics) SupplierHead(_ domain.ServiceID, operator, _ string, lag uint64, _ time.Duration, delayKnown bool) {
+	s.mu.Lock()
+	s.heads = append(s.heads, fmt.Sprintf("%s|%d|%v", operator, lag, delayKnown))
+	s.mu.Unlock()
+}
+
+func (s *spyWSMetrics) SupplierHeadMismatch(_ domain.ServiceID, operator, _ string) {
+	s.mu.Lock()
+	s.mismatches = append(s.mismatches, operator)
+	s.mu.Unlock()
 }
 
 func (s *spyWSMetrics) ForService(domain.ServiceID) websockets.Observer { return nil }
