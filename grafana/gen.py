@@ -249,23 +249,24 @@ table(
         ("P95", f'histogram_quantile(0.95, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
         ("P99", f'histogram_quantile(0.99, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
         ("KeysLow", f'max by ({by}) (count by ({by}, pod) ({KEY_OPERATOR} < 80))'),
-        ("MinScore", f'avg by ({by}) (min by ({by}, pod) ({KEY_OPERATOR}))'),
+        ("MeanScore", f'avg by ({by}) (sage_operator_reputation_mean{{{S}}})'),
+        ("Keys", f'max by ({by}) (sage_operator_reputation_keys{{{S}}})'),
         ("Drained", f'max by (service_id, operator, rpc_type) (label_replace(sage_drained_operators{{{S}}}, "operator", "$1", "domain", "(.*)"))'),
     ],
     {"service_id": 1, "operator": 0, "rpc_type": 2, "Value #RPS": 3, "Value #Success": 4, "Value #SupplierErr": 5,
-     "Value #P50": 6, "Value #P95": 7, "Value #P99": 8, "Value #KeysLow": 9, "Value #MinScore": 10,
-     "Value #Drained": 11},
+     "Value #P50": 6, "Value #P95": 7, "Value #P99": 8, "Value #MeanScore": 9, "Value #Keys": 10,
+     "Value #KeysLow": 11, "Value #Drained": 12},
     {"operator": "Operator", "service_id": "Service", "rpc_type": "RPC Type", "Value #RPS": "RPS",
      "Value #Success": "Success %", "Value #SupplierErr": "Supplier err/s", "Value #P50": "P50 (ms)",
      "Value #P95": "P95 (ms)", "Value #P99": "P99 (ms)", "Value #KeysLow": "Keys < 80",
-     "Value #MinScore": "Min Score", "Value #Drained": "Drained"},
+     "Value #MeanScore": "Mean Score", "Value #Keys": "Keys", "Value #Drained": "Drained"},
     0, 24, 18, sort="RPS",
     desc="Per operator (registrable domain), service and RPC type, client attempts only. Success % counts a good "
          "answer and a chain or client error the supplier answered honestly; only supplier and unknown "
-         "attributions count against it. Latency is per attempt. Keys < 80 is how many of the operator's "
-         "reputation keys (one per URL and RPC type) sit below tier 1 on the worst pod; Min Score is the lowest "
-         "key score averaged across pods. Only keys below 100 are exported, so an operator with every key at "
-         "100 shows blank there — that is healthy, not missing. Drained 1 = removed from the pool right now.",
+         "attributions count against it. Latency is per attempt. Mean Score is the mean over every "
+         "reputation key the operator holds for the service (one per URL and RPC type), averaged across pods; "
+         "Keys is how many keys that is, and Keys < 80 how many of them sit below tier 1 on the worst pod. "
+         "Drained 1 = removed from the pool right now.",
     overrides=[
         col("Success %", unit="percent", mn=0, mx=100, novalue="—", steps=PCT_GOOD, cell=GAUGE, width=120),
         col("RPS", unit="reqps", novalue="0", width=90),
@@ -274,8 +275,9 @@ table(
         col("P95 (ms)", unit="ms", novalue="—", steps=((0, "green"), (1000, "yellow"), (3000, "red")), width=90),
         col("P99 (ms)", unit="ms", novalue="—", steps=((0, "green"), (2000, "yellow"), (5000, "red")), width=90),
         col("Keys < 80", novalue="0", steps=((0, "green"), (1, "yellow"), (10, "red")), cell=BG, width=90),
-        col("Min Score", mn=0, mx=100, novalue="100", steps=((0, "red"), (50, "yellow"), (80, "green")),
+        col("Mean Score", mn=0, mx=100, decimals=1, novalue="—", steps=((0, "red"), (50, "yellow"), (80, "green")),
             cell={"mode": "lcd", "type": "gauge", "valueDisplayMode": "color"}, width=120),
+        col("Keys", decimals=0, novalue="—", width=70),
         col("Drained", novalue="—", steps=((0, "green"), (1, "red")), cell=BG, width=80),
         col("Operator", width=150), col("Service", width=100), col("RPC Type", width=100),
     ],

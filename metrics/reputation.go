@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -65,6 +66,11 @@ type ScoreCollector struct {
 	scoreDesc   *prometheus.Desc
 	droppedDesc *prometheus.Desc
 	keysDesc    *prometheus.Desc
+	opMeanDesc  *prometheus.Desc
+	opKeysDesc  *prometheus.Desc
+
+	// operators bounds the operator label of the per-operator families.
+	operators *labelPolicy
 }
 
 // NewScoreCollector returns a collector for the given services. fullScore is
@@ -88,6 +94,22 @@ func NewScoreCollector(lister ScoreLister, services []domain.ServiceID, fullScor
 			[]string{"service_id"},
 			nil,
 		),
+		// Per operator, over EVERY key including those at the full score:
+		// the per-key family above leaves those out, so a mean or a share
+		// of low keys cannot be derived from it.
+		opMeanDesc: prometheus.NewDesc(
+			"sage_operator_reputation_mean",
+			"Mean reputation score over every key an operator (the registrable domain of the key's URL) holds for a service and RPC type, keys at the full score included. Only URL-keyed reputation (the default granularity) is aggregated.",
+			[]string{"service_id", "operator", "rpc_type"},
+			nil,
+		),
+		opKeysDesc: prometheus.NewDesc(
+			"sage_operator_reputation_keys",
+			"Reputation keys an operator (the registrable domain of the key's URL) holds for a service and RPC type, keys at the full score included: the denominator for sage_operator_reputation_mean and for any share of low keys.",
+			[]string{"service_id", "operator", "rpc_type"},
+			nil,
+		),
+		operators: cappedLabel(maxOperatorLabels),
 		keysDesc: prometheus.NewDesc(
 			"sage_reputation_keys",
 			"Reputation keys this replica holds a score for, by service — the full count, before the full-score filter and the per-scrape cap on sage_endpoint_reputation_score. At per-URL granularity this tracks the real backend population; at per-supplier or per-endpoint it grows with every session's fresh registrations until the score map's own bound prunes uninformative keys.",
@@ -102,6 +124,8 @@ func (c *ScoreCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.scoreDesc
 	ch <- c.droppedDesc
 	ch <- c.keysDesc
+	ch <- c.opMeanDesc
+	ch <- c.opKeysDesc
 }
 
 // Collect implements prometheus.Collector. Called on scrape, not on the hot
@@ -124,9 +148,25 @@ func (c *ScoreCollector) Collect(ch chan<- prometheus.Metric) {
 
 		total := len(scores)
 		keys := make([]string, 0, len(scores))
+		type opKey struct{ op, rpc string }
+		type opSum struct {
+			sum float64
+			n   int
+		}
+		byOp := map[opKey]*opSum{}
 		for k, score := range scores {
 			if score < c.fullScore {
 				keys = append(keys, k)
+			}
+			if op, rpc, ok := operatorOfKey(k); ok {
+				ki := opKey{c.operators.value(op), rpc}
+				a := byOp[ki]
+				if a == nil {
+					a = &opSum{}
+					byOp[ki] = a
+				}
+				a.sum += score
+				a.n++
 			}
 		}
 
@@ -167,7 +207,25 @@ func (c *ScoreCollector) Collect(ch chan<- prometheus.Metric) {
 			float64(total),
 			sid,
 		)
+		for k, a := range byOp {
+			rpc := sanitizeLabel(k.rpc)
+			ch <- prometheus.MustNewConstMetric(c.opMeanDesc, prometheus.GaugeValue, a.sum/float64(a.n), sid, k.op, rpc)
+			ch <- prometheus.MustNewConstMetric(c.opKeysDesc, prometheus.GaugeValue, float64(a.n), sid, k.op, rpc)
+		}
 	}
+}
+
+// operatorOfKey splits a reputation key "<identity>|<rpc_type>" into the
+// operator of a URL identity and the RPC type. ok is false for an identity
+// that is not a URL (per-supplier or per-endpoint granularity), whose
+// "operator" would be a rotating supplier address.
+func operatorOfKey(key string) (operator, rpcType string, ok bool) {
+	i := strings.LastIndexByte(key, '|')
+	if i < 0 || !strings.Contains(key[:i], "://") {
+		return "", "", false
+	}
+	op := domain.OperatorOfURL(key[:i])
+	return op, key[i+1:], op != ""
 }
 
 // NewTimelineKeysGauge exposes the number of distinct keys the reputation

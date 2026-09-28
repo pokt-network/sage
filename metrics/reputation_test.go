@@ -242,3 +242,44 @@ func TestNewHydratedGauges(t *testing.T) {
 		})
 	}
 }
+
+// The operator mean counts keys at the full score, which the per-key family
+// leaves out; and a non-URL key (per-supplier granularity) is not aggregated.
+func TestScoreCollector_OperatorMeanIncludesFullScoreKeys(t *testing.T) {
+	lister := &fakeScoreLister{scores: map[domain.ServiceID]map[string]float64{
+		"eth": {
+			"https://a.example.com|json_rpc": 100,
+			"https://b.example.com|json_rpc": 100,
+			"https://c.example.com|json_rpc": 40,
+			"https://d.other.net|rest":       70,
+			"pokt1supplier|json_rpc":         10,
+		},
+	}}
+	mfs := gather(t, NewScoreCollector(lister, []domain.ServiceID{"eth"}, 100))
+
+	values := func(name string) map[string]float64 {
+		out := map[string]float64{}
+		mf := familyByName(mfs, name)
+		if mf == nil {
+			t.Fatalf("%s not reported", name)
+		}
+		for _, m := range mf.GetMetric() {
+			l := map[string]string{}
+			for _, p := range m.GetLabel() {
+				l[p.GetName()] = p.GetValue()
+			}
+			out[l["operator"]+"|"+l["rpc_type"]] = m.GetGauge().GetValue()
+		}
+		return out
+	}
+	mean, keys := values("sage_operator_reputation_mean"), values("sage_operator_reputation_keys")
+	if mean["example.com|json_rpc"] != 80 || keys["example.com|json_rpc"] != 3 {
+		t.Errorf("example.com json_rpc: mean %v keys %v, want 80 and 3", mean["example.com|json_rpc"], keys["example.com|json_rpc"])
+	}
+	if mean["other.net|rest"] != 70 || keys["other.net|rest"] != 1 {
+		t.Errorf("other.net rest: mean %v keys %v, want 70 and 1", mean["other.net|rest"], keys["other.net|rest"])
+	}
+	if len(mean) != 2 {
+		t.Errorf("operators = %v, want 2 (the supplier-address key is not an operator)", mean)
+	}
+}

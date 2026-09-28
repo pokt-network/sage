@@ -1168,7 +1168,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per operator (registrable domain), service and RPC type, client attempts only. Success % counts a good answer and a chain or client error the supplier answered honestly; only supplier and unknown attributions count against it. Latency is per attempt. Keys < 80 is how many of the operator's reputation keys (one per URL and RPC type) sit below tier 1 on the worst pod; Min Score is the lowest key score averaged across pods. Only keys below 100 are exported, so an operator with every key at 100 shows blank there \u2014 that is healthy, not missing. Drained 1 = removed from the pool right now.",
+      "description": "Per operator (registrable domain), service and RPC type, client attempts only. Success % counts a good answer and a chain or client error the supplier answered honestly; only supplier and unknown attributions count against it. Latency is per attempt. Mean Score is the mean over every reputation key the operator holds for the service (one per URL and RPC type), averaged across pods; Keys is how many keys that is, and Keys < 80 how many of them sit below tier 1 on the worst pod. Drained 1 = removed from the pool right now.",
       "type": "table",
       "title": "HTTP Supplier Quality \u2014 excludes WebSocket",
       "id": 20,
@@ -1489,12 +1489,16 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Min Score"
+              "options": "Mean Score"
             },
             "properties": [
               {
                 "id": "noValue",
-                "value": "100"
+                "value": "\u2014"
+              },
+              {
+                "id": "decimals",
+                "value": 1
               },
               {
                 "id": "min",
@@ -1535,6 +1539,26 @@
               {
                 "id": "custom.width",
                 "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Keys"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "\u2014"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 70
               }
             ]
           },
@@ -1717,8 +1741,20 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg by (service_id, operator, rpc_type) (min by (service_id, operator, rpc_type, pod) (label_replace(label_replace(sage_endpoint_reputation_score{job=\"sage\", environment=\"mainnet-sage\"}, \"operator\", \"$1\", \"exported_endpoint\", \"[a-z]+://(?:[^/|:]*\\\\.)?([^./|:]+\\\\.[^./|:]+)(?::[0-9]+)?(?:/[^|]*)?\\\\|.*\"), \"rpc_type\", \"$1\", \"exported_endpoint\", \".*\\\\|(.*)\")))",
-          "refId": "MinScore",
+          "expr": "avg by (service_id, operator, rpc_type) (sage_operator_reputation_mean{job=\"sage\", environment=\"mainnet-sage\"})",
+          "refId": "MeanScore",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service_id, operator, rpc_type) (sage_operator_reputation_keys{job=\"sage\", environment=\"mainnet-sage\"})",
+          "refId": "Keys",
           "format": "table",
           "instant": true,
           "range": false
@@ -1767,9 +1803,10 @@
               "Value #P50": 6,
               "Value #P95": 7,
               "Value #P99": 8,
-              "Value #KeysLow": 9,
-              "Value #MinScore": 10,
-              "Value #Drained": 11
+              "Value #MeanScore": 9,
+              "Value #Keys": 10,
+              "Value #KeysLow": 11,
+              "Value #Drained": 12
             },
             "renameByName": {
               "operator": "Operator",
@@ -1782,7 +1819,8 @@
               "Value #P95": "P95 (ms)",
               "Value #P99": "P99 (ms)",
               "Value #KeysLow": "Keys < 80",
-              "Value #MinScore": "Min Score",
+              "Value #MeanScore": "Mean Score",
+              "Value #Keys": "Keys",
               "Value #Drained": "Drained"
             }
           }
