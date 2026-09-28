@@ -155,6 +155,11 @@ PCT_GOOD = ((0, "red"), (80, "yellow"), (95, "green"))
 
 # Shorthands for the per-operator series (added in 9380153).
 OA = f'sage_operator_attempts_total{{{S}}}'
+# First attempts only: the fair sample of an operator. Retries arrive with less
+# budget after another host failed, and an operator reputation has demoted is
+# sent mostly those, so a success rate over all attempts condemns it for being
+# demoted.
+OF = f'sage_operator_attempts_total{{{S}, attempt="first"}}'
 OAB = 'sage_operator_attempt_seconds_bucket{' + S + '}'
 FAULT = 'attribution=~"supplier|unknown"'
 
@@ -203,10 +208,11 @@ stat("Relays in range", f'sum by (status) (increase(sage_relay_total{{{S}, reque
      desc="Upstream client relay attempts by status over the dashboard time range.")
 y[0] += 4
 stat("Relay Success %",
-     f'(1 - sum(rate({OA[:-1]}, {FAULT}}}[{RI}])) / sum(rate({OA}[{RI}]))) * 100',
+     f'(1 - sum(rate({OF[:-1]}, {FAULT}}}[{RI}])) / sum(rate({OF}[{RI}]))) * 100',
      0, 4, unit="percent", mn=0, mx=100, steps=PCT_GOOD,
-     desc="Client attempts whose outcome the heuristic did not blame on the supplier: a good answer, or a chain "
-          "or client error the supplier answered honestly (block not found, execution reverted).")
+     desc="First client attempts whose outcome the heuristic did not blame on the supplier: a good answer, or a "
+          "chain or client error the supplier answered honestly (block not found, execution reverted). First attempts "
+          "only: retries arrive after another host failed, with less time left.")
 stat("Hedge Fire Rate %",
      f'sum(rate(sage_hedge_total{{{S}, result=~"primary_won|hedge_won|both_failed"}}[{RI}])) / '
      f'sum(rate(sage_hedge_total{{{S}, result=~"primary_before_delay|primary_won|hedge_won|both_failed"}}[{RI}])) * 100',
@@ -238,9 +244,9 @@ table(
     "HTTP Supplier Quality — excludes WebSocket",
     [
         ("RPS", f'sum by ({by}) (rate({OA}[{RI}]))'),
-        ("Success", f'(1 - (sum by ({by}) (rate({OA[:-1]}, {FAULT}}}[{RI}])) or sum by ({by}) (rate({OA}[{RI}])) * 0) '
-                    f'/ sum by ({by}) (rate({OA}[{RI}]))) * 100'),
-        ("SupplierErr", f'sum by ({by}) (rate({OA[:-1]}, {FAULT}}}[{RI}]))'),
+        ("Success", f'(1 - (sum by ({by}) (rate({OF[:-1]}, {FAULT}}}[{RI}])) or sum by ({by}) (rate({OF}[{RI}])) * 0) '
+                    f'/ sum by ({by}) (rate({OF}[{RI}]))) * 100'),
+        ("SupplierErr", f'sum by ({by}) (rate({OF[:-1]}, {FAULT}}}[{RI}]))'),
         ("P50", f'histogram_quantile(0.50, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
         ("P95", f'histogram_quantile(0.95, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
         ("P99", f'histogram_quantile(0.99, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
@@ -259,7 +265,11 @@ table(
      "Value #MeanScore": "Mean Score", "Value #Low": "Eps < 80", "Value #Drained": "Drained",
      "Value #URLs": "URLs (1h)"},
     0, 24, 18, sort="RPS",
-    desc="Per operator (registrable domain), service and RPC type, client attempts only. Success % counts a good "
+    desc="Per operator (registrable domain), service and RPC type, client attempts only. RPS and latency count every "
+         "attempt; Success % and Supplier err/s count first attempts only (the fair sample: an operator reputation "
+         "has demoted gets mostly retries, which arrive with less time left, and would read worse than it is). An "
+         "operator with almost no first attempts has no fair reading here: check its health checks or PATH. "
+         "Success % counts a good "
          "answer and a chain or client error the supplier answered honestly; only supplier and unknown "
          "attributions count against it. Latency is per attempt. Session eps is the operator's "
          "registrations in the current session (PATH's Endpoints); Mean Score is the mean reputation of those "
@@ -288,11 +298,11 @@ y[0] += 18
 table(
     "Error Attribution by Operator — what's dragging Success %",
     [
-        ("Supplier", f'sum by ({by}) (rate({OA[:-1]}, attribution="supplier"}}[{RI}]))'),
-        ("Unknown", f'sum by ({by}) (rate({OA[:-1]}, attribution="unknown"}}[{RI}]))'),
-        ("Chain", f'sum by ({by}) (rate({OA[:-1]}, attribution="blockchain"}}[{RI}]))'),
-        ("Client", f'sum by ({by}) (rate({OA[:-1]}, attribution="client"}}[{RI}]))'),
-        ("FaultPct", f'sum by ({by}) (rate({OA[:-1]}, {FAULT}}}[{RI}])) / sum by ({by}) (rate({OA}[{RI}])) * 100'),
+        ("Supplier", f'sum by ({by}) (rate({OF[:-1]}, attribution="supplier"}}[{RI}]))'),
+        ("Unknown", f'sum by ({by}) (rate({OF[:-1]}, attribution="unknown"}}[{RI}]))'),
+        ("Chain", f'sum by ({by}) (rate({OF[:-1]}, attribution="blockchain"}}[{RI}]))'),
+        ("Client", f'sum by ({by}) (rate({OF[:-1]}, attribution="client"}}[{RI}]))'),
+        ("FaultPct", f'sum by ({by}) (rate({OF[:-1]}, {FAULT}}}[{RI}])) / sum by ({by}) (rate({OF}[{RI}])) * 100'),
     ],
     {"operator": 0, "service_id": 1, "rpc_type": 2, "Value #FaultPct": 3, "Value #Supplier": 4,
      "Value #Unknown": 5, "Value #Chain": 6, "Value #Client": 7},
@@ -300,7 +310,7 @@ table(
      "Value #Supplier": "supplier /s", "Value #Unknown": "unknown /s", "Value #Chain": "chain /s",
      "Value #Client": "client /s"},
     0, 24, 12, sort="Supplier fault %",
-    desc="Client attempts by the side the heuristic blamed. supplier: the relay miner or node failed (5xx, 408, "
+    desc="First client attempts (the fair sample) by the side the heuristic blamed. supplier: the relay miner or node failed (5xx, 408, "
          "timeouts, bad answers). unknown: failed with no verdict either way. chain: the node answered honestly "
          "about chain state (block not found, pruned history) — never penalised. client: the request's own fault "
          "(invalid params, execution reverted) — never penalised. Only supplier and unknown count as fault.",

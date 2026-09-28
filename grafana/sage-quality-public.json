@@ -725,7 +725,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Client attempts whose outcome the heuristic did not blame on the supplier: a good answer, or a chain or client error the supplier answered honestly (block not found, execution reverted).",
+      "description": "First client attempts whose outcome the heuristic did not blame on the supplier: a good answer, or a chain or client error the supplier answered honestly (block not found, execution reverted). First attempts only: retries arrive after another host failed, with less time left.",
       "type": "stat",
       "title": "Relay Success %",
       "id": 13,
@@ -787,7 +787,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(1 - sum(rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / sum(rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))) * 100",
+          "expr": "(1 - sum(rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / sum(rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval]))) * 100",
           "refId": "A",
           "range": true,
           "legendFormat": "__auto"
@@ -1168,7 +1168,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per operator (registrable domain), service and RPC type, client attempts only. Success % counts a good answer and a chain or client error the supplier answered honestly; only supplier and unknown attributions count against it. Latency is per attempt. Session eps is the operator's registrations in the current session (PATH's Endpoints); Mean Score is the mean reputation of those that have a score, averaged across pods; Eps < 80 is how many of them sit below tier 1. All three count registrations, so operators compare whatever their host layout. Drained 1 = removed from the pool right now. URLs (1h) is how many distinct URLs the operator served from in the last hour \u2014 a layout indicator, not a quality score: many registrations behind one host is one failure away from losing them all.",
+      "description": "Per operator (registrable domain), service and RPC type, client attempts only. RPS and latency count every attempt; Success % and Supplier err/s count first attempts only (the fair sample: an operator reputation has demoted gets mostly retries, which arrive with less time left, and would read worse than it is). An operator with almost no first attempts has no fair reading here: check its health checks or PATH. Success % counts a good answer and a chain or client error the supplier answered honestly; only supplier and unknown attributions count against it. Latency is per attempt. Session eps is the operator's registrations in the current session (PATH's Endpoints); Mean Score is the mean reputation of those that have a score, averaged across pods; Eps < 80 is how many of them sit below tier 1. All three count registrations, so operators compare whatever their host layout. Drained 1 = removed from the pool right now. URLs (1h) is how many distinct URLs the operator served from in the last hour \u2014 a layout indicator, not a quality score: many registrations behind one host is one failure away from losing them all.",
       "type": "table",
       "title": "HTTP Supplier Quality \u2014 excludes WebSocket",
       "id": 20,
@@ -1693,7 +1693,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(1 - (sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attribution=~\"supplier|unknown\"}[$__rate_interval])) or sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval])) * 0) / sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))) * 100",
+          "expr": "(1 - (sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) or sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) * 0) / sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval]))) * 100",
           "refId": "Success",
           "format": "table",
           "instant": true,
@@ -1705,7 +1705,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attribution=~\"supplier|unknown\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval]))",
           "refId": "SupplierErr",
           "format": "table",
           "instant": true,
@@ -1870,7 +1870,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Client attempts by the side the heuristic blamed. supplier: the relay miner or node failed (5xx, 408, timeouts, bad answers). unknown: failed with no verdict either way. chain: the node answered honestly about chain state (block not found, pruned history) \u2014 never penalised. client: the request's own fault (invalid params, execution reverted) \u2014 never penalised. Only supplier and unknown count as fault.",
+      "description": "First client attempts (the fair sample) by the side the heuristic blamed. supplier: the relay miner or node failed (5xx, 408, timeouts, bad answers). unknown: failed with no verdict either way. chain: the node answered honestly about chain state (block not found, pruned history) \u2014 never penalised. client: the request's own fault (invalid params, execution reverted) \u2014 never penalised. Only supplier and unknown count as fault.",
       "type": "table",
       "title": "Error Attribution by Operator \u2014 what's dragging Success %",
       "id": 21,
@@ -2147,7 +2147,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attribution=\"supplier\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=\"supplier\"}[$__rate_interval]))",
           "refId": "Supplier",
           "format": "table",
           "instant": true,
@@ -2159,7 +2159,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attribution=\"unknown\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=\"unknown\"}[$__rate_interval]))",
           "refId": "Unknown",
           "format": "table",
           "instant": true,
@@ -2171,7 +2171,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attribution=\"blockchain\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=\"blockchain\"}[$__rate_interval]))",
           "refId": "Chain",
           "format": "table",
           "instant": true,
@@ -2183,7 +2183,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attribution=\"client\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=\"client\"}[$__rate_interval]))",
           "refId": "Client",
           "format": "table",
           "instant": true,
@@ -2195,7 +2195,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval])) * 100",
+          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) * 100",
           "refId": "FaultPct",
           "format": "table",
           "instant": true,
