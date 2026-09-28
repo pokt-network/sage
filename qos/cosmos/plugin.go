@@ -5,7 +5,8 @@
 //   - CometBFT RPC: GET to paths like /status, /block, or POST with JSON-RPC method names
 //   - JSON-RPC: standard JSON-RPC 2.0 over POST (rare, chain-specific)
 //
-// Block height is sourced from CometBFT /status responses (sync_info.latest_block_height).
+// Block height is sourced from CometBFT /status responses (sync_info.latest_block_height),
+// and, behind featureflag.FlagCosmosEVMHeight, from the EVM face's eth_blockNumber.
 package cosmos
 
 import (
@@ -17,9 +18,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/qos"
+	"github.com/pokt-network/sage/qos/evm"
 )
 
 const (
@@ -55,6 +59,7 @@ type Plugin struct {
 	syncAllowance     atomic.Uint64
 	supportedRPCTypes []domain.RPCType
 	expectedChainID   string
+	evmHeight         func() bool
 
 	store     *qos.EndpointStore[cosmosEndpoint]
 	consensus *qos.BlockConsensus
@@ -80,6 +85,12 @@ type Config struct {
 	// /status reports it under node_info.network (e.g. "cosmoshub-4"). Empty
 	// disables the assertion.
 	ExpectedChainID string
+
+	// EVMHeight reports, at the moment it is asked, whether this chain's EVM
+	// face reports the Cosmos height (featureflag.FlagCosmosEVMHeight). When
+	// it does, the plugin probes eth_blockNumber on json_rpc stakes and reads
+	// the height out of eth_blockNumber answers. Nil means never.
+	EVMHeight func() bool
 }
 
 // Validate reports whether the config is usable, and is called at wire time.
@@ -134,6 +145,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		logger:            logger,
 		supportedRPCTypes: supportedRPCTypes,
 		expectedChainID:   cfg.ExpectedChainID,
+		evmHeight:         cfg.EVMHeight,
 		store:             qos.NewEndpointStore[cosmosEndpoint](logger),
 		consensus:         qos.NewBlockConsensus(logger, cfg.SyncAllowance),
 		pruned:            newPrunedMemory(),
@@ -333,6 +345,8 @@ func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
 
 // HealthChecks returns health check payloads for the given endpoint.
 // The Cosmos plugin always issues a CometBFT /status check to obtain block height.
+// Behind featureflag.FlagCosmosEVMHeight it adds an eth_blockNumber check on
+// the EVM face, for chains whose json_rpc stakes cannot answer /status.
 //
 // Always the CometBFT HTTP GET /status. A supplier staked for json_rpc only
 // still receives it, through the service's rpc_type_fallbacks mapping
@@ -341,7 +355,7 @@ func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
 // store field nothing wrote, so it never ran; the fallback is the live
 // version of that idea.
 func (p *Plugin) HealthChecks() []qos.HealthCheck {
-	return []qos.HealthCheck{
+	checks := []qos.HealthCheck{
 		{
 			Name:    "comet_bft_status",
 			Payload: cometBFTStatusPayload(),
@@ -362,6 +376,16 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 			Payload: restSyncingPayload(),
 		},
 	}
+	// The EVM face, where its block number is the Cosmos height: on a chain
+	// whose json_rpc stakes are EVM nodes, /status reaches none of them.
+	if p.evmHeights() {
+		checks = append(checks, qos.HealthCheck{
+			Name:      "evm_block_number",
+			Payload:   evmBlockNumberPayload(),
+			Essential: true,
+		})
+	}
+	return checks
 }
 
 // --- qos.ChainViewer --- //
@@ -381,9 +405,22 @@ func (p *Plugin) LastHeightObservation(endpoints domain.EndpointAddrList) (time.
 
 // ExtractData parses a relay response and returns structured data: the block
 // height, and the chain identifier when the response carries one.
-func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, _, response []byte) (*qos.ExtractedData, error) {
+func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []byte) (*qos.ExtractedData, error) {
 	if len(response) == 0 {
 		return nil, fmt.Errorf("cosmos: empty response from %s", endpoint)
+	}
+
+	// An EVM face's eth_blockNumber answer, on a chain where that number is
+	// the Cosmos height (featureflag.FlagCosmosEVMHeight).
+	if p.evmHeights() && gjson.GetBytes(request, "method").String() == "eth_blockNumber" {
+		height, err := evm.ParseBlockNumber(response)
+		if err != nil {
+			return nil, fmt.Errorf("cosmos: evm eth_blockNumber from %s: %w", endpoint, err)
+		}
+		if height > 0 {
+			p.UpdateBlockHeight(endpoint, height)
+		}
+		return &qos.ExtractedData{BlockHeight: &height}, nil
 	}
 
 	// Chain identity is checked before block height is recorded. An endpoint on
@@ -493,6 +530,9 @@ func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
 // SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
 // qos.sync_allowance, per service, without a restart.
 func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }
+
+// evmHeights reports whether this chain's EVM face reports the Cosmos height.
+func (p *Plugin) evmHeights() bool { return p.evmHeight != nil && p.evmHeight() }
 
 // AllStale reports whether every endpoint in eps is known to sit below the
 // relaxed height bound (qos.StaleChecker).

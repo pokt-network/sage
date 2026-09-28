@@ -867,3 +867,42 @@ func TestParseRequest_CometBFTOnRESTOnlyService_Rejected(t *testing.T) {
 		t.Fatal("expected a rejection: JSON-RPC face of CometBFT with neither comet_bft nor json_rpc declared")
 	}
 }
+
+// Behind cosmos_evm_height the plugin probes the EVM face and reads its
+// eth_blockNumber answers as the Cosmos height; without it, neither.
+func TestEVMHeight_ProbeAndExtractFollowTheFlag(t *testing.T) {
+	on := false
+	p := NewPlugin(nil, Config{SyncAllowance: 10, EVMHeight: func() bool { return on }})
+	req := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":"0xdfcc701"}`)
+
+	hasEVMCheck := func() bool {
+		for _, c := range p.HealthChecks() {
+			if c.Name == "evm_block_number" {
+				if c.Payload.RPCType() != domain.RPCTypeJSONRPC || !c.Essential {
+					t.Errorf("evm_block_number: rpc type %s essential %v", c.Payload.RPCType(), c.Essential)
+				}
+				return true
+			}
+		}
+		return false
+	}
+
+	if hasEVMCheck() {
+		t.Error("flag off: no EVM probe expected")
+	}
+	if _, _ = p.ExtractData("s1-https://evm.example.net", req, resp); p.PerceivedBlockHeight() != 0 {
+		t.Errorf("flag off: perceived = %d, want 0", p.PerceivedBlockHeight())
+	}
+
+	on = true
+	if !hasEVMCheck() {
+		t.Error("flag on: EVM probe expected")
+	}
+	if _, err := p.ExtractData("s1-https://evm.example.net", req, resp); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.PerceivedBlockHeight(); got != 234_669_825 {
+		t.Errorf("flag on: perceived = %d, want 234669825", got)
+	}
+}

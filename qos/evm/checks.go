@@ -59,6 +59,10 @@ func parseHexUint64(s string) (uint64, error) {
 	return v, nil
 }
 
+// ParseBlockNumber parses an eth_blockNumber JSON-RPC response body: the
+// shared reader for any plugin that probes an EVM face.
+func ParseBlockNumber(response []byte) (uint64, error) { return extractBlockNumber(response) }
+
 // extractBlockNumber parses the block number from an eth_blockNumber JSON-RPC response body.
 // The response body is the full JSON-RPC envelope; the result field is a hex string.
 func extractBlockNumber(response []byte) (uint64, error) {

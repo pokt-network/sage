@@ -427,7 +427,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		case domain.ServiceTypeEVM:
 			plugin = evm.NewPlugin(pluginLogger, evmConfigFor(svc))
 		case domain.ServiceTypeCosmos:
-			plugin = cosmos.NewPlugin(pluginLogger, cosmosConfigFor(svc))
+			cosmosCfg := cosmosConfigFor(svc)
+			serviceID := domain.ServiceID(svc.ID)
+			cosmosCfg.EVMHeight = func() bool {
+				return flags.IsEnabled(context.Background(), featureflag.FlagCosmosEVMHeight, serviceID)
+			}
+			plugin = cosmos.NewPlugin(pluginLogger, cosmosCfg)
 		case domain.ServiceTypeSolana:
 			plugin = solana.NewPlugin(pluginLogger, svc.SyncAllowance)
 		case domain.ServiceTypeTron:

@@ -178,9 +178,15 @@ func (bc *BlockConsensus) PerceivedBlock() uint64 {
 // Under mu like every other store, so that a Reset and a floor update cannot
 // interleave: outside the lock, a floor fetched before the operator's reset
 // could land after it and outlive the state the reset was meant to discard.
+//
+// Perceived is recomputed here, not only on the next observation: a service
+// whose endpoints report no height at all (mainnet sei until 2026-09-29) never
+// makes one, and its floor sat in the chain view for a week with perceived at 0.
 func (bc *BlockConsensus) SetExternalFloor(height uint64) {
 	bc.mu.Lock()
 	bc.externalFloor.Store(height)
+	beforeStoreHook("floor")
+	bc.perceived.Store(bc.computePerceived(time.Now()))
 	bc.mu.Unlock()
 }
 

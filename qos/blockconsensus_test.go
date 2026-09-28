@@ -395,3 +395,15 @@ func TestBlockConsensus_EvenSplitFavoursTheLaggingSide(t *testing.T) {
 		t.Fatalf("perceived = %d, want 1000", got)
 	}
 }
+
+// A floor lifts perceived when it is set, not only on the next observation:
+// a service whose endpoints report no height never makes one.
+func TestBlockConsensus_FloorAppliesWithoutObservations(t *testing.T) {
+	bc := NewBlockConsensus(nil, 5)
+	bc.gracePeriod = 0
+	bc.graceStart = time.Now().Add(-time.Hour)
+	bc.SetExternalFloor(1000)
+	if got := bc.PerceivedBlock(); got != 995 {
+		t.Fatalf("perceived = %d, want 995 (floor minus allowance)", got)
+	}
+}

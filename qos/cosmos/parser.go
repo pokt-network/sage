@@ -274,6 +274,11 @@ func cometBFTStatusPayload() domain.Payload {
 		WithHTTP("/status", http.MethodGet)
 }
 
+// evmBlockNumberPayload is the EVM face's height probe, sent to json_rpc stakes.
+func evmBlockNumberPayload() domain.Payload {
+	return domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+}
+
 // restSyncingPayload is the Cosmos SDK gRPC-gateway liveness path: a small
 // JSON answer every SDK chain's REST face serves.
 func restSyncingPayload() domain.Payload {

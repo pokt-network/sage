@@ -110,6 +110,17 @@ const (
 	// it. The marks never escalate to a host-wide block — a host refusing
 	// some methods is not a dead host. Off by default.
 	FlagMethodBlock408 = "method_block_408"
+	// FlagCosmosEVMHeight lets a Cosmos service learn block heights from its
+	// EVM face: an eth_blockNumber probe on its json_rpc stakes, and the
+	// eth_blockNumber answers in its traffic. For chains whose EVM block
+	// number IS the Cosmos height (sei, Ethermint chains such as kava) and
+	// only for those — elsewhere the two numbers would poison one consensus.
+	// On mainnet sei (until 2026-09-29) the only height probe was CometBFT
+	// /status, which the json_rpc stakes cannot answer, and the few comet_bft
+	// stakes supplied none, so the service had no height for at least a week
+	// and its height filter passed every host. Off by default; enable
+	// per service.
+	FlagCosmosEVMHeight = "cosmos_evm_height"
 	// FlagRelativeChronic measures a key's chronic-failure penalty from the
 	// best failure rate in its (service, RPC type) pool rather than from zero,
 	// so a timeout tail every operator shares does not floor all of them. On
@@ -172,6 +183,7 @@ var DefaultFlags = map[string]bool{
 	FlagPenalize408:            true,
 	FlagCircuitBreakUpstream:   false,
 	FlagMethodBlock408:         false,
+	FlagCosmosEVMHeight:        false,
 	FlagRelativeChronic:        true,
 	FlagOperatorChronic:        false,
 	FlagQuorum:                 false,
