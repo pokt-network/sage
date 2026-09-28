@@ -325,7 +325,21 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	var current atomic.Pointer[domain.EndpointAddr]
 	current.Store(&endpointAddr)
 	r.incLoad(endpointAddr)
-	defer func() { r.decLoad(*current.Load()) }()
+
+	// swapMu orders a rebind's swap of the current endpoint and processor
+	// against the bridge's close. They race when the client leaves while a
+	// rebind is dialling: the close released the old supplier, then the
+	// rebind released it again and bound a new one nobody would release.
+	// On mainnet (2026-09-28) that left sage_websocket_supplier_connections
+	// negative for one owner and inflated for the others. Once closed, a
+	// rebind drops its new connection instead of swapping.
+	var swapMu sync.Mutex
+	closed := false
+	defer func() {
+		swapMu.Lock()
+		defer swapMu.Unlock()
+		r.decLoad(*current.Load())
+	}()
 
 	// The session the bridge is signing under moves with a rebind; the
 	// expiry watcher follows it, so a rollover becomes a rebind onto the
@@ -400,6 +414,12 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 				reputation.NewMajorErrorSignal("ws_endpoint_unavailable:"+err.Error(), 0))
 			return nil, nil, nil, fmt.Errorf("dial %s: %w", next.addr, err)
 		}
+		swapMu.Lock()
+		defer swapMu.Unlock()
+		if closed {
+			_ = conn.Close()
+			return nil, nil, nil, errors.New("bridge closed during rebind")
+		}
 		tried[next.addr] = true
 		r.decLoad(lost)
 		r.incLoad(next.addr)
@@ -446,7 +466,10 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 
 	<-bridge.Done()
 
+	swapMu.Lock()
+	closed = true
 	r.releaseSupplier(serviceID, clientIP, currentProc.Load(), bridge.ClosedBy() == websockets.InitiatorClient)
+	swapMu.Unlock()
 	r.handleBridgeClose(serviceID, *current.Load())
 	logger.Info("ws open: bridge shut down",
 		"active_subscriptions", len(subs.Active()),
