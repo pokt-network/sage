@@ -253,6 +253,7 @@ likely a chain-wide slowdown than every operator down at once.
 | hedge | on | Parallel race (primary + delayed secondary) |
 | circuit_breaker | on | Domain-wide broken tracking |
 | circuit_break_upstream | off | A relay miner's 408/5xx counts toward the circuit breaker's rate gate |
+| method_block_408 | off | A supplier's 408 keeps that method away from that host for the client TTL; never escalates to a host-wide block |
 | method_blocks | on | Per-host, per-method memory: a host that timed out on a method stops receiving it for a TTL |
 | latency_tiebreak | on | Inside tier 1 of selection, a faster host is asked more often than a slower equal, by the per-key latency EWMA; scores stay latency-blind |
 | singleflight | on | Coalesce identical concurrent requests |

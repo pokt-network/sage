@@ -96,6 +96,23 @@ func TestHeuristic_CircuitBreakUpstreamFlag(t *testing.T) {
 	}
 }
 
+// method_block_408 makes a supplier's 408 method-blocking; off, it is not.
+func TestHeuristic_MethodBlock408Flag(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		mw := middleware.Heuristic(newMockFlags(map[string]bool{"heuristic": true, "penalize_408": true, "method_block_408": on}), nil)
+		ctx := newCtx(newPOSTRequest("/v1", ""))
+		ctx.ServiceID = "arb-one"
+		ctx.RPCType = domain.RPCTypeJSONRPC
+		_ = mw(relay.HandlerFunc(func(ctx *relay.Context) error {
+			ctx.Response = &domain.Response{HTTPStatusCode: 408}
+			return nil
+		})).HandleRelay(ctx)
+		if r := ctx.HeuristicResult; r == nil || r.Reason != "http_408" || r.MethodBlocking != on {
+			t.Fatalf("method_block_408=%v: result %+v", on, r)
+		}
+	}
+}
+
 func TestHeuristic_500Response_TriggersRetry(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
 	mw := middleware.Heuristic(flags, nil)

@@ -122,7 +122,11 @@ func MethodBlocks(
 				// a healthy node without debug_*/trace_* answers it to as
 				// many methods as a client asks for, and counting those
 				// would remove the node from everything.
-				escalates := ctx.HeuristicResult.Attribution == heuristic.AttrSupplier
+				//
+				// Nor may a 408 (method_block_408): it is a host refusing
+				// some methods, and it serves the rest.
+				escalates := ctx.HeuristicResult.Attribution == heuristic.AttrSupplier &&
+					ctx.HeuristicResult.Reason != "http_408"
 				event := MethodBlockEventMark
 				host := blockHost(endpointProvider, ctx.Endpoint, ctx.RPCType)
 				if store.Mark(serviceID, host, method, escalates) {

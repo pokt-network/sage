@@ -748,3 +748,26 @@ func TestMethodBlocks_HostFollowsTheDialedURL(t *testing.T) {
 		t.Fatalf("json_rpc candidates = %v, want both", seen)
 	}
 }
+
+// A 408-derived mark keeps the method away and, being a refusal rather than
+// a dead host, never escalates to a host-wide block.
+func TestMethodBlocks_408MarksDoNotEscalate(t *testing.T) {
+	store := methodblock.New()
+	eps := testEndpoints(1)
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = eps[0]
+		ctx.HeuristicResult = &heuristic.AnalysisResult{MethodBlocking: true, Attribution: heuristic.AttrSupplier, Reason: "http_408"}
+		return retryableErr("408")
+	})
+	h := MethodBlocks(store, registryWith(t), nil, newFlags("method_blocks"), nil, nil)(inner)
+	for _, m := range []string{"eth_getLogs", "eth_getBlockReceipts", "eth_estimateGas"} {
+		_ = h.HandleRelay(methodCtx(m, eps))
+	}
+	host := eps[0].Domain()
+	if !store.Blocked("eth", host, "eth_getLogs") {
+		t.Fatal("a 408 must keep that method away from the host")
+	}
+	if store.Blocked("eth", host, "eth_call") {
+		t.Fatal("three 408-refused methods host-blocked the host")
+	}
+}

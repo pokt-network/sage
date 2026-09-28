@@ -100,6 +100,16 @@ const (
 	// 408 to most relays all the time is removed at every TTL expiry,
 	// escalating to 30 minutes, which is a stronger policy than scoring.
 	FlagCircuitBreakUpstream = "circuit_break_upstream"
+	// FlagMethodBlock408 lets a supplier's HTTP 408 keep that method away
+	// from that host for a while (method_blocks' client TTL), while the host
+	// keeps receiving every other method. A relay miner passes a backend's
+	// 408 through inside a signed, claimable relay, and on mainnet
+	// (2026-09-28) one owner answered an instant 408 to eth_getLogs,
+	// eth_getBlockReceipts and eth_estimateGas every time while serving
+	// cheap calls: each refusal was paid, and so was the retry that answered
+	// it. The marks never escalate to a host-wide block — a host refusing
+	// some methods is not a dead host. Off by default.
+	FlagMethodBlock408 = "method_block_408"
 	// FlagRelativeChronic measures a key's chronic-failure penalty from the
 	// best failure rate in its (service, RPC type) pool rather than from zero,
 	// so a timeout tail every operator shares does not floor all of them. On
@@ -161,6 +171,7 @@ var DefaultFlags = map[string]bool{
 	FlagAutoDrainShadow:        true,
 	FlagPenalize408:            true,
 	FlagCircuitBreakUpstream:   false,
+	FlagMethodBlock408:         false,
 	FlagRelativeChronic:        true,
 	FlagOperatorChronic:        false,
 	FlagQuorum:                 false,

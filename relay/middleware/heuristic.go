@@ -106,6 +106,10 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, opts ...Heur
 			}
 
 			breakUpstream(flags, ctx, &result)
+			if result.Reason == "http_408" && result.Attribution == heuristic.AttrSupplier &&
+				flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagMethodBlock408, ctx.ServiceID) {
+				result.MethodBlocking = true
+			}
 			ctx.HeuristicResult = &result
 
 			if result.ShouldRetry && result.Attribution == heuristic.AttrBlockchain {
