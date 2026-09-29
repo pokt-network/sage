@@ -241,20 +241,19 @@ func (bc *BlockConsensus) computePerceived(now time.Time) uint64 {
 		return bc.applyExternalFloor(0, now)
 	}
 
-	median := partyMedian(bc.observations)
+	tolerance := saturatingMul(bc.syncAllowance, 3)
+	anchor := partyAnchor(bc.observations, tolerance)
 
-	// Outlier threshold: median + (syncAllowance * 3).
+	// Outlier threshold: anchor + (syncAllowance * 3).
 	//
-	// Saturating, because this used to wrap. Note heights[len/2] takes the UPPER
-	// median on even counts, so a liar needs only half the observations — two
-	// endpoints, one hostile — to drag the median to its own value. When that
-	// value was huge the cap wrapped to a tiny number, every honest height then
-	// exceeded it, and perceived fell to 0 — which every plugin reads as cold
-	// start and responds to by disabling block-height filtering entirely. The
-	// ceiling in AddObservation now stops a height that large from ever being
-	// recorded; this keeps the arithmetic honest regardless of syncAllowance,
-	// which is operator-set and unbounded.
-	outlierCap := saturatingAdd(median, saturatingMul(bc.syncAllowance, 3))
+	// Saturating, because this used to wrap: a huge anchor wrapped the cap to
+	// a tiny number, every honest height then exceeded it, and perceived fell
+	// to 0 — which every plugin reads as cold start and responds to by
+	// disabling block-height filtering entirely. The ceiling in AddObservation
+	// now stops a height that large from ever being recorded; this keeps the
+	// arithmetic honest regardless of syncAllowance, which is operator-set and
+	// unbounded.
+	outlierCap := saturatingAdd(anchor, tolerance)
 
 	// Perceived = max of non-outlier heights.
 	var perceived uint64
@@ -267,43 +266,53 @@ func (bc *BlockConsensus) computePerceived(now time.Time) uint64 {
 	return bc.applyExternalFloor(perceived, now)
 }
 
-// partyMedian is the median the outlier cap is measured from: each party
-// casts one vote, the median of its own observations, and the result is the
-// lower median of the votes. A pool of one operator gets exactly the median
-// of every observation, as before.
+// partyAnchor is the height the outlier cap is measured from. Each party casts
+// one vote, the median of its own observations; the anchor is the highest vote
+// another party corroborates (the two within tolerance of each other), and the
+// lower median of the votes when no two parties agree. A pool of one operator
+// gets exactly the median of every observation, as before.
 //
-// One vote per operator, because the median of every observation weighs an
+// One vote per party, because the median of every observation weighs an
 // operator by how many endpoints it staked. On mainnet metis (2026-09-28) one
 // operator held 41 of 50 endpoints, all on a node 79,000 blocks behind: the
-// median was that node's height, the in-sync operators sat 79,000 above it and
-// were cut as outliers, and perceived was the stale height — held up only by
-// the external floor, and not at all in the grace minute after each boot,
-// when every stale endpoint passed the height filter.
+// median was that node's height, the in-sync operators were cut as outliers,
+// and perceived was the stale height — held up only by the external floor,
+// and not at all in the grace minute after each boot. A party is
+// domain.EndpointAddr.Party: two brands of one owner cast one vote.
 //
-// An operator is a party (domain.EndpointAddr.Party): two brands of one owner
-// cast one vote, not two.
+// The highest corroborated vote, not the median of the votes, because
+// parties behind the head do not agree with each other. On mainnet solana
+// (2026-09-29) the votes were one dead party, one stuck 14,363 slots behind
+// and two at the head: the lower median was the stuck party, the two at the
+// head sat outside the cap, and perceived fell to the stuck height on two of
+// five pods. Parties behind can no longer pull the head down, together or
+// apart. The price: two parties agreeing on a height above the rest lift the
+// head to it, where the median asked a liar for a majority; the plausibility
+// ceiling at ingest still bounds how far.
 //
-// The lower median across votes, because with one vote each a liar needs only
-// half the parties to reach the upper median: with two, one of them. The lower
-// median makes it a strict majority — and so an even split between parties in
-// sync and parties behind resolves to the ones behind, leaving the external
-// floor as the tiebreaker. Endpoints with no operator (bare test addresses)
-// vote alone.
-func partyMedian(observations []blockObs) uint64 {
-	byOperator := make(map[string][]uint64)
+// The lower median when nothing is corroborated — two parties that disagree —
+// resolves an even split to the side behind, leaving the external floor as
+// the tiebreaker. Endpoints with no operator (bare test addresses) vote alone.
+func partyAnchor(observations []blockObs, tolerance uint64) uint64 {
+	byParty := make(map[string][]uint64)
 	for _, obs := range observations {
 		key := obs.Endpoint.Party()
 		if key == "" {
 			key = string(obs.Endpoint)
 		}
-		byOperator[key] = append(byOperator[key], obs.Height)
+		byParty[key] = append(byParty[key], obs.Height)
 	}
-	votes := make([]uint64, 0, len(byOperator))
-	for _, heights := range byOperator {
+	votes := make([]uint64, 0, len(byParty))
+	for _, heights := range byParty {
 		slices.Sort(heights)
 		votes = append(votes, heights[len(heights)/2])
 	}
 	slices.Sort(votes)
+	for i := len(votes) - 1; i > 0; i-- {
+		if votes[i]-votes[i-1] <= tolerance {
+			return votes[i]
+		}
+	}
 	return votes[(len(votes)-1)/2]
 }
 

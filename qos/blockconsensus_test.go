@@ -407,3 +407,50 @@ func TestBlockConsensus_FloorAppliesWithoutObservations(t *testing.T) {
 		t.Fatalf("perceived = %d, want 995 (floor minus allowance)", got)
 	}
 }
+
+// Solana, 2026-09-29: one dead party, one stuck party and two at the head.
+// Parties behind the head disagree with each other; they must not become the
+// anchor and cut the head as an outlier.
+func TestBlockConsensus_StaleMinorityPartiesAtDifferentHeights(t *testing.T) {
+	bc := NewBlockConsensus(nil, 1500)
+	for i := range 9 {
+		bc.AddObservation(domain.EndpointAddr(fmt.Sprintf("k%d-https://n%d.head-a.network", i, i)), 429_671_368)
+	}
+	for i := range 27 {
+		bc.AddObservation(domain.EndpointAddr(fmt.Sprintf("n%d-https://n%d.head-b.net", i, i)), 429_671_360)
+	}
+	for i := range 3 {
+		bc.AddObservation(domain.EndpointAddr(fmt.Sprintf("d%d-https://n%d.dead.net", i, i)), 428_197_468)
+	}
+	for i := range 6 {
+		bc.AddObservation(domain.EndpointAddr(fmt.Sprintf("s%d-https://r%d.stuck.xyz", i, i)), 429_657_005)
+	}
+	if got := bc.PerceivedBlock(); got != 429_671_368 {
+		t.Fatalf("perceived = %d, want 429671368: two parties at the head outvote two stale ones", got)
+	}
+}
+
+// Three parties, one behind: the two in sync anchor the head.
+func TestBlockConsensus_ThreePartiesOneStale(t *testing.T) {
+	bc := NewBlockConsensus(nil, 10)
+	bc.AddObservation("a1-https://x.fresh-a.net", 5000)
+	bc.AddObservation("b1-https://x.fresh-b.net", 5002)
+	bc.AddObservation("c1-https://x.behind.net", 3000)
+	if got := bc.PerceivedBlock(); got != 5002 {
+		t.Fatalf("perceived = %d, want 5002", got)
+	}
+}
+
+// The price of corroboration, pinned: two parties agreeing on a height above
+// the rest lift the head to it.
+func TestBlockConsensus_TwoAgreeingPartiesAnchor(t *testing.T) {
+	bc := NewBlockConsensus(nil, 10)
+	bc.AddObservation("a1-https://x.one.net", 1000)
+	bc.AddObservation("b1-https://x.two.net", 1000)
+	bc.AddObservation("c1-https://x.three.net", 1000)
+	bc.AddObservation("l1-https://x.high-a.io", 2000)
+	bc.AddObservation("l2-https://x.high-b.io", 2001)
+	if got := bc.PerceivedBlock(); got != 2001 {
+		t.Fatalf("perceived = %d, want 2001", got)
+	}
+}
