@@ -430,8 +430,10 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	tried := map[domain.EndpointAddr]bool{endpointAddr: true}
 	bridgeOpts = append(bridgeOpts, websockets.WithEndpointLost(func(ctx context.Context, cause error) (*websocket.Conn, websockets.MessageProcessor, [][]byte, error) {
 		lost := *current.Load()
-		_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, lost, domain.RPCTypeWebSocket,
-			reputation.NewMajorErrorSignal("ws_endpoint_lost:"+cause.Error(), 0))
+		if lossIsSuppliers(cause) {
+			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, lost, domain.RPCTypeWebSocket,
+				reputation.NewMajorErrorSignal("ws_endpoint_lost:"+cause.Error(), 0))
+		}
 
 		next, _, err := r.resolveEndpoint(ctx, serviceID, tried)
 		if err != nil {
@@ -505,6 +507,16 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		"untracked_subscribes", subs.Dropped(),
 	)
 	return nil
+}
+
+// lossIsSuppliers reports whether a rebind's cause is the supplier failing. A
+// session that ended, or an operator's rebind request, is not: both used to
+// be recorded as a major error against the supplier left, at every session
+// end, for serving its session to the last block. Healing kept the scores up
+// (mainnet 2026-09-29: WebSocket keys scored no lower than JSON-RPC ones), so
+// it showed as noise in the signal rather than as a floor.
+func lossIsSuppliers(cause error) bool {
+	return !errors.Is(cause, websockets.ErrBridgeSessionExpired) && !errors.Is(cause, websockets.ErrBridgeReplaceRequested)
 }
 
 // stalled reports whether a connection's periodic feed has gone silent for

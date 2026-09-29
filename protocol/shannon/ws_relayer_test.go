@@ -729,3 +729,21 @@ func TestSessionEndAction(t *testing.T) {
 		}
 	}
 }
+
+// A rebind for a session that ended or an operator's request is not the
+// supplier's failure; a dead socket or a stalled feed is.
+func TestLossIsSuppliers(t *testing.T) {
+	for _, tc := range []struct {
+		cause error
+		want  bool
+	}{
+		{websockets.ErrBridgeSessionExpired, false},
+		{websockets.ErrBridgeReplaceRequested, false},
+		{websockets.ErrBridgeStalled, true},
+		{errors.New("read tcp: connection reset"), true},
+	} {
+		if got := lossIsSuppliers(tc.cause); got != tc.want {
+			t.Errorf("%v: %v, want %v", tc.cause, got, tc.want)
+		}
+	}
+}
