@@ -808,7 +808,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWScore, func() relay.Middleware { return middleware.Score(flags, repSvc) })
 	mwReg.Register(relay.MWDebugLog, func() relay.Middleware { return middleware.DebugLog(flags, qosReg, proto) })
 	mwReg.Register(relay.MWHeuristic, func() relay.Middleware {
-		return middleware.Heuristic(flags, qosReg, middleware.WithAttemptTimeout(timeoutFn))
+		return middleware.Heuristic(flags, qosReg, middleware.WithAttemptTimeout(timeoutFn), middleware.WithHeadLag(recorder.RecordAnswerHead))
 	})
 	mwReg.Register(relay.MWSendRelay, func() relay.Middleware { return middleware.SendRelay(proto) })
 

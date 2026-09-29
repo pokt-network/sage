@@ -454,3 +454,33 @@ func TestBlockConsensus_TwoAgreeingPartiesAnchor(t *testing.T) {
 		t.Fatalf("perceived = %d, want 2001", got)
 	}
 }
+
+// AnswerLag measures against the head advanced at the block rate since it
+// last moved, and calls a lag stale only past max(2 blocks, 10s of blocks).
+func TestBlockConsensus_AnswerLag(t *testing.T) {
+	bc := NewBlockConsensus(nil, 100)
+	if _, _, ok := bc.AnswerLag(10, time.Now()); ok {
+		t.Fatal("no head yet: ok must be false")
+	}
+	bc.AddObservation("a1-https://x.a.net", 1000)
+	now := time.Now()
+	bc.mu.Lock()
+	bc.rateSamples = []rateSample{{height: 900, at: now.Add(-44 * time.Second)}, {height: 1000, at: now.Add(-4 * time.Second)}}
+	bc.mu.Unlock()
+	// rate 2.5/s, head moved 4s ago: expected head 1010, tolerance 25.
+	for _, tc := range []struct {
+		answer    uint64
+		lag       uint64
+		wantStale bool
+	}{
+		{1010, 0, false},
+		{1020, 0, false},
+		{990, 20, false},
+		{900, 110, true},
+	} {
+		lag, stale, ok := bc.AnswerLag(tc.answer, now)
+		if !ok || lag != tc.lag || stale != tc.wantStale {
+			t.Errorf("answer %d: lag %d stale %v ok %v, want lag %d stale %v", tc.answer, lag, stale, ok, tc.lag, tc.wantStale)
+		}
+	}
+}

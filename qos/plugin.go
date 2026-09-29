@@ -225,6 +225,22 @@ type EndpointHeightLister interface {
 	EndpointHeights() []EndpointHeight
 }
 
+// HeadLagReader is implemented by plugins that can read the chain head out of
+// the answers to some methods (eth_blockNumber, Solana getBlockHeight, …).
+// HeadLag reports how far the answer's head lags the head the plugin expects
+// now, and whether that counts as stale; ok is false for any other method,
+// any answer that names no head, or while the plugin has no head yet.
+//
+// It exists because a response cache only looks fast. On mainnet solana
+// (2026-09-29) one owner served getEpochInfo frozen for a minute and
+// getBlockHeight 60-110 slots behind, from one cache in front of every
+// hostname, at a tenth of its peers' latency — which the latency tie-break
+// rewarded. The height filter never saw it: the lag sat inside the sync
+// allowance. Only the answer says how old it is.
+type HeadLagReader interface {
+	HeadLag(payload domain.Payload, response []byte) (lag uint64, stale, ok bool)
+}
+
 // StaleChecker is implemented by plugins that filter on block height. AllStale
 // reports whether every endpoint in eps is known to sit below the relaxed
 // (tier-2) height bound: a list SelectEndpoints can serve only by abandoning

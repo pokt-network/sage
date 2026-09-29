@@ -70,6 +70,8 @@ type Recorder struct {
 	batchDisconnects       *prometheus.CounterVec
 	quorumRequests         *prometheus.CounterVec
 	selectionTiers         *prometheus.CounterVec
+	staleAnswers           *prometheus.CounterVec
+	answerHeadLag          *prometheus.HistogramVec
 	reputationWriteDrops   *prometheus.CounterVec
 	quorumDissent          *prometheus.CounterVec
 	batchSubRelays         prometheus.Gauge
@@ -296,6 +298,23 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "tier"},
 		),
+		staleAnswers: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "stale_answers_total",
+				Help:      "Answers naming the chain head (eth_blockNumber, eth_getBlockByNumber(\"latest\"), Solana getEpochInfo, getBlockHeight, getLatestBlockhash) that lagged the head this pod expected at receive time by more than max(2 blocks, 10 seconds of blocks), by service, party (the owner when its domain is dedicated, else the operator) and method. The expected head is the perceived height advanced at the chain's block rate since it last moved. A response cache in front of a node serves such answers fast; the height filter cannot see it while the lag stays inside the sync allowance. Measurement only: nothing is scored or rerouted on it.",
+			},
+			[]string{"service_id", "party", "method"},
+		),
+		answerHeadLag: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "answer_head_lag_blocks",
+				Help:      "How many blocks an answer naming the chain head lagged the head this pod expected at receive time, by service and party; 0 for an answer at or ahead of it. Same answers and same expected head as sage_stale_answers_total, every one of them rather than only the stale.",
+				Buckets:   []float64{0, 1, 2, 5, 10, 25, 50, 100, 250, 1000},
+			},
+			[]string{"service_id", "party"},
+		),
 		quorumRequests: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -519,6 +538,8 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.batchDisconnects,
 		r.quorumRequests,
 		r.selectionTiers,
+		r.staleAnswers,
+		r.answerHeadLag,
 		r.reputationWriteDrops,
 		r.quorumDissent,
 		r.batchSubRelays,
@@ -635,6 +656,17 @@ func (r *Recorder) RecordBatchPayloads(serviceID domain.ServiceID, n int) {
 // storage. Wire installs it as the reputation service's write drop hook.
 func (r *Recorder) RecordReputationWriteDropped(reason string) {
 	r.reputationWriteDrops.WithLabelValues(reason).Inc()
+}
+
+// RecordAnswerHead records one answer that named the chain head: its lag
+// behind the head expected at receive time, and whether that was stale.
+// method is one of the few head methods a plugin reads, so it is bounded.
+func (r *Recorder) RecordAnswerHead(serviceID domain.ServiceID, party, method string, lag uint64, stale bool) {
+	service := r.services.serviceValue(serviceID)
+	r.answerHeadLag.WithLabelValues(service, party).Observe(float64(lag))
+	if stale {
+		r.staleAnswers.WithLabelValues(service, party, method).Inc()
+	}
 }
 
 // RecordSelectionTier counts one endpoint selection by its height tier. Tiers

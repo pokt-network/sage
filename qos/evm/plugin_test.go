@@ -1001,3 +1001,22 @@ func TestAllStale_UsesRelaxedBound(t *testing.T) {
 		t.Error("a list with an endpoint inside the relaxed bound is not all stale")
 	}
 }
+
+// HeadLag reads eth_blockNumber and eth_getBlockByNumber("latest") only.
+// Staleness needs a block rate; AnswerLag's own test covers it.
+func TestHeadLag_ReadsLatestOnly(t *testing.T) {
+	p := newTestPlugin(5)
+	p.UpdateBlockHeight("a1-https://x.a.net", 1000)
+	latest := domain.NewPayload([]byte(`{"method":"eth_getBlockByNumber","params":["latest",false]}`), domain.RPCTypeJSONRPC, "eth_getBlockByNumber")
+	old := domain.NewPayload([]byte(`{"method":"eth_getBlockByNumber","params":["0x10",false]}`), domain.RPCTypeJSONRPC, "eth_getBlockByNumber")
+	num := domain.NewPayload([]byte(`{"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	if lag, _, ok := p.HeadLag(latest, []byte(`{"result":{"number":"0x3de"}}`)); !ok || lag != 10 {
+		t.Errorf("latest 990: lag %d ok %v, want 10 true", lag, ok)
+	}
+	if _, _, ok := p.HeadLag(old, []byte(`{"result":{"number":"0x10"}}`)); ok {
+		t.Error("a numbered block is history, not the head")
+	}
+	if lag, stale, ok := p.HeadLag(num, []byte(`{"result":"0x3e7"}`)); !ok || lag != 1 || stale {
+		t.Errorf("eth_blockNumber 999: lag %d stale %v ok %v, want 1 false true", lag, stale, ok)
+	}
+}

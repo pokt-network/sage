@@ -450,6 +450,47 @@ func (p HeightProjection) Project(height uint64, observedAt time.Time) uint64 {
 	return min(height+uint64(p.rate*age.Seconds()), p.perceived)
 }
 
+// staleAnswerSeconds is how far behind the head, in the chain's own time, an
+// answer naming the head may be before it counts as stale: generous for
+// propagation, far short of a response cache holding one answer for a minute.
+const staleAnswerSeconds = 10
+
+// staleAnswerMinBlocks is the least lag that counts as stale, for chains
+// slow enough that ten seconds is under two blocks.
+const staleAnswerMinBlocks = 2
+
+// AnswerLag measures an answer that names the chain head against the head
+// this consensus expects at now: perceived, advanced at the chain's block rate
+// since it last moved (at most two windows, as HeightProjection allows).
+// Perceived moves only when an observation arrives, so comparing against it
+// unadvanced would forgive a stale answer by up to one probe cycle.
+//
+// stale is lag above max(staleAnswerMinBlocks, rate x staleAnswerSeconds),
+// and never while the block rate is unknown (a cold start): the lag is still
+// reported, but without a rate there is no telling propagation from a cache.
+// ok is false while there is no head to compare with. An answer ahead of the
+// head is lag 0.
+func (bc *BlockConsensus) AnswerLag(height uint64, now time.Time) (lag uint64, stale, ok bool) {
+	p := bc.Projection()
+	if p.perceived == 0 {
+		return 0, false, false
+	}
+	head := p.perceived
+	if p.rate > 0 {
+		if age := now.Sub(p.headAt); age > 0 {
+			head += uint64(p.rate * min(age, 2*p.window).Seconds())
+		}
+	}
+	if height < head {
+		lag = head - height
+	}
+	if p.rate <= 0 {
+		return lag, false, true
+	}
+	tolerance := max(uint64(staleAnswerMinBlocks), uint64(p.rate*staleAnswerSeconds))
+	return lag, lag > tolerance, true
+}
+
 func blockRate(samples []rateSample) (float64, bool) {
 	if len(samples) < 2 {
 		return 0, false

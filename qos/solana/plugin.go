@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
 )
@@ -291,3 +293,31 @@ func (p *Plugin) AllStale(eps domain.EndpointAddrList) bool {
 }
 
 var _ qos.StaleChecker = (*Plugin)(nil)
+
+// solanaBlockhashValidity is how many blocks past its own a blockhash stays
+// valid: getLatestBlockhash answers lastValidBlockHeight = its block + 150.
+const solanaBlockhashValidity = 150
+
+// HeadLag reads the head a getEpochInfo, getBlockHeight or getLatestBlockhash
+// answer names, on the block-height scale perceived is kept in, and measures
+// it against the head expected now (qos.HeadLagReader). getSlot and
+// context.slot are slots, a different scale, and are not read.
+func (p *Plugin) HeadLag(payload domain.Payload, response []byte) (lag uint64, stale, ok bool) {
+	var head uint64
+	switch payload.Method() {
+	case "getEpochInfo":
+		head = gjson.GetBytes(response, "result.blockHeight").Uint()
+	case "getBlockHeight":
+		head = gjson.GetBytes(response, "result").Uint()
+	case "getLatestBlockhash":
+		if v := gjson.GetBytes(response, "result.value.lastValidBlockHeight").Uint(); v > solanaBlockhashValidity {
+			head = v - solanaBlockhashValidity
+		}
+	}
+	if head == 0 {
+		return 0, false, false
+	}
+	return p.consensus.AnswerLag(head, time.Now())
+}
+
+var _ qos.HeadLagReader = (*Plugin)(nil)

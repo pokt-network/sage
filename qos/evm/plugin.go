@@ -553,3 +553,24 @@ func (p *Plugin) AllStale(eps domain.EndpointAddrList) bool {
 }
 
 var _ qos.StaleChecker = (*Plugin)(nil)
+
+// HeadLag reads the head an eth_blockNumber or eth_getBlockByNumber("latest")
+// answer names and measures it against the head expected now
+// (qos.HeadLagReader).
+func (p *Plugin) HeadLag(payload domain.Payload, response []byte) (lag uint64, stale, ok bool) {
+	var head uint64
+	switch payload.Method() {
+	case "eth_blockNumber":
+		head, _ = extractBlockNumber(response)
+	case "eth_getBlockByNumber":
+		if gjson.GetBytes(payload.Bytes(), "params.0").String() == "latest" {
+			head, _ = parseHexUint64(gjson.GetBytes(response, "result.number").String())
+		}
+	}
+	if head == 0 {
+		return 0, false, false
+	}
+	return p.consensus.AnswerLag(head, time.Now())
+}
+
+var _ qos.HeadLagReader = (*Plugin)(nil)
