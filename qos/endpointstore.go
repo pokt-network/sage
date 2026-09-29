@@ -13,8 +13,19 @@ import (
 type EndpointStore[T any] struct {
 	mu        sync.RWMutex
 	endpoints map[domain.EndpointAddr]storedEndpoint[T]
-	logger    *slog.Logger
+	// hosts is the latest height reading per host, for a registration that
+	// has none yet (see HeightGetter).
+	hosts  map[string]storedEndpoint[T]
+	logger *slog.Logger
 }
+
+// hostHeightMaxAge is how old a host's reading may be and still stand in for
+// a registration of that host with none of its own.
+const hostHeightMaxAge = 10 * time.Minute
+
+// hostHeightsMax bounds the per-host readings. A service has a few dozen
+// hosts; the cap is a backstop against churn, cleared wholesale when hit.
+const hostHeightsMax = 4096
 
 type storedEndpoint[T any] struct {
 	Data     T
@@ -32,6 +43,7 @@ func NewEndpointStore[T any](logger *slog.Logger) *EndpointStore[T] {
 	}
 	return &EndpointStore[T]{
 		endpoints: make(map[domain.EndpointAddr]storedEndpoint[T]),
+		hosts:     make(map[string]storedEndpoint[T]),
 		logger:    logger,
 	}
 }
@@ -56,10 +68,24 @@ func NewEndpointStore[T any](logger *slog.Logger) *EndpointStore[T] {
 // for our own missing data — the same reasoning BlockHeightFilter already
 // applies to an endpoint that is absent from the store entirely. Treating
 // "absent" and "present with no height" differently was the accident.
+//
+// Except where the host has reported. A height belongs to the backend, not to
+// the registration in front of it, and a session rollover hands every
+// supplier a new address the store has never seen. On mainnet base
+// (2026-09-29) that made one operator's 34 registrations, all on nodes 27,000
+// blocks behind, unknown — and so admitted — for the minute after each
+// rollover until the next probe: 1,200-3,500 client relays to them in that
+// minute, every 20 minutes. An address with no height of its own takes its
+// host's latest reading, if one was taken in the last hostHeightMaxAge.
 func HeightGetter[T any](store *EndpointStore[T], height func(T) uint64, projection HeightProjection) func(domain.EndpointAddr) (uint64, bool) {
 	return func(addr domain.EndpointAddr) (uint64, bool) {
 		store.mu.RLock()
 		ep, ok := store.endpoints[addr]
+		if !ok || height(ep.Data) == 0 {
+			var hostOK bool
+			ep, hostOK = store.hosts[addr.Domain()]
+			ok = hostOK && time.Since(ep.HeightAt) <= hostHeightMaxAge
+		}
 		store.mu.RUnlock()
 		if !ok {
 			return 0, false
@@ -122,6 +148,12 @@ func (s *EndpointStore[T]) ObserveHeight(addr domain.EndpointAddr, fn func(*T)) 
 	ep.LastSeen = now
 	ep.HeightAt = now
 	s.endpoints[addr] = ep
+	if host := addr.Domain(); host != "" {
+		if len(s.hosts) >= hostHeightsMax {
+			clear(s.hosts)
+		}
+		s.hosts[host] = ep
+	}
 }
 
 // Touch updates LastSeen for all given addresses. Addresses not in the store are ignored.
@@ -174,6 +206,7 @@ func (s *EndpointStore[T]) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.endpoints = make(map[domain.EndpointAddr]storedEndpoint[T])
+	s.hosts = make(map[string]storedEndpoint[T])
 }
 
 // Count returns the number of stored endpoints.

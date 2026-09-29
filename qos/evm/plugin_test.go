@@ -1020,3 +1020,19 @@ func TestHeadLag_ReadsLatestOnly(t *testing.T) {
 		t.Errorf("eth_blockNumber 999: lag %d stale %v ok %v, want 1 false true", lag, stale, ok)
 	}
 }
+
+// A session rollover's new address for a stale backend is judged by its
+// host's reading and filtered, instead of passing as unknown.
+func TestSelectEndpoints_RolloverAddressOfStaleHostFiltered(t *testing.T) {
+	p := newTestPlugin(5)
+	p.UpdateBlockHeight("a1-https://rm01.fresh.tech", 1000)
+	p.UpdateBlockHeight("b1-https://rm02.fresh2.net", 1000)
+	p.UpdateBlockHeight("s1-https://n1.behind.net", 100)
+	got, err := p.SelectEndpoints(domain.EndpointAddrList{"a2-https://rm01.fresh.tech", "s2-https://n1.behind.net"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "a2-https://rm01.fresh.tech" {
+		t.Fatalf("selected %v, want only the fresh host's new address", got)
+	}
+}

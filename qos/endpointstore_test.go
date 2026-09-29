@@ -190,3 +190,34 @@ func TestEndpointStore_Clear(t *testing.T) {
 		t.Fatal("expected \"a\" gone after Clear")
 	}
 }
+
+// A registration the store has never seen — a session rollover's new address
+// for a known backend — takes its host's latest reading, while that reading
+// is recent. Its own reading, once it has one, wins.
+func TestHeightGetter_FallsBackToHostReading(t *testing.T) {
+	type data struct{ H uint64 }
+	s := NewEndpointStore[data](nil)
+	get := HeightGetter(s, func(d data) uint64 { return d.H }, HeightProjection{})
+
+	s.ObserveHeight("old-https://n1.behind.net", func(d *data) { d.H = 900 })
+	if h, ok := get("new-https://n1.behind.net"); !ok || h != 900 {
+		t.Fatalf("new address on a known host: %d %v, want 900 true", h, ok)
+	}
+	if _, ok := get("new-https://n2.behind.net"); ok {
+		t.Fatal("another host has no reading: must stay unknown")
+	}
+	s.ObserveHeight("new-https://n1.behind.net", func(d *data) { d.H = 950 })
+	s.ObserveHeight("old-https://n1.behind.net", func(d *data) { d.H = 1000 })
+	if h, _ := get("new-https://n1.behind.net"); h != 950 {
+		t.Fatalf("own reading must win over the host's: got %d, want 950", h)
+	}
+
+	s.mu.Lock()
+	e := s.hosts["n1.behind.net"]
+	e.HeightAt = time.Now().Add(-hostHeightMaxAge - time.Minute)
+	s.hosts["n1.behind.net"] = e
+	s.mu.Unlock()
+	if _, ok := get("third-https://n1.behind.net"); ok {
+		t.Fatal("a host reading older than hostHeightMaxAge must not stand in")
+	}
+}
