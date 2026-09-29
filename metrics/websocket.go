@@ -69,6 +69,7 @@ type WebSocketMetrics struct {
 	headLag               *prometheus.HistogramVec
 	headDelay             *prometheus.HistogramVec
 	headMismatch          *prometheus.CounterVec
+	shareCap              *prometheus.CounterVec
 }
 
 // Caps for the supplier labels. Operators serving WebSocket number in the
@@ -87,7 +88,7 @@ func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
 	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
 		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes,
-		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch)
+		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap)
 	return m
 }
 
@@ -155,6 +156,14 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 				Help:      "Blocks for which a supplier pushed a head whose hash differs from the one most operators pushed for that number, judged 8 blocks later, by service, operator and owner. A reorg makes honest mismatches, so read it as a rate against other operators on the same service, never alone.",
 			},
 			supplierLabels,
+		),
+		shareCap: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_share_cap_total",
+				Help:      "WebSocket supplier placements (opens and rebinds) the ws_share_cap flag was asked about, by service and outcome: bound (it kept the connection off a party that would have held more than half the service's frames on this pod), clear (every vouched party was under), or open (it could not bind: fewer than two vouched fresh parties, no traffic yet, or no party under the cap with the connection added). Nothing is counted while the flag is off.",
+			},
+			[]string{"service_id", "outcome"},
 		),
 		supplierConnections: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -420,6 +429,12 @@ func (m *WebSocketMetrics) SupplierHead(serviceID domain.ServiceID, operator, ow
 	if delayKnown {
 		m.headDelay.WithLabelValues(sid, op, own).Observe(delay.Seconds())
 	}
+}
+
+// ShareCap counts one placement the WebSocket share cap was asked about.
+// outcome is bound, clear or open.
+func (m *WebSocketMetrics) ShareCap(serviceID domain.ServiceID, outcome string) {
+	m.shareCap.WithLabelValues(m.services.serviceValue(serviceID), outcome).Inc()
 }
 
 // SupplierHeadMismatch counts one block a supplier pushed with a hash other

@@ -117,6 +117,7 @@ type WSMetrics interface {
 	SupplierHead(serviceID domain.ServiceID, operator, owner string, lagBlocks uint64, delay time.Duration, delayKnown bool)
 	SupplierHeadMismatch(serviceID domain.ServiceID, operator, owner string)
 	Probed(serviceID domain.ServiceID, result string)
+	ShareCap(serviceID domain.ServiceID, outcome string)
 }
 
 // WSRelayer is the only public entry point for opening WebSocket bridges in
@@ -169,7 +170,7 @@ type WSRelayer struct {
 	stallCheck   time.Duration
 
 	// live tracks every open bridge by service, for RebindService.
-	live sync.Map // *websockets.Bridge → domain.ServiceID
+	live sync.Map // *websockets.Bridge → *wsLive
 
 	// clients records which supplier served each client connection for how
 	// long, for the admin clients route. See ws_clients.go.
@@ -339,7 +340,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	// Pick and resolve an endpoint: tier cascade + load-aware weighted
 	// random, then the session, URL and app that go with it. The same path a
 	// rebind takes later, minus the exclusions.
-	target, httpMsg, err := r.resolveEndpoint(ctx, serviceID, nil)
+	target, httpMsg, err := r.resolveEndpoint(ctx, serviceID, nil, nil)
 	if err != nil {
 		logger.Error("ws open: resolve endpoint", "err", err)
 		http.Error(w, httpMsg, http.StatusBadGateway)
@@ -375,6 +376,8 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	var sessionEnd atomic.Int64
 	sessionEnd.Store(session.Header.SessionEndBlockHeight)
 	var currentProc atomic.Pointer[wsMessageProcessor]
+	// The bridge as the share cap sees it; registered once the bridge is up.
+	live := &wsLive{service: serviceID, current: &current, proc: &currentProc, opened: time.Now()}
 
 	logger = logger.With("endpoint", endpointAddr, "supplier", ep.Supplier(), "url", url)
 	logger.Info("ws open: starting bridge")
@@ -435,7 +438,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 				reputation.NewMajorErrorSignal("ws_endpoint_lost:"+cause.Error(), 0))
 		}
 
-		next, _, err := r.resolveEndpoint(ctx, serviceID, tried)
+		next, _, err := r.resolveEndpoint(ctx, serviceID, tried, live)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -457,6 +460,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		addr := next.addr
 		current.Store(&addr)
 		r.releaseSupplier(serviceID, clientIP, currentProc.Load(), false)
+		live.retired.Add(currentProc.Load().endpointFrames.Load())
 		proc := newProcessor(next)
 		r.bindSupplier(serviceID, proc)
 		currentProc.Store(proc)
@@ -482,7 +486,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 
 	r.clients.opened(clientIP)
 	r.bindSupplier(serviceID, processor)
-	r.live.Store(bridge, serviceID)
+	r.live.Store(bridge, live)
 	defer r.live.Delete(bridge)
 
 	// Watch for session expiry in a goroutine; trigger graceful close.
@@ -924,7 +928,9 @@ type wsTarget struct {
 // back in when nothing else advertises WebSocket — a blip on the only host
 // is still worth one reconnect. The second return is the message for the
 // HTTP error Open sends when this fails before the upgrade.
-func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.ServiceID, tried map[domain.EndpointAddr]bool) (*wsTarget, string, error) {
+//
+// self is the connection being placed (nil when opening), for the share cap.
+func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.ServiceID, tried map[domain.EndpointAddr]bool, self *wsLive) (*wsTarget, string, error) {
 	endpoints, err := r.deps.Protocol.AvailableEndpoints(ctx, serviceID, domain.RPCTypeWebSocket)
 	if err != nil {
 		return nil, "no websocket endpoints available", fmt.Errorf("available endpoints: %w", err)
@@ -934,6 +940,7 @@ func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.Servic
 	}
 	candidates := untriedFirst(endpoints, tried, r.deps.Flags.IsEnabled(ctx, featureflag.FlagOperatorAwareSelection, serviceID))
 	candidates = r.freshest(serviceID, candidates)
+	candidates = r.capShare(ctx, serviceID, candidates, self)
 	load := r.snapshotLoad()
 	addr := r.deps.Reputation.SelectSpread(ctx, serviceID, candidates, domain.RPCTypeWebSocket, load)
 	if addr == "" {
@@ -1023,7 +1030,7 @@ func untriedFirst(endpoints domain.EndpointAddrList, tried map[domain.EndpointAd
 func (r *WSRelayer) RebindService(serviceID domain.ServiceID) int {
 	n := 0
 	r.live.Range(func(key, value any) bool {
-		if value.(domain.ServiceID) != serviceID {
+		if value.(*wsLive).service != serviceID {
 			return true
 		}
 		key.(*websockets.Bridge).ReplaceEndpoint(websockets.ErrBridgeReplaceRequested)

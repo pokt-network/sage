@@ -121,6 +121,17 @@ const (
 	// and its height filter passed every host. Off by default; enable
 	// per service.
 	FlagCosmosEVMHeight = "cosmos_evm_height"
+	// FlagWSShareCap keeps any one party (the owner when its domain is
+	// dedicated, else the operator) under half of a service's WebSocket
+	// traffic on a pod, measured in supplier frames a second rather than
+	// connections: on mainnet (2026-09-29) one owner carried two thirds of
+	// base's WebSocket traffic on about two connections, which a
+	// connection-count spread never sees. Applied where a connection picks
+	// its supplier — at open and at every rebind, which includes the one each
+	// session end takes — and only while at least two parties the service's
+	// reputation vouches for are in the session; otherwise placement is as
+	// before. Off by default.
+	FlagWSShareCap = "ws_share_cap"
 	// FlagRelativeChronic measures a key's chronic-failure penalty from the
 	// best failure rate in its (service, RPC type) pool rather than from zero,
 	// so a timeout tail every operator shares does not floor all of them. On
@@ -184,6 +195,7 @@ var DefaultFlags = map[string]bool{
 	FlagCircuitBreakUpstream:   false,
 	FlagMethodBlock408:         false,
 	FlagCosmosEVMHeight:        false,
+	FlagWSShareCap:             false,
 	FlagRelativeChronic:        true,
 	FlagOperatorChronic:        false,
 	FlagQuorum:                 false,

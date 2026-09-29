@@ -509,6 +509,7 @@ type spyWSMetrics struct {
 	frames        map[string]int // operator|owner|direction
 	notifications map[string]int // operator|owner|topic|kind
 	probes        []string
+	shareCaps     []string
 	heads         []string // operator|lag|delayKnown
 	mismatches    []string // operator
 }
@@ -526,6 +527,11 @@ func (s *spyWSMetrics) SupplierHeadMismatch(_ domain.ServiceID, operator, _ stri
 }
 
 func (s *spyWSMetrics) ForService(domain.ServiceID) websockets.Observer { return nil }
+func (s *spyWSMetrics) ShareCap(_ domain.ServiceID, outcome string) {
+	s.mu.Lock()
+	s.shareCaps = append(s.shareCaps, outcome)
+	s.mu.Unlock()
+}
 func (s *spyWSMetrics) Probed(_ domain.ServiceID, result string) {
 	s.mu.Lock()
 	s.probes = append(s.probes, result)
