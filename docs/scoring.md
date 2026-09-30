@@ -418,6 +418,18 @@ Two more corrections followed the same day, both from mainnet sei:
   the baseline is the best *operator* in the pool, one vote each. A service is
   measured in one basis or the other, never a mix.
 
+  Only first, probation and probe attempts feed those counters. Retries and
+  hedges score their key but not its operator: which relays reach them was
+  decided by another host's failure or slowness, and a demoted operator gets
+  little else, so counting them held its rate up by the demotion itself
+  (mainnet sei and opbnb, 2026-09-28).
+
+  Time alone does not lower a rate, since it scales failures and attempts
+  alike. An operator that answers 20 in a row with no failure is forgiven by
+  half every hour until its next failure, which stops the forgiveness but
+  keeps what was earned. `POST /admin/reputation/operator-reset/{serviceID}/{operator}`
+  forgets an operator's counters in one service outright.
+
   WebSocket is not measured this way (2026-09-30). Its attempts are
   connections and probes, a few hundred per operator, against which the probe
   failures every operator shares read as 2–11%: the in-sync operators were
@@ -439,14 +451,11 @@ Two more corrections followed the same day, both from mainnet sei:
   the chronic term and under the same floor. Relative, because a chain the
   head projection runs ahead of reads stale for everyone (every party on
   scroll near 20%); a service with one measured party is not charged. The
-  counts are pod-local and rebuild in minutes after a roll. Shares and
-  penalties are `sage_party_stale_share` and `sage_party_stale_penalty`.
-
-  Only first, probation and probe attempts feed those counters. Retries and
-  hedges score their key but not its operator: which relays reach them was
-  decided by another host's failure or slowness, and a demoted operator gets
-  little else, so counting them held its rate up by the demotion itself
-  (mainnet sei and opbnb, 2026-09-28).
+  counts are pod-local and rebuild in minutes after a roll. A priced party
+  whose evidence falls under the minimum, as a demoted party's does, keeps
+  its penalty for 30 minutes from when it was last priced; fresh evidence
+  replaces it at once. Shares and penalties are `sage_party_stale_share` and
+  `sage_party_stale_penalty`, and the admin listing shows `stale_penalty`.
 - **A probe cannot outvote traffic.** A probe success on a key that served
   traffic in the last 10 minutes moves neither term. One operator passed
   `eth_blockNumber` every cycle while answering 408 to real calls, and the

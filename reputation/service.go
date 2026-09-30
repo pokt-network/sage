@@ -234,6 +234,7 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	s.scoring.Store(newScoring(cfg.Impacts, cfg.Rate))
 	s.ops = newOpTracker(cfg.OperatorHalfLife)
 	s.heads = newOpTracker(staleShareHalfLife)
+	s.heads.dirty = nil // never persisted, so nothing takes the marks
 	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, cfg.URLResolver)))
 	selCfg := cfg.Selector
 	if selCfg == (SelectorConfig{}) {
@@ -487,8 +488,8 @@ func (s *serviceImpl) refreshBaselines() {
 	// lives one session and an operator does not (opstats.go).
 	now := time.Now()
 	stats := s.ops.snapshot(now)
+	byOp := make(map[opID]OperatorRateView, len(stats))
 	v := chronicView{
-		byOp:     make(map[opID]OperatorRateView, len(stats)),
 		byKey:    map[keyID]float64{},
 		baseline: map[poolID]float64{},
 		opOn:     map[domain.ServiceID]bool{},
@@ -500,7 +501,7 @@ func (s *serviceImpl) refreshBaselines() {
 			continue
 		}
 		if rate := st.RateAt(now); rate > 0 {
-			v.byOp[id] = OperatorRateView{Rate: rate, Attempts: uint64(st.Attempts)}
+			byOp[id] = OperatorRateView{Rate: rate, Attempts: uint64(st.Attempts)}
 		}
 	}
 	// A service is measured in one basis or the other, never a mix: charging
@@ -520,7 +521,7 @@ func (s *serviceImpl) refreshBaselines() {
 	for _, ks := range keys {
 		rate := ks.rate
 		if v.opOn[ks.id.svc] {
-			r, ok := v.byOp[ks.op]
+			r, ok := byOp[ks.op]
 			if !ok {
 				continue
 			}
@@ -544,7 +545,11 @@ func (s *serviceImpl) refreshBaselines() {
 		}
 	}
 	// The stale-share term, charged to every key of a priced party.
-	v.stale = partyStale(s.heads.snapshot(now), gateOf(&s.staleGate))
+	var prev []PartyStale
+	if old := s.chronic.Load(); old != nil {
+		prev = old.stale
+	}
+	v.stale = partyStale(s.heads.snapshot(now), gateOf(&s.staleGate), prev, now)
 	priced := map[opID]float64{}
 	for _, p := range v.stale {
 		if p.Penalty < 0 {
@@ -1007,6 +1012,9 @@ func (s *serviceImpl) GetStates(_ context.Context, serviceID domain.ServiceID) (
 			TrafficAttempts: st.TrafficAttempts, ProbeOnly: st.TrafficAttempts == 0,
 			LatencyMS: st.LatencyMS,
 		}
+		if v := s.chronic.Load(); v != nil {
+			view.StalePenalty = v.staleByKey[keyID{serviceID, key}]
+		}
 		// The rate a young key shows and the rate its operator is charged are
 		// different numbers; a reader comparing keys needs both (operator.go).
 		if r, ok := s.OperatorRate(serviceID, domain.RPCType(rpcOfKey(key)), operatorOfKey(key)); ok {
@@ -1255,24 +1263,16 @@ func hostOf(s string) string {
 // still carries the initial score, and a method block diverting traffic must
 // not treat that as a vouch.
 func (s *serviceImpl) Vouched(_ context.Context, serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool {
-	key := s.keyOf(endpoint, rpcType)
-	sh := s.shard(key)
-	sh.mu.RLock()
-	st, ok := sh.cache[serviceID][key]
-	sh.mu.RUnlock()
-	return ok && s.effectiveFor(serviceID, key, st) >= s.selector.cfg.Load().ProbationThreshold
+	score, ok := s.ScoreOf(serviceID, endpoint, rpcType)
+	return ok && score >= s.selector.cfg.Load().ProbationThreshold
 }
 
 // RuledOut reports whether an endpoint has a recorded score for the RPC type
 // below the selector's MinThreshold: ranked out, not merely unproven. An
 // endpoint with no score is not ruled out.
 func (s *serviceImpl) RuledOut(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool {
-	key := s.keyOf(endpoint, rpcType)
-	sh := s.shard(key)
-	sh.mu.RLock()
-	st, ok := sh.cache[serviceID][key]
-	sh.mu.RUnlock()
-	return ok && s.effectiveFor(serviceID, key, st) < s.selector.cfg.Load().MinThreshold
+	score, ok := s.ScoreOf(serviceID, endpoint, rpcType)
+	return ok && score < s.selector.cfg.Load().MinThreshold
 }
 
 // clamp constrains a score to [0, MaxScore].
@@ -1345,9 +1345,9 @@ func (s *serviceImpl) drainWrites() {
 const operatorFlushInterval = 15 * time.Second
 
 // flushOperatorStats writes the operator counters that changed since the last
-// flush. Errors are dropped like every other write-behind error: the next
-// flush carries the same rows, because a dirty mark is only cleared when the
-// value is taken, not when the write succeeds.
+// flush. Errors are dropped like every other write-behind error: the dirty
+// mark is cleared when the value is taken, so a failed row waits for its next
+// change, and the counters decay over hours.
 func (s *serviceImpl) flushOperatorStats(store OperatorStatStore, now time.Time) {
 	for id, st := range s.ops.takeDirty(now) {
 		_ = store.SetOperatorStat(context.Background(),

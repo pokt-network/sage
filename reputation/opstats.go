@@ -108,20 +108,20 @@ func (s OperatorStat) decayTo(now time.Time, halfLife time.Duration) OperatorSta
 	return s
 }
 
-// Rate is failures per attempt, or 0 when there is too little evidence to say.
-func (s OperatorStat) Rate() float64 {
+// rate is failures per attempt, or 0 when there is too little evidence to say.
+func (s OperatorStat) rate() float64 {
 	if s.Attempts < minOperatorAttempts {
 		return 0
 	}
 	return min(s.Failures/s.Attempts, 1)
 }
 
-// RateAt is Rate forgiven for a recovery: once the operator has answered
+// RateAt is rate forgiven for a recovery: once the operator has answered
 // operatorHealAfter times in a row, the rate halves every operatorHealHalfLife
 // since, until its next failure. The discount starts at one, so healing does
 // not jump.
 func (s OperatorStat) RateAt(now time.Time) float64 {
-	r := s.Rate()
+	r := s.rate()
 	if s.HealedAt <= 0 || r == 0 {
 		return r
 	}
@@ -190,6 +190,15 @@ func (t *opTracker) record(id opID, failure float64, now time.Time) {
 	defer t.mu.Unlock()
 	st := t.stats[id].decayTo(now, t.halfLife)
 	st.Attempts++
+	if failure > 0 && st.HealedAt > 0 {
+		// Keep the forgiveness already earned: clearing HealedAt alone
+		// snapped the rate from its discounted value back to the outage's
+		// on one failure, so an honest operator's normal misses kept
+		// resetting its recovery.
+		if r := st.rate(); r > 0 {
+			st.Failures *= st.RateAt(now) / r
+		}
+	}
 	st.Failures += failure
 	if failure > 0 {
 		st.CleanRun, st.HealedAt = 0, 0
@@ -197,7 +206,9 @@ func (t *opTracker) record(id opID, failure float64, now time.Time) {
 		st.HealedAt = now.Unix()
 	}
 	t.stats[id] = st
-	t.dirty[id] = struct{}{}
+	if t.dirty != nil {
+		t.dirty[id] = struct{}{}
+	}
 }
 
 // get returns one operator's stat, decayed to now.
@@ -213,12 +224,21 @@ func (t *opTracker) get(id opID, now time.Time) (OperatorStat, bool) {
 
 // snapshot returns every stat decayed to now. Off the relay path: the
 // baseline refresh and the admin listing read it.
+//
+// It also forgets any id whose evidence has decayed below one attempt: ids
+// are operator domains and owner addresses, which staking can churn, and
+// nothing else ever deletes one.
 func (t *opTracker) snapshot(now time.Time) map[opID]OperatorStat {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	out := make(map[opID]OperatorStat, len(t.stats))
 	for id, st := range t.stats {
-		out[id] = st.decayTo(now, t.halfLife)
+		aged := st.decayTo(now, t.halfLife)
+		if aged.Attempts < 1 {
+			delete(t.stats, id)
+			continue
+		}
+		out[id] = aged
 	}
 	return out
 }
@@ -270,7 +290,9 @@ func (t *opTracker) reset(serviceID domain.ServiceID, operator string, now time.
 	for id := range t.stats {
 		if id.svc == serviceID && id.op == operator {
 			t.stats[id] = OperatorStat{UpdatedAt: now.Unix()}
-			t.dirty[id] = struct{}{}
+			if t.dirty != nil {
+				t.dirty[id] = struct{}{}
+			}
 			n++
 		}
 	}

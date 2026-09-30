@@ -55,11 +55,14 @@ type StateView struct {
 	TrafficAttempts uint64  `json:"traffic_attempts"`
 	ProbeOnly       bool    `json:"probe_only"`
 	LatencyMS       float64 `json:"latency_ms"`
-	// OperatorRate is the warm-up-corrected failure rate of every key this
-	// key's operator holds in the pool, 0 when the operator has too little
-	// evidence. It is what the chronic term charges where the operator term is
+	// OperatorRate is the failure rate of this key's operator in the pool,
+	// from its decayed counters (opstats.go), 0 when the operator has too
+	// little evidence. It is what the chronic term charges where the operator term is
 	// on, and a truer reading than Rate either way — see reputation/operator.go.
 	OperatorRate float64 `json:"operator_rate,omitempty"`
+	// StalePenalty is what stale_share takes off Score for this key's party
+	// (staleshare.go); Score is Additive + Penalty + StalePenalty, floored.
+	StalePenalty float64 `json:"stale_penalty,omitempty"`
 }
 
 // StateLister is the optional read interface the admin API asks a

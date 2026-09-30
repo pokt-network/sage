@@ -90,3 +90,36 @@ func TestStalePenaltyCurve(t *testing.T) {
 		}
 	}
 }
+
+// A priced party whose evidence falls under the minimum keeps its penalty for
+// the hold, and loses it once the hold has passed.
+func TestStaleShareHoldsAPenaltyPastThinEvidence(t *testing.T) {
+	now := time.Now()
+	on := func(domain.ServiceID) bool { return true }
+	prev := partyStale(map[opID]OperatorStat{
+		{svc: rateSvc, op: "cache"}: {Attempts: 200, Failures: 160},
+		{svc: rateSvc, op: "fresh"}: {Attempts: 200, Failures: 0},
+	}, on, nil, now)
+	thin := map[opID]OperatorStat{
+		{svc: rateSvc, op: "cache"}: {Attempts: 10, Failures: 8},
+		{svc: rateSvc, op: "fresh"}: {Attempts: 200, Failures: 0},
+	}
+	penaltyOf := func(ps []PartyStale) float64 {
+		for _, p := range ps {
+			if p.Party == "cache" {
+				return p.Penalty
+			}
+		}
+		return 0
+	}
+	if got := penaltyOf(partyStale(thin, on, prev, now.Add(10*time.Minute))); got != -40 {
+		t.Fatalf("inside the hold: %.1f, want -40", got)
+	}
+	if got := penaltyOf(partyStale(thin, on, prev, now.Add(staleShareHold+time.Minute))); got != 0 {
+		t.Fatalf("after the hold: %.1f, want 0", got)
+	}
+	off := func(domain.ServiceID) bool { return false }
+	if got := penaltyOf(partyStale(thin, off, prev, now.Add(time.Minute))); got != 0 {
+		t.Fatalf("flag off: %.1f, want 0", got)
+	}
+}

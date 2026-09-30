@@ -28,12 +28,8 @@ const (
 	// little traffic fades and is measured afresh rather than frozen.
 	staleShareHalfLife = 30 * time.Minute
 	// staleShareMinAnswers is the decayed evidence a party needs to be
-	// measured, or to set the service's baseline.
-	//
-	// ponytail: a priced party that gets too few answers to stay above this
-	// loses its penalty, returns, and is priced again minutes later; hold the
-	// last penalty for a half-life past the floor if the sawtooth shows in
-	// sage_party_stale_penalty.
+	// measured, or to set the service's baseline. Counts are per pod, so a
+	// demoted party's evidence falls under this fast; see staleShareHold.
 	staleShareMinAnswers = 50
 	// staleShareFloor is the excess over the cleanest party charged nothing:
 	// honest parties' propagation tails reached 11 points on 2026-09-30, the
@@ -43,6 +39,13 @@ const (
 	staleShareFull = 0.45
 	// staleSharePenalty is the most the term takes off a score.
 	staleSharePenalty = -40.0
+	// staleShareHold is how long a priced party keeps its penalty once too
+	// few answers remain to measure it. The penalty itself starves the
+	// evidence: on mainnet (2026-09-30) the owner a stale_response demotion
+	// had already moved off poly, fantom and zksync-era fell under the
+	// minimum on every pod, and was not measured at all. Fresh evidence
+	// replaces a held penalty at once, in either direction.
+	staleShareHold = staleShareHalfLife
 )
 
 // RecordHeadAnswer counts one answer that named the chain head, and whether it
@@ -72,6 +75,8 @@ type PartyStale struct {
 	Party     string
 	Share     float64
 	Penalty   float64
+	// pricedAt is when the penalty was last measured rather than held.
+	pricedAt time.Time
 }
 
 // PartyStaleShares reports every measured party, for the metrics collector.
@@ -85,7 +90,10 @@ func (s *serviceImpl) PartyStaleShares() []PartyStale {
 // partyStale measures every party with enough evidence and prices it against
 // its service's cleanest. A service with one measured party charges nothing:
 // with no second party, a chain-wide lag and a party's cache look the same.
-func partyStale(stats map[opID]OperatorStat, on func(domain.ServiceID) bool) []PartyStale {
+//
+// A party priced in prev that is no longer measured keeps its penalty for
+// staleShareHold from when it was last priced (flag permitting).
+func partyStale(stats map[opID]OperatorStat, on func(domain.ServiceID) bool, prev []PartyStale, now time.Time) []PartyStale {
 	bySvc := map[domain.ServiceID][]PartyStale{}
 	for id, st := range stats {
 		if st.Attempts < staleShareMinAnswers {
@@ -94,6 +102,7 @@ func partyStale(stats map[opID]OperatorStat, on func(domain.ServiceID) bool) []P
 		bySvc[id.svc] = append(bySvc[id.svc], PartyStale{ServiceID: id.svc, Party: id.op, Share: st.Failures / st.Attempts})
 	}
 	var out []PartyStale
+	measured := map[opID]bool{}
 	for svc, parties := range bySvc {
 		best := 1.0
 		for _, p := range parties {
@@ -102,7 +111,15 @@ func partyStale(stats map[opID]OperatorStat, on func(domain.ServiceID) bool) []P
 		for _, p := range parties {
 			if len(parties) >= 2 && on != nil && on(svc) {
 				p.Penalty = stalePenalty(p.Share - best)
+				p.pricedAt = now
 			}
+			measured[opID{svc: svc, op: p.Party}] = true
+			out = append(out, p)
+		}
+	}
+	for _, p := range prev {
+		if p.Penalty < 0 && !measured[opID{svc: p.ServiceID, op: p.Party}] &&
+			on != nil && on(p.ServiceID) && now.Sub(p.pricedAt) < staleShareHold {
 			out = append(out, p)
 		}
 	}

@@ -26,8 +26,8 @@ import (
 // better. The pool baseline was one of its youngest keys, so the first
 // operator paid the difference against a rate nothing actually exhibited.
 //
-// The fix is to measure the rate per operator, over every key it holds in the
-// pool, each key corrected for its own warm-up before it is weighted in.
+// The fix is to measure the rate per operator, on counters kept against the
+// operator itself rather than derived from its keys (opstats.go).
 
 // opID is one operator's slice of a (service, RPC type) pool.
 type opID struct {
@@ -38,8 +38,8 @@ type opID struct {
 
 // OperatorRateView is what one operator's keys add up to in a pool.
 type OperatorRateView struct {
-	// Rate is the warm-up-corrected failure rate, attempt-weighted across the
-	// operator's keys.
+	// Rate is the operator's failure rate from its decayed counters
+	// (opstats.go), forgiven on a recovery.
 	Rate float64
 	// Attempts is how much evidence that rate rests on.
 	Attempts uint64
@@ -56,9 +56,6 @@ type chronicView struct {
 	// byKey is the operator rate to charge a key, for services where the
 	// operator term is on. Absent means charge the key's own rate.
 	byKey map[keyID]float64
-	// byOp is the same numbers addressed by operator, for readers outside
-	// scoring (the auto-drain engine, the admin listing).
-	byOp map[opID]OperatorRateView
 	// baseline is the pool's best rate, in whichever basis the pool is
 	// measured in. Absent means charge from zero.
 	baseline map[poolID]float64

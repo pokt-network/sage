@@ -258,6 +258,14 @@ likely a chain-wide slowdown than every operator down at once.
 | ws_share_cap | off | No party placed into more than half of a service's WebSocket frames on a pod, at open and every rebind, while another vouched party is in the session |
 | stale_response | off | A head answer too far behind the perceived head is a major supplier verdict (feeds the failure rate) and is retried; the freshest answer is delivered if every attempt is stale |
 | stale_share | off | A party whose chain-head answers are stale well above the service's cleanest party's share loses up to 40 points on every key in that service |
+| websocket_probes | on | Once a minute, WebSocket endpoints of a service below full reputation get one signed probe, so a demoted WebSocket key has a way back |
+| penalize_408 | on | A supplier's HTTP 408 costs it a major error |
+| relative_chronic | on | The chronic penalty is measured from the pool's best failure rate, not from zero |
+| operator_chronic | off | Every key is charged its operator's failure rate from per-operator counters that outlive the session draw; WebSocket keeps the per-key rate |
+| auto_drain | off | The auto-drain engine may set drains (docs/auto-drain.md) |
+| auto_drain_shadow | on | The engine evaluates and counts its decisions without draining, even where auto_drain is on |
+| traffic_informed_probing | off | Skip a health probe for a backend client traffic graded recently (essential checks never skipped) |
+| peer_probe_skip | on | Skip a health check another SAGE instance ran recently (active_health_checks.peer_probe_stream) |
 | method_blocks | on | Per-host, per-method memory: a host that timed out on a method stops receiving it for a TTL |
 | latency_tiebreak | on | Inside tier 1 of selection, a faster host is asked more often than a slower equal, by the per-key latency EWMA; scores stay latency-blind |
 | singleflight | on | Coalesce identical concurrent requests |

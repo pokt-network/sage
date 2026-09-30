@@ -154,8 +154,8 @@ type Recorder interface {
 	RecordAutoDrain(serviceID domain.ServiceID, rpcType, outcome string)
 }
 
-// OperatorRates reports an operator's chronic failure rate across every key it
-// holds in a pool. reputation's service satisfies it; nil leaves the engine on
+// OperatorRates reports an operator's chronic failure rate, from counters kept
+// per operator in a pool. reputation's service satisfies it; nil leaves the engine on
 // collapse evidence alone.
 type OperatorRates interface {
 	OperatorRate(serviceID domain.ServiceID, rpcType domain.RPCType, operator string) (reputation.OperatorRateView, bool)

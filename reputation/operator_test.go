@@ -80,14 +80,14 @@ func TestOperatorStatDecaysByTimeAndKeepsItsRatio(t *testing.T) {
 	if math.Abs(aged.Attempts-500) > 5 || math.Abs(aged.Failures-50) > 1 {
 		t.Fatalf("after one half-life: attempts %.1f failures %.1f, want ~500/~50", aged.Attempts, aged.Failures)
 	}
-	if math.Abs(aged.Rate()-0.10) > 0.001 {
-		t.Fatalf("decay changed the rate: %.4f, want 0.10", aged.Rate())
+	if math.Abs(aged.rate()-0.10) > 0.001 {
+		t.Fatalf("decay changed the rate: %.4f, want 0.10", aged.rate())
 	}
 
 	// Faded far enough and it stops claiming to know anything.
 	cold := st.decayTo(now.Add(20*DefaultOperatorHalfLife), DefaultOperatorHalfLife)
-	if cold.Rate() != 0 {
-		t.Fatalf("a long-quiet operator still reports %.4f", cold.Rate())
+	if cold.rate() != 0 {
+		t.Fatalf("a long-quiet operator still reports %.4f", cold.rate())
 	}
 }
 
@@ -122,11 +122,13 @@ func TestOperatorRateHealsAfterACleanRun(t *testing.T) {
 		t.Fatalf("an hour after healing: %.4f, want about half of %.4f", r, before)
 	}
 
-	// A failure partway through healing starts it over.
+	// A failure partway through healing stops the forgiveness but keeps what
+	// was earned: the rate neither keeps halving nor snaps back to the
+	// outage's.
 	tr.record(id, 1, later)
 	st, _ = tr.get(id, later.Add(operatorHealHalfLife))
-	if r := st.RateAt(later.Add(operatorHealHalfLife)); r < before*0.9 {
-		t.Fatalf("a failure did not end the forgiveness: %.4f", r)
+	if r := st.RateAt(later.Add(operatorHealHalfLife)); math.Abs(r-before/2) > before*0.1 {
+		t.Fatalf("after a failure mid-healing: %.4f, want to hold about half of %.4f", r, before)
 	}
 }
 
@@ -166,13 +168,13 @@ func TestOpTrackerResetForgetsOneOperatorInOneService(t *testing.T) {
 	if n := tr.reset("eth", "op.example", now); n != 2 {
 		t.Fatalf("reset %d counters, want 2", n)
 	}
-	if st, _ := tr.get(opID{"eth", "op.example", "json_rpc"}, now); st.Rate() != 0 || st.Attempts != 0 {
+	if st, _ := tr.get(opID{"eth", "op.example", "json_rpc"}, now); st.rate() != 0 || st.Attempts != 0 {
 		t.Fatalf("reset counter = %+v, want empty", st)
 	}
-	if st, _ := tr.get(opID{"base", "op.example", "json_rpc"}, now); st.Rate() == 0 {
+	if st, _ := tr.get(opID{"base", "op.example", "json_rpc"}, now); st.rate() == 0 {
 		t.Fatal("another service's counter was reset")
 	}
-	if st, _ := tr.get(opID{"eth", "other.example", "json_rpc"}, now); st.Rate() == 0 {
+	if st, _ := tr.get(opID{"eth", "other.example", "json_rpc"}, now); st.rate() == 0 {
 		t.Fatal("another operator's counter was reset")
 	}
 }
@@ -214,8 +216,8 @@ func TestOperatorRateHoldsWhileAnOperatorIsIdle(t *testing.T) {
 	if !ok {
 		t.Fatal("operator evidence vanished while idle")
 	}
-	if math.Abs(after.Rate()-before.Rate) > 0.001 {
-		t.Fatalf("idle 30m changed the rate: %.4f then %.4f", before.Rate, after.Rate())
+	if math.Abs(after.rate()-before.Rate) > 0.001 {
+		t.Fatalf("idle 30m changed the rate: %.4f then %.4f", before.Rate, after.rate())
 	}
 }
 
