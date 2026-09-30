@@ -214,8 +214,6 @@ func serviceIDsFrom(cfg *config.Config) []domain.ServiceID {
 	return ids
 }
 
-// serviceRPCTypesFrom maps each configured service to the RPC types it
-// declares.
 // debugReferencesFrom collects each service's debug_reference_url and
 // debug_reference_ws_url, the probe's "reference" target.
 func debugReferencesFrom(cfg *config.Config) (httpRefs, wsRefs map[domain.ServiceID]string) {
@@ -231,6 +229,8 @@ func debugReferencesFrom(cfg *config.Config) (httpRefs, wsRefs map[domain.Servic
 	return httpRefs, wsRefs
 }
 
+// serviceRPCTypesFrom maps each configured service to the RPC types it
+// declares.
 func serviceRPCTypesFrom(cfg *config.Config) map[domain.ServiceID][]domain.RPCType {
 	out := make(map[domain.ServiceID][]domain.RPCType)
 	for _, svc := range cfg.Gateway.AllServices() {

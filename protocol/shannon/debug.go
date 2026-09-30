@@ -38,11 +38,11 @@ const (
 	debugRelayInterval = 100 * time.Millisecond
 	// debugMaxSubscriptions caps concurrent probe subscriptions per pod.
 	debugMaxSubscriptions = 5
-	// DebugMaxDuration and DebugMaxEvents bound one probe subscription.
-	DebugMaxDuration = 300 * time.Second
-	DebugMaxEvents   = 20000
-	// DebugMaxPayload bounds a probe request body.
-	DebugMaxPayload = 64 << 10
+	// debugMaxDuration and debugMaxEvents bound one probe subscription.
+	debugMaxDuration = 300 * time.Second
+	debugMaxEvents   = 20000
+	// debugMaxPayload bounds a probe request body.
+	debugMaxPayload = 64 << 10
 	// debugTargetReference names the configured reference endpoint.
 	debugTargetReference = "reference"
 	// debugReferenceTimeout bounds a reference relay: the admin server sets
@@ -100,9 +100,6 @@ func newDebugLimits() *debugLimits {
 
 // takeRelay admits one probe relay, or reports the rate cap.
 func (l *debugLimits) takeRelay(now time.Time) bool {
-	if l == nil {
-		return true
-	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if now.Before(l.next) {
@@ -114,9 +111,6 @@ func (l *debugLimits) takeRelay(now time.Time) bool {
 
 // takeSubscription admits one probe subscription; release gives the slot back.
 func (l *debugLimits) takeSubscription() (release func(), ok bool) {
-	if l == nil {
-		return func() {}, true
-	}
 	select {
 	case l.subs <- struct{}{}:
 		return func() { <-l.subs }, true
@@ -146,6 +140,7 @@ func (p *Protocol) resolveDebugTarget(ctx context.Context, serviceID domain.Serv
 	}
 	present := map[string]bool{}
 	var matches domain.EndpointAddrList
+	var matchEps []*endpoint
 	for _, addr := range eps {
 		ep, ok := p.sessions.lookupEndpoint(addr)
 		if !ok {
@@ -154,7 +149,7 @@ func (p *Protocol) resolveDebugTarget(ctx context.Context, serviceID domain.Serv
 		present[addr.Operator()] = true
 		url, _ := p.endpointURL(serviceID, ep, rpcType)
 		if string(addr) == target || url == target || addr.Operator() == target || ep.Supplier() == target || ep.Owner() == target {
-			matches = append(matches, addr)
+			matches, matchEps = append(matches, addr), append(matchEps, ep)
 		}
 	}
 	if len(matches) == 0 {
@@ -166,9 +161,10 @@ func (p *Protocol) resolveDebugTarget(ctx context.Context, serviceID domain.Serv
 		return "", nil, fmt.Errorf("%w: %q on %s %s; operators in the session: %s",
 			protocol.ErrDebugTargetNotFound, target, serviceID, rpcType, strings.Join(ops, ", "))
 	}
-	addr := matches[time.Now().UnixNano()%int64(len(matches))]
-	ep, _ := p.sessions.lookupEndpoint(addr)
-	return addr, ep, nil
+	// The endpoint is kept from the match, not looked up again: a session
+	// rotating in between would leave it nil.
+	i := time.Now().UnixNano() % int64(len(matches))
+	return matches[i], matchEps[i], nil
 }
 
 // DebugRelay sends one relay to exactly the target and reports it with its
@@ -176,8 +172,8 @@ func (p *Protocol) resolveDebugTarget(ctx context.Context, serviceID domain.Serv
 func (p *Protocol) DebugRelay(ctx context.Context, serviceID domain.ServiceID, target string, rpcType domain.RPCType, body []byte) (DebugRelayResult, error) {
 	res := DebugRelayResult{ServiceID: string(serviceID), RPCType: string(rpcType)}
 	method := gjson.GetBytes(body, "method").String()
-	if method == "" || len(body) > DebugMaxPayload {
-		return res, fmt.Errorf("%w: a JSON-RPC request with a method, at most %d bytes", protocol.ErrDebugBadRequest, DebugMaxPayload)
+	if method == "" || len(body) > debugMaxPayload {
+		return res, fmt.Errorf("%w: a JSON-RPC request with a method, at most %d bytes", protocol.ErrDebugBadRequest, debugMaxPayload)
 	}
 	if !p.debugLimits.takeRelay(time.Now()) {
 		return res, fmt.Errorf("%w: at most %d relays a second", protocol.ErrDebugBusy, int(time.Second/debugRelayInterval))

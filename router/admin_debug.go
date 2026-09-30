@@ -29,8 +29,8 @@ func (a *AdminAPI) SetDebugProbe(relay DebugRelayFunc, subscribe DebugSubscribeF
 const debugBodyLimit = 128 << 10
 
 // handleDebugRelay sends one signed relay to exactly the named target — an
-// endpoint address, a URL, an operator, an owner address, or "reference" —
-// in the service's current session, outside the middleware chain (no retry,
+// endpoint address, a URL, an operator, a supplier address, an owner
+// address, or "reference" — in the service's current session, outside the middleware chain (no retry,
 // hedge, scoring or metrics), and returns the answer with the signed request
 // and response bytes (base64) as evidence. Body: {"service_id", "target",
 // "rpc_type" (default json_rpc), "payload" (a JSON-RPC request)}. 404 when

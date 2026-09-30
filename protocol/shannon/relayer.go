@@ -228,15 +228,13 @@ func (p *Protocol) SendRelay(
 
 // relayEvidence collects what a debug relay needs to prove who served what:
 // the signed request and the signed response exactly as they crossed the
-// wire, the session they were signed for, and where they went. A relay that
-// carries it is evidence-gathering, so it changes no routing state: a failed
-// validation is reported, not blacklisted.
+// wire, the session they were signed for, and the miner's HTTP status. A
+// relay that carries it is evidence-gathering, so it changes no routing state
+// or metrics: a failed validation is reported, not blacklisted.
 type relayEvidence struct {
 	Request    []byte
 	Response   []byte
 	Session    *sessiontypes.SessionHeader
-	URL        string
-	Supplier   string
 	HTTPStatus int
 }
 
@@ -321,7 +319,7 @@ func (p *Protocol) sendRelay(
 	}
 
 	if ev != nil {
-		ev.Session, ev.URL, ev.Supplier = session.Header, url, ep.Supplier()
+		ev.Session = session.Header
 	}
 
 	// Build the HTTP request to embed in the relay payload. The SDK serializes
@@ -458,8 +456,11 @@ func (p *Protocol) sendRelay(
 	relayResp, err := p.fullNode.ValidateRelayResponse(ep.Supplier(), respBz)
 
 	// Read the miner's error report first — it survives a validation failure,
-	// and branching on err would discard it.
-	p.trackRelayMinerError(serviceID, endpointAddr, ep.Supplier(), relayResp)
+	// and branching on err would discard it. A debug probe records no
+	// metrics, so it is left out.
+	if ev == nil {
+		p.trackRelayMinerError(serviceID, endpointAddr, ep.Supplier(), relayResp)
+	}
 
 	if ev != nil && ev.Response == nil {
 		ev.Response = respBz
@@ -665,10 +666,13 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 	// scores: an endpoint nothing has scored yet is not ruled out, or a pod
 	// fresh from boot would divert a healthy pool.
 	if filtered && fallback != "" && lookupType == rpcType && p.unusable(serviceID, rpcType, result, byReputation) {
+		// collect resets the counters; an empty fallback keeps the first
+		// pass, so its counters are put back rather than the pass rerun.
+		counts := [...]int{blacklisted, blocked, drained, supplierBlocked, policyRejected}
 		if fb, fbBenched := collect(fallback, true); len(fb) > 0 {
 			result, benched = fb, fbBenched
 		} else {
-			result, benched = collect(lookupType, false)
+			blacklisted, blocked, drained, supplierBlocked, policyRejected = counts[0], counts[1], counts[2], counts[3], counts[4]
 		}
 	}
 

@@ -78,14 +78,14 @@ const debugReadSlice = time.Second
 func (r *WSRelayer) DebugSubscribe(ctx context.Context, serviceID domain.ServiceID, target string, subscribe []byte, opts DebugSubscribeOptions) (DebugSubscribeResult, error) {
 	res := DebugSubscribeResult{ServiceID: string(serviceID), Events: []DebugEvent{}}
 	method := gjson.GetBytes(subscribe, "method").String()
-	if method == "" || len(subscribe) > DebugMaxPayload {
-		return res, fmt.Errorf("%w: a JSON-RPC subscribe with a method, at most %d bytes", protocol.ErrDebugBadRequest, DebugMaxPayload)
+	if method == "" || len(subscribe) > debugMaxPayload {
+		return res, fmt.Errorf("%w: a JSON-RPC subscribe with a method, at most %d bytes", protocol.ErrDebugBadRequest, debugMaxPayload)
 	}
-	if opts.Duration <= 0 || opts.Duration > DebugMaxDuration {
-		opts.Duration = DebugMaxDuration
+	if opts.Duration <= 0 || opts.Duration > debugMaxDuration {
+		opts.Duration = debugMaxDuration
 	}
-	if opts.MaxEvents <= 0 || opts.MaxEvents > DebugMaxEvents {
-		opts.MaxEvents = DebugMaxEvents
+	if opts.MaxEvents <= 0 || opts.MaxEvents > debugMaxEvents {
+		opts.MaxEvents = debugMaxEvents
 	}
 	p := r.deps.Protocol
 	release, ok := p.debugLimits.takeSubscription()

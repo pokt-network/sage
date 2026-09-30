@@ -189,7 +189,7 @@ func TestDebugRelay_Reference(t *testing.T) {
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0x10"}`))
 	}))
 	t.Cleanup(ref.Close)
-	p := &Protocol{logger: newTestLogger()}
+	p := &Protocol{logger: newTestLogger(), debugLimits: newDebugLimits()}
 	p.SetDebugReferences(map[domain.ServiceID]string{"eth": ref.URL}, nil)
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`)
 
@@ -197,6 +197,7 @@ func TestDebugRelay_Reference(t *testing.T) {
 	if err != nil || res.Body != `{"jsonrpc":"2.0","id":1,"result":"0x10"}` || res.Target.Endpoint != "reference" {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
+	p.debugLimits = newDebugLimits() // past the rate cap the first relay took
 	if _, err := p.DebugRelay(context.Background(), "base", "reference", domain.RPCTypeJSONRPC, body); !errors.Is(err, protocol.ErrDebugTargetNotFound) {
 		t.Fatalf("unconfigured: err = %v", err)
 	}
