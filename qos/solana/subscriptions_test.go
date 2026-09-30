@@ -14,12 +14,11 @@ func TestSubscriptions_SolanaRoundTrip(t *testing.T) {
 	if a := r.Active(); len(a) != 1 || a[0].ID != "23784" || a[0].Method != "slotSubscribe" || a[0].Topic != "slotSubscribe" {
 		t.Fatalf("Active = %+v", a)
 	}
-	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","method":"slotNotification","params":{"result":{"slot":75},"subscription":23784}}`))
-	if r.LastData().IsZero() {
-		t.Fatal("slotNotification must count as data")
+	if _, _, n := r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","method":"slotNotification","params":{"result":{"slot":75},"subscription":23784}}`)); n.Kind != qos.NotificationOK {
+		t.Fatalf("slotNotification must count as data, got %+v", n)
 	}
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":2,"method":"slotUnsubscribe","params":[23784]}`))
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("slotUnsubscribe must close the subscription")
 	}
 }
@@ -28,7 +27,7 @@ func TestSubscriptions_SolanaPlainCallIgnored(t *testing.T) {
 	r := qos.NewSubscriptionRegistry(&Plugin{})
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":3,"method":"getSlot"}`))
 	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","result":1234,"id":3}`))
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("getSlot's numeric result is not a subscription id")
 	}
 }
@@ -42,7 +41,7 @@ func TestSubscriptions_SolanaRebindTranslation(t *testing.T) {
 		t.Fatalf("replay = %q", frames)
 	}
 	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","result":99,"id":"sage-replay-1"}`))
-	out, _ := r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","method":"slotNotification","params":{"result":{"slot":75},"subscription":99}}`))
+	out, _, _ := r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","method":"slotNotification","params":{"result":{"slot":75},"subscription":99}}`))
 	if string(out) != `{"jsonrpc":"2.0","method":"slotNotification","params":{"result":{"slot":75},"subscription":10}}` {
 		t.Fatalf("notification = %q", out)
 	}

@@ -277,7 +277,7 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	// After validation, before the client: a replay ack is consumed here
 	// (nil, nil — the bridge forwards nothing), a notification may be
 	// rewritten to the subscription id the client holds.
-	out, forward, note := p.subs.TranslateEndpointFrameNote(payload)
+	out, forward, note := p.subs.TranslateEndpointFrame(payload)
 	p.endpointFrames.Add(1)
 	if p.metrics != nil {
 		p.metrics.SupplierFrame(serviceID, p.operator, p.owner, websockets.SourceEndpoint)

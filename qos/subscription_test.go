@@ -44,11 +44,11 @@ func (fakeClassifier) ClassifyEndpointFrame(data []byte) EndpointFrameInfo {
 func TestSubscriptionRegistry_SubscribeBecomesActiveOnResponse(t *testing.T) {
 	r := NewSubscriptionRegistry(fakeClassifier{})
 	r.TranslateClientFrame([]byte("sub:1"))
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("a subscribe is not active until the endpoint answers")
 	}
 	r.TranslateEndpointFrame([]byte("ok:1:0xabc"))
-	if !r.HasActive() {
+	if len(r.Active()) == 0 {
 		t.Fatal("a successful subscribe response must make the subscription active")
 	}
 	active := r.Active()
@@ -61,13 +61,13 @@ func TestSubscriptionRegistry_ErrorResponseOpensNothing(t *testing.T) {
 	r := NewSubscriptionRegistry(fakeClassifier{})
 	r.TranslateClientFrame([]byte("sub:1"))
 	r.TranslateEndpointFrame([]byte("err:1"))
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("a failed subscribe must not be active")
 	}
 	// And the pending entry is gone: a later unrelated response with the
 	// same id is not a subscribe answer.
 	r.TranslateEndpointFrame([]byte("ok:1:late"))
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("a response after the subscribe failed must not resurrect it")
 	}
 }
@@ -83,22 +83,21 @@ func TestSubscriptionRegistry_UnsubscribeAndUnsubscribeAll(t *testing.T) {
 		t.Fatalf("after one unsubscribe: %d active, want 2", n)
 	}
 	r.TranslateClientFrame([]byte("unsuball"))
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("unsubscribe_all must clear every subscription")
 	}
 }
 
 func TestSubscriptionRegistry_NotificationMarksData(t *testing.T) {
-	r := NewSubscriptionRegistry(fakeClassifier{})
+	r := NewSubscriptionRegistry(periodicClassifier{})
 	r.TranslateEndpointFrame([]byte("data:ghost"))
-	if !r.LastData().IsZero() {
+	if _, last := r.Heartbeat(); !last.IsZero() {
 		t.Fatal("data for a subscription that was never established is not data")
 	}
-	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateClientFrame([]byte("psub:1"))
 	r.TranslateEndpointFrame([]byte("ok:1:s1"))
-	r.TranslateEndpointFrame([]byte("data:s1"))
-	if r.LastData().IsZero() {
-		t.Fatal("a notification for a live subscription must update LastData")
+	if _, _, n := r.TranslateEndpointFrame([]byte("data:s1")); n.Kind != NotificationOK {
+		t.Fatalf("a notification for a live subscription = %+v, want ok", n)
 	}
 }
 
@@ -119,13 +118,13 @@ func TestSubscriptionRegistry_NilIsInert(t *testing.T) {
 	var r *SubscriptionRegistry
 	r.TranslateClientFrame([]byte("sub:1"))
 	r.TranslateEndpointFrame([]byte("ok:1:s1"))
-	if r.HasActive() || r.Active() != nil || !r.LastData().IsZero() {
+	if periodic, last := r.Heartbeat(); r.Active() != nil || periodic || !last.IsZero() {
 		t.Fatal("a nil registry must observe nothing and report nothing")
 	}
 	inert := NewSubscriptionRegistry(nil)
 	inert.TranslateClientFrame([]byte("sub:1"))
 	inert.TranslateEndpointFrame([]byte("ok:1:s1"))
-	if inert.HasActive() {
+	if len(inert.Active()) != 0 {
 		t.Fatal("a registry with no classifier must stay empty")
 	}
 }
@@ -142,24 +141,24 @@ func TestJSONRPCRequestID_RawKeepsStringAndNumberDistinct(t *testing.T) {
 	}
 }
 
-// LastActivity is what a stall watchdog measures from: the later of the last
+// The heartbeat is what a stall watchdog measures from: the later of the last
 // notification and the last subscribe acknowledgement, so a subscription that
 // was just established is not "stalled" before its first event could arrive.
-func TestSubscriptionRegistry_LastActivity(t *testing.T) {
-	r := NewSubscriptionRegistry(fakeClassifier{})
-	if !r.LastActivity().IsZero() {
+func TestSubscriptionRegistry_HeartbeatFromAck(t *testing.T) {
+	r := NewSubscriptionRegistry(periodicClassifier{})
+	if _, last := r.Heartbeat(); !last.IsZero() {
 		t.Fatal("nothing has happened yet")
 	}
-	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateClientFrame([]byte("psub:1"))
 	r.TranslateEndpointFrame([]byte("ok:1:s1"))
-	established := r.LastActivity()
+	_, established := r.Heartbeat()
 	if established.IsZero() {
 		t.Fatal("an ack is activity")
 	}
 	time.Sleep(2 * time.Millisecond)
 	r.TranslateEndpointFrame([]byte("data:s1"))
-	if !r.LastActivity().After(established) {
-		t.Fatal("a notification must move LastActivity forward")
+	if _, last := r.Heartbeat(); !last.After(established) {
+		t.Fatal("a notification must move the heartbeat forward")
 	}
 }
 
@@ -172,7 +171,7 @@ func TestSubscriptionRegistry_GradesNotifications(t *testing.T) {
 
 	grade := func(frame string) Notification {
 		t.Helper()
-		out, fwd, note := r.TranslateEndpointFrameNote([]byte(frame))
+		out, fwd, note := r.TranslateEndpointFrame([]byte(frame))
 		if !fwd || string(out) != frame {
 			t.Fatalf("%q: a graded notification must still be forwarded unchanged, got %q fwd=%v", frame, out, fwd)
 		}
@@ -191,7 +190,7 @@ func TestSubscriptionRegistry_GradesNotifications(t *testing.T) {
 	if n := grade("data:nobody:block100"); n.Kind != NotificationUnsolicited {
 		t.Errorf("a notification for a subscription never opened = %+v, want unsolicited", n)
 	}
-	if _, _, n := r.TranslateEndpointFrameNote([]byte("ok:9:s9")); n.Kind != NotificationNone {
+	if _, _, n := r.TranslateEndpointFrame([]byte("ok:9:s9")); n.Kind != NotificationNone {
 		t.Errorf("a response is not a notification, got %+v", n)
 	}
 
@@ -210,7 +209,7 @@ func TestSubscriptionRegistry_DuplicateWindowResetsOnReplay(t *testing.T) {
 	r := NewSubscriptionRegistry(spanClassifier{})
 	r.TranslateClientFrame([]byte("sub:1"))
 	r.TranslateEndpointFrame([]byte("ok:1:s1"))
-	r.TranslateEndpointFrameNote([]byte("data:s1:block100"))
+	r.TranslateEndpointFrame([]byte("data:s1:block100"))
 
 	replay := r.ReplayFrames()
 	if len(replay) != 1 {
@@ -219,7 +218,7 @@ func TestSubscriptionRegistry_DuplicateWindowResetsOnReplay(t *testing.T) {
 	replayID := strings.TrimPrefix(string(replay[0]), "sub:")
 	r.TranslateEndpointFrame([]byte("ok:" + replayID + ":s1"))
 
-	if _, _, n := r.TranslateEndpointFrameNote([]byte("data:s1:block100")); n.Kind != NotificationOK {
+	if _, _, n := r.TranslateEndpointFrame([]byte("data:s1:block100")); n.Kind != NotificationOK {
 		t.Errorf("the new supplier's first frame = %+v, want ok", n)
 	}
 }
@@ -234,7 +233,7 @@ func TestSubscriptionRegistry_UntrackedSubscriptionsAreNotUnsolicited(t *testing
 	if r.Dropped() == 0 {
 		t.Fatal("expected the pending table to overflow")
 	}
-	if _, _, n := r.TranslateEndpointFrameNote([]byte("data:untracked:x")); n.Kind != NotificationNone {
+	if _, _, n := r.TranslateEndpointFrame([]byte("data:untracked:x")); n.Kind != NotificationNone {
 		t.Errorf("notification on a connection past the cap = %+v, want none", n)
 	}
 }
@@ -289,14 +288,14 @@ func TestSubscriptionRegistry_Heartbeat(t *testing.T) {
 func TestSubscriptionRegistry_AckOutcome(t *testing.T) {
 	r := NewSubscriptionRegistry(spanClassifier{})
 	r.TranslateClientFrame([]byte("sub:1"))
-	if _, _, n := r.TranslateEndpointFrameNote([]byte("ok:1:s1")); n.Ack != AckOK || n.Topic != "heads" {
+	if _, _, n := r.TranslateEndpointFrame([]byte("ok:1:s1")); n.Ack != AckOK || n.Topic != "heads" {
 		t.Fatalf("subscribe ok: note %+v", n)
 	}
 	r.TranslateClientFrame([]byte("sub:2"))
-	if _, _, n := r.TranslateEndpointFrameNote([]byte("err:2")); n.Ack != AckError {
+	if _, _, n := r.TranslateEndpointFrame([]byte("err:2")); n.Ack != AckError {
 		t.Fatalf("subscribe refused: note %+v", n)
 	}
-	if _, _, n := r.TranslateEndpointFrameNote([]byte("data:s1")); n.Ack != "" {
+	if _, _, n := r.TranslateEndpointFrame([]byte("data:s1")); n.Ack != "" {
 		t.Fatalf("notification: note %+v", n)
 	}
 	replay := r.ReplayFrames()
@@ -304,10 +303,10 @@ func TestSubscriptionRegistry_AckOutcome(t *testing.T) {
 		t.Fatalf("ReplayFrames = %d, want 1", len(replay))
 	}
 	replayID := strings.TrimPrefix(string(replay[0]), "sub:")
-	if _, fwd, n := r.TranslateEndpointFrameNote([]byte("err:" + replayID)); fwd || n.Ack != AckError || n.Topic != "heads" {
+	if _, fwd, n := r.TranslateEndpointFrame([]byte("err:" + replayID)); fwd || n.Ack != AckError || n.Topic != "heads" {
 		t.Fatalf("replay refused: forward=%v note %+v", fwd, n)
 	}
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("a refused replay must drop the subscription")
 	}
 }

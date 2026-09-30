@@ -180,14 +180,10 @@ type SubscriptionRegistry struct {
 	pending  map[string][]pendingSubscription
 	npending int                     // total entries across pending, for the cap
 	active   map[string]Subscription // client-facing subscription id → live subscription
-	lastData time.Time
-	// lastActivity is the later of the last notification and the last
-	// subscribe ack (including a replay ack): what a stall watchdog measures
-	// from, so a subscription just established is not stalled before its
-	// first event could arrive.
-	lastActivity time.Time
-	// lastPeriodic is lastActivity counted over periodic subscriptions
-	// only: what Heartbeat reports.
+	// lastPeriodic is the later of the last notification and the last
+	// subscribe ack (including a replay ack) on a periodic subscription:
+	// what Heartbeat reports, so a subscription just established is not
+	// stalled before its first event could arrive.
 	lastPeriodic time.Time
 	dropped      int // subscribe frames not tracked because a table was full
 
@@ -238,7 +234,7 @@ const (
 	NotificationUnsolicited
 )
 
-// Notification is TranslateEndpointFrameNote's grade for one frame.
+// Notification is TranslateEndpointFrame's grade for one frame.
 type Notification struct {
 	Kind NotificationKind
 	// Topic is the subscription's topic; "" when unknown (unsolicited).
@@ -416,21 +412,16 @@ func (r *SubscriptionRegistry) translateClientFrame(data []byte) []byte {
 }
 
 // TranslateEndpointFrame records what an endpoint→client frame does and
-// returns the frame to forward and whether to forward it at all. A replay
-// ack is consumed: the client already has one. A notification for a
-// subscription the current supplier knows by a different id is rewritten to
-// the id the client knows.
-func (r *SubscriptionRegistry) TranslateEndpointFrame(data []byte) (out []byte, forward bool) {
-	out, forward, _ = r.TranslateEndpointFrameNote(data)
-	return out, forward
-}
-
-// TranslateEndpointFrameNote is TranslateEndpointFrame that also grades a
-// notification (see NotificationKind). The grade never changes what is
-// forwarded: a duplicate or unsolicited frame still reaches the client,
-// because deciding a supplier is padding is for whoever reads the counts,
-// not for a per-frame check that might be wrong about one frame.
-func (r *SubscriptionRegistry) TranslateEndpointFrameNote(data []byte) (out []byte, forward bool, note Notification) {
+// returns the frame to forward, whether to forward it at all, and the
+// notification's grade (see NotificationKind). A replay ack is consumed: the
+// client already has one. A notification for a subscription the current
+// supplier knows by a different id is rewritten to the id the client knows.
+//
+// The grade never changes what is forwarded: a duplicate or unsolicited
+// frame still reaches the client, because deciding a supplier is padding is
+// for whoever reads the counts, not for a per-frame check that might be
+// wrong about one frame.
+func (r *SubscriptionRegistry) TranslateEndpointFrame(data []byte) (out []byte, forward bool, note Notification) {
 	if r == nil || r.classifier == nil {
 		return data, true, note
 	}
@@ -494,7 +485,6 @@ func (r *SubscriptionRegistry) translateEndpointFrame(data []byte) (out []byte, 
 			Since:      now,
 		}
 		delete(r.closed, info.SubscriptionID)
-		r.lastActivity = now
 		if p.periodic {
 			r.lastPeriodic = now
 		}
@@ -519,10 +509,8 @@ func (r *SubscriptionRegistry) translateEndpointFrame(data []byte) (out []byte, 
 // touch records a notification for the live subscription clientID. Caller
 // holds mu.
 func (r *SubscriptionRegistry) touch(clientID string) {
-	r.lastData = time.Now()
-	r.lastActivity = r.lastData
 	if r.active[clientID].Periodic {
-		r.lastPeriodic = r.lastData
+		r.lastPeriodic = time.Now()
 	}
 }
 
@@ -573,9 +561,8 @@ func (r *SubscriptionRegistry) completeReplay(clientID string, info EndpointFram
 	// A new supplier: its first notification may legitimately repeat the old
 	// one's last (and on chains with small integer ids, byte for byte).
 	delete(r.recent, clientID)
-	r.lastActivity = time.Now()
 	if sub.Periodic {
-		r.lastPeriodic = r.lastActivity
+		r.lastPeriodic = time.Now()
 	}
 }
 
@@ -654,39 +641,6 @@ func (r *SubscriptionRegistry) Active() []Subscription {
 		out = append(out, s)
 	}
 	return out
-}
-
-// HasActive reports whether at least one subscription is established.
-func (r *SubscriptionRegistry) HasActive() bool {
-	if r == nil {
-		return false
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.active) > 0
-}
-
-// LastData is when a notification for a live subscription last arrived; zero
-// if never.
-func (r *SubscriptionRegistry) LastData() time.Time {
-	if r == nil {
-		return time.Time{}
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.lastData
-}
-
-// LastActivity is the later of the last notification for a live
-// subscription and the last subscribe acknowledgement; zero if neither has
-// happened. A stall watchdog measures silence from here.
-func (r *SubscriptionRegistry) LastActivity() time.Time {
-	if r == nil {
-		return time.Time{}
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.lastActivity
 }
 
 // Heartbeat reports whether the connection holds a periodic subscription and,

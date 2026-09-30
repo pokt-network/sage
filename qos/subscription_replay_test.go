@@ -38,7 +38,7 @@ func (spanClassifier) RequestIDSpan(data []byte) Span {
 func establish(t *testing.T, r *SubscriptionRegistry, req, sub string) {
 	t.Helper()
 	r.TranslateClientFrame([]byte("sub:" + req))
-	if _, fwd := r.TranslateEndpointFrame([]byte("ok:" + req + ":" + sub)); !fwd {
+	if _, fwd, _ := r.TranslateEndpointFrame([]byte("ok:" + req + ":" + sub)); !fwd {
 		t.Fatal("the client's own subscribe ack must be forwarded")
 	}
 }
@@ -70,12 +70,12 @@ func TestSubscriptionRegistry_ReplayAckIsConsumedAndIDRemapped(t *testing.T) {
 	replayID := strings.TrimPrefix(string(frames[0]), "sub:")
 
 	// The new supplier acks with a new subscription id.
-	out, fwd := r.TranslateEndpointFrame([]byte("ok:" + replayID + ":new"))
+	out, fwd, _ := r.TranslateEndpointFrame([]byte("ok:" + replayID + ":new"))
 	if fwd {
 		t.Fatalf("a replay ack must not reach the client (got %q)", out)
 	}
 	// Data on the new id is delivered under the id the client knows.
-	out, fwd = r.TranslateEndpointFrame([]byte("data:new"))
+	out, fwd, _ = r.TranslateEndpointFrame([]byte("data:new"))
 	if !fwd || string(out) != "data:old" {
 		t.Fatalf("notification = %q forward=%v, want data:old forwarded", out, fwd)
 	}
@@ -83,7 +83,7 @@ func TestSubscriptionRegistry_ReplayAckIsConsumedAndIDRemapped(t *testing.T) {
 	if got := r.TranslateClientFrame([]byte("unsub:old")); string(got) != "unsub:new" {
 		t.Fatalf("unsubscribe = %q, want unsub:new", got)
 	}
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("unsubscribe must still clear the subscription")
 	}
 }
@@ -93,10 +93,10 @@ func TestSubscriptionRegistry_ReplayErrorDropsSubscription(t *testing.T) {
 	establish(t, r, "1", "old")
 	frames := r.ReplayFrames()
 	replayID := strings.TrimPrefix(string(frames[0]), "sub:")
-	if _, fwd := r.TranslateEndpointFrame([]byte("err:" + replayID)); fwd {
+	if _, fwd, _ := r.TranslateEndpointFrame([]byte("err:" + replayID)); fwd {
 		t.Fatal("a failed replay ack must not reach the client either")
 	}
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("a subscription the new supplier refused is no longer live")
 	}
 }
@@ -109,7 +109,7 @@ func TestSubscriptionRegistry_SameIDAcrossSuppliersNeedsNoRewrite(t *testing.T) 
 	frames := r.ReplayFrames()
 	replayID := strings.TrimPrefix(string(frames[0]), "sub:")
 	r.TranslateEndpointFrame([]byte("ok:" + replayID + ":" + replayID))
-	out, fwd := r.TranslateEndpointFrame([]byte("data:" + replayID))
+	out, fwd, _ := r.TranslateEndpointFrame([]byte("data:" + replayID))
 	if !fwd || string(out) != "data:7" {
 		t.Fatalf("event = %q forward=%v, want data:7", out, fwd)
 	}
@@ -122,10 +122,10 @@ func TestSubscriptionRegistry_ReplayTwiceChainsRemaps(t *testing.T) {
 	r.TranslateEndpointFrame([]byte("ok:" + strings.TrimPrefix(string(f1[0]), "sub:") + ":second"))
 	f2 := r.ReplayFrames()
 	r.TranslateEndpointFrame([]byte("ok:" + strings.TrimPrefix(string(f2[0]), "sub:") + ":third"))
-	if out, _ := r.TranslateEndpointFrame([]byte("data:third")); string(out) != "data:old" {
+	if out, _, _ := r.TranslateEndpointFrame([]byte("data:third")); string(out) != "data:old" {
 		t.Fatalf("after two rebinds the client must still see its id, got %q", out)
 	}
-	if out, _ := r.TranslateEndpointFrame([]byte("data:second")); string(out) != "data:second" {
+	if out, _, _ := r.TranslateEndpointFrame([]byte("data:second")); string(out) != "data:second" {
 		t.Fatalf("a stale id from the previous supplier must not be remapped, got %q", out)
 	}
 }

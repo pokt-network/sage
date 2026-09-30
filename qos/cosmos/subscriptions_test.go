@@ -15,12 +15,11 @@ func TestSubscriptions_CometBFTRoundTrip(t *testing.T) {
 	if a := r.Active(); len(a) != 1 || a[0].ID != "1" || a[0].Method != "subscribe" {
 		t.Fatalf("Active = %+v", a)
 	}
-	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":1,"result":{"query":"tm.event='NewBlock'","data":{"type":"tendermint/event/NewBlock","value":{}}}}`))
-	if r.LastData().IsZero() {
-		t.Fatal("an event with the subscribe's id must count as data")
+	if _, _, n := r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":1,"result":{"query":"tm.event='NewBlock'","data":{"type":"tendermint/event/NewBlock","value":{}}}}`)); n.Kind != qos.NotificationOK {
+		t.Fatalf("an event with the subscribe's id must count as data, got %+v", n)
 	}
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":2,"method":"unsubscribe","params":{"query":"tm.event='NewBlock'"}}`))
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("unsubscribe must clear the subscription")
 	}
 }
@@ -29,7 +28,7 @@ func TestSubscriptions_CometBFTEmptyResultToPlainCallOpensNothing(t *testing.T) 
 	r := qos.NewSubscriptionRegistry(&Plugin{})
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":5,"method":"health"}`))
 	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":5,"result":{}}`))
-	if r.HasActive() {
+	if len(r.Active()) != 0 {
 		t.Fatal("health's empty result must not open a subscription")
 	}
 }
@@ -44,10 +43,10 @@ func TestSubscriptions_CometBFTRebindRewritesEventID(t *testing.T) {
 	if len(frames) != 1 || string(frames[0]) != `{"jsonrpc":"2.0","id":"sage-replay-1","method":"subscribe","params":{"query":"tm.event='NewBlock'"}}` {
 		t.Fatalf("replay = %q", frames)
 	}
-	if _, fwd := r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":"sage-replay-1","result":{}}`)); fwd {
+	if _, fwd, _ := r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":"sage-replay-1","result":{}}`)); fwd {
 		t.Fatal("replay ack must be consumed")
 	}
-	out, fwd := r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":"sage-replay-1","result":{"query":"tm.event='NewBlock'","data":{"type":"x","value":{}}}}`))
+	out, fwd, _ := r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":"sage-replay-1","result":{"query":"tm.event='NewBlock'","data":{"type":"x","value":{}}}}`))
 	if !fwd || string(out) != `{"jsonrpc":"2.0","id":1,"result":{"query":"tm.event='NewBlock'","data":{"type":"x","value":{}}}}` {
 		t.Fatalf("event = %q", out)
 	}
