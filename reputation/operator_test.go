@@ -252,3 +252,33 @@ func TestOperatorRateIgnoresLeftoverAttempts(t *testing.T) {
 		t.Fatalf("key score %.1f: leftover failures must still score the key", score)
 	}
 }
+
+// WebSocket stays out of the operator counters: connections and probes are too
+// few for the probe failures every operator shares to read as anything but a
+// high rate.
+func TestOperatorRateIgnoresWebSocket(t *testing.T) {
+	s := opService(t, nil)
+	ep := domain.EndpointAddr("pokt1a-https://r001.opa.example")
+	for i := 0; i < 400; i++ {
+		_ = s.RecordSignal(context.Background(), rateSvc, ep, domain.RPCTypeWebSocket,
+			Signal{Type: SignalMajorError, Timestamp: time.Now()})
+	}
+	if got, ok := s.OperatorRate(rateSvc, domain.RPCTypeWebSocket, "opa.example"); ok {
+		t.Fatalf("websocket operator rate %.4f recorded, want none", got.Rate)
+	}
+}
+
+// Stored WebSocket evidence from before the guard is not charged: the key falls
+// back to its own rate.
+func TestOperatorChronicSkipsStoredWebSocketStats(t *testing.T) {
+	s := opService(t, nil)
+	ep := domain.EndpointAddr("pokt1a-https://r001.opa.example")
+	_ = s.RecordSignal(context.Background(), rateSvc, ep, domain.RPCTypeWebSocket, Signal{Type: SignalSuccess, Timestamp: time.Now()})
+	s.ops.merge(map[string]OperatorStat{
+		OperatorField(rateSvc, "opa.example", domain.RPCTypeWebSocket): {Attempts: 1000, Failures: 100, UpdatedAt: time.Now().Unix()},
+	}, time.Now())
+	s.refreshBaselines()
+	if _, ok := s.chronic.Load().byKey[keyID{rateSvc, s.keyOf(ep, domain.RPCTypeWebSocket)}]; ok {
+		t.Fatal("websocket key charged a stored operator rate")
+	}
+}

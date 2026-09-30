@@ -418,6 +418,12 @@ Two more corrections followed the same day, both from mainnet sei:
   the baseline is the best *operator* in the pool, one vote each. A service is
   measured in one basis or the other, never a mix.
 
+  WebSocket is not measured this way (2026-09-30). Its attempts are
+  connections and probes, a few hundred per operator, against which the probe
+  failures every operator shares read as 2–11%: the in-sync operators were
+  charged −50 to −70 on WebSocket while their JSON-RPC rates were near zero.
+  WebSocket keys keep the per-key rate.
+
   Only first, probation and probe attempts feed those counters. Retries and
   hedges score their key but not its operator: which relays reach them was
   decided by another host's failure or slowness, and a demoted operator gets

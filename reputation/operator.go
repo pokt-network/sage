@@ -97,6 +97,9 @@ func (s *serviceImpl) OperatorRate(serviceID domain.ServiceID, rpcType domain.RP
 	// Read the tracker rather than the 30s view: the auto-drain engine
 	// evaluates on its own minute and there is no reason to hand it a stale
 	// copy of something an atomic read away.
+	if rpcType == domain.RPCTypeWebSocket {
+		return OperatorRateView{}, false // not measured per operator; see RecordSignal
+	}
 	now := time.Now()
 	st, ok := s.ops.get(opID{serviceID, operator, string(rpcType)}, now)
 	if !ok {

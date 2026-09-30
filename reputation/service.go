@@ -485,6 +485,11 @@ func (s *serviceImpl) refreshBaselines() {
 		opOn:     map[domain.ServiceID]bool{},
 	}
 	for id, st := range stats {
+		// WebSocket evidence recorded before it was kept out (RecordSignal)
+		// lives on in storage for hours; it is not charged either.
+		if id.rpc == string(domain.RPCTypeWebSocket) {
+			continue
+		}
 		if rate := st.RateAt(now); rate > 0 {
 			v.byOp[id] = OperatorRateView{Rate: rate, Attempts: uint64(st.Attempts)}
 		}
@@ -795,7 +800,13 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// slow on — so counting them held its rate up by the very demotion it
 	// caused (mainnet sei and opbnb, 2026-09-28). Probation attempts are
 	// first attempts on a share of relays, a fair sample, and count.
-	if sc.rate.Enabled() && !deferred && !signal.Leftover {
+	//
+	// WebSocket does not either. Its attempts are connections and probes, a
+	// denominator of hundreds against which the probe failures every operator
+	// shares read as 2-11%: on mainnet (2026-09-30) that charged the in-sync
+	// operators -50 to -70 on base, blast, opbnb and zksync-era while their
+	// JSON-RPC rates were near zero. WebSocket keys keep their own rate.
+	if sc.rate.Enabled() && !deferred && !signal.Leftover && rpcType != domain.RPCTypeWebSocket {
 		if op := endpoint.Operator(); op != "" {
 			s.ops.record(opID{serviceID, op, string(rpcType)}, FailureWeight(signal.Type), ts)
 		}
