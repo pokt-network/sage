@@ -181,6 +181,11 @@ type serviceImpl struct {
 	relativeGate atomic.Pointer[func(domain.ServiceID) bool]
 	operatorGate atomic.Pointer[func(domain.ServiceID) bool]
 	chronic      atomic.Pointer[chronicView]
+	// staleGate turns on the stale-share penalty per service; heads is the
+	// per-party head-answer evidence it prices (staleshare.go). Not persisted:
+	// it rebuilds in minutes.
+	staleGate atomic.Pointer[func(domain.ServiceID) bool]
+	heads     *opTracker
 	// ops is the per-operator evidence the chronic term actually reads: an
 	// identity that does not rotate with the session draw (operator.go,
 	// opstats.go). Persisted through OperatorStatStore when storage has one.
@@ -228,6 +233,7 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	}
 	s.scoring.Store(newScoring(cfg.Impacts, cfg.Rate))
 	s.ops = newOpTracker(cfg.OperatorHalfLife)
+	s.heads = newOpTracker(staleShareHalfLife)
 	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, cfg.URLResolver)))
 	selCfg := cfg.Selector
 	if selCfg == (SelectorConfig{}) {
@@ -278,6 +284,9 @@ func (s *serviceImpl) Retune(impacts SignalImpacts, rate RateConfig, sel Selecto
 // the pool-collapse fallback while the term ranked nobody above anybody.
 func (s *serviceImpl) effectiveFor(serviceID domain.ServiceID, key string, st State) float64 {
 	score := st.Score + s.penaltyFor(serviceID, key, st.Rate)
+	if v := s.chronic.Load(); v != nil {
+		score += v.staleByKey[keyID{serviceID, key}]
+	}
 	if floor := min(st.Score, s.selector.cfg.Load().MinThreshold); score < floor {
 		score = floor
 	}
@@ -532,6 +541,22 @@ func (s *serviceImpl) refreshBaselines() {
 		} else {
 			a.min = min(a.min, rate)
 			a.n++
+		}
+	}
+	// The stale-share term, charged to every key of a priced party.
+	v.stale = partyStale(s.heads.snapshot(now), gateOf(&s.staleGate))
+	priced := map[opID]float64{}
+	for _, p := range v.stale {
+		if p.Penalty < 0 {
+			priced[opID{svc: p.ServiceID, op: p.Party}] = p.Penalty
+		}
+	}
+	if len(priced) > 0 {
+		v.staleByKey = map[keyID]float64{}
+		for _, ks := range keys {
+			if pen, ok := priced[opID{svc: ks.id.svc, op: domain.PartyOfOperator(ks.op.op)}]; ok {
+				v.staleByKey[ks.id] = pen
+			}
 		}
 	}
 	for id, a := range pools {

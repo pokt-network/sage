@@ -142,6 +142,16 @@ const (
 	// every retry is stale too, the freshest answer is delivered rather than
 	// an error. Needs the heuristic flag. Off by default.
 	FlagStaleResponse = "stale_response"
+	// FlagStaleShare charges a party (the owner when its domain is dedicated,
+	// else the operator) for the share of its chain-head answers that are
+	// stale, on every one of its reputation keys in the service: 0 within 15
+	// points of the service's cleanest party, linear to -40 at 45 points. The
+	// share is measured whatever the flag says (sage_party_stale_share). On
+	// mainnet (2026-09-30) one owner's cache answered 70-80% of its head calls
+	// stale on tron, bera and arb-one while head calls were 1-2% of its
+	// traffic there, so stale_response's per-answer hits, spread over dozens
+	// of keys, healed between hits and never moved its share. Off by default.
+	FlagStaleShare = "stale_share"
 	// FlagRelativeChronic measures a key's chronic-failure penalty from the
 	// best failure rate in its (service, RPC type) pool rather than from zero,
 	// so a timeout tail every operator shares does not floor all of them. On
@@ -207,6 +217,7 @@ var DefaultFlags = map[string]bool{
 	FlagCosmosEVMHeight:        false,
 	FlagWSShareCap:             false,
 	FlagStaleResponse:          false,
+	FlagStaleShare:             false,
 	FlagRelativeChronic:        true,
 	FlagOperatorChronic:        false,
 	FlagQuorum:                 false,

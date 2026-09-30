@@ -257,6 +257,7 @@ likely a chain-wide slowdown than every operator down at once.
 | cosmos_evm_height | off | A Cosmos service learns block heights from its EVM face (eth_blockNumber probe and answers); only for chains whose EVM block number is the Cosmos height |
 | ws_share_cap | off | No party placed into more than half of a service's WebSocket frames on a pod, at open and every rebind, while another vouched party is in the session |
 | stale_response | off | A head answer too far behind the perceived head is a major supplier verdict (feeds the failure rate) and is retried; the freshest answer is delivered if every attempt is stale |
+| stale_share | off | A party whose chain-head answers are stale well above the service's cleanest party's share loses up to 40 points on every key in that service |
 | method_blocks | on | Per-host, per-method memory: a host that timed out on a method stops receiving it for a TTL |
 | latency_tiebreak | on | Inside tier 1 of selection, a faster host is asked more often than a slower equal, by the per-key latency EWMA; scores stay latency-blind |
 | singleflight | on | Coalesce identical concurrent requests |

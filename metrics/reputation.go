@@ -329,3 +329,51 @@ func NewHydratedGauges(keys, services, skipped int) []prometheus.Collector {
 
 	return []prometheus.Collector{keysGauge, servicesGauge, skippedGauge}
 }
+
+// StaleShareCollector exposes each party's stale head share and the penalty
+// the stale_share flag charges it, as reputation's last baseline refresh left
+// them (reputation.PartyStale). Derived at scrape time, so a party that has
+// faded out of the evidence stops being reported.
+type StaleShareCollector struct {
+	each      func(yield func(serviceID domain.ServiceID, party string, share, penalty float64))
+	parties   *labelPolicy
+	shareDesc *prometheus.Desc
+	penDesc   *prometheus.Desc
+}
+
+// NewStaleShareCollector returns a collector over each, which calls yield once
+// per measured party.
+func NewStaleShareCollector(each func(yield func(serviceID domain.ServiceID, party string, share, penalty float64))) *StaleShareCollector {
+	return &StaleShareCollector{
+		each:    each,
+		parties: cappedLabel(maxOperatorLabels),
+		shareDesc: prometheus.NewDesc(
+			"sage_party_stale_share",
+			"Share of a party's answers naming the chain head that were stale (sage_stale_answers_total over the answers sage_answer_head_lag_blocks counts), by service and party, over counts halving every 30 minutes. Only parties with at least 50 answers' evidence. Measured whatever the flags say.",
+			[]string{"service_id", "party"}, nil,
+		),
+		penDesc: prometheus.NewDesc(
+			"sage_party_stale_penalty",
+			"Points the stale_share flag takes off every reputation key of a party: 0 while its stale share is within 15 points of the service's cleanest party, then linear to -40 at 45 points. 0 where the flag is off or the service has one measured party.",
+			[]string{"service_id", "party"}, nil,
+		),
+	}
+}
+
+// Describe implements prometheus.Collector.
+func (c *StaleShareCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.shareDesc
+	ch <- c.penDesc
+}
+
+// Collect implements prometheus.Collector.
+func (c *StaleShareCollector) Collect(ch chan<- prometheus.Metric) {
+	c.each(func(serviceID domain.ServiceID, party string, share, penalty float64) {
+		sid, p := sanitizeLabel(string(serviceID)), c.parties.value(party)
+		if p == otherLabel {
+			return // two parties past the cap would collide on one series
+		}
+		ch <- prometheus.MustNewConstMetric(c.shareDesc, prometheus.GaugeValue, share, sid, p)
+		ch <- prometheus.MustNewConstMetric(c.penDesc, prometheus.GaugeValue, penalty, sid, p)
+	})
+}

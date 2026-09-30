@@ -157,6 +157,19 @@ func (e EndpointAddr) Party() string {
 	return op
 }
 
+// PartyOfOperator is Party for an endpoint known only by its operator, as a
+// reputation key is: the owner the operator's domain is dedicated to, else the
+// operator. It differs from Party only while a dedicated domain's supplier has
+// no owner named yet, when Party says the operator; evidence recorded under
+// that name then matches no key, so the difference costs a charge, never
+// makes a wrong one.
+func PartyOfOperator(operator string) string {
+	if owner := dedicatedOwner(operator); owner != "" {
+		return owner
+	}
+	return operator
+}
+
 // Add adds one endpoint's operator, and its owner when the endpoint's domain
 // is dedicated to that owner.
 func (a *Affiliates) Add(ep EndpointAddr) {

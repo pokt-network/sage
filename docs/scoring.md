@@ -424,6 +424,24 @@ Two more corrections followed the same day, both from mainnet sei:
   charged −50 to −70 on WebSocket while their JSON-RPC rates were near zero.
   WebSocket keys keep the per-key rate.
 
+- **A party that answers the chain head stale is charged on all its traffic**
+  (flag `stale_share`, default off, added 2026-09-30). `stale_response` grades
+  a stale head answer where it happens, as a major hit on one key; where head
+  calls are 1–2% of a party's traffic, spread over dozens of keys, each key
+  heals between hits and the party's share never moves (one owner's cache on
+  tron, bera and arb-one, 70–80% of its head answers stale). A cache that
+  serves an old head serves an old `latest` to everything else too, and only
+  the head calls show it. So each (service, party) keeps decayed counts of
+  head answers and stale ones, halving every 30 minutes, retries and hedges
+  included; a party with 50 answers' evidence is measured, and one whose share
+  is more than 15 points above the service's cleanest measured party loses up
+  to 40 points (linear, full at 45) on every key it has in the service, beside
+  the chronic term and under the same floor. Relative, because a chain the
+  head projection runs ahead of reads stale for everyone (every party on
+  scroll near 20%); a service with one measured party is not charged. The
+  counts are pod-local and rebuild in minutes after a roll. Shares and
+  penalties are `sage_party_stale_share` and `sage_party_stale_penalty`.
+
   Only first, probation and probe attempts feed those counters. Retries and
   hedges score their key but not its operator: which relays reach them was
   decided by another host's failure or slowness, and a demoted operator gets

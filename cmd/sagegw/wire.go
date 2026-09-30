@@ -477,6 +477,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// The timeline is bounded by design; this is the gauge that proves it.
 	prometheus.MustRegister(metrics.NewTimelineKeysGauge(timeline.Len))
 	prometheus.MustRegister(metrics.NewOperatorStatsGauge(repSvc.OperatorStatsLen))
+	prometheus.MustRegister(metrics.NewStaleShareCollector(func(yield func(domain.ServiceID, string, float64, float64)) {
+		for _, p := range repSvc.PartyStaleShares() {
+			yield(p.ServiceID, p.Party, p.Share, p.Penalty)
+		}
+	}))
 	// What each service's current session holds, per operator: the
 	// registration count PATH's dashboard shows, and the mean score over it.
 	if app.Protocol != nil {
@@ -639,6 +644,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// decides only whether scoring charges them.
 	repSvc.SetOperatorChronic(func(serviceID domain.ServiceID) bool {
 		return flags.IsEnabled(context.Background(), featureflag.FlagOperatorChronic, serviceID)
+	})
+
+	// Stale-share penalty, read on the same refresh. The shares are measured
+	// either way (the Heuristic middleware's head-lag hook feeds them).
+	repSvc.SetStaleShare(func(serviceID domain.ServiceID) bool {
+		return flags.IsEnabled(context.Background(), featureflag.FlagStaleShare, serviceID)
 	})
 
 	// When a drain ends, its endpoints restart at the bottom of probation
@@ -808,7 +819,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWScore, func() relay.Middleware { return middleware.Score(flags, repSvc) })
 	mwReg.Register(relay.MWDebugLog, func() relay.Middleware { return middleware.DebugLog(flags, qosReg, proto) })
 	mwReg.Register(relay.MWHeuristic, func() relay.Middleware {
-		return middleware.Heuristic(flags, qosReg, middleware.WithAttemptTimeout(timeoutFn), middleware.WithHeadLag(recorder.RecordAnswerHead))
+		return middleware.Heuristic(flags, qosReg, middleware.WithAttemptTimeout(timeoutFn),
+			middleware.WithHeadLag(func(serviceID domain.ServiceID, party, method string, lag uint64, stale bool) {
+				recorder.RecordAnswerHead(serviceID, party, method, lag, stale)
+				repSvc.RecordHeadAnswer(serviceID, party, stale)
+			}))
 	})
 	mwReg.Register(relay.MWSendRelay, func() relay.Middleware { return middleware.SendRelay(proto) })
 

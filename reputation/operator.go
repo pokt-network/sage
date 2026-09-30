@@ -65,6 +65,10 @@ type chronicView struct {
 	// opOn records which services had the operator term on at refresh time, so
 	// the flag is not read per relay.
 	opOn map[domain.ServiceID]bool
+	// staleByKey is the stale-share penalty to add to a key; stale is every
+	// measured party, for the metrics (staleshare.go).
+	staleByKey map[keyID]float64
+	stale      []PartyStale
 }
 
 // keyID addresses one reputation key without building a string.
