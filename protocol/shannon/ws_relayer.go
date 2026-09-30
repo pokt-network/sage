@@ -256,7 +256,7 @@ func (r *WSRelayer) Clients(serviceID domain.ServiceID, limit int, onlyShopping 
 // ShoppingClients counts clients flagged as shopping for a supplier (see
 // ws_clients.go), for the sage_websocket_shopping_clients gauge.
 func (r *WSRelayer) ShoppingClients() int {
-	return r.clients.ShoppingClients()
+	return r.clients.shoppingClients()
 }
 
 // clientIP resolves the address an upgrade is attributed to.
@@ -475,7 +475,17 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		)
 		return conn, proc, subs.ReplayFrames(), nil
 	}))
+	// StartBridge starts the endpoint read loop before it returns, so a loss
+	// can reach the rebind handler — which releases the current supplier
+	// under swapMu — before the first supplier is bound. Holding swapMu
+	// across the start and the bind makes that release wait for the bind.
+	swapMu.Lock()
 	bridge, err := websockets.StartBridge(ctx, logger, req, w, url, supplierHeaders, processor, bridgeOpts...)
+	if err == nil {
+		r.clients.opened(clientIP)
+		r.bindSupplier(serviceID, processor)
+	}
+	swapMu.Unlock()
 	if err != nil {
 		// Pre-upgrade error: either the client handshake failed (our fault —
 		// no supplier penalty) or the endpoint dial failed (supplier
@@ -488,8 +498,6 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		return fmt.Errorf("ws open: start bridge: %w", err)
 	}
 
-	r.clients.opened(clientIP)
-	r.bindSupplier(serviceID, processor)
 	r.live.Store(bridge, live)
 	defer r.live.Delete(bridge)
 
@@ -1023,13 +1031,19 @@ func untriedFirst(endpoints domain.EndpointAddrList, tried map[domain.EndpointAd
 // client sees nothing. It returns how many bridges were asked. This is the
 // admin rebind route — a drill, or the way to move live connections off an
 // operator that was just drained, which selection alone never touches.
+//
+// Each rebind resolves and dials a supplier, so they run in the background:
+// done one after another, the admin request took the sum of every dial.
 func (r *WSRelayer) RebindService(serviceID domain.ServiceID) int {
 	n := 0
 	r.live.Range(func(key, value any) bool {
 		if value.(*wsLive).service != serviceID {
 			return true
 		}
-		key.(*websockets.Bridge).ReplaceEndpoint(websockets.ErrBridgeReplaceRequested)
+		bridge := key.(*websockets.Bridge)
+		safego.Go(r.deps.Logger, "websocket.rebind", func() {
+			bridge.ReplaceEndpoint(websockets.ErrBridgeReplaceRequested)
+		})
 		n++
 		return true
 	})

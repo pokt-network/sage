@@ -248,27 +248,30 @@ type WSClientsSnapshot struct {
 	Clients         []WSClientReport `json:"clients"`
 }
 
-// shopping judges one client's merged suppliers; nil when it is not shopping.
-func shopping(suppliers []WSClientSupplierStat) *WSShopping {
-	byOwner := map[string]float64{}
+// wsOwnerTime is one client's connected time and quick closes with one owner,
+// what shopping judges.
+type wsOwnerTime struct {
+	seconds     float64
+	quickCloses int
+}
+
+// shopping judges one client's time per owner; nil when it is not shopping.
+func shopping(byOwner map[string]wsOwnerTime) *WSShopping {
 	var total float64
-	for _, s := range suppliers {
-		byOwner[s.Owner] += s.TenureSeconds
-		total += s.TenureSeconds
-	}
 	favoured, best := "", 0.0
-	for owner, secs := range byOwner {
-		if secs > best || (secs == best && owner < favoured) {
-			favoured, best = owner, secs
+	for owner, t := range byOwner {
+		total += t.seconds
+		if t.seconds > best || (t.seconds == best && owner < favoured) {
+			favoured, best = owner, t.seconds
 		}
 	}
 	if total == 0 || best < wsShoppingMinFavouredTime.Seconds() || best/total < wsShoppingMinShare {
 		return nil
 	}
 	elsewhere := 0
-	for _, s := range suppliers {
-		if s.Owner != favoured {
-			elsewhere += s.QuickCloses
+	for owner, t := range byOwner {
+		if owner != favoured {
+			elsewhere += t.quickCloses
 		}
 	}
 	if elsewhere < wsShoppingMinQuickCloses {
@@ -277,10 +280,37 @@ func shopping(suppliers []WSClientSupplierStat) *WSShopping {
 	return &WSShopping{Owner: favoured, Share: best / total, QuickClosesElsewhere: elsewhere}
 }
 
-// ShoppingClients counts the clients currently flagged as shopping, across
-// every service. It backs sage_websocket_shopping_clients.
-func (l *wsClientLedger) ShoppingClients() int {
-	return l.snapshot("", 1, false).ShoppingClients
+// shoppingClients counts the clients currently flagged as shopping, across
+// every service. A scrape calls it under the ledger lock, so it merges only
+// what shopping judges — time and quick closes per owner — and builds no
+// report.
+func (l *wsClientLedger) shoppingClients() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.rotate()
+	byClient := make(map[string]map[string]wsOwnerTime)
+	for _, window := range []map[string]*wsClientStats{l.prev, l.cur} {
+		for ip, c := range window {
+			byOwner := byClient[ip]
+			if byOwner == nil {
+				byOwner = make(map[string]wsOwnerTime, len(c.suppliers))
+				byClient[ip] = byOwner
+			}
+			for k, s := range c.suppliers {
+				t := byOwner[k.owner]
+				t.seconds += s.seconds
+				t.quickCloses += s.quickCloses
+				byOwner[k.owner] = t
+			}
+		}
+	}
+	n := 0
+	for _, byOwner := range byClient {
+		if shopping(byOwner) != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // snapshot merges both windows and returns the top limit clients by frames,
@@ -339,7 +369,14 @@ func (l *wsClientLedger) snapshot(serviceID domain.ServiceID, limit int, onlySho
 			r.Suppliers = append(r.Suppliers, *st)
 		}
 		sort.Slice(r.Suppliers, func(i, j int) bool { return r.Suppliers[i].Frames > r.Suppliers[j].Frames })
-		r.Shopping = shopping(r.Suppliers)
+		byOwner := make(map[string]wsOwnerTime, len(r.Suppliers))
+		for _, st := range r.Suppliers {
+			t := byOwner[st.Owner]
+			t.seconds += st.TenureSeconds
+			t.quickCloses += st.QuickCloses
+			byOwner[st.Owner] = t
+		}
+		r.Shopping = shopping(byOwner)
 		if r.Shopping != nil {
 			out.ShoppingClients++
 		} else if onlyShopping {

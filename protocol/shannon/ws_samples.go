@@ -30,7 +30,7 @@ const (
 	wsSampleEvery = 100
 	wsSampleKeep  = 200
 	// wsSampleMaxKeys bounds the table: services × operators × owners ×
-	// topics is hundreds on mainnet. Past it new keys are not sampled.
+	// topics is hundreds on mainnet. A new key past it resets the table.
 	wsSampleMaxKeys = 2048
 )
 
@@ -76,8 +76,7 @@ func (s *wsNotificationSamples) observe(serviceID domain.ServiceID, operator, ow
 	r := s.rings[k]
 	if r == nil {
 		if len(s.rings) >= wsSampleMaxKeys {
-			s.mu.Unlock()
-			return
+			clear(s.rings) // Start over rather than never sample a key seen after the table filled.
 		}
 		r = &wsSampleRing{}
 		s.rings[k] = r

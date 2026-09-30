@@ -50,7 +50,12 @@ func TestNotificationSamples_KeyTableIsBounded(t *testing.T) {
 	for i := 0; i < wsSampleMaxKeys+10; i++ {
 		s.observe("eth", fmt.Sprintf("op%d.example", i), "", "logs", []byte(`{"params":{"result":{"transactionHash":"0x1"}}}`))
 	}
-	if n := len(s.rings); n != wsSampleMaxKeys {
-		t.Fatalf("keys = %d, want the cap %d", n, wsSampleMaxKeys)
+	if n := len(s.rings); n > wsSampleMaxKeys {
+		t.Fatalf("keys = %d, want at most the cap %d", n, wsSampleMaxKeys)
+	}
+	// A key first seen after the table filled is still sampled.
+	late := fmt.Sprintf("op%d.example", wsSampleMaxKeys+9)
+	if s.rings[wsSampleKey{"eth", late, "", "logs"}] == nil {
+		t.Fatal("a key seen after the table filled must be sampled")
 	}
 }

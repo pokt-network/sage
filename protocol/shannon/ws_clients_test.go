@@ -160,8 +160,8 @@ func TestWSClientLedger_FlagsShopping(t *testing.T) {
 	if s := byIP["192.0.2.9"].Shopping; s != nil {
 		t.Errorf("a client that just stays is not shopping, got %+v", s)
 	}
-	if snap.ShoppingClients != 1 || l.ShoppingClients() != 1 {
-		t.Errorf("shopping clients = %d / %d, want 1", snap.ShoppingClients, l.ShoppingClients())
+	if snap.ShoppingClients != 1 || l.shoppingClients() != 1 {
+		t.Errorf("shopping clients = %d / %d, want 1", snap.ShoppingClients, l.shoppingClients())
 	}
 	if only := l.snapshot("", 0, true); len(only.Clients) != 1 || only.Clients[0].ClientIP != "203.0.113.7" {
 		t.Errorf("shopping-only snapshot = %+v, want the shopper alone", only.Clients)
