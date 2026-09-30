@@ -484,3 +484,19 @@ func TestBlockConsensus_AnswerLag(t *testing.T) {
 		}
 	}
 }
+
+// A head that has not moved for a window is a halted chain or a stalled
+// measurement, not everyone's cache: lag is reported, nothing is stale.
+func TestBlockConsensus_AnswerLagNoVerdictOnAStalledHead(t *testing.T) {
+	bc := NewBlockConsensus(nil, 100)
+	bc.AddObservation("a1-https://x.a.net", 1000)
+	now := time.Now()
+	bc.mu.Lock()
+	moved := now.Add(-bc.windowDuration - time.Second)
+	bc.rateSamples = []rateSample{{height: 900, at: moved.Add(-40 * time.Second)}, {height: 1000, at: moved}}
+	bc.mu.Unlock()
+	lag, stale, ok := bc.AnswerLag(1000, now)
+	if !ok || stale || lag == 0 {
+		t.Fatalf("lag %d stale %v ok %v, want a lag and no verdict", lag, stale, ok)
+	}
+}

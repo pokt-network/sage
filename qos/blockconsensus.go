@@ -39,7 +39,7 @@ type BlockConsensus struct {
 	gracePeriod   time.Duration
 }
 
-// storeHook, when set, is called with "add" or "reset" immediately before the
+// storeHook, when set, is called with "add", "reset" or "floor" immediately before the
 // perceived height is published, while mu is held. It exists for one test —
 // blockconsensus_ordering_test.go — which cannot otherwise wedge itself
 // between the computation and the store to prove the two happen together: the
@@ -461,13 +461,14 @@ const staleAnswerMinBlocks = 2
 
 // AnswerLag measures an answer that names the chain head against the head
 // this consensus expects at now: perceived, advanced at the chain's block rate
-// since it last moved (at most two windows, as HeightProjection allows).
+// since it last moved (at most one window).
 // Perceived moves only when an observation arrives, so comparing against it
 // unadvanced would forgive a stale answer by up to one probe cycle.
 //
 // stale is lag above max(staleAnswerMinBlocks, rate x staleAnswerSeconds),
-// and never while the block rate is unknown (a cold start): the lag is still
-// reported, but without a rate there is no telling propagation from a cache.
+// and never while the block rate is unknown (a cold start) or the head has not
+// moved for a window: the lag is still reported, but there is then no telling
+// propagation or a halt from a cache.
 // ok is false while there is no head to compare with. An answer ahead of the
 // head is lag 0.
 func (bc *BlockConsensus) AnswerLag(height uint64, now time.Time) (lag uint64, stale, ok bool) {
@@ -476,15 +477,18 @@ func (bc *BlockConsensus) AnswerLag(height uint64, now time.Time) (lag uint64, s
 		return 0, false, false
 	}
 	head := p.perceived
-	if p.rate > 0 {
-		if age := now.Sub(p.headAt); age > 0 {
-			head += uint64(p.rate * min(age, 2*p.window).Seconds())
-		}
+	age := now.Sub(p.headAt)
+	if p.rate > 0 && age > 0 {
+		head += uint64(p.rate * min(age, p.window).Seconds())
 	}
 	if height < head {
 		lag = head - height
 	}
-	if p.rate <= 0 {
+	// No verdict without a rate, or once the head has not moved for a
+	// window: a halted chain, or readings that stopped coming, look the same
+	// from here, and projecting on would call every party's honest answer
+	// stale at once — a major penalty and a retry for all of them.
+	if p.rate <= 0 || age > p.window {
 		return lag, false, true
 	}
 	tolerance := max(uint64(staleAnswerMinBlocks), uint64(p.rate*staleAnswerSeconds))

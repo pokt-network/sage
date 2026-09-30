@@ -192,6 +192,9 @@ func (p *Plugin) LastHeightObservation(endpoints domain.EndpointAddrList) (time.
 // which shapes are accepted depends on the request, so the request is read
 // rather than ignored (see extractBlockHeightForMethod).
 func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []byte) (*qos.ExtractedData, error) {
+	if unfinalized(request) {
+		return &qos.ExtractedData{}, nil
+	}
 	height, err := extractBlockHeightForMethod(request, response)
 	if err != nil {
 		// Not every response carries a block height — not an error worth surfacing.
@@ -303,6 +306,9 @@ const solanaBlockhashValidity = 150
 // it against the head expected now (qos.HeadLagReader). getSlot and
 // context.slot are slots, a different scale, and are not read.
 func (p *Plugin) HeadLag(payload domain.Payload, response []byte) (lag uint64, stale, ok bool) {
+	if unfinalized(payload.Bytes()) {
+		return 0, false, false
+	}
 	var head uint64
 	switch payload.Method() {
 	case "getEpochInfo":
@@ -321,3 +327,13 @@ func (p *Plugin) HeadLag(payload domain.Payload, response []byte) (lag uint64, s
 }
 
 var _ qos.HeadLagReader = (*Plugin)(nil)
+
+// unfinalized reports whether a request asks for a commitment below finalized.
+// The height probe asks at the default, finalized, which runs ~30 blocks behind
+// processed: a processed answer fed to consensus lifted perceived above every
+// finalized one, and measured against a finalized head it is a different
+// scale. Both are kept on finalized.
+func unfinalized(request []byte) bool {
+	c := gjson.GetBytes(request, "params.0.commitment").String()
+	return c != "" && c != "finalized"
+}

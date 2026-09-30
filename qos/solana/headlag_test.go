@@ -33,3 +33,15 @@ func TestHeadLag_ReadsHeadMethodsOnly(t *testing.T) {
 		}
 	}
 }
+
+// An answer at a commitment below finalized is on another scale: not read.
+func TestHeadLag_SkipsUnfinalizedCommitment(t *testing.T) {
+	p := NewPlugin(nil, 100)
+	req := domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlockHeight","params":[{"commitment":"processed"}]}`), domain.RPCTypeJSONRPC, "getBlockHeight")
+	if _, _, ok := p.HeadLag(req, []byte(`{"result":100}`)); ok {
+		t.Fatal("processed answer must not be read")
+	}
+	if d, _ := p.ExtractData("a1-https://x.a.net", req.Bytes(), []byte(`{"result":100}`)); d.BlockHeight != nil {
+		t.Fatal("processed answer must not feed consensus")
+	}
+}

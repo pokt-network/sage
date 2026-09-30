@@ -663,6 +663,9 @@ func (r *Recorder) RecordReputationWriteDropped(reason string) {
 // method is one of the few head methods a plugin reads, so it is bounded.
 func (r *Recorder) RecordAnswerHead(serviceID domain.ServiceID, party, method string, lag uint64, stale bool) {
 	service := r.services.serviceValue(serviceID)
+	// party is an operator domain or an owner address: supplier-chosen, so
+	// capped like every other operator label.
+	party = r.operators.value(party)
 	r.answerHeadLag.WithLabelValues(service, party).Observe(float64(lag))
 	if stale {
 		r.staleAnswers.WithLabelValues(service, party, method).Inc()
