@@ -61,10 +61,12 @@ func (r *WSRelayer) capShare(ctx context.Context, serviceID domain.ServiceID, ca
 	// A party whose every endpoint is known to be far behind the head is no
 	// place to send traffic, whatever its share: freshest has already let it
 	// through only if nothing better was left (qos.StaleChecker).
-	if stale, ok := r.qosPlugin(serviceID).(qos.StaleChecker); ok {
-		for party, eps := range byParty {
-			if stale.AllStale(eps) {
-				delete(byParty, party)
+	if r.deps.QoS != nil {
+		if stale, ok := r.deps.QoS.Get(serviceID).(qos.StaleChecker); ok {
+			for party, eps := range byParty {
+				if stale.AllStale(eps) {
+					delete(byParty, party)
+				}
 			}
 		}
 	}
@@ -119,12 +121,4 @@ func (r *WSRelayer) shareCapOutcome(serviceID domain.ServiceID, outcome string) 
 	if r.deps.Metrics != nil {
 		r.deps.Metrics.ShareCap(serviceID, outcome)
 	}
-}
-
-// qosPlugin is the service's QoS plugin, or nil.
-func (r *WSRelayer) qosPlugin(serviceID domain.ServiceID) qos.Plugin {
-	if r.deps.QoS == nil {
-		return nil
-	}
-	return r.deps.QoS.Get(serviceID)
 }

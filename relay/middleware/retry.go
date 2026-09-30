@@ -215,7 +215,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					if ctx.Response != nil && errors.Is(lastErr, domain.ErrRetryVerdict) &&
 						(ctx.HeuristicResult == nil || ctx.HeuristicResult.Attribution != heuristic.AttrSupplier ||
 							ctx.HeuristicResult.Reason == heuristic.ReasonStaleResponse) &&
-						(keptResp == nil || !isStale(ctx.HeuristicResult) || !isStale(keptVerdict) || fresherStale(ctx.HeuristicResult, keptVerdict)) {
+						(!isStale(ctx.HeuristicResult) || !isStale(keptVerdict) || fresherStale(ctx.HeuristicResult, keptVerdict)) {
 						keptResp, keptEndpoint, keptVerdict, keptErr = ctx.Response, ctx.Endpoint, ctx.HeuristicResult, lastErr
 					}
 					if rec != nil {

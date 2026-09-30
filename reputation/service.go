@@ -731,11 +731,11 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// with every stall. One hit per timeoutCoalesce: a host that keeps timing
 	// out still pays every window and floors from 100 in about 20 seconds.
 	// The rate below still counts every one.
-	coalesced := signal.Type == SignalMajorError && signal.Reason == reasonTransportTimeout &&
-		prev.TimeoutHitAt != 0 && ts.UnixMilli()-prev.TimeoutHitAt < timeoutCoalesce.Milliseconds()
+	timeout := signal.Type == SignalMajorError && signal.Reason == reasonTransportTimeout
+	coalesced := timeout && prev.TimeoutHitAt != 0 && ts.UnixMilli()-prev.TimeoutHitAt < timeoutCoalesce.Milliseconds()
 	if !deferred && !coalesced {
 		st.Score = s.clamp(st.Score + impact)
-		if signal.Type == SignalMajorError && signal.Reason == reasonTransportTimeout {
+		if timeout {
 			st.TimeoutHitAt = ts.UnixMilli()
 		}
 	}
