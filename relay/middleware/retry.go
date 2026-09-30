@@ -110,8 +110,13 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// is not an answer at all (the router drops it and writes a 504).
 			// On mainnet base (2026-09-26) that turned every "block not found"
 			// retried onto a timing-out operator into a client 504.
+			//
+			// A stale answer (stale_response) is an answer too, only an old
+			// one: kept like a node's own, and between two stale answers the
+			// fresher one stands, whichever attempt produced it.
 			defer func() {
-				if retErr != nil && keptResp != nil && (ctx.Response == nil || supplierAttributed(ctx)) {
+				if retErr != nil && keptResp != nil && (ctx.Response == nil || supplierAttributed(ctx)) &&
+					(ctx.Response == nil || !fresherStale(ctx.HeuristicResult, keptVerdict)) {
 					ctx.Response, ctx.Endpoint, ctx.HeuristicResult = keptResp, keptEndpoint, keptVerdict
 					ctx.Err, retErr = keptErr, keptErr
 				}
@@ -208,7 +213,9 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					// misrouted vhost's page to the client as its answer
 					// (mainnet solana, 2026-09-15: 2172 client 404s in 10 min).
 					if ctx.Response != nil && errors.Is(lastErr, domain.ErrRetryVerdict) &&
-						(ctx.HeuristicResult == nil || ctx.HeuristicResult.Attribution != heuristic.AttrSupplier) {
+						(ctx.HeuristicResult == nil || ctx.HeuristicResult.Attribution != heuristic.AttrSupplier ||
+							ctx.HeuristicResult.Reason == heuristic.ReasonStaleResponse) &&
+						(keptResp == nil || !isStale(ctx.HeuristicResult) || !isStale(keptVerdict) || fresherStale(ctx.HeuristicResult, keptVerdict)) {
 						keptResp, keptEndpoint, keptVerdict, keptErr = ctx.Response, ctx.Endpoint, ctx.HeuristicResult, lastErr
 					}
 					if rec != nil {
@@ -407,6 +414,16 @@ func retryCause(ctx *relay.Context, err error) string {
 		return ctx.HeuristicResult.Reason
 	}
 	return retryReason(err)
+}
+
+// isStale reports whether a verdict is stale_response.
+func isStale(v *heuristic.AnalysisResult) bool {
+	return v != nil && v.Reason == heuristic.ReasonStaleResponse
+}
+
+// fresherStale reports whether a is a stale answer fresher than stale answer b.
+func fresherStale(a, b *heuristic.AnalysisResult) bool {
+	return isStale(a) && isStale(b) && a.HeadLag < b.HeadLag
 }
 
 // supplierAttributed reports whether the current attempt's verdict blames the

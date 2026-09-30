@@ -256,6 +256,7 @@ likely a chain-wide slowdown than every operator down at once.
 | method_block_408 | off | A supplier's 408 keeps that method away from that host for the client TTL; never escalates to a host-wide block |
 | cosmos_evm_height | off | A Cosmos service learns block heights from its EVM face (eth_blockNumber probe and answers); only for chains whose EVM block number is the Cosmos height |
 | ws_share_cap | off | No party placed into more than half of a service's WebSocket frames on a pod, at open and every rebind, while another vouched party is in the session |
+| stale_response | off | A head answer too far behind the perceived head is a major supplier verdict (feeds the failure rate) and is retried; the freshest answer is delivered if every attempt is stale |
 | method_blocks | on | Per-host, per-method memory: a host that timed out on a method stops receiving it for a TTL |
 | latency_tiebreak | on | Inside tier 1 of selection, a faster host is asked more often than a slower equal, by the per-key latency EWMA; scores stay latency-blind |
 | singleflight | on | Coalesce identical concurrent requests |

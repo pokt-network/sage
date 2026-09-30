@@ -132,6 +132,16 @@ const (
 	// reputation vouches for are in the session; otherwise placement is as
 	// before. Off by default.
 	FlagWSShareCap = "ws_share_cap"
+	// FlagStaleResponse grades an answer that names a chain head too far
+	// behind the perceived one (eth_blockNumber, Solana getBlockHeight, …;
+	// see sage_stale_answers_total) as stale_response: a major supplier
+	// penalty, so it feeds the failure rate, and a retry on another party. A
+	// response cache only looks fast: on mainnet (2026-09-30) one owner's
+	// cache answered 69-79% of its head calls on base, robinhood, tron and
+	// bsc stale while its reputation sat above the in-sync operators'. When
+	// every retry is stale too, the freshest answer is delivered rather than
+	// an error. Needs the heuristic flag. Off by default.
+	FlagStaleResponse = "stale_response"
 	// FlagRelativeChronic measures a key's chronic-failure penalty from the
 	// best failure rate in its (service, RPC type) pool rather than from zero,
 	// so a timeout tail every operator shares does not floor all of them. On
@@ -196,6 +206,7 @@ var DefaultFlags = map[string]bool{
 	FlagMethodBlock408:         false,
 	FlagCosmosEVMHeight:        false,
 	FlagWSShareCap:             false,
+	FlagStaleResponse:          false,
 	FlagRelativeChronic:        true,
 	FlagOperatorChronic:        false,
 	FlagQuorum:                 false,

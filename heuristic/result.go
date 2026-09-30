@@ -1,5 +1,7 @@
 package heuristic
 
+import "fmt"
+
 // ErrorAttribution identifies who is at fault for a failed response.
 type ErrorAttribution int
 
@@ -72,6 +74,32 @@ type AnalysisResult struct {
 	// block, owned by archival tri-state) or Solana's per-key index exclusion
 	// (per program), because those are not "cannot do this method".
 	MethodBlocking bool
+	// HeadLag is how many blocks behind the perceived head a stale_response
+	// answer named; zero on every other verdict. Retry reads it to keep the
+	// fresher of two stale answers.
+	HeadLag uint64
+}
+
+// ReasonStaleResponse is the verdict on an answer naming a chain head too far
+// behind the perceived one (qos.HeadLagReader, featureflag.FlagStaleResponse).
+const ReasonStaleResponse = "stale_response"
+
+// StaleResponse is the verdict for an answer lag blocks behind the head: the
+// supplier's (a node or a cache serving an old view), a major penalty so it
+// feeds the failure rate, and retried on another party. Not a method block
+// and not a circuit break: the same host answers other calls, and a fresh
+// answer from it tomorrow is as good as anyone's.
+func StaleResponse(lag uint64) AnalysisResult {
+	return AnalysisResult{
+		ShouldRetry:     true,
+		ShouldPenalize:  true,
+		PenaltySeverity: SeverityMajor,
+		Attribution:     AttrSupplier,
+		Confidence:      0.9,
+		Reason:          ReasonStaleResponse,
+		Details:         fmt.Sprintf("head answer %d blocks behind the perceived head", lag),
+		HeadLag:         lag,
+	}
 }
 
 // ReasonSuccess is the Reason a verdict carries when the response passed every

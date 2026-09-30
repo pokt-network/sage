@@ -55,8 +55,10 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, opts ...Heur
 				return err
 			}
 
+			var headLag uint64
+			var headStale bool
 			if ctx.Response != nil {
-				o.observeHeadLag(registry, ctx)
+				headLag, headStale = o.observeHeadLag(registry, ctx)
 			}
 
 			// Skip analysis if the flag is disabled.
@@ -109,6 +111,12 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, opts ...Heur
 				result.ShouldPenalize = false
 			}
 
+			// An answer the analyzer passed, naming a head too far behind
+			// (featureflag.FlagStaleResponse): a cache's old view, retried.
+			if headStale && result.IsSuccess() && flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagStaleResponse, ctx.ServiceID) {
+				result = heuristic.StaleResponse(headLag)
+			}
+
 			breakUpstream(flags, ctx, &result)
 			if result.Reason == "http_408" && result.Attribution == heuristic.AttrSupplier &&
 				flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagMethodBlock408, ctx.ServiceID) {
@@ -150,12 +158,13 @@ func WithHeadLag(fn func(serviceID domain.ServiceID, party, method string, lag u
 	return func(o *heuristicOptions) { o.headLag = fn }
 }
 
-// observeHeadLag hands a single-payload answer that names the chain head to
-// the head-lag recorder. Measurement only, before and apart from the
-// heuristic flag: the verdict is untouched.
-func (o heuristicOptions) observeHeadLag(registry *qos.Registry, ctx *relay.Context) {
-	if o.headLag == nil || len(ctx.Payloads) != 1 || ctx.Response.HTTPStatusCode != 200 {
-		return
+// observeHeadLag reads how far a single-payload answer that names the chain
+// head lags the perceived head, hands it to the head-lag recorder when one is
+// set, and returns it for the stale_response verdict. The recording is
+// measurement only, before and apart from the heuristic flag.
+func (o heuristicOptions) observeHeadLag(registry *qos.Registry, ctx *relay.Context) (lag uint64, stale bool) {
+	if len(ctx.Payloads) != 1 || ctx.Response.HTTPStatusCode != 200 {
+		return 0, false
 	}
 	plugin := ctx.Plugin
 	if plugin == nil && registry != nil {
@@ -163,11 +172,16 @@ func (o heuristicOptions) observeHeadLag(registry *qos.Registry, ctx *relay.Cont
 	}
 	reader, ok := plugin.(qos.HeadLagReader)
 	if !ok {
-		return
+		return 0, false
 	}
-	if lag, stale, ok := reader.HeadLag(ctx.Payloads[0], ctx.Response.Body); ok {
+	lag, stale, ok = reader.HeadLag(ctx.Payloads[0], ctx.Response.Body)
+	if !ok {
+		return 0, false
+	}
+	if o.headLag != nil {
 		o.headLag(ctx.ServiceID, ctx.Endpoint.Party(), ctx.Payloads[0].Method(), lag, stale)
 	}
+	return lag, stale
 }
 
 // WithAttemptTimeout gives the middleware each service's per-attempt relay
