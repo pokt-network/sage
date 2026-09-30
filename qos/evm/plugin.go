@@ -242,7 +242,7 @@ func (p *Plugin) StartSync(ctx context.Context) {}
 
 // ParseBlockHeight extracts a block number from an eth_blockNumber response.
 func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
-	return extractBlockNumber(response)
+	return ParseBlockNumber(response)
 }
 
 // --- Archival routing ---
@@ -350,7 +350,7 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 
 	switch method {
 	case "eth_blockNumber":
-		height, err := extractBlockNumber(response)
+		height, err := ParseBlockNumber(response)
 		if err != nil {
 			return nil, fmt.Errorf("eth_blockNumber: %w", err)
 		}
@@ -561,7 +561,7 @@ func (p *Plugin) HeadLag(payload domain.Payload, response []byte) (lag uint64, s
 	var head uint64
 	switch payload.Method() {
 	case "eth_blockNumber":
-		head, _ = extractBlockNumber(response)
+		head, _ = ParseBlockNumber(response)
 	case "eth_getBlockByNumber":
 		if gjson.GetBytes(payload.Bytes(), "params.0").String() == "latest" {
 			head, _ = parseHexUint64(gjson.GetBytes(response, "result.number").String())

@@ -41,7 +41,7 @@ type SessionCollector struct {
 	lister    SessionEndpointLister
 	scorer    EndpointScorer
 	services  map[domain.ServiceID][]domain.RPCType
-	tier1     float64
+	tier1     func() float64
 	operators *labelPolicy
 
 	endpointsDesc *prometheus.Desc
@@ -50,8 +50,9 @@ type SessionCollector struct {
 }
 
 // NewSessionCollector returns a collector for the given services and the RPC
-// types each is configured for. tier1 is the selector's tier-1 threshold.
-func NewSessionCollector(lister SessionEndpointLister, scorer EndpointScorer, services map[domain.ServiceID][]domain.RPCType, tier1 float64) *SessionCollector {
+// types each is configured for. tier1 reads the selector's tier-1 threshold at
+// scrape time, since a reload can retune it.
+func NewSessionCollector(lister SessionEndpointLister, scorer EndpointScorer, services map[domain.ServiceID][]domain.RPCType, tier1 func() float64) *SessionCollector {
 	labels := []string{"service_id", "operator", "rpc_type"}
 	return &SessionCollector{
 		lister:    lister,
@@ -91,6 +92,7 @@ func (c *SessionCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 	ctx := context.Background()
+	tier1 := c.tier1()
 	type agg struct {
 		n, scored, low int
 		sum            float64
@@ -114,7 +116,7 @@ func (c *SessionCollector) Collect(ch chan<- prometheus.Metric) {
 				if score, ok := c.scorer.ScoreOf(serviceID, ep, rpcType); ok {
 					a.scored++
 					a.sum += score
-					if score < c.tier1 {
+					if score < tier1 {
 						a.low++
 					}
 				}

@@ -190,7 +190,6 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 	if _, err := qos.ValidateBlockHeight(height, p.consensus.PerceivedBlock(), p.syncAllowance.Load()); err != nil {
 		return nil, fmt.Errorf("%s: invalid block height from endpoint %s: %w", p.chain.Name, endpoint, err)
 	}
-	p.UpdateBlockHeight(endpoint, height)
 	return &qos.ExtractedData{BlockHeight: &height}, nil
 }
 

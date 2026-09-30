@@ -485,8 +485,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// What each service's current session holds, per operator: the
 	// registration count PATH's dashboard shows, and the mean score over it.
 	if app.Protocol != nil {
+		// The threshold is read from the live config: a reload retunes the
+		// selector, and "low" must follow it.
 		prometheus.MustRegister(metrics.NewSessionCollector(app.Protocol, repSvc, serviceRPCTypesFrom(cfg),
-			cfg.Gateway.Reputation.SelectorConfig().Tier1Threshold))
+			func() float64 { return app.Config.Load().Gateway.Reputation.SelectorConfig().Tier1Threshold }))
 	}
 
 	// 6b. Method blocks: per-host, per-method memory consulted at selection.

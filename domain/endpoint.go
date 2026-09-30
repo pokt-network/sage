@@ -158,27 +158,6 @@ func (l EndpointAddrList) Operators() []string {
 	return out
 }
 
-// ExcludeOperators returns a new list without any endpoint whose operator is in
-// the given set. It never returns an empty list when the input was non-empty:
-// if every candidate belongs to an excluded operator, the input is returned
-// unchanged. Avoiding an operator is a preference — reach different
-// infrastructure if you can — not a reason to have nowhere to send the request.
-func (l EndpointAddrList) ExcludeOperators(operators map[string]bool) EndpointAddrList {
-	if len(operators) == 0 || len(l) == 0 {
-		return l
-	}
-	out := make(EndpointAddrList, 0, len(l))
-	for _, a := range l {
-		if !operators[a.Operator()] {
-			out = append(out, a)
-		}
-	}
-	if len(out) == 0 {
-		return l
-	}
-	return out
-}
-
 // Contains returns true if the list contains the given addr.
 func (l EndpointAddrList) Contains(addr EndpointAddr) bool {
 	for _, a := range l {

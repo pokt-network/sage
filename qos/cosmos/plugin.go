@@ -417,9 +417,6 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		if err != nil {
 			return nil, fmt.Errorf("cosmos: evm eth_blockNumber from %s: %w", endpoint, err)
 		}
-		if height > 0 {
-			p.UpdateBlockHeight(endpoint, height)
-		}
 		return &qos.ExtractedData{BlockHeight: &height}, nil
 	}
 
@@ -454,10 +451,6 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 			return &qos.ExtractedData{ChainID: &chainID}, nil
 		}
 		return &qos.ExtractedData{}, nil
-	}
-
-	if height > 0 {
-		p.UpdateBlockHeight(endpoint, height)
 	}
 
 	data := &qos.ExtractedData{BlockHeight: &height}

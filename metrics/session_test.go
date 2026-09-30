@@ -30,7 +30,7 @@ func TestSessionCollector_CountsRegistrations(t *testing.T) {
 	scores := fakeScorer{
 		"s1-https://one.example.com": 100, "s2-https://one.example.com": 100, "s3-https://two.example.com": 40,
 	}
-	c := NewSessionCollector(fakeSession{eps}, scores, map[domain.ServiceID][]domain.RPCType{"eth": {domain.RPCTypeJSONRPC}}, 80)
+	c := NewSessionCollector(fakeSession{eps}, scores, map[domain.ServiceID][]domain.RPCType{"eth": {domain.RPCTypeJSONRPC}}, func() float64 { return 80 })
 	mfs := gather(t, c)
 
 	value := func(name, op string) (float64, bool) {

@@ -426,14 +426,6 @@ func TestExtractData_CometBFTResponse(t *testing.T) {
 	if *data.BlockHeight != 55000 {
 		t.Errorf("expected 55000, got %d", *data.BlockHeight)
 	}
-	// Should also update the store.
-	stored, ok := p.store.Get(ep)
-	if !ok {
-		t.Fatal("expected endpoint in store after ExtractData")
-	}
-	if stored.BlockHeight != 55000 {
-		t.Errorf("expected stored height 55000, got %d", stored.BlockHeight)
-	}
 }
 
 func TestExtractData_EmptyResponse(t *testing.T) {
@@ -891,18 +883,19 @@ func TestEVMHeight_ProbeAndExtractFollowTheFlag(t *testing.T) {
 	if hasEVMCheck() {
 		t.Error("flag off: no EVM probe expected")
 	}
-	if _, _ = p.ExtractData("s1-https://evm.example.net", req, resp); p.PerceivedBlockHeight() != 0 {
-		t.Errorf("flag off: perceived = %d, want 0", p.PerceivedBlockHeight())
+	if data, _ := p.ExtractData("s1-https://evm.example.net", req, resp); data != nil && data.BlockHeight != nil {
+		t.Errorf("flag off: height = %d, want none", *data.BlockHeight)
 	}
 
 	on = true
 	if !hasEVMCheck() {
 		t.Error("flag on: EVM probe expected")
 	}
-	if _, err := p.ExtractData("s1-https://evm.example.net", req, resp); err != nil {
+	data, err := p.ExtractData("s1-https://evm.example.net", req, resp)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := p.PerceivedBlockHeight(); got != 234_669_825 {
-		t.Errorf("flag on: perceived = %d, want 234669825", got)
+	if data.BlockHeight == nil || *data.BlockHeight != 234_669_825 {
+		t.Errorf("flag on: height = %v, want 234669825", data.BlockHeight)
 	}
 }

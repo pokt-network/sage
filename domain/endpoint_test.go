@@ -129,26 +129,3 @@ func TestEndpointAddrList_Operators(t *testing.T) {
 		t.Errorf("Operators() = %v, want [example.net other.net]", got)
 	}
 }
-
-func TestEndpointAddrList_ExcludeOperators(t *testing.T) {
-	l := EndpointAddrList{
-		"pokt1a-https://rpc-1.example.net",
-		"pokt1b-https://rpc-2.example.net",
-		"pokt1c-https://rpc.other.net",
-	}
-
-	got := l.ExcludeOperators(map[string]bool{"example.net": true})
-	if len(got) != 1 || got[0] != "pokt1c-https://rpc.other.net" {
-		t.Errorf("ExcludeOperators() = %v, want the other.net endpoint only", got)
-	}
-
-	// Excluding everything is a preference, not a reason to have no endpoint.
-	all := l.ExcludeOperators(map[string]bool{"example.net": true, "other.net": true})
-	if len(all) != len(l) {
-		t.Errorf("excluding every operator should return the input unchanged, got %v", all)
-	}
-
-	if got := l.ExcludeOperators(nil); len(got) != len(l) {
-		t.Errorf("nil exclusion set should return the input unchanged, got %v", got)
-	}
-}
