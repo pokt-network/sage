@@ -15,22 +15,9 @@ import (
 // WS path had no metrics at all: a gateway could hold a thousand dead sockets,
 // or none, and the dashboards would look the same.
 //
-//	sage_websocket_connections{service_id}                 live bridges
-//	sage_websocket_frames_total{service_id,direction}      data frames routed
-//	sage_websocket_bytes_total{service_id,direction}       payload bytes routed
-//	sage_websocket_closes_total{service_id,initiator,code} bridges ended, by who and the client-facing code
-//	sage_websocket_unresponsive_total{service_id,side}     liveness timeouts, by the silent side
-//	sage_websocket_rejected_total{service_id,reason}       upgrades refused before a bridge existed
-//	sage_websocket_rebinds_total{service_id,result}        lost suppliers replaced under a live client
-//	sage_websocket_stalls_total{service_id}                subscriptions with no data for the stall timeout
-//
-// and, per supplier, keyed by operator (the endpoint's registrable domain) and
-// owner (its on-chain owner address):
-//
-//	sage_websocket_supplier_frames_total{service_id,operator,owner,direction}
-//	sage_websocket_supplier_notifications_total{service_id,operator,owner,topic,grade}
-//	sage_websocket_supplier_connections{service_id,operator,owner}
-//	sage_websocket_supplier_tenure_seconds{service_id,operator,owner}
+// The series and their labels are listed in docs/metrics.md, generated from
+// the collectors below. Per supplier they are keyed by operator (the
+// endpoint's registrable domain) and owner (its on-chain owner address).
 //
 // The per-service series cannot say who is paid for the traffic: every frame
 // a supplier pushes is a relay it claims, so a supplier can earn out of all

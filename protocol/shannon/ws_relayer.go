@@ -394,7 +394,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	consensusHead := r.consensusHead(serviceID)
 	newProcessor := func(t *wsTarget) *wsMessageProcessor {
 		addr := t.addr
-		return newWSMessageProcessor(
+		p := newWSMessageProcessor(
 			ctx,
 			r.deps.Protocol,
 			t.session.Header,
@@ -407,7 +407,11 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 				default:
 				}
 			},
-		).withSubscriptions(subs).withSupplier(r.deps.Metrics, t.ep.Owner()).withSamples(r.samples).withHeads(r.heads, consensusHead)
+		)
+		p.subs, p.samples = subs, r.samples
+		p.heads, p.consensusHead = r.heads, consensusHead
+		p.metrics, p.owner, p.operator, p.boundAt = r.deps.Metrics, t.ep.Owner(), p.endpointAddr.Operator(), time.Now()
+		return p
 	}
 	processor := newProcessor(target)
 	currentProc.Store(processor)
@@ -784,7 +788,7 @@ func (r *WSRelayer) handleEndpointFrame(
 	// session boundary it does not control. The observation still goes out,
 	// forced, because a client did receive a non-2xx and that is worth seeing.
 	if errors.Is(frameErr, ErrEndpointControlFrame) {
-		r.submitObservation(serviceID, endpointAddr, payload, latency, frameErr, true)
+		r.submitObservation(serviceID, endpointAddr, payload, latency)
 		return
 	}
 
@@ -794,7 +798,7 @@ func (r *WSRelayer) handleEndpointFrame(
 	if frameErr != nil {
 		_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket,
 			reputation.NewMajorErrorSignal("ws_validate_err:"+frameErr.Error(), latency))
-		r.submitObservation(serviceID, endpointAddr, payload, latency, frameErr, true)
+		r.submitObservation(serviceID, endpointAddr, payload, latency)
 		return
 	}
 
@@ -807,9 +811,8 @@ func (r *WSRelayer) handleEndpointFrame(
 	}
 
 	// Always submit if heuristic penalized; otherwise sample.
-	forced := res.ShouldPenalize
-	if forced || rand.Float64() < r.deps.FrameObservationSampleRate {
-		r.submitObservation(serviceID, endpointAddr, payload, latency, nil, forced)
+	if res.ShouldPenalize || rand.Float64() < r.deps.FrameObservationSampleRate {
+		r.submitObservation(serviceID, endpointAddr, payload, latency)
 	}
 }
 
@@ -836,8 +839,6 @@ func (r *WSRelayer) submitObservation(
 	endpointAddr domain.EndpointAddr,
 	payload []byte,
 	latency time.Duration,
-	frameErr error,
-	_ bool,
 ) {
 	obs := observe.Observation{
 		ServiceID:    serviceID,
@@ -847,7 +848,6 @@ func (r *WSRelayer) submitObservation(
 		Latency:      latency,
 		ResponseBody: payload,
 	}
-	_ = frameErr // Observation currently has no Error field; follow-up commit can add.
 	r.deps.Observe.Submit(obs)
 }
 
@@ -864,11 +864,7 @@ func frameSeverityToSignal(res heuristic.AnalysisResult, latency time.Duration) 
 		return reputation.NewCriticalErrorSignal(reason, latency)
 	case heuristic.SeverityCritical:
 		return reputation.NewMajorErrorSignal(reason, latency)
-	case heuristic.SeverityMajor:
-		return reputation.NewMinorErrorSignal(reason, latency)
-	case heuristic.SeverityMinor:
-		return reputation.NewMinorErrorSignal(reason, latency)
-	default:
+	default: // Major and below all land on Minor.
 		return reputation.NewMinorErrorSignal(reason, latency)
 	}
 }

@@ -80,8 +80,9 @@ func TestWSProcessor_FeedsHeadSignals(t *testing.T) {
 		"pokt1supplier", "pokt1supplier-https://rel001.op-alpha.example",
 		&apptypes.Application{Address: "pokt1app"}, nil)
 	spy := &spyWSMetrics{}
-	proc.withSubscriptions(qos.NewSubscriptionRegistry(&evm.Plugin{})).withSupplier(spy, "pokt1owner").
-		withHeads(newWSHeadTracker(), func() uint64 { return 18 })
+	proc.subs = qos.NewSubscriptionRegistry(&evm.Plugin{})
+	proc.metrics, proc.owner, proc.operator = spy, "pokt1owner", proc.endpointAddr.Operator()
+	proc.heads, proc.consensusHead = newWSHeadTracker(), func() uint64 { return 18 }
 	endpoint := func(payload string) {
 		t.Helper()
 		fn.validateResponse = &servicetypes.RelayResponse{Payload: []byte(payload)}

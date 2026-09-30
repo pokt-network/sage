@@ -161,7 +161,7 @@ func TestWSProcessor_ProcessEndpointMessage_ValidationFailure_Blacklists(t *test
 func TestWSProcessor_FeedsSubscriptionRegistry(t *testing.T) {
 	_, proc, _, fn := buildProcessorFixture()
 	subs := qos.NewSubscriptionRegistry(&evm.Plugin{})
-	proc.withSubscriptions(subs)
+	proc.subs = subs
 
 	if _, err := proc.ProcessClientMessage([]byte(`{"jsonrpc":"2.0","id":9,"method":"eth_subscribe","params":["newHeads"]}`)); err != nil {
 		t.Fatal(err)
@@ -186,7 +186,8 @@ func TestWSProcessor_AttributesFramesAndGradesNotifications(t *testing.T) {
 		"pokt1supplier", "pokt1supplier-https://rel001.op-alpha.example",
 		&apptypes.Application{Address: "pokt1app"}, nil)
 	spy := &spyWSMetrics{}
-	proc.withSubscriptions(qos.NewSubscriptionRegistry(&evm.Plugin{})).withSupplier(spy, "pokt1owner")
+	proc.subs = qos.NewSubscriptionRegistry(&evm.Plugin{})
+	proc.metrics, proc.owner, proc.operator = spy, "pokt1owner", proc.endpointAddr.Operator()
 
 	endpoint := func(payload string) {
 		t.Helper()

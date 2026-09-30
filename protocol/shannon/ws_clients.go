@@ -86,19 +86,25 @@ func addTopics(dst map[string]int64, counts map[string]int64) map[string]int64 {
 		if dst == nil {
 			dst = make(map[string]int64, len(counts))
 		}
-		if _, ok := dst[t]; !ok && t != otherTopic && namedTopics(dst) >= wsLedgerMaxTopics {
-			t = otherTopic
-		}
-		dst[t] += n
+		dst[topicSlot(dst, t)] += n
 	}
 	return dst
 }
 
-func namedTopics(m map[string]int64) int {
-	if _, ok := m[otherTopic]; ok {
-		return len(m) - 1
+// topicSlot is the key topic is counted under in m: topic itself, or
+// otherTopic once m holds wsLedgerMaxTopics other named topics.
+func topicSlot(m map[string]int64, topic string) string {
+	if _, ok := m[topic]; ok || topic == otherTopic {
+		return topic
 	}
-	return len(m)
+	named := len(m)
+	if _, ok := m[otherTopic]; ok {
+		named--
+	}
+	if named >= wsLedgerMaxTopics {
+		return otherTopic
+	}
+	return topic
 }
 
 func newWSClientLedger(now func() time.Time) *wsClientLedger {

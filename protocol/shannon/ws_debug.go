@@ -115,24 +115,13 @@ func (r *WSRelayer) DebugSubscribe(ctx context.Context, serviceID domain.Service
 	if err != nil {
 		return res, fmt.Errorf("%w: %s serves no websocket", protocol.ErrDebugTargetNotFound, addr)
 	}
-	app, err := p.getApp(ctx, h.ApplicationAddress)
+	proc, wire, conn, err := r.dialSigned(ctx, serviceID, h, ep, addr, url, subscribe)
 	if err != nil {
-		res.Stop, res.Error = "error", "application unavailable for signing"
-		return res, nil
-	}
-	proc := newWSMessageProcessor(ctx, p, h, ep.Supplier(), addr, app, nil)
-	proc.evidence = true
-	wire, err := proc.ProcessClientMessage(subscribe)
-	if err != nil {
-		res.Stop, res.Error = "error", "signing the subscribe failed: "+err.Error()
-		return res, nil
-	}
-	conn, err := websockets.ConnectEndpoint(probeLogger, url, relayMinerHeaders(serviceID, h.ApplicationAddress))
-	if err != nil {
-		res.Stop, res.Error = "error", "dial failed: "+err.Error()
+		res.Stop, res.Error = "error", err.Error()
 		return res, nil
 	}
 	defer conn.Close()
+	proc.evidence = true
 	endHeight := h.SessionEndBlockHeight
 	sessionEnded := func() bool {
 		height := p.LatestBlockHeight()

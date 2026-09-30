@@ -106,7 +106,9 @@ func TestWSRelayer_SupplierTenureAccounting(t *testing.T) {
 	})
 	proc := newWSMessageProcessor(context.Background(), r.deps.Protocol,
 		&sessiontypes.SessionHeader{ServiceId: "eth"}, "pokt1op", "pokt1op-https://rel001.op-alpha.example",
-		&apptypes.Application{}, nil).withSupplier(spy, "pokt1owner")
+		&apptypes.Application{}, nil)
+	proc.metrics, proc.owner, proc.operator = spy, "pokt1owner", proc.endpointAddr.Operator()
+	proc.boundAt = time.Now()
 	proc.endpointFrames.Add(7)
 
 	r.bindSupplier("eth", proc)

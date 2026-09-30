@@ -2,12 +2,15 @@ package shannon
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 	"github.com/tidwall/gjson"
 
 	"github.com/pokt-network/sage/domain"
@@ -224,6 +227,32 @@ func (r *WSRelayer) probeEndpoint(ctx context.Context, t wsProbeTarget) {
 // keys that already failed), and the connect path logs at error.
 var probeLogger = slog.New(slog.DiscardHandler)
 
+// errSignedDial marks a dialSigned failure at the dial itself, after the
+// frame was signed: the endpoint's fault, not the gateway's.
+var errSignedDial = errors.New("dial failed")
+
+// dialSigned signs frame as a relay to ep under session h and dials url with
+// the relay miner's headers: the one signed connection a probe and a debug
+// subscription open outside any bridge. The processor it returns validates
+// the answers. A dial failure wraps errSignedDial; any other error is the
+// gateway failing to sign.
+func (r *WSRelayer) dialSigned(ctx context.Context, serviceID domain.ServiceID, h *sessiontypes.SessionHeader, ep *endpoint, addr domain.EndpointAddr, url string, frame []byte) (*wsMessageProcessor, []byte, *websocket.Conn, error) {
+	app, err := r.deps.Protocol.getApp(ctx, h.ApplicationAddress)
+	if err != nil {
+		return nil, nil, nil, errors.New("application unavailable for signing")
+	}
+	proc := newWSMessageProcessor(ctx, r.deps.Protocol, h, ep.Supplier(), addr, app, nil)
+	wire, err := proc.ProcessClientMessage(frame)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("signing the frame failed: %w", err)
+	}
+	conn, err := websockets.ConnectEndpoint(probeLogger, url, relayMinerHeaders(serviceID, h.ApplicationAddress))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: %w", errSignedDial, err)
+	}
+	return proc, wire, conn, nil
+}
+
 // runProbe performs one probe and returns its result.
 func (r *WSRelayer) runProbe(ctx context.Context, t wsProbeTarget) string {
 	ep, ok := r.deps.Protocol.sessions.lookupEndpoint(t.addr)
@@ -234,24 +263,12 @@ func (r *WSRelayer) runProbe(ctx context.Context, t wsProbeTarget) string {
 	if session == nil || session.Header == nil {
 		return wsProbeUnresolved
 	}
-	url, err := ep.GetURL(domain.RPCTypeWebSocket)
-	if err != nil {
-		return wsProbeUnresolved
-	}
-	appAddr := session.Header.ApplicationAddress
-	app, err := r.deps.Protocol.getApp(ctx, appAddr)
-	if err != nil {
-		return wsProbeUnresolved
-	}
-	proc := newWSMessageProcessor(ctx, r.deps.Protocol, session.Header, ep.Supplier(), t.addr, app, nil)
-	wire, err := proc.ProcessClientMessage(t.frame)
-	if err != nil {
-		return wsProbeUnresolved
-	}
-
-	conn, err := websockets.ConnectEndpoint(probeLogger, url, relayMinerHeaders(t.serviceID, appAddr))
-	if err != nil {
+	proc, wire, conn, err := r.dialSigned(ctx, t.serviceID, session.Header, ep, t.addr, t.url, t.frame)
+	if errors.Is(err, errSignedDial) {
 		return wsProbeDialFailed
+	}
+	if err != nil {
+		return wsProbeUnresolved
 	}
 	defer conn.Close()
 	deadline := time.Now().Add(wsProbeTimeout)

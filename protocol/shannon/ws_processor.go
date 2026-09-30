@@ -30,10 +30,10 @@ type frameCallback func(payload []byte, err error, latency time.Duration)
 
 // wsMessageProcessor implements websockets.MessageProcessor for Shannon.
 //
-// The processor is instantiated once per WS bridge (i.e. per client session).
-// The SessionHeader, supplier, and app are captured at construction and are
-// stable for the bridge's lifetime — v1 closes the bridge at session
-// boundaries instead of rotating the endpoint or refreshing the session.
+// The processor is instantiated once per supplier tenure: a bridge starts with
+// one, and every rebind (a lost supplier, a session rollover) builds a new one
+// for the supplier and session it moves to. The SessionHeader, supplier, and
+// app are captured at construction and never change after it.
 type wsMessageProcessor struct {
 	// evidence marks a debug probe's processor: a response that fails
 	// verification is reported, not blacklisted (debug.go).
@@ -64,26 +64,18 @@ type wsMessageProcessor struct {
 	onEndpointFrame frameCallback
 
 	// subs tracks the connection's subscriptions from the frames that cross
-	// it. Nil-safe; set by withSubscriptions.
+	// it. Nil-safe; shared by every processor of one bridge.
 	subs *qos.SubscriptionRegistry
 
 	// metrics, owner and operator attribute every frame to the supplier
 	// that signed it; endpointFrames counts this supplier's frames to the
-	// client for its tenure. Set by withSupplier; metrics is nil-safe.
+	// client for its tenure. Set by the relayer when it binds the supplier;
+	// metrics is nil-safe.
 	metrics        WSMetrics
 	owner          string
 	operator       string
 	boundAt        time.Time
 	endpointFrames atomic.Int64
-}
-
-// withSupplier attaches the per-supplier accounting.
-func (p *wsMessageProcessor) withSupplier(m WSMetrics, owner string) *wsMessageProcessor {
-	p.metrics = m
-	p.owner = owner
-	p.operator = p.endpointAddr.Operator()
-	p.boundAt = time.Now()
-	return p
 }
 
 // countTopic counts one notification this supplier pushed on a topic, capped
@@ -99,10 +91,7 @@ func (p *wsMessageProcessor) countTopic(topic string) {
 	if p.topics == nil {
 		p.topics = make(map[string]int64, 2)
 	}
-	if _, ok := p.topics[topic]; !ok && namedTopics(p.topics) >= wsLedgerMaxTopics {
-		topic = otherTopic
-	}
-	p.topics[topic]++
+	p.topics[topicSlot(p.topics, topic)]++
 	p.topicMu.Unlock()
 }
 
@@ -115,25 +104,6 @@ func (p *wsMessageProcessor) topicCounts() map[string]int64 {
 		out[t] = n
 	}
 	return out
-}
-
-// withHeads attaches the head tracker and the service's consensus head
-// (ws_heads.go).
-func (p *wsMessageProcessor) withHeads(t *wsHeadTracker, consensusHead func() uint64) *wsMessageProcessor {
-	p.heads, p.consensusHead = t, consensusHead
-	return p
-}
-
-// withSamples attaches the notification sampler (ws_samples.go).
-func (p *wsMessageProcessor) withSamples(s *wsNotificationSamples) *wsMessageProcessor {
-	p.samples = s
-	return p
-}
-
-// withSubscriptions attaches the subscription registry the frames feed.
-func (p *wsMessageProcessor) withSubscriptions(subs *qos.SubscriptionRegistry) *wsMessageProcessor {
-	p.subs = subs
-	return p
 }
 
 // newWSMessageProcessor creates a processor ready to be handed to

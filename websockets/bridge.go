@@ -265,7 +265,7 @@ func (b *Bridge) Shutdown(err error) {
 		closeCode := sanitizeCloseCode(rawCode)
 		clientMsg := websocket.FormatCloseMessage(closeCode, closeText)
 		if b.observer != nil {
-			b.observer.Closed(b.closeInitiator(), rawCode)
+			b.observer.Closed(b.ClosedBy(), rawCode)
 		}
 
 		// The two peers do not get the same frame. SAGE sits in the middle —
@@ -386,14 +386,10 @@ func (b *Bridge) route(msg message) {
 	}
 }
 
-// ClosedBy reports who ended the bridge. Meaningful once Done is closed.
+// ClosedBy reports who ended the bridge: a peer that sent a close frame, else
+// the gateway (a deadline, a processing error, a shutdown). Meaningful once
+// Done is closed.
 func (b *Bridge) ClosedBy() CloseInitiator {
-	return b.closeInitiator()
-}
-
-// closeInitiator reports who ended the bridge: a peer that sent a close
-// frame, else the gateway (a deadline, a processing error, a shutdown).
-func (b *Bridge) closeInitiator() CloseInitiator {
 	if ep := b.endpointConn.Load(); ep != nil {
 		if code, _ := ep.GetCloseInfo(); code != 0 {
 			return InitiatorEndpoint
