@@ -330,6 +330,12 @@ func rpcOfKey(key string) string {
 }
 
 const (
+	// timeoutCoalesce is the window in which a key's transport timeouts cost
+	// the additive score once. See RecordSignal.
+	timeoutCoalesce = time.Second
+	// reasonTransportTimeout is the heuristic's reason for an attempt that
+	// timed out on the wire (heuristic.AnalyzeTransportError).
+	reasonTransportTimeout = "transport_timeout"
 	// probeDefer is how recent traffic must be for it, not a probe, to have
 	// the last word on a key's score. See RecordSignal.
 	probeDefer = 10 * time.Minute
@@ -718,8 +724,20 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 		st.Score >= s.selector.cfg.Load().MinThreshold &&
 		st.LastTraffic > 0 && ts.Unix()-st.LastTraffic < int64(probeDefer/time.Second)
 	prev := st
-	if !deferred {
+	// Timeouts that land together are one event: the requests in flight when
+	// a backend stalls all time out at once. Charged one by one, six of them
+	// inside a second took mainnet solana's second operator from 100 to 0
+	// (2026-09-29), and it healed in tens of seconds — its share saw-toothed
+	// with every stall. One hit per timeoutCoalesce: a host that keeps timing
+	// out still pays every window and floors from 100 in about 20 seconds.
+	// The rate below still counts every one.
+	coalesced := signal.Type == SignalMajorError && signal.Reason == reasonTransportTimeout &&
+		prev.TimeoutHitAt != 0 && ts.UnixMilli()-prev.TimeoutHitAt < timeoutCoalesce.Milliseconds()
+	if !deferred && !coalesced {
 		st.Score = s.clamp(st.Score + impact)
+		if signal.Type == SignalMajorError && signal.Reason == reasonTransportTimeout {
+			st.TimeoutHitAt = ts.UnixMilli()
+		}
 	}
 	// An endpoint the additive term has already floored is in an outage, not
 	// exhibiting a rate; letting a day of probes against a dead host drive the

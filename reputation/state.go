@@ -28,6 +28,9 @@ type State struct {
 	// older than the idle TTL is deleted) and by the per-operator key count.
 	// Not consulted by scoring.
 	UpdatedAt int64 `json:"updated_at,omitempty"`
+	// TimeoutHitAt is the Unix millisecond of the last transport timeout that
+	// moved Score; see timeoutCoalesce. Not persisted.
+	TimeoutHitAt int64 `json:"-"`
 }
 
 // DefaultIdleTTL is how long a reputation key that has stopped receiving

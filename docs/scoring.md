@@ -488,6 +488,17 @@ outage — the case the chronic term exists for is the endpoint that fails 0.2%
 of the time and is *never* floored, and its arithmetic is untouched (a 1-in-500
 violator never reaches 0, so every one of its attempts feeds the rate).
 
+#### Timeout bursts are one event
+
+The additive term charges a key's transport timeouts at most once per second.
+The requests in flight when a backend stalls all time out together, and
+charged one by one, six of them inside a second took mainnet solana's second
+operator from 100 to 0 (2026-09-29); it healed in tens of seconds, and its
+share saw-toothed with every stall. The failure rate still counts every
+timeout, and a host that keeps timing out still pays every second and
+reaches 0 in the same order of time it did. Only timeouts: a 5xx is an answer,
+and N answers are N pieces of evidence.
+
 ### 7.4 Probe-only endpoints: selectable at full score
 
 Beta: probes and traffic agreed on every host — the live one passed every probe
