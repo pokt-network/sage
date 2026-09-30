@@ -104,6 +104,16 @@ func TestCapShare(t *testing.T) {
 			t.Errorf("outcomes %v, want [open]", spy.shareCaps)
 		}
 	})
+	t.Run("an unvouched endpoint in a party under the cap stays", func(t *testing.T) {
+		fresh := domain.EndpointAddr("b9-https://n9.light.net")
+		r, _ := shareRelayer(t, true, heavyA, heavyB, lightA)
+		addLive(r, heavyA, 6000)
+		addLive(r, lightA, 3000)
+		got := r.capShare(ctx, "base", append(pool, fresh), nil)
+		if !slices.Contains(got, fresh) || slices.Contains(got, heavyA) {
+			t.Fatalf("got %v, want the light party with its unvouched endpoint and no heavy one", got)
+		}
+	})
 	t.Run("flag off: unchanged", func(t *testing.T) {
 		r, _ := shareRelayer(t, false, heavyA, heavyB, lightA)
 		addLive(r, heavyA, 6000)

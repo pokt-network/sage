@@ -78,6 +78,14 @@ type wsHeadReading struct {
 func (t *wsHeadTracker) observe(serviceID domain.ServiceID, p wsHeadPusher, number uint64, hash string, now time.Time, consensus uint64) (r wsHeadReading, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// A head far past the service's consensus is not a reading. Nothing
+	// lowers the newest head once one push raises it, so one supplier's huge
+	// block number would read every honest push as far behind and forget
+	// every held block before it was judged: the check switched off by the
+	// party it judges.
+	if consensus > 0 && number > consensus+wsHeadKeepDepth {
+		return wsHeadReading{}, false
+	}
 	s := t.services[serviceID]
 	if s == nil {
 		s = &wsServiceHeads{blocks: make(map[uint64]*wsHeadBlock)}

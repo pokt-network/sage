@@ -589,9 +589,11 @@ func (b *Bridge) rebind(lost *Connection, cause error) {
 	}
 	b.endpointConn.Store(next)
 	b.processor = processor
-	if !errors.Is(cause, ErrBridgeSessionExpired) {
-		// A session rollover is a planned move, not evidence of a dying
-		// pool; only losses count toward the limit.
+	if !errors.Is(cause, ErrBridgeSessionExpired) && !errors.Is(cause, ErrBridgeReplaceRequested) {
+		// A session rollover and an operator's rebind are planned moves, not
+		// evidence of a dying pool; only losses count toward the limit. Three
+		// admin rebinds used to spend the budget, and the next real loss or
+		// session end closed every bridge on the service.
 		b.losses = append(b.losses, time.Now())
 	}
 	b.endpointMu.Unlock()

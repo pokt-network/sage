@@ -144,7 +144,7 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.HistogramOpts{
 				Namespace: "sage",
 				Name:      "websocket_head_delay_seconds",
-				Help:      "How long after the first supplier on this pod pushed a block's head this supplier pushed the same block, by service, operator and owner; 0 for the first. Observed only for a block at least two operators pushed, so an operator alone on a service has no reading rather than a perfect one.",
+				Help:      "How long after the first supplier on this pod pushed a block's head this supplier pushed the same block, by service, operator and owner. Only later pushers are observed: the first to push a block has no reading for it, so an operator that is always first, or alone on a service, has an empty histogram rather than a perfect one.",
 				Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30},
 			},
 			supplierLabels,

@@ -103,3 +103,16 @@ func TestWSProcessor_FeedsHeadSignals(t *testing.T) {
 		t.Fatalf("heads = %v", spy.heads)
 	}
 }
+
+// A push far past consensus is dropped, so it cannot pin the newest head.
+func TestWSHeadTracker_IgnoresAHeadFarPastConsensus(t *testing.T) {
+	tr := newWSHeadTracker()
+	t0 := time.Now()
+	if _, ok := tr.observe("eth", opA, 1_000_000, "0xliar", t0, 100); ok {
+		t.Fatal("a head far past consensus must not be a reading")
+	}
+	r, ok := tr.observe("eth", opB, 100, "0xh100", t0, 100)
+	if !ok || r.lag != 0 {
+		t.Fatalf("honest push after the liar: %+v ok=%v, want lag 0", r, ok)
+	}
+}

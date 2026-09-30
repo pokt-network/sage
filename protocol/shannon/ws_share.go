@@ -95,23 +95,30 @@ func (r *WSRelayer) capShare(ctx context.Context, serviceID domain.ServiceID, ca
 		r.shareCapOutcome(serviceID, "open")
 		return candidates
 	}
-	var allowed domain.EndpointAddrList
-	bound := false
-	for party, eps := range byParty {
-		if (load[party]+own)/total <= wsShareCap {
-			allowed = append(allowed, eps...)
-		} else {
-			bound = true
+	// Vouched parties decide who is over the cap; only those parties are
+	// taken out. An endpoint reputation has not vouched for yet, in a party
+	// under the cap, stays a candidate: keeping only vouched ones meant a
+	// WebSocket key with no connection history never got a connection.
+	over := map[string]bool{}
+	for party := range byParty {
+		if (load[party]+own)/total > wsShareCap {
+			over[party] = true
 		}
 	}
-	switch {
-	case len(allowed) == 0:
+	if len(over) == len(byParty) {
 		r.shareCapOutcome(serviceID, "open")
 		return candidates
-	case bound:
-		r.shareCapOutcome(serviceID, "bound")
-	default:
+	}
+	if len(over) == 0 {
 		r.shareCapOutcome(serviceID, "clear")
+		return candidates
+	}
+	r.shareCapOutcome(serviceID, "bound")
+	allowed := make(domain.EndpointAddrList, 0, len(candidates))
+	for _, ep := range candidates {
+		if !over[ep.Party()] {
+			allowed = append(allowed, ep)
+		}
 	}
 	return allowed
 }

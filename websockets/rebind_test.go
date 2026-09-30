@@ -288,9 +288,16 @@ func TestBridge_ReplaceEndpointRebinds(t *testing.T) {
 	}
 }
 
-// A session rollover is a planned replacement, not a dying pool: it must not
-// eat the rebind budget that guards against the latter.
-func TestBridge_SessionRolloverDoesNotCountTowardLimit(t *testing.T) {
+// A session rollover and an operator's rebind are planned replacements, not
+// a dying pool: neither may eat the rebind budget that guards against the
+// latter.
+func TestBridge_PlannedRebindsDoNotCountTowardLimit(t *testing.T) {
+	for _, cause := range []error{ErrBridgeSessionExpired, ErrBridgeReplaceRequested} {
+		t.Run(cause.Error(), func(t *testing.T) { plannedRebindsKeepBudget(t, cause) })
+	}
+}
+
+func plannedRebindsKeepBudget(t *testing.T, cause error) {
 	first := newEchoServer(t)
 	defer first.Close()
 	var servers []*httptest.Server
@@ -312,13 +319,13 @@ func TestBridge_SessionRolloverDoesNotCountTowardLimit(t *testing.T) {
 	b := <-bridges
 
 	for i := 0; i < 3; i++ {
-		b.ReplaceEndpoint(ErrBridgeSessionExpired)
+		b.ReplaceEndpoint(cause)
 		require.Eventually(t, func() bool { return int(n.Load()) == i+1 }, 2*time.Second, 5*time.Millisecond)
 		time.Sleep(20 * time.Millisecond)
 	}
 	select {
 	case <-b.Done():
-		t.Fatal("three session rollovers must not exhaust a limit of one")
+		t.Fatal("three planned rebinds must not exhaust a limit of one")
 	default:
 	}
 }
