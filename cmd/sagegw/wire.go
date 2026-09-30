@@ -801,9 +801,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		return middleware.Observe(flags, obsQueue, repSvc, sampler)
 	})
 	mwReg.Register(relay.MWRetry, func() relay.Middleware {
-		return middleware.RetryWithRecorder(flags, retryFn, recorder, middleware.RetryVouchedBy(repSvc))
+		return middleware.RetryWithRecorder(flags, retryFn, recorder, middleware.RetryVouchedBy(repSvc), middleware.RetryEndpointsFrom(proto))
 	})
-	mwReg.Register(relay.MWHedge, func() relay.Middleware { return middleware.HedgeWithRecorder(flags, retryFn, recorder) })
+	mwReg.Register(relay.MWHedge, func() relay.Middleware { return middleware.HedgeWithRecorder(flags, retryFn, recorder, proto) })
 	mwReg.Register(relay.MWSupplierAffinity, func() relay.Middleware {
 		return middleware.SupplierAffinity(flags, 10*time.Second)
 	})

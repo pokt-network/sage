@@ -454,7 +454,7 @@ func TestHedge_RecordsOutcome(t *testing.T) {
 	rec := &recordingHedgeRec{}
 	// Primary answers before the delay: no hedge sent, one primary_before_delay.
 	handler := newMockHandler(nil)
-	mw := HedgeWithRecorder(newFlags("hedge"), hedgeCfg(50*time.Millisecond), rec)
+	mw := HedgeWithRecorder(newFlags("hedge"), hedgeCfg(50*time.Millisecond), rec, nil)
 	if err := mw(handler).HandleRelay(baseContext()); err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +689,7 @@ func TestHedge_SuppressedForLargeBatchItems(t *testing.T) {
 			}
 			ctx := baseContext()
 			ctx.BatchSize = tc.batchSize
-			if err := HedgeWithRecorder(newFlags("hedge"), cfgFn, rec)(slow).HandleRelay(ctx); err != nil {
+			if err := HedgeWithRecorder(newFlags("hedge"), cfgFn, rec, nil)(slow).HandleRelay(ctx); err != nil {
 				t.Fatal(err)
 			}
 			<-primaryDone
@@ -731,5 +731,44 @@ func TestHedge_DeadlineNamesTheArmsInFlight(t *testing.T) {
 	}
 	if !domain.IsRetryable(err) {
 		t.Fatal("a hedged deadline must stay retryable")
+	}
+}
+
+// In production nothing outside the race has fetched the pool on a first
+// attempt: SelectEndpoint does, inside the arm. The hedge must still steer
+// away from the primary's operator, which it can only do when Hedge fetched
+// the pool itself before cloning.
+func TestHedge_SteersOnAFirstAttemptWithNoPool(t *testing.T) {
+	provider := stubProvider{eps: multiOperatorEndpoints()}
+	var mu sync.Mutex
+	var picked []domain.EndpointAddr
+	// SelectEndpoint's shape: fetch when empty, pick the first, publish it.
+	slow := relay.HandlerFunc(func(ctx *relay.Context) error {
+		if len(ctx.Endpoints) == 0 {
+			ctx.Endpoints, _ = provider.AvailableEndpoints(ctx.Ctx, ctx.ServiceID, ctx.RPCType)
+		}
+		ep := ctx.Endpoints[0]
+		ctx.Endpoint = ep
+		if ctx.SelectedEndpoint != nil {
+			ctx.SelectedEndpoint.Store(&ep)
+		}
+		mu.Lock()
+		picked = append(picked, ep)
+		mu.Unlock()
+		time.Sleep(60 * time.Millisecond)
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	h := HedgeWithRecorder(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond), nil, provider)(slow)
+	ctx := baseContext()
+	ctx.Endpoints = nil
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(picked) != 2 || picked[0].Operator() == picked[1].Operator() {
+		t.Fatalf("hedge did not steer off the primary's operator: %v", picked)
 	}
 }

@@ -757,3 +757,41 @@ func TestAttemptNote_MarksProbation(t *testing.T) {
 		t.Errorf("note = %q, want slow.example:ok", got)
 	}
 }
+
+// The same recovery with nothing having fetched the pool before the first
+// attempt, as in production: the hedged attempt the deadline ends merges
+// nothing back, so Retry needs a pool of its own to retry from.
+func TestRetryOverHedge_RecoversWithNoPoolBeforeTheFirstAttempt(t *testing.T) {
+	provider := stubProvider{eps: baseContext().Endpoints}
+	var mu sync.Mutex
+	attempts := 0
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		if len(ctx.Endpoints) == 0 {
+			ctx.Endpoints, _ = provider.AvailableEndpoints(ctx.Ctx, ctx.ServiceID, ctx.RPCType)
+		}
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n <= 2 {
+			<-ctx.Ctx.Done()
+			return retryableErr("blackhole")
+		}
+		ctx.Endpoint = ctx.Endpoints[0]
+		ctx.Response = &domain.Response{HTTPStatusCode: 200}
+		return nil
+	})
+
+	flags := newFlags("retry", "hedge")
+	chain := RetryWithRecorder(flags, retryCfg(1, 0), nil, RetryEndpointsFrom(provider))(Hedge(flags, hedgeCfg(2*time.Millisecond))(inner))
+
+	ctx := baseContext()
+	ctx.Endpoints = nil
+	c, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	ctx.Ctx = c
+
+	if err := chain.HandleRelay(ctx); err != nil {
+		t.Fatalf("expected recovery on the retry, got %v", err)
+	}
+}

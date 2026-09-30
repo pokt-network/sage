@@ -10,6 +10,7 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
+	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/reputation"
 )
@@ -25,7 +26,14 @@ type RetryRecorder interface {
 type RetryOption func(*retryOptions)
 
 type retryOptions struct {
-	repSvc reputation.Service
+	repSvc    reputation.Service
+	endpoints protocol.EndpointProvider
+}
+
+// RetryEndpointsFrom has Retry fetch the pool before the first attempt, so it
+// has one to retry from whatever the attempt merged back (fillEndpoints).
+func RetryEndpointsFrom(p protocol.EndpointProvider) RetryOption {
+	return func(o *retryOptions) { o.endpoints = p }
 }
 
 // RetryVouchedBy lets the operator-aware retry check that the operators it
@@ -85,6 +93,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// from the previous attempt's list: operator preference narrows the
 			// pool for one attempt only, and compounding those narrowings across
 			// attempts would strand later retries with nothing to pick from.
+			fillEndpoints(ctx, o.endpoints)
 			var pool domain.EndpointAddrList
 			operatorAware := flags.IsEnabled(ctx.Ctx, featureflag.FlagOperatorAwareSelection, ctx.ServiceID)
 			start := time.Now()
@@ -277,7 +286,7 @@ func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 					// operator's hostnames are one operator's infrastructure —
 					// avoiding only the failed endpoint can land the retry on
 					// the same rack behind the same outage. This is a
-					// preference, not a filter: ExcludeOperators returns the
+					// preference, not a filter: ExcludeAffiliates returns the
 					// list untouched when every remaining candidate belongs to
 					// an operator we have tried.
 					//

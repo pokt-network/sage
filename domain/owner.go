@@ -197,7 +197,7 @@ func (a Affiliates) Contains(ep EndpointAddr) bool {
 }
 
 // ExcludeAffiliates returns the list without any endpoint affiliated with a.
-// Like ExcludeOperators it never empties a non-empty list: when every
+// It never empties a non-empty list: when every
 // candidate is affiliated, the input is returned unchanged. Reaching an
 // independent provider is a preference, not a reason to have nowhere to send.
 func (l EndpointAddrList) ExcludeAffiliates(a Affiliates) EndpointAddrList {

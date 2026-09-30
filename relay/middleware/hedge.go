@@ -11,6 +11,7 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/internal/safego"
+	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -33,12 +34,15 @@ type HedgeRecorder interface {
 // HedgeWithRecorder with no metric recorder. If the "hedge" flag is disabled
 // or HedgeDelay==0 the middleware passes through.
 func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig) relay.Middleware {
-	return HedgeWithRecorder(flags, configFn, nil)
+	return HedgeWithRecorder(flags, configFn, nil, nil)
 }
 
 // HedgeWithRecorder returns the hedge middleware, recording sage_hedge_total
 // on each resolved race when rec is non-nil.
-func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec HedgeRecorder) relay.Middleware {
+//
+// endpoints, when non-nil, fetches the pool before the race so the hedge can
+// steer away from the primary on a first attempt (fillEndpoints).
+func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec HedgeRecorder, endpoints protocol.EndpointProvider) relay.Middleware {
 	recordHedge := func(ctx *relay.Context, result string) {
 		if rec != nil {
 			rec.RecordHedge(ctx.ServiceID, result)
@@ -65,6 +69,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 				return next.HandleRelay(ctx)
 			}
 
+			fillEndpoints(ctx, endpoints)
 			primaryCh := make(chan hedgeResult, 1)
 			hedgeCh := make(chan hedgeResult, 1)
 
@@ -135,7 +140,7 @@ func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.Service
 			// different one, and prefer a different OPERATOR: the point of a
 			// hedge is a second, independent path to an answer, and two
 			// hostnames run by the same provider are not independent. The
-			// operator step is a preference — ExcludeOperators leaves the list
+			// operator step is a preference — ExcludeAffiliates leaves the list
 			// alone when the primary's operator is the only one left — so a
 			// single-operator pool still hedges exactly as before.
 			//

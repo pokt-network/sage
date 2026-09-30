@@ -117,6 +117,25 @@ func narrowsIntoStale(ctx *relay.Context, narrowed, full domain.EndpointAddrList
 	return ok && c.AllStale(narrowed) && !c.AllStale(full)
 }
 
+// fillEndpoints fetches the service's endpoints onto ctx when nothing has yet.
+//
+// Retry and Hedge steer by the pool (the endpoints tried, the primary arm's
+// pick), but the pool is fetched by SelectEndpoint, inside the arm, onto the
+// arm's clone. On a first attempt the parent's list was therefore empty: a
+// hedge excluded its primary from nothing and could land on the same host,
+// and a hedged first attempt the deadline ended left Retry no pool to retry
+// from. Fetched here once, the arms inherit it and SelectEndpoint skips its
+// own fetch. A failed fetch leaves the list empty for SelectEndpoint to fail
+// on, as before.
+func fillEndpoints(ctx *relay.Context, p protocol.EndpointProvider) {
+	if len(ctx.Endpoints) > 0 || p == nil {
+		return
+	}
+	if eps, err := p.AvailableEndpoints(ctx.Ctx, ctx.ServiceID, ctx.RPCType); err == nil {
+		ctx.Endpoints = eps
+	}
+}
+
 // probationBudgetShare is the fraction (1/n) of an attempt's remaining
 // deadline a probation first try may use.
 const probationBudgetShare = 4
