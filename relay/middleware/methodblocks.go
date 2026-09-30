@@ -223,11 +223,7 @@ func normalizedMethod(registry *qos.Registry, ctx *relay.Context) string {
 	if registry == nil || len(ctx.Payloads) == 0 {
 		return ""
 	}
-	plugin := ctx.Plugin
-	if plugin == nil {
-		plugin = registry.Get(ctx.ServiceID)
-	}
-	normalizer, ok := plugin.(qos.MethodNormalizer)
+	normalizer, ok := pluginOf(registry, ctx).(qos.MethodNormalizer)
 	if !ok {
 		return ""
 	}
@@ -237,11 +233,7 @@ func normalizedMethod(registry *qos.Registry, ctx *relay.Context) string {
 // methodFamily asks the service's plugin which catalogued methods a host
 // that refused method will refuse too; nil when the plugin cannot say.
 func methodFamily(registry *qos.Registry, ctx *relay.Context, method string) []string {
-	plugin := ctx.Plugin
-	if plugin == nil && registry != nil {
-		plugin = registry.Get(ctx.ServiceID)
-	}
-	lister, ok := plugin.(qos.MethodFamilyLister)
+	lister, ok := pluginOf(registry, ctx).(qos.MethodFamilyLister)
 	if !ok {
 		return nil
 	}

@@ -166,11 +166,7 @@ func (o heuristicOptions) observeHeadLag(registry *qos.Registry, ctx *relay.Cont
 	if len(ctx.Payloads) != 1 || ctx.Response.HTTPStatusCode != 200 {
 		return 0, false
 	}
-	plugin := ctx.Plugin
-	if plugin == nil && registry != nil {
-		plugin = registry.Get(ctx.ServiceID)
-	}
-	reader, ok := plugin.(qos.HeadLagReader)
+	reader, ok := pluginOf(registry, ctx).(qos.HeadLagReader)
 	if !ok {
 		return 0, false
 	}
@@ -251,13 +247,18 @@ func observeAttempt(registry *qos.Registry, ctx *relay.Context) {
 	if len(ctx.Payloads) == 0 {
 		return
 	}
-	plugin := ctx.Plugin
-	if plugin == nil && registry != nil {
-		plugin = registry.Get(ctx.ServiceID)
-	}
-	if x, ok := plugin.(qos.DataExtractor); ok {
+	if x, ok := pluginOf(registry, ctx).(qos.DataExtractor); ok {
 		_, _ = x.ExtractData(ctx.Endpoint, ctx.Payloads[0].Bytes(), ctx.Response.Body)
 	}
+}
+
+// pluginOf is the request's plugin: the one Parse set, else the service's
+// registered one. Nil when neither is known.
+func pluginOf(registry *qos.Registry, ctx *relay.Context) qos.Plugin {
+	if ctx.Plugin == nil && registry != nil {
+		return registry.Get(ctx.ServiceID)
+	}
+	return ctx.Plugin
 }
 
 // refineVerdict lets the service's plugin re-attribute the verdict from the
@@ -266,11 +267,7 @@ func refineVerdict(registry *qos.Registry, ctx *relay.Context, result *heuristic
 	if len(ctx.Payloads) == 0 {
 		return false
 	}
-	plugin := ctx.Plugin
-	if plugin == nil && registry != nil {
-		plugin = registry.Get(ctx.ServiceID)
-	}
-	refiner, ok := plugin.(qos.VerdictRefiner)
+	refiner, ok := pluginOf(registry, ctx).(qos.VerdictRefiner)
 	if !ok {
 		return false
 	}

@@ -40,6 +40,9 @@ func (r *fakeRecorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.
 	r.verdicts = append(r.verdicts, fakeVerdict{serviceID, rpcType, reason, attribution})
 }
 
+func (r *fakeRecorder) RecordOperatorAttempt(domain.ServiceID, domain.RPCType, domain.EndpointAddr, string, string, string, time.Duration) {
+}
+
 func (r *fakeRecorder) RecordRelay(serviceID domain.ServiceID, endpoint domain.EndpointAddr, statusCode int, latency time.Duration, err error) {
 	r.serviceID = serviceID
 	r.endpoint = endpoint

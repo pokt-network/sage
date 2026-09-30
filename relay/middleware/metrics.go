@@ -23,14 +23,10 @@ type MetricsRecorder interface {
 	// Called once per attempt that produced a verdict, so a retried request
 	// records one verdict per attempt.
 	RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCType, reason, attribution string)
-}
-
-// OperatorRecorder is implemented by a recorder that also counts attempts per
-// operator: who served the attempt, whose fault the outcome was, and how long
-// it took.
-type OperatorRecorder interface {
-	// kind is the attempt's relay.AttemptKind label (first, retry, hedge,
-	// probation); methodClass is methodClassOf the request's method.
+	// RecordOperatorAttempt counts one attempt per operator: who served it,
+	// whose fault the outcome was, and how long it took. kind is the
+	// attempt's relay.AttemptKind label (first, retry, hedge, probation);
+	// methodClass is methodClassOf the request's method.
 	RecordOperatorAttempt(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution, kind, methodClass string, latency time.Duration)
 }
 
@@ -72,7 +68,6 @@ var heavyMethods = map[string]bool{
 // next.HandleRelay; recording is best-effort and never affects the returned
 // error.
 func Metrics(recorder MetricsRecorder) relay.Middleware {
-	operators, _ := recorder.(OperatorRecorder)
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			start := time.Now()
@@ -103,7 +98,7 @@ func Metrics(recorder MetricsRecorder) relay.Middleware {
 			if v := ctx.HeuristicResult; v != nil {
 				recorder.RecordVerdict(ctx.ServiceID, ctx.RPCType, v.Reason, verdictAttribution(v))
 			}
-			if operators != nil && ctx.Endpoint != "" {
+			if ctx.Endpoint != "" {
 				kind := ctx.AttemptKind
 				if kind == "" {
 					kind = relay.AttemptFirst
@@ -112,7 +107,7 @@ func Metrics(recorder MetricsRecorder) relay.Middleware {
 				if len(ctx.Payloads) > 0 {
 					method = ctx.Payloads[0].Method()
 				}
-				operators.RecordOperatorAttempt(ctx.ServiceID, ctx.RPCType, ctx.Endpoint,
+				recorder.RecordOperatorAttempt(ctx.ServiceID, ctx.RPCType, ctx.Endpoint,
 					attemptAttribution(ctx.HeuristicResult, err), kind, methodClassOf(method), latency)
 			}
 

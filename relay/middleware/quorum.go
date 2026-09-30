@@ -172,9 +172,10 @@ func Quorum(flags featureflag.FlagStore, endpoints protocol.EndpointProvider, re
 
 			need := len(groups)/2 + 1
 			votes := map[[sha256.Size]byte][]armResult{}
-			voted := map[string]bool{}
-			// voters widens voted by owner: an owner answering through two
-			// brands is one voice, or it could outvote everyone else alone.
+			voted := 0
+			// voters is one voice per operator, widened by owner: an owner
+			// answering through two brands is one voice, or it could outvote
+			// everyone else alone.
 			var voters domain.Affiliates
 			done := make([]*armResult, len(groups))
 			answered := 0
@@ -193,11 +194,10 @@ func Quorum(flags featureflag.FlagStore, endpoints protocol.EndpointProvider, re
 					if mode != QuorumModeConsensus {
 						continue
 					}
-					op := r.ctx.Endpoint.Operator()
-					if voted[op] || voters.Contains(r.ctx.Endpoint) {
+					if voters.Contains(r.ctx.Endpoint) {
 						continue
 					}
-					voted[op] = true
+					voted++
 					voters.Add(r.ctx.Endpoint)
 					digest := answerDigest(r.ctx.Response)
 					votes[digest] = append(votes[digest], r)
@@ -210,7 +210,7 @@ func Quorum(flags featureflag.FlagStore, endpoints protocol.EndpointProvider, re
 					setHeader(ctx, headerQuorumAchieved, strconv.Itoa(len(votes[digest])))
 					setHeader(ctx, headerQuorumMajority, "true")
 					record(ctx, "majority")
-					if dissent := len(voted) - len(votes[digest]); dissent > 0 && rec != nil {
+					if dissent := voted - len(votes[digest]); dissent > 0 && rec != nil {
 						// Counted, not scored: the dissenter's own attempt was
 						// already scored on its merits, and whether being
 						// outvoted should cost more is not decided.
