@@ -76,6 +76,10 @@ func TestGradeHead_CheckRecordsNoReputationSignal(t *testing.T) {
 		})
 	}
 	exec.applyResult(context.Background(), ProbeResult{
+		ServiceID: "eth", Endpoint: "a-https://n1.example", Check: "canary", RPCType: domain.RPCTypeJSONRPC,
+		TransportError: "timeout", TransportReason: "timeout", TransportSeverity: "major",
+	})
+	exec.applyResult(context.Background(), ProbeResult{
 		ServiceID: "eth", Endpoint: "a-https://n1.example", Check: "plain", RPCType: domain.RPCTypeJSONRPC,
 		StatusCode: 400,
 	})
@@ -83,5 +87,34 @@ func TestGradeHead_CheckRecordsNoReputationSignal(t *testing.T) {
 	defer rep.mu.Unlock()
 	if len(rep.signals) != 1 {
 		t.Fatalf("%d signals, want only the plain check's", len(rep.signals))
+	}
+}
+
+// restHeadPlugin's one head check is a body-less GET, recognised by its path.
+type restHeadPlugin struct{ graded *bool }
+
+func (restHeadPlugin) ParseRequest(context.Context, *http.Request, []byte, domain.RPCType) ([]domain.Payload, error) {
+	return nil, nil
+}
+func (restHeadPlugin) SelectEndpoints(eps domain.EndpointAddrList, _ []domain.Payload) (domain.EndpointAddrList, error) {
+	return eps, nil
+}
+func (restHeadPlugin) HealthChecks() []qos.HealthCheck {
+	return []qos.HealthCheck{{Name: "rest_canary", Payload: domain.NewPayload(nil, domain.RPCTypeREST, "").WithHTTP("/latest", http.MethodGet), GradesHead: true}}
+}
+func (p restHeadPlugin) HeadLag(payload domain.Payload, _ []byte, _ time.Time) (uint64, bool, bool) {
+	*p.graded = payload.Path() == "/latest" && payload.HTTPMethod() == http.MethodGet
+	return 1, false, *p.graded
+}
+
+// A REST canary has no body: the grading must carry the check's path, or the
+// plugin cannot tell what was asked.
+func TestGradeHead_RESTCheckKeepsItsPath(t *testing.T) {
+	graded := false
+	e := &Executor{}
+	e.SetHeadLagRecorder(func(domain.ServiceID, string, string, uint64, bool) {})
+	e.gradeHead(restHeadPlugin{graded: &graded}, ProbeResult{ServiceID: "osmosis", Endpoint: "a-https://n1.example", Check: "rest_canary", RPCType: domain.RPCTypeREST, ProbedAt: time.Now()})
+	if !graded {
+		t.Fatal("REST canary graded without its path")
 	}
 }

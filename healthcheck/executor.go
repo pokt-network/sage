@@ -1082,6 +1082,17 @@ func (e *Executor) isEssentialCheck(plugin qos.Plugin, name string) bool {
 	return false
 }
 
+// isHeadCheck reports whether the named check is one the plugin marked
+// GradesHead.
+func (e *Executor) isHeadCheck(plugin qos.Plugin, name string) bool {
+	for _, c := range pluginChecks(plugin) {
+		if c.Name == name {
+			return c.GradesHead
+		}
+	}
+	return false
+}
+
 // gradeHead hands a check marked GradesHead to the plugin's head-lag reader,
 // graded at the moment the probe was answered (a peer's result is applied
 // here later), and the reading to the head-lag hook. It reports whether the
@@ -1095,11 +1106,15 @@ func (e *Executor) gradeHead(plugin qos.Plugin, r ProbeResult) bool {
 		if e.headLag == nil || !ok {
 			return true
 		}
-		at := r.ProbedAt
-		if at.IsZero() {
+		// Graded when the answer arrived: ProbedAt is when the probe was
+		// sent, and a slow answer is that much older.
+		at := r.ProbedAt.Add(time.Duration(r.LatencyMS) * time.Millisecond)
+		if r.ProbedAt.IsZero() {
 			at = time.Now()
 		}
-		payload := domain.NewPayload(r.Request, r.RPCType, c.Payload.Method())
+		// The check's own payload carries the path and verb a REST canary is
+		// recognised by; the probe result keeps only the body.
+		payload := domain.NewPayload(r.Request, r.RPCType, c.Payload.Method()).WithHTTP(c.Payload.Path(), c.Payload.HTTPMethod())
 		if lag, stale, ok := reader.HeadLag(payload, r.Body, at); ok {
 			e.headLag(r.ServiceID, r.Endpoint.Party(), r.Check, lag, stale)
 		}
@@ -1438,8 +1453,10 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 		// Penalize only the endpoint that actually failed. A relay error can be
 		// the supplier's session or signing rather than the backend, and there
 		// is no response to tell the two apart — blaming the backend's other
-		// registrations for it would eject healthy ones.
-		if e.repService != nil && r.TransportSeverity != "" {
+		// registrations for it would eject healthy ones. A check that grades
+		// the head records nothing at all (gradeHead): it measures, the
+		// service's other probes grade reachability.
+		if e.repService != nil && r.TransportSeverity != "" && !e.isHeadCheck(e.qosRegistry.Get(r.ServiceID), r.Check) {
 			signal := severitySignal(r.TransportSeverity, "health_check: "+r.Check+": "+r.TransportReason, latency)
 			signal.Probe = true
 			_ = e.repService.RecordSignal(ctx, r.ServiceID, r.Endpoint, rpcType, signal)
