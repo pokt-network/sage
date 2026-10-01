@@ -500,3 +500,27 @@ func TestBlockConsensus_AnswerLagNoVerdictOnAStalledHead(t *testing.T) {
 		t.Fatalf("lag %d stale %v ok %v, want a lag and no verdict", lag, stale, ok)
 	}
 }
+
+// StateLag grades a block timestamp against the clock: two block times plus
+// the slack, no verdict without a rate or once the head has stalled.
+func TestBlockConsensus_StateLag(t *testing.T) {
+	bc := NewBlockConsensus(nil, 100)
+	now := time.Now()
+	if _, _, ok := bc.StateLag(now, now); ok {
+		t.Fatal("no head: ok must be false")
+	}
+	bc.AddObservation("a1-https://x.a.net", 1000)
+	bc.mu.Lock()
+	bc.rateSamples = []rateSample{{height: 990, at: now.Add(-24 * time.Second)}, {height: 1000, at: now.Add(-4 * time.Second)}}
+	bc.mu.Unlock()
+	// rate 0.5/s: two blocks are 4s, stale past 14s.
+	if lag, stale, ok := bc.StateLag(now.Add(-10*time.Second), now); !ok || stale || lag != 5 {
+		t.Errorf("10s old: lag %d stale %v ok %v, want 5 false true", lag, stale, ok)
+	}
+	if _, stale, _ := bc.StateLag(now.Add(-20*time.Second), now); !stale {
+		t.Error("20s old must be stale")
+	}
+	if _, stale, ok := bc.StateLag(now.Add(-time.Hour), now.Add(bc.windowDuration+time.Minute)); !ok || stale {
+		t.Error("a stalled head gives no verdict")
+	}
+}

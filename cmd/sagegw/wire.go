@@ -425,7 +425,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		pluginLogger := logger.With("service_id", svc.ID)
 		switch domain.ServiceType(svc.Type) {
 		case domain.ServiceTypeEVM:
-			plugin = evm.NewPlugin(pluginLogger, evmConfigFor(svc))
+			evmCfg := evmConfigFor(svc)
+			serviceID := domain.ServiceID(svc.ID)
+			evmCfg.StateCanary = func() bool {
+				return flags.IsEnabled(context.Background(), featureflag.FlagStateCanary, serviceID)
+			}
+			plugin = evm.NewPlugin(pluginLogger, evmCfg)
 		case domain.ServiceTypeCosmos:
 			cosmosCfg := cosmosConfigFor(svc)
 			serviceID := domain.ServiceID(svc.ID)
@@ -820,12 +825,16 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	})
 	mwReg.Register(relay.MWScore, func() relay.Middleware { return middleware.Score(flags, repSvc) })
 	mwReg.Register(relay.MWDebugLog, func() relay.Middleware { return middleware.DebugLog(flags, qosReg, proto) })
+	// Every answer that names the chain head, from client traffic and from
+	// health checks marked GradesHead: the metric, and the stale-share
+	// evidence reputation prices.
+	recordHeadAnswer := func(serviceID domain.ServiceID, party, method string, lag uint64, stale bool) {
+		recorder.RecordAnswerHead(serviceID, party, method, lag, stale)
+		repSvc.RecordHeadAnswer(serviceID, party, stale)
+	}
 	mwReg.Register(relay.MWHeuristic, func() relay.Middleware {
 		return middleware.Heuristic(flags, qosReg, middleware.WithAttemptTimeout(timeoutFn),
-			middleware.WithHeadLag(func(serviceID domain.ServiceID, party, method string, lag uint64, stale bool) {
-				recorder.RecordAnswerHead(serviceID, party, method, lag, stale)
-				repSvc.RecordHeadAnswer(serviceID, party, stale)
-			}))
+			middleware.WithHeadLag(recordHeadAnswer))
 	})
 	mwReg.Register(relay.MWSendRelay, func() relay.Middleware { return middleware.SendRelay(proto) })
 
@@ -918,6 +927,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// is always leader and there is nothing to publish to — unchanged.
 	healthExe.SetLeader(leader)
 	healthExe.SetResultRecorder(recorder)
+	healthExe.SetHeadLagRecorder(recordHeadAnswer)
 	// The health_checks flag: off globally or per service stops the probes
 	// for the next cycle, from the admin API, without a restart.
 	healthExe.SetFlags(flags)

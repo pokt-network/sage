@@ -96,6 +96,12 @@ type HealthCheck struct {
 	// a backend is seen.
 	Interval time.Duration
 
+	// GradesHead marks a check whose answer names the chain head: the
+	// executor grades it through qos.HeadLagReader and records it beside
+	// client head answers, so a party's stale share counts it. Such a check
+	// records no reputation signal of its own.
+	GradesHead bool
+
 	// Essential marks a check that client traffic cannot stand in for, so
 	// traffic-informed probing never skips it.
 	//
@@ -228,8 +234,10 @@ type EndpointHeightLister interface {
 // HeadLagReader is implemented by plugins that can read the chain head out of
 // the answers to some methods (eth_blockNumber, Solana getBlockHeight, …).
 // HeadLag reports how far the answer's head lags the head the plugin expects
-// now, and whether that counts as stale; ok is false for any other method,
-// any answer that names no head, or while the plugin has no head yet.
+// at the moment the answer was received, and whether that counts as stale; ok
+// is false for any other method, any answer that names no head, or while the
+// plugin has no head yet. at matters for a health check another pod ran: its
+// result is applied here later than it was received.
 //
 // It exists because a response cache only looks fast. On mainnet solana
 // (2026-09-29) one owner served getEpochInfo frozen for a minute and
@@ -238,7 +246,7 @@ type EndpointHeightLister interface {
 // rewarded. The height filter never saw it: the lag sat inside the sync
 // allowance. Only the answer says how old it is.
 type HeadLagReader interface {
-	HeadLag(payload domain.Payload, response []byte) (lag uint64, stale, ok bool)
+	HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool)
 }
 
 // StaleChecker is implemented by plugins that filter on block height. AllStale

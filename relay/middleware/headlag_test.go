@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/tidwall/gjson"
 
@@ -16,7 +17,7 @@ import (
 // and stale.
 type headPlugin struct{ normPlugin }
 
-func (headPlugin) HeadLag(payload domain.Payload, _ []byte) (uint64, bool, bool) {
+func (headPlugin) HeadLag(payload domain.Payload, _ []byte, _ time.Time) (uint64, bool, bool) {
 	if payload.Method() != "eth_blockNumber" {
 		return 0, false, false
 	}
@@ -64,7 +65,7 @@ func TestHeuristic_RecordsHeadLag(t *testing.T) {
 // from the answer's "lag" field so each attempt can say its own.
 type lagPlugin struct{ normPlugin }
 
-func (lagPlugin) HeadLag(payload domain.Payload, body []byte) (uint64, bool, bool) {
+func (lagPlugin) HeadLag(payload domain.Payload, body []byte, _ time.Time) (uint64, bool, bool) {
 	if payload.Method() != "eth_blockNumber" {
 		return 0, false, false
 	}

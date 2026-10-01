@@ -456,6 +456,17 @@ Two more corrections followed the same day, both from mainnet sei:
   its penalty for 30 minutes from when it was last priced; fresh evidence
   replaces it at once. Shares and penalties are `sage_party_stale_share` and
   `sage_party_stale_penalty`, and the admin listing shows `stale_penalty`.
+
+  A cache keyed on the request body serves state calls as old as head calls,
+  and only head calls show it. With flag `state_canary` (default off, EVM
+  only) every backend is also probed once a cycle with a fixed eth_call to
+  Multicall3 at `latest` whose answer carries its block's timestamp; one of
+  four single-call bodies, rotated every ten minutes and byte-identical while
+  in use, and no reputation signal of its own. An
+  answer more than two block times plus 10s behind the clock is stale and
+  counts toward the party's share like a stale head answer (method label
+  `eth_call_canary`). On 2026-10-01 one owner's cache answered such a call
+  with the same block for over two minutes on bsc.
 - **A probe cannot outvote traffic.** A probe success on a key that served
   traffic in the last 10 minutes moves neither term. One operator passed
   `eth_blockNumber` every cycle while answering 408 to real calls, and the

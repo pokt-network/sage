@@ -31,6 +31,9 @@ const (
 
 // Executor runs periodic health checks across all configured services.
 type Executor struct {
+	// headLag receives graded head answers; see SetHeadLagRecorder.
+	headLag func(serviceID domain.ServiceID, party, method string, lag uint64, stale bool)
+
 	protocol    protocol.Relayer
 	endpoints   protocol.EndpointProvider
 	sessions    protocol.SessionManager
@@ -364,6 +367,13 @@ func (e *Executor) SetTrafficSkip(counter reputation.TrafficCounter, flags featu
 
 // SetResultRecorder installs the metric hook for applied results.
 func (e *Executor) SetResultRecorder(r ResultRecorder) { e.recorder = r }
+
+// SetHeadLagRecorder installs the hook a graded head answer goes to: the same
+// one client head answers reach (middleware.WithHeadLag), so a check marked
+// qos.HealthCheck.GradesHead counts toward a party's stale share. Wire time.
+func (e *Executor) SetHeadLagRecorder(fn func(serviceID domain.ServiceID, party, method string, lag uint64, stale bool)) {
+	e.headLag = fn
+}
 
 // SetFlags installs the flag store the health_checks flag is read from, per
 // cycle and per service. Nil leaves probing ungated. The flag had a row in
@@ -1072,6 +1082,32 @@ func (e *Executor) isEssentialCheck(plugin qos.Plugin, name string) bool {
 	return false
 }
 
+// gradeHead hands a check marked GradesHead to the plugin's head-lag reader,
+// graded at the moment the probe was answered (a peer's result is applied
+// here later), and the reading to the head-lag hook. It reports whether the
+// check is one that grades the head.
+func (e *Executor) gradeHead(plugin qos.Plugin, r ProbeResult) bool {
+	for _, c := range pluginChecks(plugin) {
+		if c.Name != r.Check || !c.GradesHead {
+			continue
+		}
+		reader, ok := plugin.(qos.HeadLagReader)
+		if e.headLag == nil || !ok {
+			return true
+		}
+		at := r.ProbedAt
+		if at.IsZero() {
+			at = time.Now()
+		}
+		payload := domain.NewPayload(r.Request, r.RPCType, c.Payload.Method())
+		if lag, stale, ok := reader.HeadLag(payload, r.Body, at); ok {
+			e.headLag(r.ServiceID, r.Endpoint.Party(), r.Check, lag, stale)
+		}
+		return true
+	}
+	return false
+}
+
 // pluginChecks returns a plugin's own health checks, or none for a plugin
 // that declares none (the passthrough) or is missing.
 func pluginChecks(plugin qos.Plugin) []qos.HealthCheck {
@@ -1454,6 +1490,8 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 		}
 	}
 
+	headCheck := e.gradeHead(plugin, r)
+
 	// Record reputation signal. A configured check may name the penalty its
 	// failure carries; the default grading applies to everything else.
 	//
@@ -1465,7 +1503,11 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 	// instead would charge a backend its stake count in attempts, which is a
 	// property of the stake table and not of the machine (ruling F1,
 	// docs/scoring.md §3 principle 4 and §7.4).
-	if e.repService != nil {
+	//
+	// Not for a check that grades the head: its verdict is the head grading,
+	// and an answer it cannot decode is a gateway's policy as often as a
+	// fault (one refuses multicalls with -32602), which is no reason to score.
+	if e.repService != nil && !headCheck {
 		configured := e.configured.Load()
 		statusOK := configured.StatusHealthy(r.Check, r.StatusCode)
 		signal := checkSignal(r.Check, r.StatusCode, statusOK, extractErr, latency)

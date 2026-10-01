@@ -305,7 +305,7 @@ const solanaBlockhashValidity = 150
 // answer names, on the block-height scale perceived is kept in, and measures
 // it against the head expected now (qos.HeadLagReader). getSlot and
 // context.slot are slots, a different scale, and are not read.
-func (p *Plugin) HeadLag(payload domain.Payload, response []byte) (lag uint64, stale, ok bool) {
+func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool) {
 	if unfinalized(payload.Bytes()) {
 		return 0, false, false
 	}
@@ -323,7 +323,7 @@ func (p *Plugin) HeadLag(payload domain.Payload, response []byte) (lag uint64, s
 	if head == 0 {
 		return 0, false, false
 	}
-	return p.consensus.AnswerLag(head, time.Now())
+	return p.consensus.AnswerLag(head, at)
 }
 
 var _ qos.HeadLagReader = (*Plugin)(nil)

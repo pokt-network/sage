@@ -495,6 +495,37 @@ func (bc *BlockConsensus) AnswerLag(height uint64, now time.Time) (lag uint64, s
 	return lag, lag > tolerance, true
 }
 
+// staleStateSlack is what a state answer's block timestamp may trail the
+// clock by beyond two blocks before it counts as stale: propagation, clock
+// skew and the time the probe itself took.
+const staleStateSlack = 10 * time.Second
+
+// StateLag grades an answer about state at "latest" by the timestamp of the
+// block it was computed at, against at: stale when it trails by more than two
+// block times plus staleStateSlack. lag is that trail in blocks.
+//
+// The clock, not perceived, because what such an answer carries is a block's
+// own time. block.number inside eth_call is not the chain's own on every
+// chain (on Arbitrum it is Ethereum's), and block.timestamp is. The rate is
+// still needed for "two block times", so there is no verdict without one;
+// and none once the head has not moved for a window, since a halted chain
+// would read every party's honest answer as old (see AnswerLag).
+func (bc *BlockConsensus) StateLag(blockTime, at time.Time) (lag uint64, stale, ok bool) {
+	p := bc.Projection()
+	if p.perceived == 0 || p.rate <= 0 {
+		return 0, false, false
+	}
+	trail := at.Sub(blockTime)
+	if trail > 0 {
+		lag = uint64(trail.Seconds() * p.rate)
+	}
+	if at.Sub(p.headAt) > p.window {
+		return lag, false, true
+	}
+	blockTimes := time.Duration(2 / p.rate * float64(time.Second))
+	return lag, trail > blockTimes+staleStateSlack, true
+}
+
 func blockRate(samples []rateSample) (float64, bool) {
 	if len(samples) < 2 {
 		return 0, false

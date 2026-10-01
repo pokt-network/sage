@@ -2,6 +2,7 @@ package solana
 
 import (
 	"testing"
+	"time"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -27,7 +28,7 @@ func TestHeadLag_ReadsHeadMethodsOnly(t *testing.T) {
 		{"getSlot", `{"result":451632688}`, false, 0},
 		{"getBlock", `{"result":{"blockHeight":100}}`, false, 0},
 	} {
-		lag, stale, ok := p.HeadLag(pay(tc.method), []byte(tc.body))
+		lag, stale, ok := p.HeadLag(pay(tc.method), []byte(tc.body), time.Now())
 		if ok != tc.ok || lag != tc.lag || stale {
 			t.Errorf("%s: ok %v lag %d stale %v, want ok %v lag %d stale false", tc.method, ok, lag, stale, tc.ok, tc.lag)
 		}
@@ -38,7 +39,7 @@ func TestHeadLag_ReadsHeadMethodsOnly(t *testing.T) {
 func TestHeadLag_SkipsUnfinalizedCommitment(t *testing.T) {
 	p := NewPlugin(nil, 100)
 	req := domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"getBlockHeight","params":[{"commitment":"processed"}]}`), domain.RPCTypeJSONRPC, "getBlockHeight")
-	if _, _, ok := p.HeadLag(req, []byte(`{"result":100}`)); ok {
+	if _, _, ok := p.HeadLag(req, []byte(`{"result":100}`), time.Now()); ok {
 		t.Fatal("processed answer must not be read")
 	}
 	if d, _ := p.ExtractData("a1-https://x.a.net", req.Bytes(), []byte(`{"result":100}`)); d.BlockHeight != nil {

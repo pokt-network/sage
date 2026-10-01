@@ -79,6 +79,7 @@ type Plugin struct {
 	consensus       *qos.BlockConsensus
 	syncAllowance   atomic.Uint64
 	expectedChainID string
+	stateCanary     func() bool
 	// archival remembers, per host, who served or refused historical state.
 	archival *archivalMemory
 }
@@ -102,6 +103,10 @@ type Config struct {
 	// eth_chainId reports it (e.g. "0x1" for Ethereum mainnet). Empty disables
 	// the assertion.
 	ExpectedChainID string
+
+	// StateCanary reports, when asked, whether the state canary check runs
+	// (featureflag.FlagStateCanary, canary.go). Nil means never.
+	StateCanary func() bool
 }
 
 // Validate reports whether the config is usable, and is called at wire time so
@@ -132,6 +137,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		store:           qos.NewEndpointStore[evmEndpoint](logger),
 		consensus:       qos.NewBlockConsensus(logger, cfg.SyncAllowance),
 		expectedChainID: cfg.ExpectedChainID,
+		stateCanary:     cfg.StateCanary,
 		archival:        newArchivalMemory(),
 	}
 	p.syncAllowance.Store(cfg.SyncAllowance)
@@ -305,7 +311,7 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 	blockNumberBody := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
 	chainIDBody := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":2}`)
 
-	return []qos.HealthCheck{
+	checks := []qos.HealthCheck{
 		{
 			Name:    "eth_blockNumber",
 			Payload: domain.NewPayload(blockNumberBody, domain.RPCTypeJSONRPC, "eth_blockNumber"),
@@ -323,6 +329,10 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 			Interval: chainIDCheckInterval,
 		},
 	}
+	if p.stateCanary != nil && p.stateCanary() {
+		checks = append(checks, canaryCheck(time.Now()))
+	}
+	return checks
 }
 
 // chainIDCheckInterval is how often the chain-id check is repeated per
@@ -557,9 +567,18 @@ var _ qos.StaleChecker = (*Plugin)(nil)
 // HeadLag reads the head an eth_blockNumber or eth_getBlockByNumber("latest")
 // answer names and measures it against the head expected now
 // (qos.HeadLagReader).
-func (p *Plugin) HeadLag(payload domain.Payload, response []byte) (lag uint64, stale, ok bool) {
+func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool) {
 	var head uint64
 	switch payload.Method() {
+	case "eth_call":
+		if !isCanary(payload.Bytes()) {
+			return 0, false, false
+		}
+		ts, ok := canaryTimestamp(response)
+		if !ok {
+			return 0, false, false
+		}
+		return p.consensus.StateLag(ts, at)
 	case "eth_blockNumber":
 		head, _ = ParseBlockNumber(response)
 	case "eth_getBlockByNumber":
@@ -570,7 +589,7 @@ func (p *Plugin) HeadLag(payload domain.Payload, response []byte) (lag uint64, s
 	if head == 0 {
 		return 0, false, false
 	}
-	return p.consensus.AnswerLag(head, time.Now())
+	return p.consensus.AnswerLag(head, at)
 }
 
 var _ qos.HeadLagReader = (*Plugin)(nil)

@@ -152,6 +152,17 @@ const (
 	// traffic there, so stale_response's per-answer hits, spread over dozens
 	// of keys, healed between hits and never moved its share. Off by default.
 	FlagStaleShare = "stale_share"
+	// FlagStateCanary adds the state canary to an EVM service's health
+	// checks: an eth_call to Multicall3 at "latest", byte-identical while in
+	// use, whose answer names its block's timestamp (qos/evm/canary.go). A
+	// timestamp more than two block times and ten seconds behind the clock is
+	// a stale answer, counted toward the party's stale share like a stale head
+	// answer. It finds a response cache keyed on the request body serving
+	// state calls old: on mainnet (2026-10-01) one owner's cache answered a
+	// fixed eth_call with the same block for over two minutes on bsc while a
+	// fresh request was current. One relay per backend per cycle. Off by
+	// default; not for TRON, whose JSON-RPC face has no Multicall3.
+	FlagStateCanary = "state_canary"
 	// FlagRelativeChronic measures a key's chronic-failure penalty from the
 	// best failure rate in its (service, RPC type) pool rather than from zero,
 	// so a timeout tail every operator shares does not floor all of them. On
@@ -218,6 +229,7 @@ var DefaultFlags = map[string]bool{
 	FlagWSShareCap:             false,
 	FlagStaleResponse:          false,
 	FlagStaleShare:             false,
+	FlagStateCanary:            false,
 	FlagRelativeChronic:        true,
 	FlagOperatorChronic:        false,
 	FlagQuorum:                 false,

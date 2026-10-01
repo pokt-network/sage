@@ -170,7 +170,7 @@ func (o heuristicOptions) observeHeadLag(registry *qos.Registry, ctx *relay.Cont
 	if !ok {
 		return 0, false
 	}
-	lag, stale, ok = reader.HeadLag(ctx.Payloads[0], ctx.Response.Body)
+	lag, stale, ok = reader.HeadLag(ctx.Payloads[0], ctx.Response.Body, time.Now())
 	if !ok {
 		return 0, false
 	}
