@@ -227,8 +227,7 @@ func (p *Plugin) askedForHead(request []byte) bool {
 	if !p.askedForHeight(request) {
 		return false
 	}
-	return p.chain.HeadParamPath == "" || gjson.GetBytes(request, p.chain.HeadParamPath).Exists() ||
-		string(request) == string(p.chain.Probe.Bytes())
+	return p.chain.HeadParamPath == "" || gjson.GetBytes(request, p.chain.HeadParamPath).Exists()
 }
 
 // isCanary reports whether a request is one of the chain's canary bodies.

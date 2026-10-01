@@ -387,9 +387,9 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		return &qos.ExtractedData{ChainID: &chainID}, nil
 	}
 
-	// Anything else is user traffic: health checks send only the two methods
-	// above. A relay that named a historical block reports, for free, whether
-	// the endpoint retains it.
+	// Anything else is user traffic, or the state canary (at latest, which
+	// names no historical block). A relay that named a historical block
+	// reports, for free, whether the endpoint retains it.
 	if archival, observed := p.observeArchival(endpoint, method, request, response); observed {
 		return &qos.ExtractedData{IsArchival: &archival}, nil
 	}

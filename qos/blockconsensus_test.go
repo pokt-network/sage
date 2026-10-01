@@ -524,3 +524,16 @@ func TestBlockConsensus_StateLag(t *testing.T) {
 		t.Error("a stalled head gives no verdict")
 	}
 }
+
+// A block time a day or more from the clock is junk, not an old answer.
+func TestBlockConsensus_StateLagIgnoresAnImplausibleTime(t *testing.T) {
+	bc := NewBlockConsensus(nil, 100)
+	bc.AddObservation("a1-https://x.a.net", 1000)
+	now := time.Now()
+	bc.mu.Lock()
+	bc.rateSamples = []rateSample{{height: 990, at: now.Add(-24 * time.Second)}, {height: 1000, at: now.Add(-4 * time.Second)}}
+	bc.mu.Unlock()
+	if _, _, ok := bc.StateLag(time.Unix(1, 0), now); ok {
+		t.Fatal("a 1970 timestamp must not be a reading")
+	}
+}

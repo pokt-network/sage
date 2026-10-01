@@ -35,7 +35,10 @@ var indicators = []indicator{
 	{pattern: "historical state", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "historical_state"},
 	{pattern: "state has been pruned", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "state_pruned"},
 	{pattern: "block has been pruned", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "block_pruned"},
+	{pattern: "has been pruned", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "pruned"},
 	{pattern: "is pruned", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "pruned"},
+	{pattern: "no state available for block", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "state_not_available"},
+	{pattern: "no state found for block", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "state_not_available"},
 	{pattern: "height is not available", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "height_not_available"},
 	// CometBFT's pruned-height wording puts the number between the words:
 	// "height 27782 is not available, lowest height is 25052001". The tail is

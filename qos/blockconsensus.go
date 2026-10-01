@@ -510,6 +510,10 @@ func (bc *BlockConsensus) AnswerLag(height uint64, now time.Time) (lag uint64, s
 // skew and the time the probe itself took.
 const staleStateSlack = 10 * time.Second
 
+// staleStateImplausible is how far from the clock a block time may be before
+// it is not a reading at all.
+const staleStateImplausible = 24 * time.Hour
+
 // StateLag grades an answer about state at "latest" by the timestamp of the
 // block it was computed at, against at: stale when it trails by more than two
 // block times plus staleStateSlack. lag is that trail in blocks.
@@ -526,6 +530,11 @@ func (bc *BlockConsensus) StateLag(blockTime, at time.Time) (lag uint64, stale, 
 		return 0, false, false
 	}
 	trail := at.Sub(blockTime)
+	// A time this far off is not an old answer but a wrong one: a different
+	// contract at the canary's address, a gateway's junk. Not graded.
+	if trail > staleStateImplausible || trail < -staleStateImplausible {
+		return 0, false, false
+	}
 	if trail > 0 {
 		lag = uint64(trail.Seconds() * p.rate)
 	}

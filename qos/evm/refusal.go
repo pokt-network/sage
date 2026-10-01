@@ -22,9 +22,8 @@ import (
 // as the chain's answer, and were paid either way.
 //
 // Only short spans count. A node may refuse a wide eth_getLogs range on
-// policy, in the same words ("historical state is not available" for an
-// unfiltered 100-block range, served block by block); that is a limit, not a
-// lie, and is left as it was.
+// policy (one operator does, for an unfiltered 100-block range it serves
+// block by block); that is a limit, not a lie, and is left as it was.
 const refusalMaxSpan = 10
 
 // The window a request's blocks must fall in, behind the perceived head, in
@@ -62,7 +61,7 @@ var refusalClaims = []string{
 
 // stateMethods read state, which geth-style nodes keep for only the last 128
 // blocks; for them the window never reaches past refusalMaxBlocks, however
-// slow the chain. History (logs, receipts, bodies) is kept far longer, so the
+// fast the chain (where ten minutes would be more blocks than that). History (logs, receipts, bodies) is kept far longer, so the
 // time ceiling applies to the rest. On mainnet (2026-10-01) an honest node
 // answered eth_getBalance 128-178 blocks back on a fast chain with "historical
 // state is not available", inside the ten-minute window.

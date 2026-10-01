@@ -234,8 +234,6 @@ var capabilityLimitationPatterns = []string{
 	"metadata is not found",
 	"state not available",
 	"historical state",
-	"state has been pruned",
-	"block has been pruned",
 	"has been pruned",
 	"no state available for block",
 	"no state found for block",
