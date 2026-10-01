@@ -171,3 +171,24 @@ func TestWSProbeBackoff_DoublesToTheCapAndResetsOnSuccess(t *testing.T) {
 		t.Fatal("a success must clear the backoff")
 	}
 }
+
+// ownScoredRepSvc reads 70 (a party penalty) but 100 on the key's own account.
+type ownScoredRepSvc struct{ scoredRepSvc }
+
+func (ownScoredRepSvc) OwnScore(domain.ServiceID, domain.EndpointAddr, domain.RPCType) float64 {
+	return 100
+}
+
+// A key below full only because its party is penalized is not probed: no
+// probe can lift a party penalty, and every key of a distrusted party would
+// otherwise be probed at every slot for the day it is held.
+func TestWSProbe_SkipsAKeyFullOnItsOwnAccount(t *testing.T) {
+	supplier := newEchoSupplier(t)
+	r, rep, m := probeFixture(t, wsURL(supplier), 70, `{"jsonrpc":"2.0","id":1,"result":"0x10"}`,
+		map[string]bool{featureflag.FlagWebsocketRelays: true, featureflag.FlagWebsocketProbes: true})
+	r.deps.Reputation = ownScoredRepSvc{scoredRepSvc{rep, 70}}
+	r.probeCycle(context.Background(), []domain.ServiceID{"eth"})
+	if len(m.probes) != 0 {
+		t.Errorf("probes=%v, want none for a key full on its own account", m.probes)
+	}
+}

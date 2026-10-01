@@ -146,3 +146,15 @@ func TestTimelineKeepsTheVerdictDetail(t *testing.T) {
 		t.Fatalf("timeline: %+v", evs)
 	}
 }
+
+// OwnScore leaves the party penalties out; GetScore keeps them.
+func TestOwnScoreLeavesThePartyOut(t *testing.T) {
+	s := staleShareService(true)
+	s.SetTrustPenalty(func(domain.ServiceID) bool { return true })
+	cache := domain.EndpointAddr("pokt1a-https://r001.cache.example")
+	s.chronic.Store(&chronicView{trustPen: map[string]float64{cache.Party(): trustPenalty}, trustGate: func(domain.ServiceID) bool { return true }})
+	got, _ := s.GetScore(context.Background(), "eth", cache, domain.RPCTypeWebSocket)
+	if got != 70 || s.OwnScore("eth", cache, domain.RPCTypeWebSocket) != 100 {
+		t.Fatalf("GetScore %.0f OwnScore %.0f, want 70 and 100", got, s.OwnScore("eth", cache, domain.RPCTypeWebSocket))
+	}
+}

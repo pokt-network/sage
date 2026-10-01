@@ -195,6 +195,11 @@ func (r *WSRelayer) probeTargets(ctx context.Context, serviceID domain.ServiceID
 			continue
 		}
 		score, err := r.deps.Reputation.GetScore(ctx, serviceID, addr, domain.RPCTypeWebSocket)
+		// Below full on its own account, not its party's: a party penalty
+		// is no reason to probe, and no probe can lift it.
+		if own, ok := r.deps.Reputation.(reputation.OwnScorer); ok && err == nil {
+			score = own.OwnScore(serviceID, addr, domain.RPCTypeWebSocket)
+		}
 		if err != nil || score >= 100 {
 			continue
 		}

@@ -290,7 +290,13 @@ func (s *serviceImpl) Retune(impacts SignalImpacts, rate RateConfig, sel Selecto
 // working additive score of 30–50 read as 0, so the whole service fell into
 // the pool-collapse fallback while the term ranked nobody above anybody.
 func (s *serviceImpl) effectiveFor(serviceID domain.ServiceID, key string, st State) float64 {
-	score := st.Score + s.penaltyFor(serviceID, key, st.Rate) + s.chronic.Load().partyPenalty(serviceID, key)
+	return s.scoreWith(serviceID, key, st, s.chronic.Load().partyPenalty(serviceID, key))
+}
+
+// scoreWith is effectiveFor with the party penalty given rather than looked
+// up, so OwnScore can leave it out.
+func (s *serviceImpl) scoreWith(serviceID domain.ServiceID, key string, st State, party float64) float64 {
+	score := st.Score + s.penaltyFor(serviceID, key, st.Rate) + party
 	if floor := min(st.Score, s.selector.cfg.Load().MinThreshold); score < floor {
 		score = floor
 	}
@@ -639,7 +645,7 @@ func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.Servi
 		// A key with no state yet still carries its party's penalties: a
 		// party's hosts rotate in fresh every session, and each started at
 		// the initial score, uncharged, until its first signal.
-		return s.clamp(s.cfg.InitialScore + s.chronic.Load().partyPenalty(serviceID, key)), true
+		st = State{Score: s.cfg.InitialScore}
 	}
 	return s.effectiveFor(serviceID, key, st), true
 }
@@ -979,9 +985,34 @@ func (s *serviceImpl) GetScore(_ context.Context, serviceID domain.ServiceID, en
 	st, ok := sh.cache[serviceID][key]
 	sh.mu.RUnlock()
 	if !ok {
-		return s.cfg.InitialScore, nil
+		st = State{Score: s.cfg.InitialScore}
 	}
 	return s.effectiveFor(serviceID, key, st), nil
+}
+
+// OwnScore implements OwnScorer: an endpoint's score without its party's
+// penalties, for a decision about the endpoint itself (whether a recovery
+// probe can still raise it).
+func (s *serviceImpl) OwnScore(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) float64 {
+	key := s.keyOf(endpoint, rpcType)
+	sh := s.shard(key)
+	sh.mu.RLock()
+	st, ok := sh.cache[serviceID][key]
+	sh.mu.RUnlock()
+	if !ok {
+		st = State{Score: s.cfg.InitialScore}
+	}
+	return s.scoreWith(serviceID, key, st, 0)
+}
+
+// OwnScorer is implemented by a reputation service that can report an
+// endpoint's score without its party's stale-share or trust penalty. A party
+// penalty holds whatever one endpoint does, so a key carrying one can never
+// read as fully healthy: WebSocket recovery probes, sent to every key below
+// full, would otherwise probe a distrusted party's every key at every slot
+// for the whole day it is held, and could not change its score.
+type OwnScorer interface {
+	OwnScore(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) float64
 }
 
 // GetScoresSince is GetScores restricted to keys that received a signal at or
