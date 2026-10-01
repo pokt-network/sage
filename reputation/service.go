@@ -572,7 +572,7 @@ func (s *serviceImpl) refreshBaselines() {
 	if old := s.chronic.Load(); old != nil {
 		prevTrust = old.trust
 	}
-	v.trust = partyTrust(v.stale, s.refusals.snapshot(now), prevTrust, now)
+	v.trust = partyTrust(v.stale, s.refusals.snapshot(now), prevTrust, now, gateOf(&s.staleGate))
 	v.trustPen = map[string]float64{}
 	for _, t := range v.trust {
 		if t.Penalty < 0 {

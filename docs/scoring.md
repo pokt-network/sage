@@ -480,7 +480,9 @@ Two more corrections followed the same day, both from mainnet sei:
 - **A party caught faking on several services is distrusted on all of them**
   (flag `trust_penalty`, default off, added 2026-10-01). The evidence is
   breadth: a stale share more than 15 points over the cleanest party's on
-  eight services at once, or ten or more `refused_recent` verdicts in about
+  eight services at once, counted only where `stale_share` is on (a service
+  is vetted before its measurement can distrust anyone), or ten or more
+  `refused_recent` verdicts in about
   the last hour on each of two. An honest node lagging the head is one node
   on one chain; a cache or a refusal policy spans the party's hosts. On the
   day it was built three honest parties were priced by `stale_share` on one

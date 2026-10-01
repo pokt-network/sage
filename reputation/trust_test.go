@@ -19,6 +19,7 @@ func TestPartyTrust_EvidenceAndHold(t *testing.T) {
 		}
 		return out
 	}
+	all := func(domain.ServiceID) bool { return true }
 	penaltyOf := func(ts []PartyTrust, party string) float64 {
 		for _, t := range ts {
 			if t.Party == party {
@@ -29,7 +30,7 @@ func TestPartyTrust_EvidenceAndHold(t *testing.T) {
 	}
 
 	// One lagging node on one chain is not distrust; three services are.
-	lag := partyTrust(stale("lagging", "base"), nil, nil, now)
+	lag := partyTrust(stale("lagging", "base"), nil, nil, now, all)
 	if penaltyOf(lag, "lagging") != 0 {
 		t.Fatal("stale on one service must not distrust a party")
 	}
@@ -37,12 +38,17 @@ func TestPartyTrust_EvidenceAndHold(t *testing.T) {
 	for i := 0; i < trustStaleServices; i++ {
 		many = append(many, domain.ServiceID(fmt.Sprintf("s%d", i)))
 	}
-	if penaltyOf(partyTrust(stale("fleet", many[:trustStaleServices-1]...), nil, nil, now), "fleet") != 0 {
+	if penaltyOf(partyTrust(stale("fleet", many[:trustStaleServices-1]...), nil, nil, now, all), "fleet") != 0 {
 		t.Fatal("stale on one service fewer than the bar must not distrust a party")
 	}
-	cache := partyTrust(stale("cache", many...), nil, nil, now)
+	cache := partyTrust(stale("cache", many...), nil, nil, now, all)
 	if penaltyOf(cache, "cache") != trustPenalty {
 		t.Fatal("stale on the bar's number of services must")
+	}
+
+	// Stale evidence counts only where stale_share prices the service.
+	if penaltyOf(partyTrust(stale("cache", many...), nil, nil, now, func(domain.ServiceID) bool { return false }), "cache") != 0 {
+		t.Fatal("stale evidence from services stale_share does not price must not count")
 	}
 
 	// Refusals: ten or more on each of two services.
@@ -51,16 +57,16 @@ func TestPartyTrust_EvidenceAndHold(t *testing.T) {
 		{svc: "op", op: "refuser"}:    {Attempts: 15},
 		{svc: "gnosis", op: "single"}: {Attempts: 40},
 	}
-	r := partyTrust(nil, refusals, nil, now)
+	r := partyTrust(nil, refusals, nil, now, all)
 	if penaltyOf(r, "refuser") != trustPenalty || penaltyOf(r, "single") != 0 {
 		t.Fatalf("refusals: %+v", r)
 	}
 
 	// The penalty holds for the day after the evidence, then lapses.
-	if penaltyOf(partyTrust(nil, nil, cache, now.Add(23*time.Hour)), "cache") != trustPenalty {
+	if penaltyOf(partyTrust(nil, nil, cache, now.Add(23*time.Hour), all), "cache") != trustPenalty {
 		t.Fatal("penalty lapsed inside the hold")
 	}
-	if penaltyOf(partyTrust(nil, nil, cache, now.Add(25*time.Hour)), "cache") != 0 {
+	if penaltyOf(partyTrust(nil, nil, cache, now.Add(25*time.Hour), all), "cache") != 0 {
 		t.Fatal("penalty outlived the hold")
 	}
 }

@@ -182,8 +182,8 @@ const (
 	// on every key it has in the service, every RPC type and WebSocket
 	// included, for 24 hours after the evidence was last seen: its stale
 	// share more than 15 points over the cleanest party's on eight services
-	// at once, or ten or more refused_recent verdicts in the last hour on
-	// each of two. Breadth is what tells a cache or a refusal policy from an
+	// with stale_share on at once, or ten or more refused_recent verdicts in
+	// the last hour on each of two. Breadth is what tells a cache or a refusal policy from an
 	// honest node lagging on one chain. Charged as the larger of it and the
 	// stale-share penalty, never both, and under the same floor, so it ranks
 	// a party down and never takes it out of rotation. The evidence is

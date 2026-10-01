@@ -76,7 +76,13 @@ func (s *serviceImpl) PartyTrusts() []PartyTrust {
 
 // partyTrust tallies the evidence per party and carries a penalty set in prev
 // until it lapses.
-func partyTrust(stale []PartyStale, refusals map[opID]OperatorStat, prev []PartyTrust, now time.Time) []PartyTrust {
+//
+// Stale evidence counts only from services where vetted says so: the ones
+// stale_share prices. A service is turned on there once its measurement has
+// been read and found to separate a cache from honest lag; a newly measured
+// chain (every Cosmos chain, the day their answers began to count) cannot
+// move a party toward distrust before that.
+func partyTrust(stale []PartyStale, refusals map[opID]OperatorStat, prev []PartyTrust, now time.Time, vetted func(domain.ServiceID) bool) []PartyTrust {
 	by := map[string]*PartyTrust{}
 	get := func(party string) *PartyTrust {
 		t := by[party]
@@ -87,7 +93,7 @@ func partyTrust(stale []PartyStale, refusals map[opID]OperatorStat, prev []Party
 		return t
 	}
 	for _, p := range stale {
-		if p.Excess > staleShareFloor {
+		if p.Excess > staleShareFloor && vetted != nil && vetted(p.ServiceID) {
 			get(p.Party).StaleServices++
 		}
 	}
