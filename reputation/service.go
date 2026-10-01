@@ -186,6 +186,10 @@ type serviceImpl struct {
 	// it rebuilds in minutes.
 	staleGate atomic.Pointer[func(domain.ServiceID) bool]
 	heads     *opTracker
+	// trustGate turns on the trust penalty per service; refusals counts each
+	// (service, party)'s refused_recent verdicts (trust.go).
+	trustGate atomic.Pointer[func(domain.ServiceID) bool]
+	refusals  *opTracker
 	// ops is the per-operator evidence the chronic term actually reads: an
 	// identity that does not rotate with the session draw (operator.go,
 	// opstats.go). Persisted through OperatorStatStore when storage has one.
@@ -235,6 +239,8 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	s.ops = newOpTracker(cfg.OperatorHalfLife)
 	s.heads = newOpTracker(staleShareHalfLife)
 	s.heads.dirty = nil // never persisted, so nothing takes the marks
+	s.refusals = newOpTracker(refusalHalfLife)
+	s.refusals.dirty = nil
 	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, cfg.URLResolver)))
 	selCfg := cfg.Selector
 	if selCfg == (SelectorConfig{}) {
@@ -284,10 +290,7 @@ func (s *serviceImpl) Retune(impacts SignalImpacts, rate RateConfig, sel Selecto
 // working additive score of 30–50 read as 0, so the whole service fell into
 // the pool-collapse fallback while the term ranked nobody above anybody.
 func (s *serviceImpl) effectiveFor(serviceID domain.ServiceID, key string, st State) float64 {
-	score := st.Score + s.penaltyFor(serviceID, key, st.Rate)
-	if v := s.chronic.Load(); v != nil {
-		score += v.staleByKey[keyID{serviceID, key}]
-	}
+	score := st.Score + s.penaltyFor(serviceID, key, st.Rate) + s.chronic.Load().partyPenalty(serviceID, key)
 	if floor := min(st.Score, s.selector.cfg.Load().MinThreshold); score < floor {
 		score = floor
 	}
@@ -346,6 +349,9 @@ const (
 	// reasonTransportTimeout is the heuristic's reason for an attempt that
 	// timed out on the wire (heuristic.AnalyzeTransportError).
 	reasonTransportTimeout = "transport_timeout"
+	// reasonRefusedRecent is the heuristic's reason for a missing-state answer
+	// about a block too recent to be gone (heuristic.RefusedRecent).
+	reasonRefusedRecent = "refused_recent"
 	// probeDefer is how recent traffic must be for it, not a probe, to have
 	// the last word on a key's score. See RecordSignal.
 	probeDefer = 10 * time.Minute
@@ -550,19 +556,29 @@ func (s *serviceImpl) refreshBaselines() {
 		prev = old.stale
 	}
 	v.stale = partyStale(s.heads.snapshot(now), gateOf(&s.staleGate), prev, now)
-	priced := map[opID]float64{}
+	v.stalePen = map[opID]float64{}
 	for _, p := range v.stale {
 		if p.Penalty < 0 {
-			priced[opID{svc: p.ServiceID, op: p.Party}] = p.Penalty
+			v.stalePen[opID{svc: p.ServiceID, op: p.Party}] = p.Penalty
 		}
 	}
-	if len(priced) > 0 {
-		v.staleByKey = map[keyID]float64{}
-		for _, ks := range keys {
-			if pen, ok := priced[opID{svc: ks.id.svc, op: domain.PartyOfOperator(ks.op.op)}]; ok {
-				v.staleByKey[ks.id] = pen
-			}
+	var prevTrust []PartyTrust
+	if old := s.chronic.Load(); old != nil {
+		prevTrust = old.trust
+	}
+	v.trust = partyTrust(v.stale, s.refusals.snapshot(now), prevTrust, now)
+	v.trustPen = map[string]float64{}
+	for _, t := range v.trust {
+		if t.Penalty < 0 {
+			v.trustPen[t.Party] = t.Penalty
 		}
+	}
+	// Read per lookup, not per refresh: the penalty reaches a service the
+	// party has no key in yet, and only a distrusted party pays the read.
+	v.trustGate = gateOf(&s.trustGate)
+	v.keyParty = make(map[string]string, len(keys))
+	for _, ks := range keys {
+		v.keyParty[ks.id.key] = domain.PartyOfOperator(ks.op.op)
 	}
 	for id, a := range pools {
 		// The relative term is what a baseline is for; without it a key is
@@ -614,7 +630,10 @@ func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.Servi
 	st, ok := sh.cache[serviceID][key]
 	sh.mu.RUnlock()
 	if !ok {
-		return s.cfg.InitialScore, true
+		// A key with no state yet still carries its party's penalties: a
+		// party's hosts rotate in fresh every session, and each started at
+		// the initial score, uncharged, until its first signal.
+		return s.clamp(s.cfg.InitialScore + s.chronic.Load().partyPenalty(serviceID, key)), true
 	}
 	return s.effectiveFor(serviceID, key, st), true
 }
@@ -849,6 +868,13 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 			s.ops.record(opID{serviceID, op, string(rpcType)}, FailureWeight(signal.Type), ts)
 		}
 	}
+	// A refusal worded as a prune is trust evidence against the party
+	// (trust.go), counted outside the shard lock like the operator counters.
+	if signal.Reason == reasonRefusedRecent && !signal.Probe {
+		if party := endpoint.Party(); party != "" {
+			s.refusals.record(opID{svc: serviceID, op: party}, 0, ts)
+		}
+	}
 
 	// Storage and timeline are keyed by the concatenated string form.
 	key := scoreKey(serviceID, repKey)
@@ -1020,9 +1046,7 @@ func (s *serviceImpl) GetStates(_ context.Context, serviceID domain.ServiceID) (
 			TrafficAttempts: st.TrafficAttempts, ProbeOnly: st.TrafficAttempts == 0,
 			LatencyMS: st.LatencyMS,
 		}
-		if v := s.chronic.Load(); v != nil {
-			view.StalePenalty = v.staleByKey[keyID{serviceID, key}]
-		}
+		view.StalePenalty, view.TrustPenalty = s.chronic.Load().partyPenalties(serviceID, key)
 		// The rate a young key shows and the rate its operator is charged are
 		// different numbers; a reader comparing keys needs both (operator.go).
 		if r, ok := s.OperatorRate(serviceID, domain.RPCType(rpcOfKey(key)), operatorOfKey(key)); ok {

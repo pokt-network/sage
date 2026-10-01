@@ -469,6 +469,28 @@ Two more corrections followed the same day, both from mainnet sei:
   counts toward the party's share like a stale head answer (method label
   `eth_call_canary`). On 2026-10-01 one owner's cache answered such a call
   with the same block for over two minutes on bsc.
+
+- **A party caught faking on several services is distrusted on all of them**
+  (flag `trust_penalty`, default off, added 2026-10-01). The evidence is
+  breadth: a stale share more than 15 points over the cleanest party's on
+  three services at once, or ten or more `refused_recent` verdicts in about
+  the last hour on each of two. An honest node lagging the head is one node
+  on one chain; a cache or a refusal policy spans the party's hosts. On the
+  day it was built three honest parties were priced by `stale_share` on one
+  service each, and one owner on 26. A distrusted party loses 30 points on
+  every key it has in a service with the flag on, every RPC type and
+  WebSocket included, for 24 hours after its evidence last crossed either
+  bar. Charged as the larger of it and the party's stale-share penalty, never
+  both, and under the same floor: one tier down, never out of rotation. Over
+  WebSocket, where placement takes only the best populated tier, that means
+  the party gets new connections only when no better party is in the
+  session. Pod-local; the flag is the release. Evidence and penalty are
+  `sage_party_trust_evidence` and `sage_party_trust_penalty`, and the admin
+  listing shows `trust_penalty`.
+
+  Both party penalties now reach a key with no state yet. A party's hosts
+  rotate in fresh every session and each used to start at the initial score,
+  uncharged, until its first signal.
 - **A probe cannot outvote traffic.** A probe success on a key that served
   traffic in the last 10 minutes moves neither term. One operator passed
   `eth_blockNumber` every cycle while answering 408 to real calls, and the

@@ -75,6 +75,10 @@ type PartyStale struct {
 	Party     string
 	Share     float64
 	Penalty   float64
+	// Excess is Share over the service's cleanest measured party, 0 where
+	// the service has one measured party. Computed whatever the flag says:
+	// the trust evidence reads it (trust.go).
+	Excess float64
 	// pricedAt is when the penalty was last measured rather than held.
 	pricedAt time.Time
 }
@@ -109,6 +113,9 @@ func partyStale(stats map[opID]OperatorStat, on func(domain.ServiceID) bool, pre
 			best = min(best, p.Share)
 		}
 		for _, p := range parties {
+			if len(parties) >= 2 {
+				p.Excess = p.Share - best
+			}
 			if len(parties) >= 2 && on != nil && on(svc) {
 				p.Penalty = stalePenalty(p.Share - best)
 				p.pricedAt = now

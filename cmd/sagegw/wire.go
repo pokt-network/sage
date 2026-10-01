@@ -482,6 +482,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// The timeline is bounded by design; this is the gauge that proves it.
 	prometheus.MustRegister(metrics.NewTimelineKeysGauge(timeline.Len))
 	prometheus.MustRegister(metrics.NewOperatorStatsGauge(repSvc.OperatorStatsLen))
+	prometheus.MustRegister(metrics.NewTrustCollector(func(yield func(party string, staleServices, refusalServices int, penalty float64)) {
+		for _, t := range repSvc.PartyTrusts() {
+			yield(t.Party, t.StaleServices, t.RefusalServices, t.Penalty)
+		}
+	}))
 	prometheus.MustRegister(metrics.NewStaleShareCollector(func(yield func(domain.ServiceID, string, float64, float64)) {
 		for _, p := range repSvc.PartyStaleShares() {
 			yield(p.ServiceID, p.Party, p.Share, p.Penalty)
@@ -657,6 +662,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// either way (the Heuristic middleware's head-lag hook feeds them).
 	repSvc.SetStaleShare(func(serviceID domain.ServiceID) bool {
 		return flags.IsEnabled(context.Background(), featureflag.FlagStaleShare, serviceID)
+	})
+
+	// Trust penalty, read on the same refresh. The evidence is tallied either
+	// way (reputation/trust.go).
+	repSvc.SetTrustPenalty(func(serviceID domain.ServiceID) bool {
+		return flags.IsEnabled(context.Background(), featureflag.FlagTrustPenalty, serviceID)
 	})
 
 	// When a drain ends, its endpoints restart at the bottom of probation

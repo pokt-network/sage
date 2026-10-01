@@ -62,10 +62,47 @@ type chronicView struct {
 	// opOn records which services had the operator term on at refresh time, so
 	// the flag is not read per relay.
 	opOn map[domain.ServiceID]bool
-	// staleByKey is the stale-share penalty to add to a key; stale is every
-	// measured party, for the metrics (staleshare.go).
-	staleByKey map[keyID]float64
-	stale      []PartyStale
+	// stalePen is the stale-share penalty of each priced (service, party);
+	// stale is every measured party, for the metrics (staleshare.go).
+	stalePen map[opID]float64
+	stale    []PartyStale
+	// trustPen is the trust penalty of each distrusted party, on every
+	// service in trustOn; trust is every party with evidence (trust.go).
+	trustPen  map[string]float64
+	trustGate func(domain.ServiceID) bool
+	trust     []PartyTrust
+	// keyParty is each known key's party, so the lookup per candidate does
+	// not parse a URL; an unknown key's is computed (partyOfKey).
+	keyParty map[string]string
+}
+
+// partyPenalties returns the stale-share and trust penalties a key's party
+// carries in a service. They are charged as the larger of the two, not the
+// sum (partyPenalty): both rest on the same evidence where both apply.
+func (v *chronicView) partyPenalties(svc domain.ServiceID, key string) (stale, trust float64) {
+	if v == nil || (len(v.stalePen) == 0 && len(v.trustPen) == 0) {
+		return 0, 0
+	}
+	party, ok := v.keyParty[key]
+	if !ok {
+		party = partyOfKey(key)
+	}
+	stale = v.stalePen[opID{svc: svc, op: party}]
+	if pen, ok := v.trustPen[party]; ok && v.trustGate != nil && v.trustGate(svc) {
+		trust = pen
+	}
+	return stale, trust
+}
+
+// partyPenalty is what a key's party costs it in a service.
+func (v *chronicView) partyPenalty(svc domain.ServiceID, key string) float64 {
+	stale, trust := v.partyPenalties(svc, key)
+	return min(stale, trust)
+}
+
+// partyOfKey is the party a reputation key belongs to.
+func partyOfKey(key string) string {
+	return domain.PartyOfOperator(operatorOfKey(key))
 }
 
 // keyID addresses one reputation key without building a string.

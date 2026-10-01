@@ -260,6 +260,7 @@ likely a chain-wide slowdown than every operator down at once.
 | stale_response | off | A head answer too far behind the perceived head is a major supplier verdict (feeds the failure rate) and is retried; the freshest answer is delivered if every attempt is stale |
 | stale_share | off | A party whose chain-head answers are stale well above the service's cleanest party's share loses up to 40 points on every key in that service |
 | state_canary | off | EVM health checks add a fixed Multicall3 eth_call at latest; an answer whose block timestamp trails the clock by more than two blocks plus 10s counts toward the party's stale share |
+| trust_penalty | off | A party caught faking on several services (stale share over the floor on 3, or refused_recent on 2) loses 30 points on every key, every RPC type and WebSocket, for 24h after the evidence; the larger of it and the stale-share penalty, never both |
 | websocket_probes | on | Once a minute, WebSocket endpoints of a service below full reputation get one signed probe, so a demoted WebSocket key has a way back |
 | penalize_408 | on | A supplier's HTTP 408 costs it a major error |
 | relative_chronic | on | The chronic penalty is measured from the pool's best failure rate, not from zero |

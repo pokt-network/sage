@@ -377,3 +377,50 @@ func (c *StaleShareCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.penDesc, prometheus.GaugeValue, penalty, sid, p)
 	})
 }
+
+// TrustCollector exposes each party's trust evidence and the trust penalty in
+// force (reputation.PartyTrust), as the last refresh left them.
+type TrustCollector struct {
+	each     func(yield func(party string, staleServices, refusalServices int, penalty float64))
+	parties  *labelPolicy
+	evidence *prometheus.Desc
+	penalty  *prometheus.Desc
+}
+
+// NewTrustCollector returns a collector over each, which calls yield once per
+// party with evidence or a penalty.
+func NewTrustCollector(each func(yield func(party string, staleServices, refusalServices int, penalty float64))) *TrustCollector {
+	return &TrustCollector{
+		each:    each,
+		parties: cappedLabel(maxOperatorLabels),
+		evidence: prometheus.NewDesc(
+			"sage_party_trust_evidence",
+			"Services on which a party currently carries trust evidence, by party and kind: stale (stale share more than 15 points over the service's cleanest party; 3 services sets the trust penalty) or refusal (10 or more refused_recent verdicts in about the last hour; 2 services set it). Counted whatever the trust_penalty flag says.",
+			[]string{"party", "kind"}, nil,
+		),
+		penalty: prometheus.NewDesc(
+			"sage_party_trust_penalty",
+			"The trust penalty in force for a party: -30 from when its evidence crossed either bar until 24 hours after it last did, else 0. Charged on services with trust_penalty on, as the larger of it and the party's stale-share penalty.",
+			[]string{"party"}, nil,
+		),
+	}
+}
+
+// Describe implements prometheus.Collector.
+func (c *TrustCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.evidence
+	ch <- c.penalty
+}
+
+// Collect implements prometheus.Collector.
+func (c *TrustCollector) Collect(ch chan<- prometheus.Metric) {
+	c.each(func(party string, staleServices, refusalServices int, penalty float64) {
+		p := c.parties.value(party)
+		if p == otherLabel {
+			return // two parties past the cap would collide on one series
+		}
+		ch <- prometheus.MustNewConstMetric(c.evidence, prometheus.GaugeValue, float64(staleServices), p, "stale")
+		ch <- prometheus.MustNewConstMetric(c.evidence, prometheus.GaugeValue, float64(refusalServices), p, "refusal")
+		ch <- prometheus.MustNewConstMetric(c.penalty, prometheus.GaugeValue, penalty, p)
+	})
+}

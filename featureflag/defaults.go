@@ -174,6 +174,17 @@ const (
 	// fresh request was current. One relay per backend per cycle. Off by
 	// default; not for TRON, whose JSON-RPC face has no Multicall3.
 	FlagStateCanary = "state_canary"
+	// FlagTrustPenalty charges a party caught faking on several services -30
+	// on every key it has in the service, every RPC type and WebSocket
+	// included, for 24 hours after the evidence was last seen: its stale
+	// share more than 15 points over the cleanest party's on three services
+	// at once, or ten or more refused_recent verdicts in the last hour on
+	// each of two. Breadth is what tells a cache or a refusal policy from an
+	// honest node lagging on one chain. Charged as the larger of it and the
+	// stale-share penalty, never both, and under the same floor, so it ranks
+	// a party down and never takes it out of rotation. The evidence is
+	// measured whatever the flag says (sage_party_trust_*). Off by default.
+	FlagTrustPenalty = "trust_penalty"
 	// FlagRelativeChronic measures a key's chronic-failure penalty from the
 	// best failure rate in its (service, RPC type) pool rather than from zero,
 	// so a timeout tail every operator shares does not floor all of them. On
@@ -242,6 +253,7 @@ var DefaultFlags = map[string]bool{
 	FlagStaleResponse:          false,
 	FlagStaleShare:             false,
 	FlagStateCanary:            false,
+	FlagTrustPenalty:           false,
 	FlagRelativeChronic:        true,
 	FlagOperatorChronic:        false,
 	FlagQuorum:                 false,
