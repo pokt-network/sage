@@ -423,23 +423,21 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		// degraded" ran 30–300 lines per five minutes on the canary with no
 		// way to tell which service was degraded.
 		pluginLogger := logger.With("service_id", svc.ID)
+		serviceID := domain.ServiceID(svc.ID)
+		stateCanary := func() bool {
+			return flags.IsEnabled(context.Background(), featureflag.FlagStateCanary, serviceID)
+		}
 		switch domain.ServiceType(svc.Type) {
 		case domain.ServiceTypeEVM:
 			evmCfg := evmConfigFor(svc)
-			serviceID := domain.ServiceID(svc.ID)
-			evmCfg.StateCanary = func() bool {
-				return flags.IsEnabled(context.Background(), featureflag.FlagStateCanary, serviceID)
-			}
+			evmCfg.StateCanary = stateCanary
 			plugin = evm.NewPlugin(pluginLogger, evmCfg)
 		case domain.ServiceTypeCosmos:
 			cosmosCfg := cosmosConfigFor(svc)
-			serviceID := domain.ServiceID(svc.ID)
 			cosmosCfg.EVMHeight = func() bool {
 				return flags.IsEnabled(context.Background(), featureflag.FlagCosmosEVMHeight, serviceID)
 			}
-			cosmosCfg.StateCanary = func() bool {
-				return flags.IsEnabled(context.Background(), featureflag.FlagStateCanary, serviceID)
-			}
+			cosmosCfg.StateCanary = stateCanary
 			plugin = cosmos.NewPlugin(pluginLogger, cosmosCfg)
 		case domain.ServiceTypeSolana:
 			plugin = solana.NewPlugin(pluginLogger, svc.SyncAllowance)
@@ -453,10 +451,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			// nothing and says so at startup (config.QoSCoverageFor).
 			if chain, ok := jsonheight.ByServiceType(domain.ServiceType(svc.Type)); ok {
 				jp := jsonheight.NewPlugin(pluginLogger, chain, svc.SyncAllowance)
-				serviceID := domain.ServiceID(svc.ID)
-				jp.SetStateCanary(func() bool {
-					return flags.IsEnabled(context.Background(), featureflag.FlagStateCanary, serviceID)
-				})
+				jp.SetStateCanary(stateCanary)
 				plugin = jp
 			} else {
 				plugin = noop.NewPlugin(pluginLogger, svc.SyncAllowance)

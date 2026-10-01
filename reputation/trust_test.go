@@ -29,7 +29,7 @@ func TestPartyTrust_EvidenceAndHold(t *testing.T) {
 		return 0
 	}
 
-	// One lagging node on one chain is not distrust; three services are.
+	// One lagging node on one chain is not distrust; trustStaleServices are.
 	lag := partyTrust(stale("lagging", "base"), nil, nil, now, all)
 	if penaltyOf(lag, "lagging") != 0 {
 		t.Fatal("stale on one service must not distrust a party")
