@@ -130,10 +130,14 @@ func TestSubscriptions_EVMDuplicateGapSeesPastTheGradeWindow(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		r.TranslateEndpointFrame(frame(fmt.Sprintf("0x%x", 100+i)))
 	}
+	// A pause before each repeat: two calls inside one clock tick measure a
+	// gap of exactly 0, which reads as "first sight".
+	time.Sleep(time.Millisecond)
 	_, _, late := r.TranslateEndpointFrame(frame("0x1"))
 	if late.Kind != qos.NotificationOK || late.Gap <= 0 {
 		t.Fatalf("repeat after 20 others: %+v, want graded ok with a gap", late)
 	}
+	time.Sleep(time.Millisecond)
 	_, _, again := r.TranslateEndpointFrame(frame("0x1"))
 	if again.Kind != qos.NotificationDuplicate || again.Gap <= 0 || again.Gap > time.Second {
 		t.Fatalf("immediate repeat: %+v, want duplicate with a small gap", again)
