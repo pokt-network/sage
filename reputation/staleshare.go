@@ -81,6 +81,8 @@ type PartyStale struct {
 	Excess float64
 	// pricedAt is when the penalty was last measured rather than held.
 	pricedAt time.Time
+	// held marks a penalty carried past thin evidence, not measured now.
+	held bool
 }
 
 // PartyStaleShares reports every measured party, for the metrics collector.
@@ -127,6 +129,7 @@ func partyStale(stats map[opID]OperatorStat, on func(domain.ServiceID) bool, pre
 	for _, p := range prev {
 		if p.Penalty < 0 && !measured[opID{svc: p.ServiceID, op: p.Party}] &&
 			on != nil && on(p.ServiceID) && now.Sub(p.pricedAt) < staleShareHold {
+			p.held = true
 			out = append(out, p)
 		}
 	}

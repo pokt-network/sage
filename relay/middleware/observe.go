@@ -174,8 +174,11 @@ func penaltySignal(result heuristic.AnalysisResult, latency time.Duration) reput
 		sig = reputation.NewMinorErrorSignal(reason, latency)
 	}
 	// The timeline is where an operator reads why a host was charged: the
-	// verdict's details (a refusal's block and depth, the node's words).
-	sig.Detail = result.Details
+	// verdict's details (a refusal's block and depth, the node's words),
+	// unless they already are the reason.
+	if result.Reason != "" {
+		sig.Detail = result.Details
+	}
 	return sig
 }
 

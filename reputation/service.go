@@ -585,12 +585,20 @@ func (s *serviceImpl) refreshBaselines() {
 			v.trustPen[t.Party] = t.Penalty
 		}
 	}
-	// Read per lookup, not per refresh: the penalty reaches a service the
-	// party has no key in yet, and only a distrusted party pays the read.
-	v.trustGate = gateOf(&s.trustGate)
-	v.keyParty = make(map[string]string, len(keys))
-	for _, ks := range keys {
-		v.keyParty[ks.id.key] = domain.PartyOfOperator(ks.op.op)
+	// Party lookups only matter while some party is charged.
+	if len(v.stalePen)+len(v.trustPen) > 0 {
+		// The flag per service is read here, once a refresh, for every
+		// service with a key; a service with none yet falls back to the
+		// gate on lookup (the penalty reaches a party's first key there).
+		v.trustGate = gateOf(&s.trustGate)
+		v.trustOn = map[domain.ServiceID]bool{}
+		v.keyParty = make(map[string]string, len(keys))
+		for _, ks := range keys {
+			v.keyParty[ks.id.key] = domain.PartyOfOperator(ks.op.op)
+			if _, seen := v.trustOn[ks.id.svc]; !seen && v.trustGate != nil {
+				v.trustOn[ks.id.svc] = v.trustGate(ks.id.svc)
+			}
+		}
 	}
 	for id, a := range pools {
 		// The relative term is what a baseline is for; without it a key is
@@ -894,21 +902,16 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// Record timeline event. Structured fields only — Detail is rendered on
 	// the admin read path, not here on the relay hot path.
 	if s.timeline != nil {
-		ev := TimelineEvent{
+		s.timeline.Record(key, TimelineEvent{
 			Timestamp:  signal.Timestamp,
 			Event:      "signal",
 			SignalType: string(signal.Type),
 			Reason:     signal.Reason,
 			OldScore:   s.effectiveFor(serviceID, repKey, prev),
 			Score:      newScore,
-		}
-		// A penalty's own explanation: which block a refusal named, what
-		// the node said. Rendered here only when there is one, which is
-		// only on failures.
-		if signal.Detail != "" {
-			ev.Detail = ev.rendered().Detail + ": " + truncateDetail(signal.Detail)
-		}
-		s.timeline.Record(key, ev)
+			// A penalty's own explanation, rendered with the rest on read.
+			Note: truncateDetail(signal.Detail),
+		})
 	}
 
 	// Enqueue async write (non-blocking: drop if queue full).

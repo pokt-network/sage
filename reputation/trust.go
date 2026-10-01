@@ -93,7 +93,9 @@ func partyTrust(stale []PartyStale, refusals map[opID]OperatorStat, prev []Party
 		return t
 	}
 	for _, p := range stale {
-		if p.Excess > staleShareFloor && vetted != nil && vetted(p.ServiceID) {
+		// A held stale-share penalty is not evidence now: counting it would
+		// renew the trust hold on the strength of the hold.
+		if !p.held && p.Excess > staleShareFloor && vetted != nil && vetted(p.ServiceID) {
 			get(p.Party).StaleServices++
 		}
 	}

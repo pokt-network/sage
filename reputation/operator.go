@@ -66,9 +66,12 @@ type chronicView struct {
 	// stale is every measured party, for the metrics (staleshare.go).
 	stalePen map[opID]float64
 	stale    []PartyStale
-	// trustPen is the trust penalty of each distrusted party, on every
-	// service in trustOn; trust is every party with evidence (trust.go).
+	// trustPen is the trust penalty of each distrusted party, charged in a
+	// service where trustOn (read at refresh) or, for a service with no key
+	// at refresh, trustGate says so; trust is every party with evidence
+	// (trust.go).
 	trustPen  map[string]float64
+	trustOn   map[domain.ServiceID]bool
 	trustGate func(domain.ServiceID) bool
 	trust     []PartyTrust
 	// keyParty is each known key's party, so the lookup per candidate does
@@ -88,8 +91,14 @@ func (v *chronicView) partyPenalties(svc domain.ServiceID, key string) (stale, t
 		party = partyOfKey(key)
 	}
 	stale = v.stalePen[opID{svc: svc, op: party}]
-	if pen, ok := v.trustPen[party]; ok && v.trustGate != nil && v.trustGate(svc) {
-		trust = pen
+	if pen, ok := v.trustPen[party]; ok {
+		on, known := v.trustOn[svc]
+		if !known && v.trustGate != nil {
+			on = v.trustGate(svc)
+		}
+		if on {
+			trust = pen
+		}
 	}
 	return stale, trust
 }

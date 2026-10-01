@@ -22,12 +22,18 @@ type TimelineEvent struct {
 	OldScore   float64 // score before the event
 	Score      float64 // score after the event
 	Detail     string  // human-readable; pre-set by callers or rendered on read
+	// Note is the verdict's own explanation (a refusal's block, the node's
+	// words), appended to the rendered Detail on read. Bounded at record.
+	Note string
 }
 
 // rendered returns a copy with Detail filled in from the structured fields.
 func (e TimelineEvent) rendered() TimelineEvent {
 	if e.Detail == "" && e.SignalType != "" {
 		e.Detail = fmt.Sprintf("%s: %s (score: %.1f -> %.1f)", e.SignalType, e.Reason, e.OldScore, e.Score)
+		if e.Note != "" {
+			e.Detail += ": " + e.Note
+		}
 	}
 	return e
 }
@@ -55,8 +61,10 @@ const (
 	DefaultTimelineIdleTTL = DefaultIdleTTL
 	// DefaultTimelineMaxKeys is the hard ceiling on distinct keys across all
 	// shards, applied when the idle sweep alone is not enough. At the default
-	// ring of 100 events (~104B each, capacity rounds up to 128) that is
-	// ~13KB per key worst case, ~210MB for a full timeline.
+	// ring of 100 events (~120B each, capacity rounds up to 128) that is
+	// ~15KB per key, ~250MB for a full timeline, before notes: a failure
+	// event may carry up to 200B more, so a key whose whole ring is failures
+	// can reach ~41KB.
 	DefaultTimelineMaxKeys = 16_384
 	// timelineSweepInterval is the least time between two idle sweeps, so a
 	// burst of records does not scan every key on every insert.
