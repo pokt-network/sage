@@ -122,6 +122,12 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, opts ...Heur
 				flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagMethodBlock408, ctx.ServiceID) {
 				result.MethodBlocking = true
 			}
+			// A refusal worded as a prune (heuristic.RefusedRecent) keeps the
+			// method away from the host the same way, behind its own flag.
+			if result.Reason == heuristic.ReasonRefusedRecent &&
+				flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagMethodBlockRefusal, ctx.ServiceID) {
+				result.MethodBlocking = true
+			}
 			ctx.HeuristicResult = &result
 
 			if result.ShouldRetry && result.Attribution == heuristic.AttrBlockchain {

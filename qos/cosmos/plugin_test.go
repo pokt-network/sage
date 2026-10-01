@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
 )
 
@@ -897,5 +898,23 @@ func TestEVMHeight_ProbeAndExtractFollowTheFlag(t *testing.T) {
 	}
 	if data.BlockHeight == nil || *data.BlockHeight != 234_669_825 {
 		t.Errorf("flag on: height = %v, want 234669825", data.BlockHeight)
+	}
+}
+
+// On a chain whose EVM face reports the Cosmos height (sei), a json_rpc
+// "pruned" answer about a block 100 behind is the supplier refusing; with the
+// face off, the cosmos plugin leaves it alone.
+func TestRefineVerdict_EVMFaceRefusal(t *testing.T) {
+	on := true
+	p := NewPlugin(nil, Config{SyncAllowance: 10, EVMHeight: func() bool { return on }})
+	p.UpdateBlockHeight("a1-https://x.a.net", 235_168_774)
+	req := domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0xe0463a2","toBlock":"0xe0463a2"}]}`), domain.RPCTypeJSONRPC, "eth_getLogs")
+	pruned := heuristic.Analyze([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"requested height has been pruned"}}`), 200, domain.RPCTypeJSONRPC)
+	if got, ok := p.RefineVerdict(req, pruned); !ok || got.Reason != heuristic.ReasonRefusedRecent {
+		t.Fatalf("sei refusal: %+v %v", got, ok)
+	}
+	on = false
+	if _, ok := p.RefineVerdict(req, pruned); ok {
+		t.Fatal("with the EVM face off the cosmos plugin must not judge json_rpc")
 	}
 }

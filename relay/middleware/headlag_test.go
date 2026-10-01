@@ -152,3 +152,33 @@ func TestRetry_DeliversTheFreshestStaleAnswer(t *testing.T) {
 		}
 	}
 }
+
+// refusingPlugin refines every verdict into a refusal worded as a prune.
+type refusingPlugin struct{ normPlugin }
+
+func (refusingPlugin) RefineVerdict(_ domain.Payload, _ heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
+	return heuristic.RefusedRecent("claims block gone"), true
+}
+
+// A refused_recent verdict is a method mark only behind method_block_refusal;
+// the verdict itself (supplier, major, retried) does not wait for the flag.
+func TestHeuristic_RefusalMarksBehindItsFlag(t *testing.T) {
+	run := func(flags *mockFlags) *heuristic.AnalysisResult {
+		ctx := baseContext()
+		ctx.Plugin = refusingPlugin{}
+		ctx.RPCType = domain.RPCTypeJSONRPC
+		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{}]}`), domain.RPCTypeJSONRPC, "eth_getLogs")}
+		_ = Heuristic(flags, nil)(relay.HandlerFunc(func(c *relay.Context) error {
+			c.Endpoint = "s1-https://r1.cache.example.xyz"
+			c.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"requested height has been pruned"}}`)}
+			return nil
+		})).HandleRelay(ctx)
+		return ctx.HeuristicResult
+	}
+	if r := run(newFlags("heuristic", "method_block_refusal")); r == nil || r.Reason != heuristic.ReasonRefusedRecent || !r.MethodBlocking {
+		t.Fatalf("flag on: %+v, want a method-blocking refusal", r)
+	}
+	if r := run(newFlags("heuristic")); r == nil || r.Reason != heuristic.ReasonRefusedRecent || r.MethodBlocking || !r.ShouldPenalize {
+		t.Fatalf("flag off: %+v, want a scored refusal and no mark", r)
+	}
+}

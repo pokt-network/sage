@@ -12,6 +12,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
 )
 
@@ -593,3 +594,12 @@ func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) 
 }
 
 var _ qos.HeadLagReader = (*Plugin)(nil)
+
+// RefineVerdict implements qos.VerdictRefiner: a missing-state answer about a
+// block too recent to have been discarded is the supplier refusing
+// (RefusalVerdict).
+func (p *Plugin) RefineVerdict(payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
+	return RefusalVerdict(payload, result, p.consensus.PerceivedBlock())
+}
+
+var _ qos.VerdictRefiner = (*Plugin)(nil)

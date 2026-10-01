@@ -80,6 +80,26 @@ type AnalysisResult struct {
 	HeadLag uint64
 }
 
+// ReasonRefusedRecent is the verdict on an answer claiming the state or
+// history of a block too recent for any node to have discarded: a refusal
+// worded as a prune.
+const ReasonRefusedRecent = "refused_recent"
+
+// RefusedRecent is the verdict for such an answer: the supplier's, a major
+// penalty, retried on another party. It is not a method block by itself; the
+// method_block_refusal flag makes it one, as method_block_408 does for a 408.
+func RefusedRecent(details string) AnalysisResult {
+	return AnalysisResult{
+		ShouldRetry:     true,
+		ShouldPenalize:  true,
+		PenaltySeverity: SeverityMajor,
+		Attribution:     AttrSupplier,
+		Confidence:      0.9,
+		Reason:          ReasonRefusedRecent,
+		Details:         details,
+	}
+}
+
 // ReasonStaleResponse is the verdict on an answer naming a chain head too far
 // behind the perceived one (qos.HeadLagReader, featureflag.FlagStaleResponse).
 const ReasonStaleResponse = "stale_response"

@@ -6,6 +6,7 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
+	"github.com/pokt-network/sage/qos/evm"
 )
 
 var _ qos.VerdictRefiner = (*Plugin)(nil)
@@ -37,7 +38,16 @@ var query5xxPrefixes = []string{
 // RefineVerdict implements qos.VerdictRefiner: a 5xx verdict (the node's
 // http_5xx, or the miner's upstream_5xx relaying it) on one of the routes
 // above becomes the chain's answer to the client's query.
+//
+// On a chain whose EVM face reports the Cosmos height (evmHeights), a
+// json_rpc missing-state answer about a recent block is graded as the EVM
+// plugin grades it: the supplier refusing (evm.RefusalVerdict).
 func (p *Plugin) RefineVerdict(payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
+	if p.evmHeights() && payload.RPCType() == domain.RPCTypeJSONRPC {
+		if refined, ok := evm.RefusalVerdict(payload, result, p.consensus.PerceivedBlock()); ok {
+			return refined, true
+		}
+	}
 	if result.Reason != "http_5xx" && result.Reason != "upstream_5xx" {
 		return result, false
 	}

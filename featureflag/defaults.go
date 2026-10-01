@@ -110,6 +110,17 @@ const (
 	// it. The marks never escalate to a host-wide block — a host refusing
 	// some methods is not a dead host. Off by default.
 	FlagMethodBlock408 = "method_block_408"
+	// FlagMethodBlockRefusal makes a refused_recent verdict a method mark,
+	// as method_block_408 does for a 408: a supplier claiming the state or
+	// history of a block within 128 of the head is gone (over at most ten
+	// blocks) keeps that method off that host for the client TTL. On mainnet
+	// (2026-10-01) one owner answered heavy calls about blocks a few minutes
+	// old with "requested height has been pruned" (sei), "No state available
+	// for block" (gnosis) and "no state found for block" (op) in 15-25ms,
+	// where others served them. The verdict itself (supplier, major,
+	// retried) needs no flag. Never escalates to a host-wide block. Off by
+	// default.
+	FlagMethodBlockRefusal = "method_block_refusal"
 	// FlagCosmosEVMHeight lets a Cosmos service learn block heights from its
 	// EVM face: an eth_blockNumber probe on its json_rpc stakes, and the
 	// eth_blockNumber answers in its traffic. For chains whose EVM block
@@ -225,6 +236,7 @@ var DefaultFlags = map[string]bool{
 	FlagPenalize408:            true,
 	FlagCircuitBreakUpstream:   false,
 	FlagMethodBlock408:         false,
+	FlagMethodBlockRefusal:     false,
 	FlagCosmosEVMHeight:        false,
 	FlagWSShareCap:             false,
 	FlagStaleResponse:          false,
