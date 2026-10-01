@@ -278,6 +278,13 @@ func TestAnalyze_Tier2_ErrorCodeClassification(t *testing.T) {
 			wantReason:      "parse_error",
 		},
 		{
+			name:            "a node's full request queue at -32000 — supplier capacity",
+			errorJSON:       `{"code":-32000,"message":"server too busy, rejecting new request (pending: 803, threshold: 800)"}`,
+			wantRetry:       true,
+			wantAttribution: AttrSupplier,
+			wantReason:      "rate_limited",
+		},
+		{
 			name:            "service unavailable at -32000 — supplier fault",
 			errorJSON:       `{"code":-32000,"message":"service unavailable"}`,
 			wantRetry:       true,

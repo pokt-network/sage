@@ -325,9 +325,13 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 		}
 	}
 
-	// The node's own rate limiter: the supplier's capacity, not the request.
-	// Scored like a relay miner's 429 (upstream_429), minor and retried.
-	for _, pattern := range []string{"rate limit", "too many requests"} {
+	// The node's own rate limiter or admission limit: the supplier's
+	// capacity, not the request. Scored like a relay miner's 429
+	// (upstream_429), minor and retried. "server too busy" is a node whose
+	// pending-request queue is full (mainnet sei, 2026-10-01: "rejecting new
+	// request (pending: 803, threshold: 800)"); it fell to the unscored
+	// default below.
+	for _, pattern := range []string{"rate limit", "too many requests", "too busy"} {
 		if strings.Contains(lowerMsg, pattern) {
 			return AnalysisResult{
 				ShouldRetry:     true,
