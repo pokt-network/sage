@@ -45,8 +45,11 @@ const (
 // discarded. Narrower than heuristic.ReportsMissingHistoricalState, on
 // purpose: geth's "missing trie node" and "metadata is not found" are true
 // for anything past its 128 in-memory states and for recent blocks after a
-// restart; "lite fullnode", "api is not supported" and the indexing wordings
-// are capabilities. None of those is a claim a node can be caught lying with.
+// restart, and "historical state is not available" is how geth and erigon
+// nodes honestly say the same, and how one operator refuses wide log ranges
+// on policy; "lite fullnode", "api is not supported" and the indexing
+// wordings are capabilities. None of those is a claim a node can be caught
+// lying with.
 var refusalClaims = []string{
 	"has been pruned",
 	"is pruned",
@@ -54,8 +57,25 @@ var refusalClaims = []string{
 	"no state available for block",
 	"no state found for block",
 	"state not available",
-	"historical state",
 	"height is not available",
+}
+
+// stateMethods read state, which geth-style nodes keep for only the last 128
+// blocks; for them the window never reaches past refusalMaxBlocks, however
+// slow the chain. History (logs, receipts, bodies) is kept far longer, so the
+// time ceiling applies to the rest. On mainnet (2026-10-01) an honest node
+// answered eth_getBalance 128-178 blocks back on a fast chain with "historical
+// state is not available", inside the ten-minute window.
+var stateMethods = map[string]bool{
+	"eth_getBalance":                true,
+	"eth_call":                      true,
+	"eth_estimateGas":               true,
+	"eth_getCode":                   true,
+	"eth_getStorageAt":              true,
+	"eth_getTransactionCount":       true,
+	"debug_traceBlockByNumber":      true,
+	"trace_block":                   true,
+	"trace_replayBlockTransactions": true,
 }
 
 // methodsWithLeadingBlock name the block in their first parameter.
@@ -70,25 +90,40 @@ var methodsWithLeadingBlock = map[string]bool{
 // (refusalClaims), to a request whose blocks all fall inside the refusal window
 // behind head over a span of at most refusalMaxSpan, as the supplier refusing
 // (heuristic.RefusedRecent). blocksIn converts the window's ages to blocks at
-// the chain's rate (0 while unknown, leaving the block bounds). nodeHead is
-// the answering host's own last reported height, 0 when unknown: a block at
-// or past it is one the host may not have yet, whatever the perceived head
-// says. head 0 (no consensus yet) judges nothing.
-func RefusalVerdict(payload domain.Payload, result heuristic.AnalysisResult, head, nodeHead uint64, blocksIn func(time.Duration) uint64) (heuristic.AnalysisResult, bool) {
+// the chain's rate (0 while unknown, leaving the block bounds). head 0 (no
+// consensus yet) judges nothing.
+//
+// skip names why a claim was not judged ("" when there was none to judge, or
+// it was): for a plugin's debug log, to see what the rule leaves out.
+//
+// The answering host's own reported head is deliberately not consulted. A
+// cache reports a stale head too, minutes behind on sei, and every lie about
+// a block newer than that was exempt; the floor already covers a node a few
+// blocks behind.
+func RefusalVerdict(payload domain.Payload, result heuristic.AnalysisResult, head uint64, blocksIn func(time.Duration) uint64) (refined heuristic.AnalysisResult, ok bool, skip string) {
 	if head == 0 || result.Attribution == heuristic.AttrSupplier || !claimsDiscarded(result.Details) {
-		return result, false
-	}
-	minBack, maxBack := uint64(refusalMinBlocks), uint64(refusalMaxBlocks)
-	if blocksIn != nil {
-		minBack, maxBack = max(minBack, blocksIn(refusalMinAge)), max(maxBack, blocksIn(refusalMaxAge))
+		return result, false, ""
 	}
 	method := payload.Method()
-	from, to, ok := requestedBlocks(method, gjson.GetBytes(payload.Bytes(), "params"), head)
-	if !ok || to < from || to-from > refusalMaxSpan || from+maxBack < head || to+minBack > head ||
-		(nodeHead > 0 && to >= nodeHead) {
-		return result, false
+	minBack, maxBack := uint64(refusalMinBlocks), uint64(refusalMaxBlocks)
+	if blocksIn != nil {
+		minBack = max(minBack, blocksIn(refusalMinAge))
+		if !stateMethods[method] {
+			maxBack = max(maxBack, blocksIn(refusalMaxAge))
+		}
 	}
-	return heuristic.RefusedRecent(fmt.Sprintf("%s blocks %d-%d, %d-%d behind the head %d: %s", method, from, to, head-to, head-from, head, result.Details)), true
+	from, to, named := requestedBlocks(method, gjson.GetBytes(payload.Bytes(), "params"), head)
+	switch {
+	case !named || to < from:
+		return result, false, "no block number"
+	case to-from > refusalMaxSpan:
+		return result, false, "span"
+	case to+minBack > head:
+		return result, false, "too new"
+	case from+maxBack < head:
+		return result, false, "too old"
+	}
+	return heuristic.RefusedRecent(fmt.Sprintf("%s blocks %d-%d, %d-%d behind the head %d: %s", method, from, to, head-to, head-from, head, result.Details)), true, ""
 }
 
 // claimsDiscarded reports whether a verdict's details carry one of

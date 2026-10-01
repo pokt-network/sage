@@ -21,12 +21,13 @@ import (
 //
 // The evidence is breadth, because that is what tells a cache or a policy
 // from a lagging machine. An honest node behind the head is one node on one
-// chain; it moves one service's stale share. On the same day three honest
-// parties were priced by stale_share on one service each, the owner on 26.
+// chain; it moves one service's stale share. On the same day honest parties
+// reached three services at most (a lagging fleet, a node on two chains),
+// the owner 24; eight leaves a wide margin on both sides.
 const (
 	// trustStaleServices is how many services a party's stale share must
 	// exceed the cleanest party's by staleShareFloor on at once.
-	trustStaleServices = 3
+	trustStaleServices = 8
 	// trustRefusalServices is how many services must each have seen at least
 	// trustRefusalMin of the party's refused_recent verdicts in the window.
 	trustRefusalServices = 2

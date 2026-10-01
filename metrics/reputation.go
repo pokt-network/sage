@@ -395,7 +395,7 @@ func NewTrustCollector(each func(yield func(party string, staleServices, refusal
 		parties: cappedLabel(maxOperatorLabels),
 		evidence: prometheus.NewDesc(
 			"sage_party_trust_evidence",
-			"Services on which a party currently carries trust evidence, by party and kind: stale (stale share more than 15 points over the service's cleanest party; 3 services sets the trust penalty) or refusal (10 or more refused_recent verdicts in about the last hour; 2 services set it). Counted whatever the trust_penalty flag says.",
+			"Services on which a party currently carries trust evidence, by party and kind: stale (stale share more than 15 points over the service's cleanest party; 8 services set the trust penalty) or refusal (10 or more refused_recent verdicts in about the last hour; 2 services set it). Counted whatever the trust_penalty flag says.",
 			[]string{"party", "kind"}, nil,
 		),
 		penalty: prometheus.NewDesc(

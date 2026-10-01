@@ -44,9 +44,12 @@ var query5xxPrefixes = []string{
 // plugin grades it: the supplier refusing (evm.RefusalVerdict).
 func (p *Plugin) RefineVerdict(endpoint domain.EndpointAddr, payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
 	if p.evmHeights() && payload.RPCType() == domain.RPCTypeJSONRPC {
-		nodeHead, _ := qos.HeightGetter(p.store, func(ep cosmosEndpoint) uint64 { return ep.BlockHeight }, qos.HeightProjection{})(endpoint)
-		if refined, ok := evm.RefusalVerdict(payload, result, p.consensus.PerceivedBlock(), nodeHead, p.consensus.BlocksIn); ok {
+		refined, ok, skip := evm.RefusalVerdict(payload, result, p.consensus.PerceivedBlock(), p.consensus.BlocksIn)
+		if ok {
 			return refined, true
+		}
+		if skip != "" {
+			p.logger.Debug("prune claim not judged", "endpoint", endpoint, "method", payload.Method(), "skip", skip, "detail", result.Details)
 		}
 	}
 	if result.Reason != "http_5xx" && result.Reason != "upstream_5xx" {

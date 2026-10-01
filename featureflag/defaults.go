@@ -111,9 +111,10 @@ const (
 	// some methods is not a dead host. Off by default.
 	FlagMethodBlock408 = "method_block_408"
 	// FlagMethodBlockRefusal makes a refused_recent verdict a method mark,
-	// as method_block_408 does for a 408: a supplier claiming the state or
-	// history of a block within 128 of the head is gone (over at most ten
-	// blocks) keeps that method off that host for the client TTL. On mainnet
+	// as method_block_408 does for a 408: a supplier claiming a block is
+	// pruned when it is between max(16 blocks, 30s) and max(128 blocks,
+	// 10 min; 128 for state methods) behind the head, over at most ten
+	// blocks, keeps that method off that host for the client TTL. On mainnet
 	// (2026-10-01) one owner answered heavy calls about blocks a few minutes
 	// old with "requested height has been pruned" (sei), "No state available
 	// for block" (gnosis) and "no state found for block" (op) in 15-25ms,
@@ -179,7 +180,7 @@ const (
 	// FlagTrustPenalty charges a party caught faking on several services -30
 	// on every key it has in the service, every RPC type and WebSocket
 	// included, for 24 hours after the evidence was last seen: its stale
-	// share more than 15 points over the cleanest party's on three services
+	// share more than 15 points over the cleanest party's on eight services
 	// at once, or ten or more refused_recent verdicts in the last hour on
 	// each of two. Breadth is what tells a cache or a refusal policy from an
 	// honest node lagging on one chain. Charged as the larger of it and the

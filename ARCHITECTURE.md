@@ -254,13 +254,13 @@ likely a chain-wide slowdown than every operator down at once.
 | circuit_breaker | on | Domain-wide broken tracking |
 | circuit_break_upstream | off | A relay miner's 408/5xx counts toward the circuit breaker's rate gate |
 | method_block_408 | off | A supplier's 408 keeps that method away from that host for the client TTL; never escalates to a host-wide block |
-| method_block_refusal | off | A refused_recent verdict (a missing-state answer about a block within 128 of the head, span ≤10) keeps that method off that host for the client TTL; never escalates to a host-wide block |
+| method_block_refusal | off | A refused_recent verdict (a prune claim about a block 16 blocks/30s to 128 blocks/10 min behind the head, span ≤10) keeps that method off that host for the client TTL; never escalates to a host-wide block |
 | cosmos_evm_height | off | A Cosmos service learns block heights from its EVM face (eth_blockNumber probe and answers); only for chains whose EVM block number is the Cosmos height |
 | ws_share_cap | off | No party placed into more than half of a service's WebSocket frames on a pod, at open and every rebind, while another vouched party is in the session |
 | stale_response | off | A head answer too far behind the perceived head is a major supplier verdict (feeds the failure rate) and is retried; the freshest answer is delivered if every attempt is stale |
 | stale_share | off | A party whose chain-head answers are stale well above the service's cleanest party's share loses up to 40 points on every key in that service |
 | state_canary | off | EVM health checks (and a Cosmos service's EVM face under cosmos_evm_height) add a fixed Multicall3 eth_call at latest; an answer whose block timestamp trails the clock by more than two blocks plus 10s counts toward the party's stale share |
-| trust_penalty | off | A party caught faking on several services (stale share over the floor on 3, or refused_recent on 2) loses 30 points on every key, every RPC type and WebSocket, for 24h after the evidence; the larger of it and the stale-share penalty, never both |
+| trust_penalty | off | A party caught faking on several services (stale share over the floor on 8, or refused_recent on 2) loses 30 points on every key, every RPC type and WebSocket, for 24h after the evidence; the larger of it and the stale-share penalty, never both |
 | websocket_probes | on | Once a minute, WebSocket endpoints of a service below full reputation get one signed probe, so a demoted WebSocket key has a way back |
 | penalize_408 | on | A supplier's HTTP 408 costs it a major error |
 | relative_chronic | on | The chronic penalty is measured from the pool's best failure rate, not from zero |

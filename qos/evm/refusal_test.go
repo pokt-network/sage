@@ -36,9 +36,10 @@ func TestRefusalVerdict(t *testing.T) {
 		{"op wording, eth_call at a block 100 behind", rpc("eth_call", `[{"to":"0x1"},`+hex(head-100)+`]`), "no state found for block", true},
 		{"latest: the node may simply be a block behind", rpc("eth_call", `[{"to":"0x1"},"latest"]`), "missing trie node", false},
 		{"two blocks behind: a node that is behind cannot have it yet",
-			rpc("eth_getLogs", `[{"fromBlock":`+hex(head-2)+`,"toBlock":`+hex(head-2)+`}]`), "historical state is not available", false},
-		{"ahead of the head", rpc("eth_getBalance", `["0x1",`+hex(head+1)+`]`), "historical state is not available", false},
-		{"one block behind", rpc("eth_getBalance", `["0x1",`+hex(head-1)+`]`), "historical state is not available", false},
+			rpc("eth_getLogs", `[{"fromBlock":`+hex(head-2)+`,"toBlock":`+hex(head-2)+`}]`), "no state found for block", false},
+		{"ahead of the head", rpc("eth_getBalance", `["0x1",`+hex(head+1)+`]`), "no state found for block", false},
+		{"one block behind", rpc("eth_getBalance", `["0x1",`+hex(head-1)+`]`), "no state found for block", false},
+		{"\"historical state is not available\" is an honest wording", rpc("eth_getBalance", `["0x1",`+hex(head-100)+`]`), "historical state is not available", false},
 		{"twenty behind is judged", rpc("eth_getBalance", `["0x1",`+hex(head-20)+`]`), "no state found for block", true},
 		{"missing trie node: an honest geth after a restart", rpc("eth_call", `[{"to":"0x1"},`+hex(head-100)+`]`), "missing trie node", false},
 		{"a block 50,000 behind is a real prune",
@@ -49,12 +50,12 @@ func TestRefusalVerdict(t *testing.T) {
 			rpc("eth_getLogs", `[{"blockHash":"0xabc"}]`), "requested height has been pruned", false},
 		{"not a missing-state answer", rpc("eth_getLogs", `[{"fromBlock":"latest"}]`), "execution reverted", false},
 	} {
-		got, ok := RefusalVerdict(tc.payload, verdict(tc.message), head, 0, nil)
+		got, ok, _ := RefusalVerdict(tc.payload, verdict(tc.message), head, nil)
 		if ok != tc.refused || (ok && (got.Reason != heuristic.ReasonRefusedRecent || got.Attribution != heuristic.AttrSupplier || !got.ShouldRetry || got.PenaltySeverity != heuristic.SeverityMajor)) {
 			t.Errorf("%s: refused=%v %+v, want refused=%v", tc.name, ok, got, tc.refused)
 		}
 	}
-	if _, ok := RefusalVerdict(rpc("eth_getLogs", `[{"fromBlock":"latest"}]`), verdict("has been pruned"), 0, 0, nil); ok {
+	if _, ok, _ := RefusalVerdict(rpc("eth_getLogs", `[{"fromBlock":"latest"}]`), verdict("has been pruned"), 0, nil); ok {
 		t.Error("with no head nothing is judged")
 	}
 }
@@ -80,18 +81,13 @@ func TestRequestedBlocks(t *testing.T) {
 	}
 }
 
-// A block at or past the answering host's own reported head is one it may
-// not have yet, whatever the perceived head says; the detail names the
-// method, the blocks, the depth and the node's words.
-func TestRefusalVerdict_NodeHeadAndDetail(t *testing.T) {
+// The detail names the method, the blocks, the depth and the node's words.
+func TestRefusalVerdict_Detail(t *testing.T) {
 	const head = 1000
 	req := rpc("eth_getLogs", `[{"fromBlock":"0x384","toBlock":"0x384"}]`) // 900
-	if _, ok := RefusalVerdict(req, verdict("no state found for block"), head, 880, nil); ok {
-		t.Fatal("a block past the host's own head must not be judged")
-	}
-	got, ok := RefusalVerdict(req, verdict("no state found for block"), head, 999, nil)
+	got, ok, _ := RefusalVerdict(req, verdict("no state found for block"), head, nil)
 	if !ok {
-		t.Fatal("a host at the head refusing block 900 is refusing")
+		t.Fatal("block 900 at head 1000 is a refusal")
 	}
 	for _, want := range []string{"eth_getLogs", "900-900", "100-100 behind the head 1000", "no state found for block"} {
 		if !strings.Contains(got.Details, want) {
@@ -112,8 +108,8 @@ func TestRefusalVerdict_TimeWindowOnAFastChain(t *testing.T) {
 		refused bool
 	}{{50, false}, {100, true}, {300, true}, {1000, true}, {10_000, false}} {
 		b := fmt.Sprintf("%q", fmt.Sprintf("0x%x", head-tc.back))
-		req := rpc("debug_traceBlockByNumber", `[`+b+`,{}]`)
-		if _, ok := RefusalVerdict(req, verdict("requested height has been pruned"), head, 0, rate); ok != tc.refused {
+		req := rpc("eth_getLogs", `[{"fromBlock":`+b+`,"toBlock":`+b+`}]`)
+		if _, ok, _ := RefusalVerdict(req, verdict("requested height has been pruned"), head, rate); ok != tc.refused {
 			t.Errorf("head-%d: refused=%v, want %v", tc.back, ok, tc.refused)
 		}
 	}
@@ -125,8 +121,36 @@ func TestRefusalVerdict_HonestWordings(t *testing.T) {
 	const head = 1000
 	req := rpc("eth_call", `[{"to":"0x1"},"0x384"]`) // 900
 	for _, msg := range []string{"missing trie node abc", "metadata is not found, 900", "this API is not supported by lite fullnode"} {
-		if _, ok := RefusalVerdict(req, verdict(msg), head, 0, nil); ok {
+		if _, ok, _ := RefusalVerdict(req, verdict(msg), head, nil); ok {
 			t.Errorf("%q judged a refusal", msg)
+		}
+	}
+}
+
+// A state method's window stops at 128 blocks however slow the chain: nodes
+// keep that many states, and say "gone" truthfully past them.
+func TestRefusalVerdict_StateMethodsStopAt128(t *testing.T) {
+	const head = 1_000_000
+	rate := func(d time.Duration) uint64 { return uint64(4 * d.Seconds()) } // a 250ms chain
+	call := func(back uint64) domain.Payload {
+		return rpc("eth_getBalance", fmt.Sprintf(`["0x1","0x%x"]`, head-back))
+	}
+	logs := func(back uint64) domain.Payload {
+		b := fmt.Sprintf("%q", fmt.Sprintf("0x%x", head-back))
+		return rpc("eth_getLogs", `[{"fromBlock":`+b+`,"toBlock":`+b+`}]`)
+	}
+	for _, tc := range []struct {
+		name    string
+		payload domain.Payload
+		refused bool
+	}{
+		{"state 150 back", call(150), false},
+		{"state 125 back", call(125), true},
+		{"logs 2,000 back (8 min)", logs(2000), true},
+		{"logs 3,000 back (12.5 min)", logs(3000), false},
+	} {
+		if _, ok, _ := RefusalVerdict(tc.payload, verdict("no state found for block"), head, rate); ok != tc.refused {
+			t.Errorf("%s: refused=%v, want %v", tc.name, ok, tc.refused)
 		}
 	}
 }

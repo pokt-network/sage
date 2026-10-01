@@ -606,8 +606,11 @@ func HeadLag(payload domain.Payload, response []byte, at time.Time, consensus *q
 // block too recent to have been discarded is the supplier refusing
 // (RefusalVerdict).
 func (p *Plugin) RefineVerdict(endpoint domain.EndpointAddr, payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
-	nodeHead, _ := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, qos.HeightProjection{})(endpoint)
-	return RefusalVerdict(payload, result, p.consensus.PerceivedBlock(), nodeHead, p.consensus.BlocksIn)
+	refined, ok, skip := RefusalVerdict(payload, result, p.consensus.PerceivedBlock(), p.consensus.BlocksIn)
+	if skip != "" {
+		p.logger.Debug("prune claim not judged", "endpoint", endpoint, "method", payload.Method(), "skip", skip, "detail", result.Details)
+	}
+	return refined, ok
 }
 
 var _ qos.VerdictRefiner = (*Plugin)(nil)
