@@ -782,7 +782,15 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// The test is on the score BEFORE this signal: the attempt that floors the
 	// key still feeds the rate, and only what happens to an already-floored key
 	// is discounted.
-	if sc.rate.Enabled() && prev.Score != 0 && !deferred {
+	//
+	// Retries and hedges score the key but do not move its rate, as they do
+	// not move its operator's (Signal.Leftover). Which relays reach them was
+	// decided by another host's failure: on mainnet sei (2026-10-01) one
+	// owner refused heavy calls with an unscored -32000, the retry sent each
+	// of them to the other operator, whose busy node failed them, and that
+	// operator's key rate read 2.46% against 0.14% on its own first attempts
+	// — a -49 penalty that took its first attempts from 10/s to 0.1/s.
+	if sc.rate.Enabled() && prev.Score != 0 && !deferred && !signal.Leftover {
 		st.Rate += sc.lambda * (FailureWeight(signal.Type) - st.Rate)
 	}
 	st.Attempts++

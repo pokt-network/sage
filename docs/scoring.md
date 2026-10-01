@@ -418,11 +418,13 @@ Two more corrections followed the same day, both from mainnet sei:
   the baseline is the best *operator* in the pool, one vote each. A service is
   measured in one basis or the other, never a mix.
 
-  Only first, probation and probe attempts feed those counters. Retries and
-  hedges score their key but not its operator: which relays reach them was
-  decided by another host's failure or slowness, and a demoted operator gets
-  little else, so counting them held its rate up by the demotion itself
-  (mainnet sei and opbnb, 2026-09-28).
+  Only first, probation and probe attempts feed those counters, or a key's
+  own rate. Retries and hedges move a key's additive score and nothing else:
+  which relays reach them was decided by another host's failure or slowness,
+  and a demoted operator gets little else, so counting them held its rate up
+  by the demotion itself (mainnet sei and opbnb, 2026-09-28; the key rate
+  followed on 2026-10-01, when another operator's unscored refusals were
+  retried onto sei's other operator and read as its 2.46% rate).
 
   Time alone does not lower a rate, since it scales failures and attempts
   alike. An operator that answers 20 in a row with no failure is forgiven by

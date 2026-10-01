@@ -284,3 +284,29 @@ func TestOperatorChronicSkipsStoredWebSocketStats(t *testing.T) {
 		t.Fatal("websocket key charged a stored operator rate")
 	}
 }
+
+// A retry's or hedge's failure scores the key but leaves its rate alone; a
+// first attempt's failure moves it.
+func TestKeyRateIgnoresLeftoverAttempts(t *testing.T) {
+	s := opService(t, nil)
+	ep := domain.EndpointAddr("pokt1a-https://r001.opa.example")
+	key := s.keyOf(ep, domain.RPCTypeJSONRPC)
+	rate := func() float64 {
+		sh := s.shard(key)
+		sh.mu.RLock()
+		defer sh.mu.RUnlock()
+		return sh.cache[rateSvc][key].Rate
+	}
+	feedOperator(s, ep, 10, 0)
+	before := rate()
+	_ = s.RecordSignal(context.Background(), rateSvc, ep, domain.RPCTypeJSONRPC,
+		Signal{Type: SignalMajorError, Timestamp: time.Now(), Leftover: true})
+	if rate() != before {
+		t.Fatalf("leftover failure moved the key rate: %v -> %v", before, rate())
+	}
+	_ = s.RecordSignal(context.Background(), rateSvc, ep, domain.RPCTypeJSONRPC,
+		Signal{Type: SignalMajorError, Timestamp: time.Now()})
+	if rate() <= before {
+		t.Fatal("a first attempt's failure must move the key rate")
+	}
+}
