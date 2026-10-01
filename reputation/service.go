@@ -427,9 +427,7 @@ func (s *serviceImpl) RecordNote(serviceID domain.ServiceID, endpoint domain.End
 	if ok {
 		score = s.effectiveFor(serviceID, key, st)
 	}
-	if len(detail) > 200 {
-		detail = detail[:200]
-	}
+	detail = truncateDetail(detail)
 	s.timeline.Record(scoreKey(serviceID, key), TimelineEvent{
 		Timestamp: time.Now(),
 		Event:     "unscored",
@@ -438,6 +436,14 @@ func (s *serviceImpl) RecordNote(serviceID domain.ServiceID, endpoint domain.End
 		Score:     score,
 		Detail:    "unscored: " + reason + ": " + detail,
 	})
+}
+
+// truncateDetail bounds a timeline detail, like RecordNote does.
+func truncateDetail(d string) string {
+	if len(d) > 200 {
+		return d[:200]
+	}
+	return d
 }
 
 // SetRelativeChronic turns on the pool-relative chronic penalty, per service,
@@ -882,14 +888,21 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// Record timeline event. Structured fields only — Detail is rendered on
 	// the admin read path, not here on the relay hot path.
 	if s.timeline != nil {
-		s.timeline.Record(key, TimelineEvent{
+		ev := TimelineEvent{
 			Timestamp:  signal.Timestamp,
 			Event:      "signal",
 			SignalType: string(signal.Type),
 			Reason:     signal.Reason,
 			OldScore:   s.effectiveFor(serviceID, repKey, prev),
 			Score:      newScore,
-		})
+		}
+		// A penalty's own explanation: which block a refusal named, what
+		// the node said. Rendered here only when there is one, which is
+		// only on failures.
+		if signal.Detail != "" {
+			ev.Detail = ev.rendered().Detail + ": " + truncateDetail(signal.Detail)
+		}
+		s.timeline.Record(key, ev)
 	}
 
 	// Enqueue async write (non-blocking: drop if queue full).

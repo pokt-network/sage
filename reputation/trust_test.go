@@ -2,6 +2,7 @@ package reputation
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,5 +114,20 @@ func TestRefusalSignalCountsTowardTrust(t *testing.T) {
 	}
 	if st, ok := s.refusals.get(opID{svc: "sei", op: ep.Party()}, time.Now()); !ok || st.Attempts < 11.9 {
 		t.Fatalf("refusals counted %+v %v", st, ok)
+	}
+}
+
+// A penalty's details reach its timeline event: a refusal's block and depth
+// and the node's words are what an operator needs to judge it.
+func TestTimelineKeepsTheVerdictDetail(t *testing.T) {
+	tl := NewTimeline(100)
+	s := NewService(NewMemoryStorage(), tl, ServiceConfig{})
+	ep := domain.EndpointAddr("pokt1a-https://r001.cache.example")
+	sig := NewMajorErrorSignal(reasonRefusedRecent, 0)
+	sig.Detail = "claims block 900 is gone, 100 behind the head: no state found for block"
+	_ = s.RecordSignal(context.Background(), "op", ep, domain.RPCTypeJSONRPC, sig)
+	evs := tl.GetAll("")
+	if len(evs) == 0 || !strings.Contains(evs[len(evs)-1].Detail, "100 behind the head: no state found") {
+		t.Fatalf("timeline: %+v", evs)
 	}
 }

@@ -34,6 +34,9 @@ type Signal struct {
 	// skewed sample of an operator's traffic: the per-key score counts them,
 	// the operator counters do not (see RecordSignal).
 	Leftover bool
+	// Detail is the verdict's own explanation (the block a refusal named,
+	// the node's message), kept on the timeline event and nowhere else.
+	Detail string
 }
 
 // NewSuccessSignal creates a signal indicating a successful relay.

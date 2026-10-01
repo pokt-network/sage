@@ -162,16 +162,21 @@ func penaltySignal(result heuristic.AnalysisResult, latency time.Duration) reput
 	if reason == "" {
 		reason = result.Details
 	}
+	var sig reputation.Signal
 	switch result.PenaltySeverity {
 	case heuristic.SeverityFatal:
-		return reputation.NewFatalErrorSignal(reason, latency)
+		sig = reputation.NewFatalErrorSignal(reason, latency)
 	case heuristic.SeverityCritical:
-		return reputation.NewCriticalErrorSignal(reason, latency)
+		sig = reputation.NewCriticalErrorSignal(reason, latency)
 	case heuristic.SeverityMajor:
-		return reputation.NewMajorErrorSignal(reason, latency)
+		sig = reputation.NewMajorErrorSignal(reason, latency)
 	default:
-		return reputation.NewMinorErrorSignal(reason, latency)
+		sig = reputation.NewMinorErrorSignal(reason, latency)
 	}
+	// The timeline is where an operator reads why a host was charged: the
+	// verdict's details (a refusal's block and depth, the node's words).
+	sig.Detail = result.Details
+	return sig
 }
 
 // isSuccessStatus returns true when the relay response has a 2xx HTTP status.
