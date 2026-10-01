@@ -470,6 +470,13 @@ Two more corrections followed the same day, both from mainnet sei:
   `eth_call_canary`). On 2026-10-01 one owner's cache answered such a call
   with the same block for over two minutes on bsc.
 
+  Cosmos chains are measured too: CometBFT `status`, `block` with no height
+  and the REST latest-block route are graded by the newest block's time
+  against the clock, and with `state_canary` a Cosmos service also gets a
+  REST canary (`rest_head_canary`, the latest-block route at the same URL
+  every time). On a chain whose EVM face reports the Cosmos height
+  (`cosmos_evm_height`), that face is read exactly as an EVM chain is.
+
 - **A party caught faking on several services is distrusted on all of them**
   (flag `trust_penalty`, default off, added 2026-10-01). The evidence is
   breadth: a stale share more than 15 points over the cleanest party's on

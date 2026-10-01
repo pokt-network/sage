@@ -87,9 +87,9 @@ type Config struct {
 	// disables the assertion.
 	ExpectedChainID string
 
-	// StateCanary reports, when asked, whether the EVM face also gets the
-	// state canary (featureflag.FlagStateCanary, qos/evm/canary.go). It is
-	// read only where EVMHeight holds: the canary is an EVM call. Nil means
+	// StateCanary reports, when asked, whether the state canary runs
+	// (featureflag.FlagStateCanary): the REST latest-block canary always, and
+	// the EVM canary (qos/evm/canary.go) too where EVMHeight holds. Nil means
 	// never.
 	StateCanary func() bool
 
@@ -396,23 +396,38 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 			// would grade that empty answer as a failed probe.
 		})
 	}
-	if p.evmHeights() && p.stateCanary != nil && p.stateCanary() {
-		checks = append(checks, evm.CanaryCheck(time.Now()))
+	if p.stateCanary != nil && p.stateCanary() {
+		checks = append(checks, qos.HealthCheck{Name: restCanaryName, Payload: restHeadCanary(), GradesHead: true})
+		if p.evmHeights() {
+			checks = append(checks, evm.CanaryCheck(time.Now()))
+		}
 	}
 	return checks
 }
 
-// HeadLag implements qos.HeadLagReader for the EVM face of a chain whose EVM
-// block number is the Cosmos height (evmHeights): eth_blockNumber,
-// eth_getBlockByNumber("latest") and the state canary, read as the EVM
-// plugin reads them. On mainnet sei (2026-10-01) one owner carried 90% of
-// first attempts on that face and nothing measured how old its answers were.
-// CometBFT and REST answers are not read yet.
+// HeadLag implements qos.HeadLagReader.
+//
+// The EVM face of a chain whose EVM block number is the Cosmos height
+// (evmHeights) is read as the EVM plugin reads it: eth_blockNumber,
+// eth_getBlockByNumber("latest") and the EVM state canary. On mainnet sei
+// (2026-10-01) one owner carried 90% of first attempts on that face and
+// nothing measured how old its answers were.
+//
+// Every other answer that names the newest block (CometBFT status, block with
+// no height, the REST latest-block route, the REST canary) is graded by that
+// block's time against the clock (headTime). The same owner held a third or
+// more of first attempts on several Cosmos chains, unmeasured.
 func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool) {
-	if !p.evmHeights() || payload.RPCType() != domain.RPCTypeJSONRPC {
+	if p.evmHeights() && payload.RPCType() == domain.RPCTypeJSONRPC {
+		if lag, stale, ok := evm.HeadLag(payload, response, at, p.consensus); ok {
+			return lag, stale, ok
+		}
+	}
+	ts, ok := headTime(payload, response)
+	if !ok {
 		return 0, false, false
 	}
-	return evm.HeadLag(payload, response, at, p.consensus)
+	return p.consensus.StateLag(ts, at)
 }
 
 var _ qos.HeadLagReader = (*Plugin)(nil)
