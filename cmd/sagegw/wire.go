@@ -452,7 +452,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			// path; anything else falls to the passthrough, which tracks
 			// nothing and says so at startup (config.QoSCoverageFor).
 			if chain, ok := jsonheight.ByServiceType(domain.ServiceType(svc.Type)); ok {
-				plugin = jsonheight.NewPlugin(pluginLogger, chain, svc.SyncAllowance)
+				jp := jsonheight.NewPlugin(pluginLogger, chain, svc.SyncAllowance)
+				serviceID := domain.ServiceID(svc.ID)
+				jp.SetStateCanary(func() bool {
+					return flags.IsEnabled(context.Background(), featureflag.FlagStateCanary, serviceID)
+				})
+				plugin = jp
 			} else {
 				plugin = noop.NewPlugin(pluginLogger, svc.SyncAllowance)
 			}

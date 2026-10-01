@@ -59,6 +59,17 @@ type Chain struct {
 	// HeightMethod is the value RequestMethodPath must hold for a client
 	// response to be read as a height. Ignored when RequestMethodPath is empty.
 	HeightMethod string
+	// HeadParamPath, when set, is a request path that must exist for a
+	// HeightMethod call to be asking for the head: NEAR's block names either
+	// a finality (the head) or a block_id (history).
+	HeadParamPath string
+
+	// Canaries are the state canary's request bodies for this chain, each
+	// sent byte-identical while in use and rotated every canaryRotation
+	// (featureflag.FlagStateCanary). CanaryHeightPath reads the height the
+	// answer's state was read at. Empty means the chain has no canary.
+	Canaries         [][]byte
+	CanaryHeightPath string
 }
 
 // Plugin serves one chain declared by a Chain.
@@ -71,6 +82,9 @@ type Plugin struct {
 
 	store     *qos.EndpointStore[endpointState]
 	consensus *qos.BlockConsensus
+
+	// stateCanary gates the canary check; nil means never.
+	stateCanary func() bool
 }
 
 type endpointState struct {
@@ -153,14 +167,78 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 
 // --- qos.HealthChecker --- //
 
-// HealthChecks returns the one probe this chain declares. It is Essential: it
-// is the only source of the fact the plugin exists to learn.
+// HealthChecks returns the probe this chain declares, Essential: it is the
+// only source of the fact the plugin exists to learn. With the state canary
+// on, and a chain that declares one, the canary too.
 func (p *Plugin) HealthChecks() []qos.HealthCheck {
-	return []qos.HealthCheck{{
+	checks := []qos.HealthCheck{{
 		Name:      p.chain.CheckName,
 		Payload:   p.chain.Probe,
 		Essential: true,
 	}}
+	if n := len(p.chain.Canaries); n > 0 && p.stateCanary != nil && p.stateCanary() {
+		body := p.chain.Canaries[(time.Now().Unix()/int64(canaryRotation/time.Second))%int64(n)]
+		checks = append(checks, qos.HealthCheck{
+			Name:       p.chain.Name + "_canary",
+			Payload:    domain.NewPayload(body, p.chain.Probe.RPCType(), gjson.GetBytes(body, p.chain.RequestMethodPath).String()),
+			GradesHead: true,
+		})
+	}
+	return checks
+}
+
+// canaryRotation is how long one canary body is used before the next.
+const canaryRotation = 10 * time.Minute
+
+// SetStateCanary installs the gate for the state canary check. Wire time.
+func (p *Plugin) SetStateCanary(gate func() bool) { p.stateCanary = gate }
+
+// HeadLag implements qos.HeadLagReader: an answer to a head request (the
+// chain's height method, for a head and not a historical block) or to a
+// canary, measured against consensus. On mainnet (2026-10-01) one owner held
+// 46% of near's first attempts and nothing measured how old its answers were.
+func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool) {
+	var height uint64
+	switch {
+	case p.isCanary(payload.Bytes()):
+		v := gjson.GetBytes(response, p.chain.CanaryHeightPath)
+		if !v.Exists() {
+			return 0, false, false
+		}
+		height = v.Uint()
+	case p.askedForHead(payload.Bytes()):
+		h, err := p.heightFrom(response)
+		if err != nil {
+			return 0, false, false
+		}
+		height = h
+	}
+	if height == 0 {
+		return 0, false, false
+	}
+	return p.consensus.AnswerLag(height, at)
+}
+
+var _ qos.HeadLagReader = (*Plugin)(nil)
+
+// askedForHead reports whether a request asks for the chain's head: the
+// height method, with HeadParamPath present when the chain declares one.
+func (p *Plugin) askedForHead(request []byte) bool {
+	if !p.askedForHeight(request) {
+		return false
+	}
+	return p.chain.HeadParamPath == "" || gjson.GetBytes(request, p.chain.HeadParamPath).Exists() ||
+		string(request) == string(p.chain.Probe.Bytes())
+}
+
+// isCanary reports whether a request is one of the chain's canary bodies.
+func (p *Plugin) isCanary(request []byte) bool {
+	for _, c := range p.chain.Canaries {
+		if string(request) == string(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- qos.DataExtractor --- //

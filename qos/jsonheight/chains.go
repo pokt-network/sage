@@ -23,6 +23,15 @@ var (
 		HeightPath:        "result.header.height",
 		RequestMethodPath: "method",
 		HeightMethod:      "block",
+		HeadParamPath:     "params.finality",
+		// view_account at final finality names the block its state was read
+		// at; two well-known accounts so the cache cannot be bypassed for
+		// one body.
+		Canaries: [][]byte{
+			[]byte(`{"jsonrpc":"2.0","id":21,"method":"query","params":{"request_type":"view_account","finality":"final","account_id":"near"}}`),
+			[]byte(`{"jsonrpc":"2.0","id":22,"method":"query","params":{"request_type":"view_account","finality":"final","account_id":"aurora"}}`),
+		},
+		CanaryHeightPath: "result.block_height",
 	}
 
 	// Sui counts checkpoints rather than blocks, and returns the sequence

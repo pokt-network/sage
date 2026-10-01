@@ -476,6 +476,9 @@ Two more corrections followed the same day, both from mainnet sei:
   REST canary (`rest_head_canary`, the latest-block route at the same URL
   every time). On a chain whose EVM face reports the Cosmos height
   (`cosmos_evm_height`), that face is read exactly as an EVM chain is.
+  NEAR's `block` for a finality (not a `block_id`) is read as a head answer,
+  and its canary is a fixed `view_account` query at final finality, graded by
+  the block height its state was read at.
 
 - **A party caught faking on several services is distrusted on all of them**
   (flag `trust_penalty`, default off, added 2026-10-01). The evidence is
