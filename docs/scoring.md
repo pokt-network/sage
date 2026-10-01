@@ -460,8 +460,8 @@ Two more corrections followed the same day, both from mainnet sei:
   `sage_party_stale_penalty`, and the admin listing shows `stale_penalty`.
 
   A cache keyed on the request body serves state calls as old as head calls,
-  and only head calls show it. With flag `state_canary` (default off, EVM
-  only) every backend is also probed once a cycle with a fixed eth_call to
+  and only head calls show it. With flag `state_canary` (default off; EVM
+  services, and a Cosmos service's EVM face under `cosmos_evm_height`) every backend is also probed once a cycle with a fixed eth_call to
   Multicall3 at `latest` whose answer carries its block's timestamp; one of
   four single-call bodies, rotated every ten minutes and byte-identical while
   in use, and no reputation signal of its own. An

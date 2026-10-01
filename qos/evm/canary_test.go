@@ -100,7 +100,7 @@ func TestCanaryHeadLag(t *testing.T) {
 func TestCanaryCheckFollowsTheFlag(t *testing.T) {
 	has := func(p *Plugin) bool {
 		for _, c := range p.HealthChecks() {
-			if c.Name == CanaryCheck {
+			if c.Name == CanaryName {
 				return c.GradesHead
 			}
 		}
@@ -120,7 +120,7 @@ func TestCanaryCheckFollowsTheFlag(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for i := 0; i < len(canaryBodies); i++ {
-		seen[string(canaryCheck(time.Unix(int64(i)*int64(canaryRotation/time.Second), 0)).Payload.Bytes())] = true
+		seen[string(CanaryCheck(time.Unix(int64(i)*int64(canaryRotation/time.Second), 0)).Payload.Bytes())] = true
 	}
 	if len(seen) != len(canaryBodies) {
 		t.Fatalf("rotation used %d of %d bodies", len(seen), len(canaryBodies))

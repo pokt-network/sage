@@ -60,6 +60,7 @@ type Plugin struct {
 	supportedRPCTypes []domain.RPCType
 	expectedChainID   string
 	evmHeight         func() bool
+	stateCanary       func() bool
 
 	store     *qos.EndpointStore[cosmosEndpoint]
 	consensus *qos.BlockConsensus
@@ -85,6 +86,12 @@ type Config struct {
 	// /status reports it under node_info.network (e.g. "cosmoshub-4"). Empty
 	// disables the assertion.
 	ExpectedChainID string
+
+	// StateCanary reports, when asked, whether the EVM face also gets the
+	// state canary (featureflag.FlagStateCanary, qos/evm/canary.go). It is
+	// read only where EVMHeight holds: the canary is an EVM call. Nil means
+	// never.
+	StateCanary func() bool
 
 	// EVMHeight reports, at the moment it is asked, whether this chain's EVM
 	// face reports the Cosmos height (featureflag.FlagCosmosEVMHeight). When
@@ -146,6 +153,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		supportedRPCTypes: supportedRPCTypes,
 		expectedChainID:   cfg.ExpectedChainID,
 		evmHeight:         cfg.EVMHeight,
+		stateCanary:       cfg.StateCanary,
 		store:             qos.NewEndpointStore[cosmosEndpoint](logger),
 		consensus:         qos.NewBlockConsensus(logger, cfg.SyncAllowance),
 		pruned:            newPrunedMemory(),
@@ -385,8 +393,26 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 			Essential: true,
 		})
 	}
+	if p.evmHeights() && p.stateCanary != nil && p.stateCanary() {
+		checks = append(checks, evm.CanaryCheck(time.Now()))
+	}
 	return checks
 }
+
+// HeadLag implements qos.HeadLagReader for the EVM face of a chain whose EVM
+// block number is the Cosmos height (evmHeights): eth_blockNumber,
+// eth_getBlockByNumber("latest") and the state canary, read as the EVM
+// plugin reads them. On mainnet sei (2026-10-01) one owner carried 90% of
+// first attempts on that face and nothing measured how old its answers were.
+// CometBFT and REST answers are not read yet.
+func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool) {
+	if !p.evmHeights() || payload.RPCType() != domain.RPCTypeJSONRPC {
+		return 0, false, false
+	}
+	return evm.HeadLag(payload, response, at, p.consensus)
+}
+
+var _ qos.HeadLagReader = (*Plugin)(nil)
 
 // --- qos.ChainViewer --- //
 

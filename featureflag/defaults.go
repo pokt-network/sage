@@ -172,7 +172,9 @@ const (
 	// state calls old: on mainnet (2026-10-01) one owner's cache answered a
 	// fixed eth_call with the same block for over two minutes on bsc while a
 	// fresh request was current. One relay per backend per cycle. Off by
-	// default; not for TRON, whose JSON-RPC face has no Multicall3.
+	// default. EVM services, and Cosmos services whose EVM face reports the
+	// Cosmos height (cosmos_evm_height on, as sei); not TRON, whose JSON-RPC
+	// face has no Multicall3.
 	FlagStateCanary = "state_canary"
 	// FlagTrustPenalty charges a party caught faking on several services -30
 	// on every key it has in the service, every RPC type and WebSocket

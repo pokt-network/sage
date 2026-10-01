@@ -437,6 +437,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			cosmosCfg.EVMHeight = func() bool {
 				return flags.IsEnabled(context.Background(), featureflag.FlagCosmosEVMHeight, serviceID)
 			}
+			cosmosCfg.StateCanary = func() bool {
+				return flags.IsEnabled(context.Background(), featureflag.FlagStateCanary, serviceID)
+			}
 			plugin = cosmos.NewPlugin(pluginLogger, cosmosCfg)
 		case domain.ServiceTypeSolana:
 			plugin = solana.NewPlugin(pluginLogger, svc.SyncAllowance)

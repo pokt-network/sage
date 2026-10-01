@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
+	"github.com/pokt-network/sage/qos/evm"
 )
 
 // --- helpers --- //
@@ -916,5 +919,52 @@ func TestRefineVerdict_EVMFaceRefusal(t *testing.T) {
 	on = false
 	if _, ok := p.RefineVerdict("", req, pruned); ok {
 		t.Fatal("with the EVM face off the cosmos plugin must not judge json_rpc")
+	}
+}
+
+// The EVM face of a chain like sei is read as the EVM plugin reads it: head
+// answers and the state canary, only while the face reports the Cosmos height.
+func TestEVMFace_HeadLagAndCanary(t *testing.T) {
+	evmOn, canaryOn := true, true
+	p := NewPlugin(nil, Config{SyncAllowance: 10,
+		EVMHeight:   func() bool { return evmOn },
+		StateCanary: func() bool { return canaryOn },
+	})
+	p.UpdateBlockHeight("a1-https://x.a.net", 1000)
+	p.UpdateBlockHeight("a1-https://x.a.net", 1010)
+	num := domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	if lag, _, ok := p.HeadLag(num, []byte(`{"result":"0x3e8"}`), time.Now()); !ok || lag < 10 {
+		t.Fatalf("eth_blockNumber 1000: lag %d ok %v, want >=10 true", lag, ok)
+	}
+
+	var canary qos.HealthCheck
+	for _, c := range p.HealthChecks() {
+		if c.Name == evm.CanaryName {
+			canary = c
+		}
+	}
+	if !canary.GradesHead {
+		t.Fatal("canary missing with both flags on")
+	}
+	now := time.Now()
+	stale := []byte(fmt.Sprintf(`{"result":"0x%064x"}`, now.Add(-2*time.Minute).Unix()))
+	if _, isStale, ok := p.HeadLag(canary.Payload, stale, now); !ok || !isStale {
+		t.Fatalf("a canary answer two minutes old: stale=%v ok=%v", isStale, ok)
+	}
+
+	canaryOn = false
+	for _, c := range p.HealthChecks() {
+		if c.Name == evm.CanaryName {
+			t.Fatal("canary sent with state_canary off")
+		}
+	}
+	evmOn, canaryOn = false, true
+	for _, c := range p.HealthChecks() {
+		if c.Name == evm.CanaryName {
+			t.Fatal("canary sent on a chain whose EVM face is not the Cosmos height")
+		}
+	}
+	if _, _, ok := p.HeadLag(num, []byte(`{"result":"0x3e8"}`), time.Now()); ok {
+		t.Fatal("EVM face off: nothing is read")
 	}
 }

@@ -331,7 +331,7 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 		},
 	}
 	if p.stateCanary != nil && p.stateCanary() {
-		checks = append(checks, canaryCheck(time.Now()))
+		checks = append(checks, CanaryCheck(time.Now()))
 	}
 	return checks
 }
@@ -569,6 +569,15 @@ var _ qos.StaleChecker = (*Plugin)(nil)
 // answer names and measures it against the head expected now
 // (qos.HeadLagReader).
 func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool) {
+	return HeadLag(payload, response, at, p.consensus)
+}
+
+var _ qos.HeadLagReader = (*Plugin)(nil)
+
+// HeadLag reads the head an EVM answer names (eth_blockNumber,
+// eth_getBlockByNumber("latest"), the state canary) and measures it against
+// consensus at at. Shared by every plugin that serves an EVM face.
+func HeadLag(payload domain.Payload, response []byte, at time.Time, consensus *qos.BlockConsensus) (lag uint64, stale, ok bool) {
 	var head uint64
 	switch payload.Method() {
 	case "eth_call":
@@ -579,7 +588,7 @@ func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) 
 		if !ok {
 			return 0, false, false
 		}
-		return p.consensus.StateLag(ts, at)
+		return consensus.StateLag(ts, at)
 	case "eth_blockNumber":
 		head, _ = ParseBlockNumber(response)
 	case "eth_getBlockByNumber":
@@ -590,10 +599,8 @@ func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) 
 	if head == 0 {
 		return 0, false, false
 	}
-	return p.consensus.AnswerLag(head, at)
+	return consensus.AnswerLag(head, at)
 }
-
-var _ qos.HeadLagReader = (*Plugin)(nil)
 
 // RefineVerdict implements qos.VerdictRefiner: a missing-state answer about a
 // block too recent to have been discarded is the supplier refusing

@@ -44,9 +44,9 @@ const (
 	// canaryRotation is how long one body is used before the next.
 	canaryRotation = 10 * time.Minute
 
-	// CanaryCheck is the health check's name, and the method label its
+	// CanaryName is the health check's name, and the method label its
 	// answers are counted under.
-	CanaryCheck = "eth_call_canary"
+	CanaryName = "eth_call_canary"
 )
 
 // canaryBodies are the request bodies, built once.
@@ -78,11 +78,12 @@ var canaryBodies = func() [][]byte {
 	return out
 }()
 
-// canaryCheck is the health check for the body in use at now.
-func canaryCheck(now time.Time) qos.HealthCheck {
+// CanaryCheck is the state canary's health check for the body in use at now,
+// for every plugin that serves an EVM face.
+func CanaryCheck(now time.Time) qos.HealthCheck {
 	body := canaryBodies[(now.Unix()/int64(canaryRotation/time.Second))%int64(len(canaryBodies))]
 	return qos.HealthCheck{
-		Name:       CanaryCheck,
+		Name:       CanaryName,
 		Payload:    domain.NewPayload(body, domain.RPCTypeJSONRPC, "eth_call"),
 		GradesHead: true,
 	}
