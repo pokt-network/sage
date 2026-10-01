@@ -33,7 +33,7 @@ func headTime(payload domain.Payload, response []byte) (time.Time, bool) {
 		}
 	case isCometCall(payload, "status"):
 		field = "result.sync_info.latest_block_time"
-	case isCometCall(payload, "block") && !gjson.GetBytes(payload.Bytes(), "params.height").Exists():
+	case isCometCall(payload, "block") && !namesHeight(payload.Bytes()):
 		field = "result.block.header.time"
 	default:
 		return time.Time{}, false
@@ -43,6 +43,18 @@ func headTime(payload domain.Payload, response []byte) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return t, true
+}
+
+// namesHeight reports whether a CometBFT JSON-RPC call names a height, by
+// name ({"height":"5"}) or by position (["5"]): a block at a height is
+// history, graded by its own old time it would read as stale.
+func namesHeight(body []byte) bool {
+	params := gjson.GetBytes(body, "params")
+	h := params.Get("height")
+	if params.IsArray() {
+		h = params.Get("0")
+	}
+	return h.Exists() && h.String() != ""
 }
 
 // isCometCall reports whether a request is the CometBFT method name, as a GET

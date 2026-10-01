@@ -33,6 +33,8 @@ func TestHeadTime(t *testing.T) {
 		{"GET /block at a height", get("/block?height=5"), block, false},
 		{"JSON-RPC block, latest", post(`{"jsonrpc":"2.0","id":1,"method":"block","params":{}}`), block, true},
 		{"JSON-RPC block at a height", post(`{"jsonrpc":"2.0","id":1,"method":"block","params":{"height":"5"}}`), block, false},
+		{"JSON-RPC block at a height, positional", post(`{"jsonrpc":"2.0","id":1,"method":"block","params":["5"]}`), block, false},
+		{"JSON-RPC block, positional and empty", post(`{"jsonrpc":"2.0","id":1,"method":"block","params":[]}`), block, true},
 		{"REST latest", restHeadCanary(), fmt.Sprintf(`{"block":{"header":{"height":"10","time":%q}}}`, ts), true},
 		{"REST latest, sdk_block", restHeadCanary(), fmt.Sprintf(`{"sdk_block":{"header":{"height":"10","time":%q}}}`, ts), true},
 		{"REST syncing", restSyncingPayload(), `{"syncing":false}`, false},
