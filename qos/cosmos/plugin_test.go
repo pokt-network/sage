@@ -875,8 +875,8 @@ func TestEVMHeight_ProbeAndExtractFollowTheFlag(t *testing.T) {
 	hasEVMCheck := func() bool {
 		for _, c := range p.HealthChecks() {
 			if c.Name == "evm_block_number" {
-				if c.Payload.RPCType() != domain.RPCTypeJSONRPC || !c.Essential {
-					t.Errorf("evm_block_number: rpc type %s essential %v", c.Payload.RPCType(), c.Essential)
+				if c.Payload.RPCType() != domain.RPCTypeJSONRPC || c.Essential {
+					t.Errorf("evm_block_number: rpc type %s essential %v, want json_rpc and not essential", c.Payload.RPCType(), c.Essential)
 				}
 				return true
 			}
@@ -966,5 +966,19 @@ func TestEVMFace_HeadLagAndCanary(t *testing.T) {
 	}
 	if _, _, ok := p.HeadLag(num, []byte(`{"result":"0x3e8"}`), time.Now()); ok {
 		t.Fatal("EVM face off: nothing is read")
+	}
+}
+
+// A json_rpc stake fronting a CometBFT node answers the EVM probe "method not
+// found": no height, and no error, so the probe is not a failure.
+func TestEVMHeight_MethodNotFoundIsNoFaceNotAFailure(t *testing.T) {
+	p := NewPlugin(nil, Config{SyncAllowance: 10, EVMHeight: func() bool { return true }})
+	req := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+	d, err := p.ExtractData("a1-https://x.a.net", req, []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`))
+	if err != nil || d == nil || d.BlockHeight != nil {
+		t.Fatalf("-32601: data %+v err %v, want empty and no error", d, err)
+	}
+	if _, err := p.ExtractData("a1-https://x.a.net", req, []byte(`{"jsonrpc":"2.0","id":1,"result":"zz"}`)); err == nil {
+		t.Fatal("a malformed answer is still an error")
 	}
 }

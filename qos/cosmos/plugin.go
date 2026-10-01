@@ -388,9 +388,12 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 	// whose json_rpc stakes are EVM nodes, /status reaches none of them.
 	if p.evmHeights() {
 		checks = append(checks, qos.HealthCheck{
-			Name:      "evm_block_number",
-			Payload:   evmBlockNumberPayload(),
-			Essential: true,
+			Name:    "evm_block_number",
+			Payload: evmBlockNumberPayload(),
+			// Not Essential: on kava half the json_rpc stakes front a
+			// CometBFT node with no EVM, and their "method not found" is an
+			// answer about the host, not a failure (ExtractData). Essential
+			// would grade that empty answer as a failed probe.
 		})
 	}
 	if p.evmHeights() && p.stateCanary != nil && p.stateCanary() {
@@ -439,6 +442,13 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 	// An EVM face's eth_blockNumber answer, on a chain where that number is
 	// the Cosmos height (featureflag.FlagCosmosEVMHeight).
 	if p.evmHeights() && gjson.GetBytes(request, "method").String() == "eth_blockNumber" {
+		// A json_rpc stake fronting a CometBFT node has no EVM face and says
+		// so (-32601). That is what it serves, not a fault: no height, no
+		// error. On mainnet kava (2026-10-01) two operators' json_rpc stakes
+		// answer this way and carry its CometBFT JSON-RPC traffic.
+		if gjson.GetBytes(response, "error.code").Int() == -32601 {
+			return &qos.ExtractedData{}, nil
+		}
 		height, err := evm.ParseBlockNumber(response)
 		if err != nil {
 			return nil, fmt.Errorf("cosmos: evm eth_blockNumber from %s: %w", endpoint, err)
