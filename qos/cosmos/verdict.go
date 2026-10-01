@@ -42,9 +42,10 @@ var query5xxPrefixes = []string{
 // On a chain whose EVM face reports the Cosmos height (evmHeights), a
 // json_rpc missing-state answer about a recent block is graded as the EVM
 // plugin grades it: the supplier refusing (evm.RefusalVerdict).
-func (p *Plugin) RefineVerdict(payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
+func (p *Plugin) RefineVerdict(endpoint domain.EndpointAddr, payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
 	if p.evmHeights() && payload.RPCType() == domain.RPCTypeJSONRPC {
-		if refined, ok := evm.RefusalVerdict(payload, result, p.consensus.PerceivedBlock()); ok {
+		nodeHead, _ := qos.HeightGetter(p.store, func(ep cosmosEndpoint) uint64 { return ep.BlockHeight }, qos.HeightProjection{})(endpoint)
+		if refined, ok := evm.RefusalVerdict(payload, result, p.consensus.PerceivedBlock(), nodeHead, p.consensus.BlocksIn); ok {
 			return refined, true
 		}
 	}

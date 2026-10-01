@@ -415,6 +415,16 @@ type HeightProjection struct {
 	window    time.Duration
 }
 
+// BlocksIn is how many blocks the chain makes in d at its measured rate, 0
+// while the rate is unknown.
+func (bc *BlockConsensus) BlocksIn(d time.Duration) uint64 {
+	p := bc.Projection()
+	if p.rate <= 0 {
+		return 0
+	}
+	return uint64(p.rate * d.Seconds())
+}
+
 // Projection captures what Project needs under one read lock, so a selection
 // does not take the lock once per endpoint.
 func (bc *BlockConsensus) Projection() HeightProjection {

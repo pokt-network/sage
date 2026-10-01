@@ -598,8 +598,9 @@ var _ qos.HeadLagReader = (*Plugin)(nil)
 // RefineVerdict implements qos.VerdictRefiner: a missing-state answer about a
 // block too recent to have been discarded is the supplier refusing
 // (RefusalVerdict).
-func (p *Plugin) RefineVerdict(payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
-	return RefusalVerdict(payload, result, p.consensus.PerceivedBlock())
+func (p *Plugin) RefineVerdict(endpoint domain.EndpointAddr, payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
+	nodeHead, _ := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, qos.HeightProjection{})(endpoint)
+	return RefusalVerdict(payload, result, p.consensus.PerceivedBlock(), nodeHead, p.consensus.BlocksIn)
 }
 
 var _ qos.VerdictRefiner = (*Plugin)(nil)

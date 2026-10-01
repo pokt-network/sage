@@ -10,6 +10,7 @@ import (
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/heuristic"
+	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -156,7 +157,9 @@ func TestRetry_DeliversTheFreshestStaleAnswer(t *testing.T) {
 // refusingPlugin refines every verdict into a refusal worded as a prune.
 type refusingPlugin struct{ normPlugin }
 
-func (refusingPlugin) RefineVerdict(_ domain.Payload, _ heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
+var _ qos.VerdictRefiner = refusingPlugin{}
+
+func (refusingPlugin) RefineVerdict(_ domain.EndpointAddr, _ domain.Payload, _ heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
 	return heuristic.RefusedRecent("claims block gone"), true
 }
 

@@ -166,8 +166,10 @@ type MethodFamilyLister interface {
 // contract, a transaction lookup at a height the node does not hold): the
 // answer is the chain's, delivered to the client, nobody scored. The
 // refined verdict replaces the analyzer's; ok false leaves it as it was.
+// endpoint is the host that answered, for a refinement that depends on what
+// the plugin knows of it (its last reported height).
 type VerdictRefiner interface {
-	RefineVerdict(payload domain.Payload, result heuristic.AnalysisResult) (refined heuristic.AnalysisResult, ok bool)
+	RefineVerdict(endpoint domain.EndpointAddr, payload domain.Payload, result heuristic.AnalysisResult) (refined heuristic.AnalysisResult, ok bool)
 }
 
 // SyncAllowanceTuner is implemented by plugins whose block-height filter has

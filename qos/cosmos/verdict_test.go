@@ -34,7 +34,7 @@ func TestRefineVerdict_Query5xx(t *testing.T) {
 		{"comet_bft, same path shape", domain.NewPayload(nil, domain.RPCTypeCometBFT, "").WithHTTP("/cosmos/tx/v1beta1/txs/block/1", "GET"), node5xx, false},
 		{"json_rpc method", domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "eth_call"), node5xx, false},
 	} {
-		got, ok := p.RefineVerdict(tc.p, tc.in)
+		got, ok := p.RefineVerdict("", tc.p, tc.in)
 		if ok != tc.want {
 			t.Errorf("%s: refined = %v, want %v", tc.name, ok, tc.want)
 			continue

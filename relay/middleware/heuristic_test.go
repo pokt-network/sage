@@ -312,7 +312,9 @@ func TestHeuristic_ClientCancelIsAttributedToClient(t *testing.T) {
 // refinerPlugin says a REST 5xx on /cosmwasm/…/smart/… is the chain's answer.
 type refinerPlugin struct{ *mockPlugin }
 
-func (refinerPlugin) RefineVerdict(payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
+var _ qos.VerdictRefiner = refinerPlugin{}
+
+func (refinerPlugin) RefineVerdict(_ domain.EndpointAddr, payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
 	if (result.Reason == "http_5xx" || result.Reason == "upstream_5xx") && strings.Contains(payload.Path(), "/smart/") {
 		return heuristic.AnalysisResult{Attribution: heuristic.AttrBlockchain, Reason: "query_5xx"}, true
 	}

@@ -277,7 +277,7 @@ func refineVerdict(registry *qos.Registry, ctx *relay.Context, result *heuristic
 	if !ok {
 		return false
 	}
-	refined, ok := refiner.RefineVerdict(ctx.Payloads[0], *result)
+	refined, ok := refiner.RefineVerdict(ctx.Endpoint, ctx.Payloads[0], *result)
 	if !ok {
 		return false
 	}

@@ -910,11 +910,11 @@ func TestRefineVerdict_EVMFaceRefusal(t *testing.T) {
 	p.UpdateBlockHeight("a1-https://x.a.net", 235_168_774)
 	req := domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0xe0463a2","toBlock":"0xe0463a2"}]}`), domain.RPCTypeJSONRPC, "eth_getLogs")
 	pruned := heuristic.Analyze([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"requested height has been pruned"}}`), 200, domain.RPCTypeJSONRPC)
-	if got, ok := p.RefineVerdict(req, pruned); !ok || got.Reason != heuristic.ReasonRefusedRecent {
+	if got, ok := p.RefineVerdict("", req, pruned); !ok || got.Reason != heuristic.ReasonRefusedRecent {
 		t.Fatalf("sei refusal: %+v %v", got, ok)
 	}
 	on = false
-	if _, ok := p.RefineVerdict(req, pruned); ok {
+	if _, ok := p.RefineVerdict("", req, pruned); ok {
 		t.Fatal("with the EVM face off the cosmos plugin must not judge json_rpc")
 	}
 }
