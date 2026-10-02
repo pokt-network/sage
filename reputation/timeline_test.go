@@ -73,6 +73,15 @@ func TestTimeline_GetAll(t *testing.T) {
 	if len(ethEvents) != 2 {
 		t.Fatalf("expected 2 eth events, got %d", len(ethEvents))
 	}
+	// A service-wide read names each event's endpoint, or the events of a
+	// service's endpoints cannot be told apart.
+	keys := map[string]bool{}
+	for _, e := range ethEvents {
+		keys[e.Key] = true
+	}
+	if !keys["ep1"] || !keys["ep2"] {
+		t.Fatalf("event keys %v, want ep1 and ep2", keys)
+	}
 
 	allEvents := tl.GetAll("")
 	if len(allEvents) != 3 {

@@ -25,6 +25,10 @@ type TimelineEvent struct {
 	// Note is the verdict's own explanation (a refusal's block, the node's
 	// words), appended to the rendered Detail on read. Bounded at record.
 	Note string
+	// Key is the endpoint key the event belongs to, without the service
+	// prefix. Filled on a service-wide read (GetAll), where events of every
+	// endpoint come back together; empty on record and on a one-key read.
+	Key string `json:",omitempty"`
 }
 
 // rendered returns a copy with Detail filled in from the structured fields.
@@ -228,7 +232,7 @@ func (t *Timeline) Get(key string) []TimelineEvent {
 }
 
 // GetAll returns all events whose key starts with the given prefix, oldest
-// first per endpoint, with Detail rendered.
+// first per endpoint, with Detail rendered and Key set to the rest of the key.
 func (t *Timeline) GetAll(prefix string) []TimelineEvent {
 	var out []TimelineEvent
 	for i := range t.shards {
@@ -237,7 +241,9 @@ func (t *Timeline) GetAll(prefix string) []TimelineEvent {
 		for k, buf := range s.events {
 			if strings.HasPrefix(k, prefix) {
 				for _, e := range buf {
-					out = append(out, e.rendered())
+					e = e.rendered()
+					e.Key = k[len(prefix):]
+					out = append(out, e)
 				}
 			}
 		}

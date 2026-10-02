@@ -262,7 +262,8 @@ Returns the recent reputation events for every endpoint of
 a service, newest last.
 
 This is the "why is this endpoint not getting traffic" endpoint: each event
-carries the signal, the reason code, and the score before and after. The
+carries the endpoint key it belongs to (Key), the signal, the reason code,
+and the score before and after. The
 timeline is a bounded in-memory ring per endpoint, so it answers for recent
 history, not for all time — and it is per instance, not shared through Redis.
 
