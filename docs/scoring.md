@@ -583,6 +583,15 @@ outage — the case the chronic term exists for is the endpoint that fails 0.2%
 of the time and is *never* floored, and its arithmetic is untouched (a 1-in-500
 violator never reaches 0, so every one of its attempts feeds the rate).
 
+A WebSocket key also fades with time: its rate halves every 6 hours since its
+last signal, on top of the per-attempt decay (`wsRateHalfLife`). Its attempts
+are connections, probes and one success per connection every 30 seconds, so a
+quiet chain earns a few dozen an hour and the 20k half-life is a month; on
+mainnet (2026-10-02) a host fixed that day would have stayed demoted into
+November. A key that stops failing reaches the onset from `-40` in about a day
+and a half; one that keeps failing holds a rate set by its failures per hour.
+HTTP keys are unchanged.
+
 #### Timeout bursts are one event
 
 The additive term charges a key's transport timeouts at most once per second.

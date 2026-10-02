@@ -1,11 +1,15 @@
 package reputation
 
 import (
+	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/pokt-network/sage/domain"
 )
 
 func TestRateConfig_Normalized_Defaults(t *testing.T) {
@@ -107,4 +111,44 @@ func TestRateConfig_NormalizedResetsAnInconsistentPair(t *testing.T) {
 	ok := RateConfig{OnsetRate: 0.001, FullRate: 0.05}.Normalized()
 	assert.Equal(t, 0.001, ok.OnsetRate)
 	assert.Equal(t, 0.05, ok.FullRate)
+}
+
+// A WebSocket key that stops failing loses half its rate every
+// wsRateHalfLife, whatever its traffic; an HTTP key's rate moves only with
+// attempts, as before.
+func TestWSRate_FadesWithTime(t *testing.T) {
+	ctx := context.Background()
+	s := NewService(NewMemoryStorage(), nil, ServiceConfig{StateIdleTTL: -1})
+	ep := domain.EndpointAddr("pokt1a-wss://ws.example")
+	t0 := time.Now().Add(-24 * time.Hour)
+	for _, rpc := range []domain.RPCType{domain.RPCTypeWebSocket, domain.RPCTypeJSONRPC} {
+		for i := range 50 {
+			sig := NewSignal(SignalCriticalError, "x", 0)
+			sig.Timestamp = t0.Add(time.Duration(i) * time.Second)
+			_ = s.RecordSignal(ctx, "poly", ep, rpc, sig)
+		}
+	}
+	rateOf := func(rpc domain.RPCType) float64 {
+		k := s.keyOf(ep, rpc)
+		sh := s.shard(k)
+		sh.mu.RLock()
+		defer sh.mu.RUnlock()
+		return sh.cache["poly"][k].Rate
+	}
+	wsBefore, httpBefore := rateOf(domain.RPCTypeWebSocket), rateOf(domain.RPCTypeJSONRPC)
+	require.Positive(t, wsBefore)
+	require.Positive(t, httpBefore)
+
+	// One success twelve hours later: two half-lives for WebSocket.
+	for _, rpc := range []domain.RPCType{domain.RPCTypeWebSocket, domain.RPCTypeJSONRPC} {
+		sig := NewSignal(SignalSuccess, "ok", 0)
+		sig.Timestamp = t0.Add(12 * time.Hour)
+		_ = s.RecordSignal(ctx, "poly", ep, rpc, sig)
+	}
+	if got, want := rateOf(domain.RPCTypeWebSocket), wsBefore/4; math.Abs(got-want) > want*0.01 {
+		t.Errorf("websocket rate %.6f, want about %.6f (two half-lives)", got, want)
+	}
+	if got := rateOf(domain.RPCTypeJSONRPC); got < httpBefore*0.99 {
+		t.Errorf("json_rpc rate %.6f faded with time from %.6f", got, httpBefore)
+	}
 }

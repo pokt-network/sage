@@ -814,6 +814,9 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	// of them to the other operator, whose busy node failed them, and that
 	// operator's key rate read 2.46% against 0.14% on its own first attempts
 	// — a -49 penalty that took its first attempts from 10/s to 0.1/s.
+	if rpcType == domain.RPCTypeWebSocket {
+		st.Rate = decayWSRate(st.Rate, prev.UpdatedAt, ts)
+	}
 	if sc.rate.Enabled() && prev.Score != 0 && !deferred && !signal.Leftover {
 		st.Rate += sc.lambda * (FailureWeight(signal.Type) - st.Rate)
 	}

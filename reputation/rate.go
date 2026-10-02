@@ -1,6 +1,9 @@
 package reputation
 
-import "math"
+import (
+	"math"
+	"time"
+)
 
 // Defaults for the chronic-failure rate term. The numbers were chosen against
 // PATH's mainnet defect rates (three operators at 0.216%, 0.065% and
@@ -113,4 +116,32 @@ func FailureWeight(t SignalType) float64 {
 	default:
 		return 0
 	}
+}
+
+// wsRateHalfLife is how fast a WebSocket key's failure rate fades with time,
+// on top of the per-attempt decay every key has.
+//
+// A WebSocket key earns few attempts: a connection records one success per
+// wsSuccessSignalInterval (30s), so it cannot buy immunity by pushing frames,
+// and a quiet chain carries one or two connections. At that volume the
+// per-attempt half-life of 20,000 is weeks: on mainnet (2026-10-02) a poly key
+// with one connection over four keys earned about 30 attempts an hour, a
+// month per halving, and a host fixed today would have stayed demoted into
+// November. Fading with time, a key that stops failing loses half its rate
+// every six hours, about a day and a half from the -40 point to the onset,
+// whatever its traffic; one that keeps failing holds a rate set by how often
+// it fails per hour, which is what a connection-graded surface can measure.
+const wsRateHalfLife = 6 * time.Hour
+
+// decayWSRate fades rate by the time since the key's last signal (a Unix
+// second, 0 when there was none). A signal stamped before it fades nothing.
+func decayWSRate(rate float64, last int64, now time.Time) float64 {
+	if rate == 0 || last == 0 {
+		return rate
+	}
+	dt := now.Sub(time.Unix(last, 0))
+	if dt <= 0 {
+		return rate
+	}
+	return rate * math.Exp2(-float64(dt)/float64(wsRateHalfLife))
 }
