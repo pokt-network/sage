@@ -110,16 +110,6 @@ func (s *EndpointStore[T]) Get(addr domain.EndpointAddr) (T, bool) {
 	return ep.Data, true
 }
 
-// Set stores data for an endpoint, updating LastSeen.
-func (s *EndpointStore[T]) Set(addr domain.EndpointAddr, data T) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.endpoints[addr] = storedEndpoint[T]{
-		Data:     data,
-		LastSeen: time.Now(),
-	}
-}
-
 // Update applies fn to the stored data in-place. If the endpoint does not exist,
 // it is created with the zero value of T before fn is called.
 func (s *EndpointStore[T]) Update(addr domain.EndpointAddr, fn func(*T)) {
@@ -174,17 +164,6 @@ func (s *EndpointStore[T]) SweepStale(ttl time.Duration) []domain.EndpointAddr {
 	return removed
 }
 
-// Range iterates over all endpoints. Return false from fn to stop iteration.
-func (s *EndpointStore[T]) Range(fn func(domain.EndpointAddr, T) bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for addr, ep := range s.endpoints {
-		if !fn(addr, ep.Data) {
-			return
-		}
-	}
-}
-
 // Clear removes every stored endpoint. It exists for an operator-triggered
 // chain-state reset: the store repopulates from the next health-check cycle
 // and the next relays, and an endpoint the store no longer knows is treated
@@ -194,22 +173,4 @@ func (s *EndpointStore[T]) Clear() {
 	defer s.mu.Unlock()
 	s.endpoints = make(map[domain.EndpointAddr]storedEndpoint[T])
 	s.hosts = make(map[string]storedEndpoint[T])
-}
-
-// Count returns the number of stored endpoints.
-func (s *EndpointStore[T]) Count() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.endpoints)
-}
-
-// Addrs returns a list of all endpoint addresses in the store.
-func (s *EndpointStore[T]) Addrs() domain.EndpointAddrList {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make(domain.EndpointAddrList, 0, len(s.endpoints))
-	for addr := range s.endpoints {
-		out = append(out, addr)
-	}
-	return out
 }

@@ -423,7 +423,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 				jp.SetStateCanary(stateCanary)
 				plugin = jp
 			} else {
-				plugin = noop.NewPlugin(pluginLogger, svc.SyncAllowance)
+				plugin = noop.NewPlugin()
 			}
 		}
 		_ = qosReg.Register(domain.ServiceID(svc.ID), plugin)

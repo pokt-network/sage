@@ -66,7 +66,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		Plugin: evm.NewPlugin(logger, cfg),
 		// Sync allowance zero: this instance is a parser. Height filtering for
 		// TRON is the embedded EVM plugin's, fed by its own observations.
-		passthrough: noop.NewPlugin(logger, 0),
+		passthrough: noop.NewPlugin(),
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -171,7 +172,7 @@ func (p *Plugin) ParseRequest(_ context.Context, req *http.Request, body []byte,
 	}
 
 	// Reject RPC types the configured service does not support.
-	if !isRPCTypeSupported(payload.RPCType(), p.supportedRPCTypes) {
+	if !slices.Contains(p.supportedRPCTypes, payload.RPCType()) {
 		return nil, &domain.RelayError{
 			Kind:      domain.ErrValidation,
 			Message:   fmt.Sprintf("cosmos: RPC type %q not supported by this service", payload.RPCType()),

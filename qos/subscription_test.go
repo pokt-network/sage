@@ -25,9 +25,6 @@ func (fakeClassifier) ClassifyClientFrame(data []byte) ClientFrameInfo {
 	return ClientFrameInfo{}
 }
 
-// EncodeReplayID: the fake dialect writes ids bare, not as JSON strings.
-func (fakeClassifier) EncodeReplayID(id string) string { return id }
-
 func (fakeClassifier) ClassifyEndpointFrame(data []byte) EndpointFrameInfo {
 	parts := strings.Split(string(data), ":")
 	switch {
@@ -207,7 +204,7 @@ func TestSubscriptionRegistry_GradesNotifications(t *testing.T) {
 // byte. That is not padding.
 func TestSubscriptionRegistry_DuplicateWindowResetsOnReplay(t *testing.T) {
 	r := NewSubscriptionRegistry(spanClassifier{})
-	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateClientFrame(subFrame("1"))
 	r.TranslateEndpointFrame([]byte("ok:1:s1"))
 	r.TranslateEndpointFrame([]byte("data:s1:block100"))
 
@@ -215,8 +212,8 @@ func TestSubscriptionRegistry_DuplicateWindowResetsOnReplay(t *testing.T) {
 	if len(replay) != 1 {
 		t.Fatalf("ReplayFrames = %d frames, want 1", len(replay))
 	}
-	replayID := strings.TrimPrefix(string(replay[0]), "sub:")
-	r.TranslateEndpointFrame([]byte("ok:" + replayID + ":s1"))
+	id := replayID(replay[0])
+	r.TranslateEndpointFrame([]byte("ok:" + id + ":s1"))
 
 	if _, _, n := r.TranslateEndpointFrame([]byte("data:s1:block100")); n.Kind != NotificationOK {
 		t.Errorf("the new supplier's first frame = %+v, want ok", n)
@@ -287,11 +284,11 @@ func TestSubscriptionRegistry_Heartbeat(t *testing.T) {
 // rebind's replay alike; any other frame carries none.
 func TestSubscriptionRegistry_AckOutcome(t *testing.T) {
 	r := NewSubscriptionRegistry(spanClassifier{})
-	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateClientFrame(subFrame("1"))
 	if _, _, n := r.TranslateEndpointFrame([]byte("ok:1:s1")); n.Ack != AckOK || n.Topic != "heads" {
 		t.Fatalf("subscribe ok: note %+v", n)
 	}
-	r.TranslateClientFrame([]byte("sub:2"))
+	r.TranslateClientFrame(subFrame("2"))
 	if _, _, n := r.TranslateEndpointFrame([]byte("err:2")); n.Ack != AckError {
 		t.Fatalf("subscribe refused: note %+v", n)
 	}
@@ -302,8 +299,8 @@ func TestSubscriptionRegistry_AckOutcome(t *testing.T) {
 	if len(replay) != 1 {
 		t.Fatalf("ReplayFrames = %d, want 1", len(replay))
 	}
-	replayID := strings.TrimPrefix(string(replay[0]), "sub:")
-	if _, fwd, n := r.TranslateEndpointFrame([]byte("err:" + replayID)); fwd || n.Ack != AckError || n.Topic != "heads" {
+	id := replayID(replay[0])
+	if _, fwd, n := r.TranslateEndpointFrame([]byte("err:" + id)); fwd || n.Ack != AckError || n.Topic != "heads" {
 		t.Fatalf("replay refused: forward=%v note %+v", fwd, n)
 	}
 	if len(r.Active()) != 0 {

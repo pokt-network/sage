@@ -2,6 +2,7 @@ package qos
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 
 	"github.com/pokt-network/sage/domain"
@@ -43,11 +44,7 @@ func (r *Registry) Get(id domain.ServiceID) Plugin {
 func (r *Registry) Plugins() map[domain.ServiceID]Plugin {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make(map[domain.ServiceID]Plugin, len(r.plugins))
-	for k, v := range r.plugins {
-		out[k] = v
-	}
-	return out
+	return maps.Clone(r.plugins)
 }
 
 // Count returns the number of registered plugins.

@@ -3,16 +3,12 @@
 // It accepts any request and returns all session endpoints unchanged.
 // Used for chains such as near, sui, tron, and radix where no chain-specific
 // QoS logic is required.
-//
-// If a non-zero syncAllowance is provided the plugin also implements
-// BlockHeightTracker so external block sources can provide a floor height.
 package noop
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 
 	"github.com/tidwall/gjson"
@@ -36,21 +32,12 @@ import (
 //
 // A chain whose heights matter needs a plugin that can read them. TRON got one
 // the same day, for exactly this reason.
-type Plugin struct {
-	logger *slog.Logger
-}
+type Plugin struct{}
 
-// NewPlugin creates a passthrough Plugin.
-//
-// syncAllowance is accepted and ignored: it is meaningless without per-endpoint
-// heights, the caller passes it uniformly for every plugin, and refusing it
-// here would push a type switch into the wiring to say nothing useful.
-func NewPlugin(logger *slog.Logger, _ uint64) *Plugin {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Plugin{logger: logger}
-}
+// NewPlugin creates a passthrough Plugin. It takes no sync_allowance: that is
+// meaningless without per-endpoint heights, and config.QoSCoverageFor reports
+// every passthrough service at startup as having no block-height tracking.
+func NewPlugin() *Plugin { return &Plugin{} }
 
 // --- qos.Plugin --- //
 
@@ -105,8 +92,6 @@ func extractMethodBestEffort(body []byte) string {
 	return ""
 }
 
-// SelectEndpoints returns all provided endpoints unchanged.
-// If syncAllowance > 0, endpoints too far behind perceived block height are
 // SelectEndpoints returns the candidates unchanged.
 //
 // There is nothing to filter on. Block height is the only thing the other

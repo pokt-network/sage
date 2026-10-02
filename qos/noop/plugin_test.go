@@ -14,7 +14,7 @@ import (
 // --- ParseRequest --- //
 
 func TestParseRequest_PassesBodyThrough(t *testing.T) {
-	p := noop.NewPlugin(nil, 0)
+	p := noop.NewPlugin()
 	body := []byte(`{"anything":"goes","even":"invalid json for other chains"}`)
 	req, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 
@@ -31,7 +31,7 @@ func TestParseRequest_PassesBodyThrough(t *testing.T) {
 }
 
 func TestParseRequest_NilBodyAllowed(t *testing.T) {
-	p := noop.NewPlugin(nil, 0)
+	p := noop.NewPlugin()
 	req, _ := http.NewRequest(http.MethodGet, "/status", nil)
 
 	payloads, err := p.ParseRequest(context.Background(), req, nil, domain.RPCTypeREST)
@@ -50,7 +50,7 @@ func TestParseRequest_NilBodyAllowed(t *testing.T) {
 }
 
 func TestParseRequest_PreservesRPCType(t *testing.T) {
-	p := noop.NewPlugin(nil, 0)
+	p := noop.NewPlugin()
 	body := []byte(`some body`)
 	req, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 
@@ -64,7 +64,7 @@ func TestParseRequest_PreservesRPCType(t *testing.T) {
 }
 
 func TestParseRequest_SplitsBatchArray(t *testing.T) {
-	p := noop.NewPlugin(nil, 0)
+	p := noop.NewPlugin()
 	batch := []byte(`[
 		{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1},
 		{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":2},
@@ -96,7 +96,7 @@ func TestParseRequest_SplitsBatchArray(t *testing.T) {
 }
 
 func TestParseRequest_SingleElementArrayNotSplit(t *testing.T) {
-	p := noop.NewPlugin(nil, 0)
+	p := noop.NewPlugin()
 	batch := []byte(`[{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}]`)
 	req, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(batch))
 
@@ -111,7 +111,7 @@ func TestParseRequest_SingleElementArrayNotSplit(t *testing.T) {
 }
 
 func TestParseRequest_NonJSONBodyNotSplit(t *testing.T) {
-	p := noop.NewPlugin(nil, 0)
+	p := noop.NewPlugin()
 	body := []byte(`this is not json at all`)
 	req, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 
@@ -129,7 +129,7 @@ func TestParseRequest_NonJSONBodyNotSplit(t *testing.T) {
 
 func TestParseRequest_BatchWithoutMethodField(t *testing.T) {
 	// Generic chains may not have standard JSON-RPC "method" fields.
-	p := noop.NewPlugin(nil, 0)
+	p := noop.NewPlugin()
 	batch := []byte(`[{"action":"get_block","height":100},{"action":"get_tx","hash":"0xabc"}]`)
 	req, _ := http.NewRequest(http.MethodPost, "/", bytes.NewReader(batch))
 
@@ -151,7 +151,7 @@ func TestParseRequest_BatchWithoutMethodField(t *testing.T) {
 // --- SelectEndpoints --- //
 
 func TestSelectEndpoints_ReturnsAllEndpoints(t *testing.T) {
-	p := noop.NewPlugin(nil, 0)
+	p := noop.NewPlugin()
 	ep1 := domain.EndpointAddr("s1-https://a.example.com")
 	ep2 := domain.EndpointAddr("s2-https://b.example.com")
 	ep3 := domain.EndpointAddr("s3-https://c.example.com")
@@ -167,7 +167,7 @@ func TestSelectEndpoints_ReturnsAllEndpoints(t *testing.T) {
 }
 
 func TestSelectEndpoints_EmptyList(t *testing.T) {
-	p := noop.NewPlugin(nil, 0)
+	p := noop.NewPlugin()
 	result, err := p.SelectEndpoints(domain.EndpointAddrList{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -177,33 +177,13 @@ func TestSelectEndpoints_EmptyList(t *testing.T) {
 	}
 }
 
-// sync_allowance is accepted and ignored. It used to gate a block-height
-// filter fed by an UpdateBlockHeight nothing ever called, so it read as live
-// and decided nothing; the filter is gone and this pins that the knob cannot
-// quietly come back to life.
-func TestSelectEndpoints_SyncAllowanceChangesNothing(t *testing.T) {
-	endpoints := domain.EndpointAddrList{"supA-https://a.example.com", "supB-https://b.example.com"}
-
-	for _, allowance := range []uint64{0, 1, 100, 1_000_000} {
-		p := noop.NewPlugin(nil, allowance)
-		got, err := p.SelectEndpoints(endpoints, nil)
-		if err != nil {
-			t.Fatalf("sync_allowance %d: %v", allowance, err)
-		}
-		if len(got) != len(endpoints) {
-			t.Errorf("sync_allowance %d returned %d of %d endpoints; the passthrough filters nothing",
-				allowance, len(got), len(endpoints))
-		}
-	}
-}
-
 // The passthrough implements the core interface and none of the optional ones.
 // Claiming a capability it cannot honour for an unknown chain is how
 // sync_allowance came to look live: the executor and the observation handler
 // both gate height tracking on DataExtractor, which this never implemented,
 // so the tracker it did implement was unreachable.
 func TestPlugin_ImplementsNoOptionalCapabilities(t *testing.T) {
-	var p any = noop.NewPlugin(nil, 100)
+	var p any = noop.NewPlugin()
 
 	if _, ok := p.(qos.HealthChecker); ok {
 		t.Error("declares HealthChecker: the passthrough cannot know what payload an unknown chain answers")

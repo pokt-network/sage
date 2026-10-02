@@ -3,6 +3,7 @@ package cosmos
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -111,7 +112,7 @@ func isCometBFTMethod(method string) bool {
 // reach the pools that can serve them. An undeclared result is returned as
 // is, so that ParseRequest refuses it with the declared list.
 func classifyRPCType(req *http.Request, body []byte, detected domain.RPCType, supported []domain.RPCType) domain.RPCType {
-	declares := func(t domain.RPCType) bool { return isRPCTypeSupported(t, supported) }
+	declares := func(t domain.RPCType) bool { return slices.Contains(supported, t) }
 	faceType := func(alt domain.RPCType) domain.RPCType {
 		if declares(domain.RPCTypeCometBFT) || !declares(alt) {
 			return domain.RPCTypeCometBFT
@@ -284,14 +285,4 @@ func evmBlockNumberPayload() domain.Payload {
 func restSyncingPayload() domain.Payload {
 	return domain.NewPayload(nil, domain.RPCTypeREST, "").
 		WithHTTP("/cosmos/base/tendermint/v1beta1/syncing", http.MethodGet)
-}
-
-// isRPCTypeSupported returns true if rpcType is in the supported set.
-func isRPCTypeSupported(rpcType domain.RPCType, supported []domain.RPCType) bool {
-	for _, s := range supported {
-		if s == rpcType {
-			return true
-		}
-	}
-	return false
 }

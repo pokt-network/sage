@@ -23,10 +23,12 @@
 package jsonheight
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -230,12 +232,7 @@ func (p *Plugin) askedForHead(request []byte) bool {
 
 // isCanary reports whether a request is one of the chain's canary bodies.
 func (p *Plugin) isCanary(request []byte) bool {
-	for _, c := range p.chain.Canaries {
-		if string(request) == string(c) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(p.chain.Canaries, func(c []byte) bool { return bytes.Equal(request, c) })
 }
 
 // --- qos.DataExtractor --- //

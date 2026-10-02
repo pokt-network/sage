@@ -6,7 +6,6 @@ package solana
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -190,23 +189,11 @@ func (p *Plugin) ResetState() {
 // --- payload helpers --- //
 
 func epochInfoPayload() domain.Payload {
-	body, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "getEpochInfo",
-		"params":  []any{},
-	})
-	return domain.NewPayload(body, domain.RPCTypeJSONRPC, "getEpochInfo")
+	return domain.NewPayload([]byte(`{"id":1,"jsonrpc":"2.0","method":"getEpochInfo","params":[]}`), domain.RPCTypeJSONRPC, "getEpochInfo")
 }
 
 func getHealthPayload() domain.Payload {
-	body, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "getHealth",
-		"params":  []any{},
-	})
-	return domain.NewPayload(body, domain.RPCTypeJSONRPC, "getHealth")
+	return domain.NewPayload([]byte(`{"id":1,"jsonrpc":"2.0","method":"getHealth","params":[]}`), domain.RPCTypeJSONRPC, "getHealth")
 }
 
 // Compile-time interface assertions.

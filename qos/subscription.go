@@ -113,18 +113,6 @@ type WebSocketProber interface {
 	WebSocketProbe() []byte
 }
 
-// ReplayIDEncoder is optionally implemented by a classifier whose dialect
-// does not write request ids as JSON strings. The default quotes.
-type ReplayIDEncoder interface {
-	EncodeReplayID(id string) string
-}
-
-// RequestIDLocator is optionally implemented by a classifier whose request
-// id is not the JSON-RPC "id" member. The default is JSONRPCRequestIDSpan.
-type RequestIDLocator interface {
-	RequestIDSpan(data []byte) Span
-}
-
 // Subscription is one established subscription on a connection.
 type Subscription struct {
 	// ID is the subscription id as the CLIENT knows it: the one the first
@@ -589,30 +577,16 @@ func (r *SubscriptionRegistry) ReplayFrames() [][]byte {
 	defer r.mu.Unlock()
 	var out [][]byte
 	for clientID, sub := range r.active {
-		span := r.requestIDSpan(sub.Request)
+		span := JSONRPCRequestIDSpan(sub.Request)
 		if span.Len == 0 {
 			continue
 		}
 		r.replays++
-		raw := r.encodeReplayID(fmt.Sprintf("sage-replay-%d", r.replays))
+		raw := fmt.Sprintf(`"sage-replay-%d"`, r.replays)
 		r.replay[raw] = clientID
 		out = append(out, spliceSpan(sub.Request, span, raw))
 	}
 	return out
-}
-
-func (r *SubscriptionRegistry) requestIDSpan(data []byte) Span {
-	if l, ok := r.classifier.(RequestIDLocator); ok {
-		return l.RequestIDSpan(data)
-	}
-	return JSONRPCRequestIDSpan(data)
-}
-
-func (r *SubscriptionRegistry) encodeReplayID(id string) string {
-	if e, ok := r.classifier.(ReplayIDEncoder); ok {
-		return e.EncodeReplayID(id)
-	}
-	return `"` + id + `"`
 }
 
 // spliceSpan returns a copy of data with span replaced by raw. An unknown

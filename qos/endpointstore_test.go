@@ -2,7 +2,6 @@ package qos
 
 import (
 	"log/slog"
-	"sort"
 	"testing"
 	"time"
 
@@ -18,7 +17,7 @@ func newTestStore() *EndpointStore[epData] {
 	return NewEndpointStore[epData](slog.Default())
 }
 
-func TestEndpointStore_GetSet(t *testing.T) {
+func TestEndpointStore_Get(t *testing.T) {
 	s := newTestStore()
 	addr := domain.EndpointAddr("pokt1-https://node1.com")
 
@@ -27,8 +26,8 @@ func TestEndpointStore_GetSet(t *testing.T) {
 		t.Fatal("expected not found")
 	}
 
-	// Set and retrieve.
-	s.Set(addr, epData{BlockHeight: 100, IsArchival: true})
+	// Store and retrieve.
+	s.Update(addr, func(d *epData) { *d = epData{BlockHeight: 100, IsArchival: true} })
 	data, ok := s.Get(addr)
 	if !ok {
 		t.Fatal("expected found")
@@ -69,8 +68,8 @@ func TestEndpointStore_SweepStale(t *testing.T) {
 	a1 := domain.EndpointAddr("pokt1-https://node1.com")
 	a2 := domain.EndpointAddr("pokt2-https://node2.com")
 
-	s.Set(a1, epData{BlockHeight: 100})
-	s.Set(a2, epData{BlockHeight: 200})
+	s.Update(a1, func(d *epData) { *d = epData{BlockHeight: 100} })
+	s.Update(a2, func(d *epData) { *d = epData{BlockHeight: 200} })
 
 	// Nothing stale yet (both just set).
 	removed := s.SweepStale(time.Hour)
@@ -84,50 +83,16 @@ func TestEndpointStore_SweepStale(t *testing.T) {
 	if len(removed) != 2 {
 		t.Fatalf("expected 2 removed, got %d", len(removed))
 	}
-	if s.Count() != 0 {
-		t.Fatalf("expected 0 remaining, got %d", s.Count())
-	}
-}
-
-func TestEndpointStore_Range(t *testing.T) {
-	s := newTestStore()
-	s.Set(domain.EndpointAddr("a"), epData{BlockHeight: 1})
-	s.Set(domain.EndpointAddr("b"), epData{BlockHeight: 2})
-	s.Set(domain.EndpointAddr("c"), epData{BlockHeight: 3})
-
-	var visited int
-	s.Range(func(_ domain.EndpointAddr, _ epData) bool {
-		visited++
-		return visited < 2 // stop after 2
-	})
-	if visited != 2 {
-		t.Fatalf("expected 2 visited, got %d", visited)
-	}
-}
-
-func TestEndpointStore_Addrs(t *testing.T) {
-	s := newTestStore()
-	s.Set(domain.EndpointAddr("a"), epData{})
-	s.Set(domain.EndpointAddr("b"), epData{})
-	s.Set(domain.EndpointAddr("c"), epData{})
-
-	addrs := s.Addrs()
-	if len(addrs) != 3 {
-		t.Fatalf("expected 3, got %d", len(addrs))
-	}
-
-	// Sort for deterministic comparison.
-	sort.Slice(addrs, func(i, j int) bool { return addrs[i] < addrs[j] })
-	if addrs[0] != "a" || addrs[1] != "b" || addrs[2] != "c" {
-		t.Fatalf("unexpected addrs: %v", addrs)
+	if len(s.endpoints) != 0 {
+		t.Fatalf("expected 0 remaining, got %d", len(s.endpoints))
 	}
 }
 
 func TestEndpointStore_NilLogger(t *testing.T) {
 	// Should not panic with nil logger.
 	s := NewEndpointStore[int](nil)
-	s.Set(domain.EndpointAddr("x"), 42)
-	if s.Count() != 1 {
+	s.Update(domain.EndpointAddr("x"), func(d *int) { *d = 42 })
+	if len(s.endpoints) != 1 {
 		t.Fatal("expected count 1")
 	}
 }
@@ -160,16 +125,16 @@ func TestHeightGetter(t *testing.T) {
 // operator-triggered chain-state reset needs to.
 func TestEndpointStore_Clear(t *testing.T) {
 	s := newTestStore()
-	s.Set("a", epData{BlockHeight: 1})
-	s.Set("b", epData{BlockHeight: 2})
-	if got := s.Count(); got != 2 {
-		t.Fatalf("Count() = %d before Clear, want 2", got)
+	s.Update("a", func(d *epData) { *d = epData{BlockHeight: 1} })
+	s.Update("b", func(d *epData) { *d = epData{BlockHeight: 2} })
+	if got := len(s.endpoints); got != 2 {
+		t.Fatalf("len(endpoints) = %d before Clear, want 2", got)
 	}
 
 	s.Clear()
 
-	if got := s.Count(); got != 0 {
-		t.Fatalf("Count() = %d after Clear, want 0", got)
+	if got := len(s.endpoints); got != 0 {
+		t.Fatalf("len(endpoints) = %d after Clear, want 0", got)
 	}
 	if _, ok := s.Get("a"); ok {
 		t.Fatal("expected \"a\" gone after Clear")
