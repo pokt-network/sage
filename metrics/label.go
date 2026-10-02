@@ -1,7 +1,8 @@
 package metrics
 
 import (
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -168,10 +169,5 @@ func (p *labelPolicy) values() []string {
 	if p.allowed == nil {
 		return nil
 	}
-	out := make([]string, 0, len(p.allowed))
-	for v := range p.allowed {
-		out = append(out, v)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(p.allowed))
 }

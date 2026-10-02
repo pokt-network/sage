@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,22 +19,17 @@ type EndpointAddrList []EndpointAddr
 // Supplier extracts the supplier address from the endpoint addr.
 // Format: "pokt1abc...-https://example.com"
 func (e EndpointAddr) Supplier() string {
-	s := string(e)
-	idx := strings.Index(s, "-")
-	if idx < 0 {
-		return s
-	}
-	return s[:idx]
+	supplier, _, _ := strings.Cut(string(e), "-")
+	return supplier
 }
 
 // URL extracts the URL from the endpoint addr.
 func (e EndpointAddr) URL() (string, error) {
-	s := string(e)
-	idx := strings.Index(s, "-")
-	if idx < 0 || idx+1 >= len(s) {
-		return "", fmt.Errorf("invalid endpoint addr format: %s", s)
+	_, url, ok := strings.Cut(string(e), "-")
+	if !ok || url == "" {
+		return "", fmt.Errorf("invalid endpoint addr format: %s", e)
 	}
-	return s[idx+1:], nil
+	return url, nil
 }
 
 // Domain extracts the domain/host from the endpoint URL.
@@ -160,12 +156,7 @@ func (l EndpointAddrList) Operators() []string {
 
 // Contains returns true if the list contains the given addr.
 func (l EndpointAddrList) Contains(addr EndpointAddr) bool {
-	for _, a := range l {
-		if a == addr {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(l, addr)
 }
 
 // Exclude returns a new list without the given addrs.

@@ -1,5 +1,7 @@
 package domain
 
+import "slices"
+
 // KnownServiceTypes are the service types that select a QoS plugin with
 // chain-specific behaviour. Anything else is served by the passthrough.
 //
@@ -17,10 +19,5 @@ func KnownServiceTypes() []ServiceType {
 // IsKnownServiceType reports whether a configured type selects a
 // chain-specific QoS plugin.
 func IsKnownServiceType(t ServiceType) bool {
-	for _, known := range KnownServiceTypes() {
-		if t == known {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(KnownServiceTypes(), t)
 }

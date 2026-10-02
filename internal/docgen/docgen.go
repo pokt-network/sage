@@ -24,6 +24,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 )
 
@@ -145,18 +146,8 @@ func collectFields(st *ast.StructType) []fieldDoc {
 
 // yamlKey pulls the name out of a struct tag literal, e.g. `yaml:"port"`.
 func yamlKey(tag string) string {
-	tag = strings.Trim(tag, "`")
-	idx := strings.Index(tag, `yaml:"`)
-	if idx < 0 {
-		return ""
-	}
-	rest := tag[idx+len(`yaml:"`):]
-	end := strings.Index(rest, `"`)
-	if end < 0 {
-		return ""
-	}
 	// Strip yaml options such as ",omitempty".
-	name, _, _ := strings.Cut(rest[:end], ",")
+	name, _, _ := strings.Cut(reflect.StructTag(strings.Trim(tag, "`")).Get("yaml"), ",")
 	return name
 }
 

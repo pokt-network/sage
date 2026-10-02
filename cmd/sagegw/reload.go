@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -582,11 +583,7 @@ func (d *configDiff) diffServices(prefix string, old, next []config.ServiceConfi
 	oldByID := servicesByID(old)
 	nextByID := servicesByID(next)
 
-	ids := make([]string, 0, len(nextByID))
-	for id := range nextByID {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
+	ids := slices.Sorted(maps.Keys(nextByID))
 
 	if len(oldByID) != len(nextByID) {
 		d.restart(prefix)
