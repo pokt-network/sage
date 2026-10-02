@@ -108,8 +108,18 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 		}
 	}
 
+	var miner *domain.MinerError
+	if errors.As(err, &miner) {
+		return analyzeMinerError(miner)
+	}
+
 	var upstream *domain.UpstreamStatusError
 	if errors.As(err, &upstream) {
+		// An HA relay miner refuses over-servicing with a 429 whose body says
+		// so; read before the status, which alone cannot tell it from busy.
+		if isOverServiced(upstream.Body) {
+			return overServicedResult()
+		}
 		switch {
 		case upstream.Status == 413:
 			return AnalysisResult{
@@ -210,4 +220,43 @@ func isTimeout(err error) bool {
 		return true
 	}
 	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// Relay miner error reports (domain.MinerError) that are about the session
+// the gateway signed for rather than about the supplier: poktroll's
+// relayer_proxy "invalid session" (1) and "unknown session" (6), and the
+// relay authenticator's "invalid session" (1, an ended session past grace)
+// and "supplier does not belong to session" (2).
+var minerSessionCodes = map[string]map[uint32]bool{
+	"relayer_proxy":       {1: true, 6: true},
+	"relay_authenticator": {1: true, 2: true},
+}
+
+// analyzeMinerError grades a relay miner's own unsigned refusal. Every one is
+// retried elsewhere. Over-servicing (relayer_proxy 7, or its wording) is
+// protocol-correct and scored nothing; a session the miner will not serve is
+// the gateway's choice of session, also scored nothing; anything else is the
+// supplier's layer failing, minor like its 5xx (upstream_5xx).
+func analyzeMinerError(m *domain.MinerError) AnalysisResult {
+	if (m.Codespace == "relayer_proxy" && m.Code == 7) || isOverServiced([]byte(m.Message)) {
+		return overServicedResult()
+	}
+	if minerSessionCodes[m.Codespace][m.Code] {
+		return AnalysisResult{
+			ShouldRetry: true,
+			Attribution: AttrUnknown,
+			Confidence:  0.90,
+			Reason:      "miner_session_rejected",
+			Details:     m.Error(),
+		}
+	}
+	return AnalysisResult{
+		ShouldRetry:     true,
+		ShouldPenalize:  true,
+		PenaltySeverity: SeverityMinor,
+		Attribution:     AttrSupplier,
+		Confidence:      0.85,
+		Reason:          "upstream_miner_error",
+		Details:         m.Error(),
+	}
 }

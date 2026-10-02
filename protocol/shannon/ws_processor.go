@@ -202,6 +202,14 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	// Protocol.trackRelayMinerError.
 	p.protocol.trackRelayMinerError(serviceID, p.endpointAddr, p.supplierAddr, relayResp)
 
+	// The miner's own unsigned refusal is not a forged frame: no blacklist
+	// (see SendRelay). The bridge still ends; the rebind decides the rest.
+	if minerErr := unsignedMinerError(relayResp, err); minerErr != nil {
+		if p.onEndpointFrame != nil && !p.evidence {
+			p.onEndpointFrame(nil, ErrEndpointControlFrame, time.Since(start))
+		}
+		return nil, fmt.Errorf("ws ProcessEndpointMessage: %w", minerErr)
+	}
 	if err != nil {
 		if p.evidence {
 			// A probe reports a failed verification; it does not act on it.

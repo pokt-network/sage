@@ -223,6 +223,8 @@ func TestTrackRelayMinerError(t *testing.T) {
 	}
 }
 
+// The miner's report is read even though the response fails validation,
+// and an unsigned report blacklists nobody.
 func TestWSProcessor_RelayMinerErrorSurvivesValidationFailure(t *testing.T) {
 	rec := &recordingMetrics{}
 	fn := &mockRelayFullNode{
@@ -251,7 +253,29 @@ func TestWSProcessor_RelayMinerErrorSurvivesValidationFailure(t *testing.T) {
 	if len(minerErrs) != 1 || minerErrs[0] != "relayer_proxy" {
 		t.Errorf("recorded miner errors = %v, want [relayer_proxy]", minerErrs)
 	}
-	if len(blacklists) != 1 || blacklists[0] != blacklistReasonBasicValidation {
-		t.Errorf("recorded blacklists = %v, want [%s]", blacklists, blacklistReasonBasicValidation)
+	// The report rode an unsigned response: the miner refusing, not a forged
+	// frame, so the supplier is not blacklisted for it.
+	if len(blacklists) != 0 {
+		t.Errorf("recorded blacklists = %v, want none for the miner's own report", blacklists)
+	}
+}
+
+// An unsigned response carrying the miner's report is the miner refusing;
+// the same report on a response that failed for another reason, or no
+// report at all, is not.
+func TestUnsignedMinerError(t *testing.T) {
+	report := &servicetypes.RelayResponse{RelayMinerError: &servicetypes.RelayMinerError{Codespace: "relayer_proxy", Code: 7, Message: "offchain rate limit hit by relayer proxy"}}
+	basic := fmt.Errorf("%w: missing supplier operator signature", sdk.ErrRelayResponseValidationBasicValidation)
+	if m := unsignedMinerError(report, basic); m == nil || m.Code != 7 || m.Codespace != "relayer_proxy" {
+		t.Fatalf("unsigned report: %+v, want the miner's error", m)
+	}
+	if m := unsignedMinerError(report, fmt.Errorf("%w: bad", sdk.ErrRelayResponseValidationUnmarshal)); m != nil {
+		t.Fatalf("unmarshal failure read as a miner report: %+v", m)
+	}
+	if m := unsignedMinerError(&servicetypes.RelayResponse{}, basic); m != nil {
+		t.Fatalf("no report read as one: %+v", m)
+	}
+	if m := unsignedMinerError(report, nil); m != nil {
+		t.Fatalf("a valid response read as a refusal: %+v", m)
 	}
 }

@@ -531,9 +531,24 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 // end, for serving its session to the last block. Healing kept the scores up
 // (mainnet 2026-09-29: WebSocket keys scored no lower than JSON-RPC ones), so
 // it showed as noise in the signal rather than as a floor.
+//
+// Nor is an HA relay miner closing with its own protocol codes: 4000 (the
+// session it was serving has expired) and 4002 (the application's stake
+// allocation for this supplier and session is spent: over-servicing, which
+// the HTTP path already scores as nothing).
 func lossIsSuppliers(cause error) bool {
-	return !errors.Is(cause, websockets.ErrBridgeSessionExpired) && !errors.Is(cause, websockets.ErrBridgeReplaceRequested)
+	if errors.Is(cause, websockets.ErrBridgeSessionExpired) || errors.Is(cause, websockets.ErrBridgeReplaceRequested) {
+		return false
+	}
+	var ce *websocket.CloseError
+	return !errors.As(cause, &ce) || (ce.Code != closeMinerSessionExpired && ce.Code != closeMinerStakeLimit)
 }
+
+// The HA relay miner's application close codes (lossIsSuppliers).
+const (
+	closeMinerSessionExpired = 4000
+	closeMinerStakeLimit     = 4002
+)
 
 // stalled reports whether a connection's periodic feed has gone silent for
 // longer than timeout. A connection with no periodic subscription is never

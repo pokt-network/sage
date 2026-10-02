@@ -441,7 +441,7 @@ func (p *Protocol) sendRelay(
 				"http_status", httpStatus,
 			)
 			return nil, domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable",
-				&domain.UpstreamStatusError{Status: httpStatus}, true)
+				&domain.UpstreamStatusError{Status: httpStatus, Body: bytes.Clone(respBz[:min(len(respBz), domain.UpstreamBodyMax)])}, true)
 		}
 	}
 
@@ -462,6 +462,15 @@ func (p *Protocol) sendRelay(
 
 	if ev != nil && ev.Response == nil {
 		ev.Response = respBz
+	}
+	// An unsigned response carrying the miner's own error report is the
+	// miner refusing the relay, not a forged answer: the poktroll relay miner
+	// answers over-servicing, an unknown session and its own failures this
+	// way, with HTTP 200 and no signature. It used to fail basic validation
+	// and blacklist the supplier for 15 minutes: on mainnet (2026-10-02)
+	// 41,110 times a day, one blacklisting per report.
+	if minerErr := unsignedMinerError(relayResp, err); minerErr != nil {
+		return nil, domain.NewRelayError(domain.ErrEndpoint, "relay miner refused the relay", minerErr, true)
 	}
 	if err != nil {
 		if ev != nil {

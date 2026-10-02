@@ -236,3 +236,15 @@ func relayMinerError(resp *servicetypes.RelayResponse) *servicetypes.RelayMinerE
 	}
 	return resp.RelayMinerError
 }
+
+// unsignedMinerError returns the miner's own error report when a response
+// failed only for want of what a relay has (basic validation: the signature
+// above all) and carries one: the miner refusing, not a response to verify.
+// Nil otherwise, including for a signed response with a report attached.
+func unsignedMinerError(resp *servicetypes.RelayResponse, err error) *domain.MinerError {
+	m := relayMinerError(resp)
+	if m == nil || !errors.Is(err, sdk.ErrRelayResponseValidationBasicValidation) {
+		return nil
+	}
+	return &domain.MinerError{Codespace: m.Codespace, Code: m.Code, Message: m.Message}
+}

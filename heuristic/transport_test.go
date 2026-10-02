@@ -262,3 +262,29 @@ func TestAnalyzeTransportError_ResponseTooLargeIsTheClients(t *testing.T) {
 		t.Fatalf("got %+v", r)
 	}
 }
+
+// Both relay miners' refusals: the HA miner's over-servicing 429 is told from
+// a busy 429 by its body; the poktroll miner's unsigned report by its code.
+// Over-servicing and a session the miner will not serve score nothing; any
+// other miner failure is minor. All are retried elsewhere.
+func TestAnalyzeTransportError_MinerRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cause    error
+		reason   string
+		penalize bool
+	}{
+		{"ha over-servicing 429", &domain.UpstreamStatusError{Status: 429, Body: []byte(`{"error":"session relay limit reached: claimable portion fully consumed"}`)}, "over_serviced", false},
+		{"ha busy 429", &domain.UpstreamStatusError{Status: 429, Body: []byte(`{"error":"relayer is not admitting relays right now"}`)}, "upstream_429", true},
+		{"poktroll over-servicing", &domain.MinerError{Codespace: "relayer_proxy", Code: 7, Message: "offchain rate limit hit by relayer proxy"}, "over_serviced", false},
+		{"poktroll unknown session", &domain.MinerError{Codespace: "relayer_proxy", Code: 6, Message: "relayer proxy encountered unknown session"}, "miner_session_rejected", false},
+		{"poktroll expired session", &domain.MinerError{Codespace: "relay_authenticator", Code: 1, Message: "session expired, expecting: 10, got: 21"}, "miner_session_rejected", false},
+		{"poktroll internal", &domain.MinerError{Codespace: "relayer_proxy", Code: 5, Message: "internal error"}, "upstream_miner_error", true},
+	} {
+		err := domain.NewRelayError(domain.ErrEndpoint, "x", tc.cause, true)
+		got := AnalyzeTransportError(err, nil)
+		if got.Reason != tc.reason || got.ShouldPenalize != tc.penalize || !got.ShouldRetry {
+			t.Errorf("%s: %s penalize=%v retry=%v, want %s penalize=%v retry", tc.name, got.Reason, got.ShouldPenalize, got.ShouldRetry, tc.reason, tc.penalize)
+		}
+	}
+}

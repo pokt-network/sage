@@ -747,6 +747,9 @@ func TestLossIsSuppliers(t *testing.T) {
 		{websockets.ErrBridgeReplaceRequested, false},
 		{websockets.ErrBridgeStalled, true},
 		{errors.New("read tcp: connection reset"), true},
+		{fmt.Errorf("%w: read from endpoint: %w", websockets.ErrBridgeConnectionFailed, &websocket.CloseError{Code: 4002, Text: "stake limit exceeded"}), false},
+		{fmt.Errorf("%w: read from endpoint: %w", websockets.ErrBridgeConnectionFailed, &websocket.CloseError{Code: 4000, Text: "session expired"}), false},
+		{fmt.Errorf("%w: read from endpoint: %w", websockets.ErrBridgeConnectionFailed, &websocket.CloseError{Code: 1011, Text: "internal"}), true},
 	} {
 		if got := lossIsSuppliers(tc.cause); got != tc.want {
 			t.Errorf("%v: %v, want %v", tc.cause, got, tc.want)

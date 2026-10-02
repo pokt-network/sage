@@ -148,10 +148,32 @@ func IsRetryable(err error) bool {
 
 // UpstreamStatusError is the cause carried when a relay miner's HTTP layer
 // answered with a non-2xx status before producing a signed RelayResponse:
-// its own 502 or 503, a 413 for a payload it will not take, a 429. The body
-// is the miner's error page, not a relay, so the status is the whole fact.
+// its own 502 or 503, a 413 for a payload it will not take, a 429. Body is
+// the head of the miner's error page (at most UpstreamBodyMax bytes): not a
+// relay, but where a miner says why, such as an HA relay miner's 429 for a
+// session whose relay allocation is spent.
 type UpstreamStatusError struct {
 	Status int
+	Body   []byte
+}
+
+// UpstreamBodyMax bounds UpstreamStatusError.Body.
+const UpstreamBodyMax = 2048
+
+// MinerError is the cause carried when a relay miner answered with its own
+// unsigned error report (RelayResponse.RelayMinerError) instead of a relay:
+// how the poktroll relay miner refuses, with HTTP 200, a relay it will not
+// serve (over-servicing, an unknown or expired session, its own failure).
+// The report is unsigned, so it says nothing about the backend and is not a
+// forged response either.
+type MinerError struct {
+	Codespace string
+	Code      uint32
+	Message   string
+}
+
+func (e *MinerError) Error() string {
+	return fmt.Sprintf("relay miner reported %s/%d: %s", e.Codespace, e.Code, e.Message)
 }
 
 func (e *UpstreamStatusError) Error() string {
