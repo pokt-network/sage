@@ -120,3 +120,24 @@ func (s *LeaderOnlyStorage) DeleteStale(ctx context.Context, olderThan time.Time
 	}
 	return sd.DeleteStale(ctx, olderThan)
 }
+
+// GetPartyPenalties reads through when the inner storage keeps them.
+func (s *LeaderOnlyStorage) GetPartyPenalties(ctx context.Context) (PartyPenalties, error) {
+	inner, ok := s.inner.(PartyPenaltyStore)
+	if !ok {
+		return PartyPenalties{}, nil
+	}
+	return inner.GetPartyPenalties(ctx)
+}
+
+// SetPartyPenalties writes through on the leader only: the stored copy is the
+// leader's view, which every pod adopts.
+func (s *LeaderOnlyStorage) SetPartyPenalties(ctx context.Context, p PartyPenalties) error {
+	inner, ok := s.inner.(PartyPenaltyStore)
+	if !ok || (s.isLeader != nil && !s.isLeader()) {
+		return nil
+	}
+	return inner.SetPartyPenalties(ctx, p)
+}
+
+var _ PartyPenaltyStore = (*LeaderOnlyStorage)(nil)

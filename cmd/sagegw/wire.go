@@ -1054,9 +1054,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			}
 			healthExe.SeedCoverage(ready)
 			app.StartupNotes = append(app.StartupNotes, fmt.Sprintf(
-				"reputation warmed from storage: keys=%d services=%d credited=%d skipped=%d (stale=%d present=%d over_bound=%d unparseable=%d)",
+				"reputation warmed from storage: keys=%d services=%d credited=%d skipped=%d (stale=%d present=%d over_bound=%d unparseable=%d) parties=%d",
 				loaded.Keys, len(loaded.Services), len(ready), loaded.Skipped,
-				loaded.Stale, loaded.Present, loaded.OverBound, loaded.Unparseable))
+				loaded.Stale, loaded.Present, loaded.OverBound, loaded.Unparseable, loaded.Parties))
 		}
 		// The durable form of that line: a log entry can be filtered out by
 		// level, a gauge cannot.

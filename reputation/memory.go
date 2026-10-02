@@ -16,6 +16,7 @@ type MemoryStorage struct {
 	mu      sync.RWMutex
 	states  map[string]State
 	opStats map[string]OperatorStat
+	parties PartyPenalties
 }
 
 // NewMemoryStorage creates a new in-memory storage backend.
@@ -100,4 +101,21 @@ func (m *MemoryStorage) DeleteStale(_ context.Context, olderThan time.Time) (int
 		}
 	}
 	return n, nil
+}
+
+var _ PartyPenaltyStore = (*MemoryStorage)(nil)
+
+// GetPartyPenalties returns the stored priced parties.
+func (m *MemoryStorage) GetPartyPenalties(_ context.Context) (PartyPenalties, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.parties, nil
+}
+
+// SetPartyPenalties replaces the stored priced parties.
+func (m *MemoryStorage) SetPartyPenalties(_ context.Context, p PartyPenalties) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.parties = p
+	return nil
 }

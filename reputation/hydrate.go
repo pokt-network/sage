@@ -12,6 +12,9 @@ import (
 type HydrateResult struct {
 	// Keys is how many states were placed in the in-memory cache.
 	Keys int
+	// Parties is how many priced parties (stale share, trust) were adopted
+	// from the leader's last write.
+	Parties int
 	// Services are the service IDs those states belong to. The health-check
 	// executor seeds its readiness coverage from this: a service whose scores
 	// are loaded is a service this pod can already steer traffic for.
@@ -119,6 +122,10 @@ func (s *serviceImpl) Hydrate(ctx context.Context) (HydrateResult, error) {
 			result.Operators = s.ops.merge(stored, time.Now())
 		}
 	}
+
+	// The leader's priced parties, so this pod charges them from its first
+	// selection rather than after gathering its own evidence (partystore.go).
+	result.Parties = s.adoptPartyPenalties(ctx)
 
 	result.Services = make([]domain.ServiceID, 0, len(seen))
 	for svc := range seen {

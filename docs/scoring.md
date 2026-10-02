@@ -500,6 +500,13 @@ Two more corrections followed the same day, both from mainnet sei:
   `sage_party_trust_evidence` and `sage_party_trust_penalty`, and the admin
   listing shows `trust_penalty`.
 
+  The leader writes the parties it prices (stale-share penalties with when
+  they were last priced, trust penalties with when they end) to storage on
+  every refresh, and a pod adopts them at boot as the view before its first,
+  so a roll or a scale-up does not leave the new pods charging nothing while
+  they gather evidence. The holds that already exist bound what is adopted;
+  the pod's own evidence takes over as it arrives.
+
   Both party penalties now reach a key with no state yet. A party's hosts
   rotate in fresh every session and each used to start at the initial score,
   uncharged, until its first signal.

@@ -252,3 +252,43 @@ func (r *RedisStorage) DeleteStale(ctx context.Context, olderThan time.Time) (in
 	}
 	return deleted, flush()
 }
+
+var _ PartyPenaltyStore = (*RedisStorage)(nil)
+
+// partiesKey holds the leader's priced parties: one small JSON value in its
+// own hash (partiesField), beside the score and operator hashes and, like the
+// operator hash, outside the score sweep.
+func (r *RedisStorage) partiesKey() string {
+	return r.hashKey + "parties"
+}
+
+// partiesField is the one field of partiesKey.
+const partiesField = "v"
+
+// GetPartyPenalties reads the stored priced parties; none when absent.
+func (r *RedisStorage) GetPartyPenalties(ctx context.Context) (PartyPenalties, error) {
+	val, err := r.client.HGet(ctx, r.partiesKey(), partiesField).Result()
+	if errors.Is(err, redis.Nil) {
+		return PartyPenalties{}, nil
+	}
+	if err != nil {
+		return PartyPenalties{}, fmt.Errorf("redis HGET %s: %w", r.partiesKey(), err)
+	}
+	var p PartyPenalties
+	if err := json.Unmarshal([]byte(val), &p); err != nil {
+		return PartyPenalties{}, fmt.Errorf("decode %s: %w", r.partiesKey(), err)
+	}
+	return p, nil
+}
+
+// SetPartyPenalties replaces the stored priced parties.
+func (r *RedisStorage) SetPartyPenalties(ctx context.Context, p PartyPenalties) error {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", r.partiesKey(), err)
+	}
+	if err := r.client.HSet(ctx, r.partiesKey(), partiesField, string(b)).Err(); err != nil {
+		return fmt.Errorf("redis HSET %s: %w", r.partiesKey(), err)
+	}
+	return nil
+}

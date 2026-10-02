@@ -597,6 +597,7 @@ func (s *serviceImpl) refreshBaselines() {
 			}
 		}
 	}
+	s.storePartyPenalties(&v)
 	for id, a := range pools {
 		// The relative term is what a baseline is for; without it a key is
 		// charged from zero, as it was before pool-relative scoring.
