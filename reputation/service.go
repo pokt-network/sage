@@ -111,8 +111,8 @@ const defaultStateSweepInterval = 5 * time.Minute
 // DefaultServiceConfig returns a ServiceConfig with sensible defaults.
 func DefaultServiceConfig() ServiceConfig {
 	return ServiceConfig{
-		InitialScore:   100,
-		MaxScore:       100,
+		InitialScore: 100,
+		MaxScore:     100,
 	}
 }
 
