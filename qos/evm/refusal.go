@@ -153,13 +153,7 @@ func RefusalVerdict(payload domain.Payload, result heuristic.AnalysisResult, hea
 
 // claimsAny reports whether a verdict's details carry one of wordings.
 func claimsAny(details string, wordings []string) bool {
-	lower := strings.ToLower(details)
-	for _, w := range wordings {
-		if strings.Contains(lower, w) {
-			return true
-		}
-	}
-	return false
+	return heuristic.ContainsAnyOf(strings.ToLower(details), wordings)
 }
 
 // requestedBlocks reads the lowest and highest block a request names,

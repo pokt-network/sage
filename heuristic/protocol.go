@@ -208,12 +208,7 @@ var methodUnsupportedPatterns = []string{
 // methodUnsupportedPatterns wordings. It does not fold case: it expects an
 // already-lowercased message, which is how every caller has it.
 func reportsMethodUnsupported(lowerMsg string) bool {
-	for _, pattern := range methodUnsupportedPatterns {
-		if strings.Contains(lowerMsg, pattern) {
-			return true
-		}
-	}
-	return false
+	return ContainsAnyOf(lowerMsg, methodUnsupportedPatterns)
 }
 
 // capabilityLimitationPatterns are the wordings in which an endpoint reports
@@ -254,13 +249,7 @@ var capabilityLimitationPatterns = []string{
 // for answering honestly, and it must not keep receiving archival requests it
 // has already proved it cannot serve.
 func ReportsMissingHistoricalState(message string) bool {
-	lower := strings.ToLower(message)
-	for _, pattern := range capabilityLimitationPatterns {
-		if strings.Contains(lower, pattern) {
-			return true
-		}
-	}
-	return false
+	return ContainsAnyOf(strings.ToLower(message), capabilityLimitationPatterns)
 }
 
 // blockchainErrorPatterns are error wordings attributable to the chain rather
@@ -285,44 +274,43 @@ var blockchainErrorPatterns = append([]string{
 	"excluded from account secondary indexes",
 }, capabilityLimitationPatterns...)
 
+// supplierInfraPatterns are the wordings of a supplier's own infrastructure
+// failing, in either the -32000 range or -32603.
+var supplierInfraPatterns = []string{
+	"service unavailable",
+	"bad gateway",
+	"gateway timeout",
+	"connection refused",
+	"internal server error",
+}
+
 // classifyServerError handles -32000 range errors which are commonly blockchain-specific.
 func classifyServerError(code int64, lowerMsg string) AnalysisResult {
-	for _, pattern := range blockchainErrorPatterns {
-		if strings.Contains(lowerMsg, pattern) {
-			result := AnalysisResult{
-				ShouldRetry:        true,
-				ShouldCircuitBreak: false,
-				ShouldPenalize:     false,
-				Attribution:        AttrBlockchain,
-				Confidence:         0.85,
-				Reason:             "blockchain_error",
-				Details:            "blockchain error (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
-			}
-			result.MethodBlocking = reportsMethodUnsupported(lowerMsg)
-			return result
+	if ContainsAnyOf(lowerMsg, blockchainErrorPatterns) {
+		result := AnalysisResult{
+			ShouldRetry:        true,
+			ShouldCircuitBreak: false,
+			ShouldPenalize:     false,
+			Attribution:        AttrBlockchain,
+			Confidence:         0.85,
+			Reason:             "blockchain_error",
+			Details:            "blockchain error (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
 		}
+		result.MethodBlocking = reportsMethodUnsupported(lowerMsg)
+		return result
 	}
 
 	// Supplier-attributed errors at -32000.
-	supplierPatterns := []string{
-		"service unavailable",
-		"bad gateway",
-		"gateway timeout",
-		"connection refused",
-		"internal server error",
-	}
-	for _, pattern := range supplierPatterns {
-		if strings.Contains(lowerMsg, pattern) {
-			return AnalysisResult{
-				ShouldRetry:        true,
-				ShouldCircuitBreak: true,
-				ShouldPenalize:     true,
-				PenaltySeverity:    SeverityCritical,
-				Attribution:        AttrSupplier,
-				Confidence:         0.85,
-				Reason:             "supplier_server_error",
-				Details:            "supplier server error (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
-			}
+	if ContainsAnyOf(lowerMsg, supplierInfraPatterns) {
+		return AnalysisResult{
+			ShouldRetry:        true,
+			ShouldCircuitBreak: true,
+			ShouldPenalize:     true,
+			PenaltySeverity:    SeverityCritical,
+			Attribution:        AttrSupplier,
+			Confidence:         0.85,
+			Reason:             "supplier_server_error",
+			Details:            "supplier server error (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
 		}
 	}
 
@@ -332,17 +320,15 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 	// pending-request queue is full (mainnet sei, 2026-10-01: "rejecting new
 	// request (pending: 803, threshold: 800)"); it fell to the unscored
 	// default below.
-	for _, pattern := range []string{"rate limit", "too many requests", "too busy"} {
-		if strings.Contains(lowerMsg, pattern) {
-			return AnalysisResult{
-				ShouldRetry:     true,
-				ShouldPenalize:  true,
-				PenaltySeverity: SeverityMinor,
-				Attribution:     AttrSupplier,
-				Confidence:      0.85,
-				Reason:          "rate_limited",
-				Details:         "supplier rate limit (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
-			}
+	if ContainsAnyOf(lowerMsg, []string{"rate limit", "too many requests", "too busy"}) {
+		return AnalysisResult{
+			ShouldRetry:     true,
+			ShouldPenalize:  true,
+			PenaltySeverity: SeverityMinor,
+			Attribution:     AttrSupplier,
+			Confidence:      0.85,
+			Reason:          "rate_limited",
+			Details:         "supplier rate limit (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
 		}
 	}
 
@@ -381,25 +367,16 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 // classifyInternalError handles -32603 (internal error) with message-based classification.
 func classifyInternalError(lowerMsg string) AnalysisResult {
 	// Supplier infrastructure errors.
-	supplierPatterns := []string{
-		"service unavailable",
-		"bad gateway",
-		"gateway timeout",
-		"connection refused",
-		"internal server error",
-	}
-	for _, pattern := range supplierPatterns {
-		if strings.Contains(lowerMsg, pattern) {
-			return AnalysisResult{
-				ShouldRetry:        true,
-				ShouldCircuitBreak: true,
-				ShouldPenalize:     true,
-				PenaltySeverity:    SeverityCritical,
-				Attribution:        AttrSupplier,
-				Confidence:         0.85,
-				Reason:             "supplier_internal_error",
-				Details:            "supplier internal error: " + lowerMsg,
-			}
+	if ContainsAnyOf(lowerMsg, supplierInfraPatterns) {
+		return AnalysisResult{
+			ShouldRetry:        true,
+			ShouldCircuitBreak: true,
+			ShouldPenalize:     true,
+			PenaltySeverity:    SeverityCritical,
+			Attribution:        AttrSupplier,
+			Confidence:         0.85,
+			Reason:             "supplier_internal_error",
+			Details:            "supplier internal error: " + lowerMsg,
 		}
 	}
 

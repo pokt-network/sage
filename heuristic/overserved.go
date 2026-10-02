@@ -1,5 +1,7 @@
 package heuristic
 
+import "slices"
+
 // overServedPatterns are wire signals that a supplier's relay-miner correctly
 // rejected a relay because the application's per-(supplier, session) stake
 // allocation is consumed. This is protocol-correct behavior — the supplier did
@@ -29,12 +31,7 @@ func isOverServiced(body []byte) bool {
 	if len(searchArea) > 2048 {
 		searchArea = searchArea[:2048]
 	}
-	for _, p := range overServedPatterns {
-		if containsFold(searchArea, p) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(overServedPatterns, func(p string) bool { return containsFold(searchArea, p) })
 }
 
 // overServicedResult is the analysis outcome for a protocol-correct
