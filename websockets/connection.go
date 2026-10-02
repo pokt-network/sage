@@ -1,7 +1,6 @@
 package websockets
 
 import (
-	"log/slog"
 	"sync"
 	"time"
 
@@ -71,7 +70,6 @@ type message struct {
 //   - labelled source for logging and routing
 type Connection struct {
 	conn   *websocket.Conn
-	logger *slog.Logger
 	source MessageSource
 
 	writeMu sync.Mutex
@@ -86,14 +84,13 @@ type Connection struct {
 }
 
 // NewConnection creates a Connection wrapper. It does not start any goroutines.
-func NewConnection(conn *websocket.Conn, source MessageSource, logger *slog.Logger) *Connection {
+func NewConnection(conn *websocket.Conn, source MessageSource) *Connection {
 	// Bound inbound frames on both sides: a client and a supplier are equally
 	// capable of sending one large enough to exhaust memory.
 	conn.SetReadLimit(maxMessageBytes)
 
 	return &Connection{
 		conn:   conn,
-		logger: logger,
 		source: source,
 	}
 }
@@ -181,32 +178,11 @@ func (c *Connection) SetCloseInfo(code int, text string) {
 // extractCloseInfo attempts to pull a close code and text out of an error returned
 // by ReadMessage. Returns 0,"" when the error is not a close error.
 func extractCloseInfo(err error) (int, string) {
-	var closeErr *websocket.CloseError
-	if websocket.IsCloseError(err, websocket.CloseNormalClosure,
-		websocket.CloseGoingAway,
-		websocket.CloseProtocolError,
-		websocket.CloseUnsupportedData,
-		websocket.CloseNoStatusReceived,
-		websocket.CloseAbnormalClosure,
-		websocket.CloseInvalidFramePayloadData,
-		websocket.ClosePolicyViolation,
-		websocket.CloseMessageTooBig,
-		websocket.CloseMandatoryExtension,
-		websocket.CloseInternalServerErr,
-		websocket.CloseServiceRestart,
-		websocket.CloseTryAgainLater,
-		websocket.CloseTLSHandshake,
-	) {
-		// Use type assertion to get code/text after confirming it is a close error.
-		if ce, ok := err.(*websocket.CloseError); ok {
-			closeErr = ce
-		}
-	} else if ce, ok := err.(*websocket.CloseError); ok {
-		// Non-standard close codes (e.g. 4000 for session expiry)
-		closeErr = ce
-	}
-	if closeErr != nil {
-		return closeErr.Code, closeErr.Text
+	// A plain type assertion, as websocket.IsCloseError does: gorilla returns
+	// the *CloseError itself, never wrapped. Any code counts, including
+	// non-standard ones (e.g. 4000 for session expiry).
+	if ce, ok := err.(*websocket.CloseError); ok {
+		return ce.Code, ce.Text
 	}
 	return 0, ""
 }

@@ -202,7 +202,7 @@ func StartBridge(
 		ctx:         bridgeCtx,
 		cancelCtx:   cancelCtx,
 		logger:      logger,
-		clientConn:  NewConnection(rawClient, SourceClient, logger.With("conn", "client")),
+		clientConn:  NewConnection(rawClient, SourceClient),
 		processor:   processor,
 		msgChan:     make(chan message, 32),
 		done:        make(chan struct{}),
@@ -210,7 +210,7 @@ func StartBridge(
 		pongWait:    defaultPongWait,
 		rebindLimit: defaultRebindLimit,
 	}
-	b.endpointConn.Store(NewConnection(rawEndpoint, SourceEndpoint, logger.With("conn", "endpoint")))
+	b.endpointConn.Store(NewConnection(rawEndpoint, SourceEndpoint))
 	for _, opt := range opts {
 		opt(b)
 	}
@@ -579,7 +579,7 @@ func (b *Bridge) rebind(lost *Connection, cause error) {
 		return
 	}
 	_ = lost.Close()
-	next := NewConnection(raw, SourceEndpoint, b.logger.With("conn", "endpoint"))
+	next := NewConnection(raw, SourceEndpoint)
 	if b.pongWait > 0 {
 		next.setLiveness(b.pongWait)
 	}

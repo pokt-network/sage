@@ -354,7 +354,7 @@ func TestConnection_ReadWrite(t *testing.T) {
 	raw, _, err := websocket.DefaultDialer.Dial(wsURL(srv), nil)
 	require.NoError(t, err)
 
-	c := NewConnection(raw, SourceClient, newTestLogger())
+	c := NewConnection(raw, SourceClient)
 	require.NoError(t, c.WriteMessage(websocket.TextMessage, []byte("ping")))
 
 	_ = raw.SetReadDeadline(time.Now().Add(time.Second))
@@ -378,7 +378,7 @@ func TestConnection_CloseInfoThreadSafety(t *testing.T) {
 	require.NoError(t, err)
 	defer raw.Close()
 
-	c := NewConnection(raw, SourceClient, newTestLogger())
+	c := NewConnection(raw, SourceClient)
 
 	// Hammer Get/Set from multiple goroutines.
 	const workers = 20
@@ -410,7 +410,7 @@ func TestConnection_Close(t *testing.T) {
 	raw, _, err := websocket.DefaultDialer.Dial(wsURL(srv), nil)
 	require.NoError(t, err)
 
-	c := NewConnection(raw, SourceClient, newTestLogger())
+	c := NewConnection(raw, SourceClient)
 	require.NoError(t, c.Close())
 
 	// A second close should return an error (already closed), not panic.
@@ -656,7 +656,7 @@ func TestNewConnection_SetsReadLimitOnBothSides(t *testing.T) {
 	require.NoError(t, err)
 	defer raw.Close()
 
-	_ = NewConnection(raw, SourceEndpoint, newTestLogger())
+	_ = NewConnection(raw, SourceEndpoint)
 
 	// gorilla exposes no getter for the read limit, so assert it behaviourally:
 	// a frame over the cap must produce a read error rather than be delivered.
