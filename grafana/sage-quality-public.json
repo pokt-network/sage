@@ -1693,7 +1693,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(1 - (sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) or sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) * 0) / sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval]))) * 100",
+          "expr": "(1 - (sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) or sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) * 0) / (sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) > 0)) * 100",
           "refId": "Success",
           "format": "table",
           "instant": true,

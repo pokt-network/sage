@@ -245,7 +245,7 @@ table(
     [
         ("RPS", f'sum by ({by}) (rate({OA}[{RI}]))'),
         ("Success", f'(1 - (sum by ({by}) (rate({OF[:-1]}, {FAULT}}}[{RI}])) or sum by ({by}) (rate({OF}[{RI}])) * 0) '
-                    f'/ sum by ({by}) (rate({OF}[{RI}]))) * 100'),
+                    f'/ (sum by ({by}) (rate({OF}[{RI}])) > 0)) * 100'),
         ("SupplierErr", f'sum by ({by}) (rate({OF[:-1]}, {FAULT}}}[{RI}]))'),
         ("P50", f'histogram_quantile(0.50, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
         ("P95", f'histogram_quantile(0.95, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
