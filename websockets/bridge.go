@@ -58,7 +58,8 @@ type MessageProcessor interface {
 //  3. The main loop reads from msgChan, routes through the MessageProcessor,
 //     and writes to the other side.
 //  4. Any error triggers Shutdown, which cancels the context, sends close
-//     frames, closes both connections, and closes the done channel.
+//     frames and closes both connections. The main loop closes the done
+//     channel when it exits, so every frame it routed has been reported first.
 //
 // Error Handling:
 //   - Read errors in readLoop → Shutdown (close codes captured first)
@@ -243,10 +244,19 @@ func (b *Bridge) Done() <-chan struct{} {
 //  1. Cancels the bridge context (signals readLoop goroutines to exit).
 //  2. Sends a WebSocket close frame to both connections.
 //  3. Closes both connections.
-//  4. Closes the done channel to unblock Done() waiters.
+//  4. Waits for Done: the main loop closes it on its way out, so a frame it
+//     is still routing when a read loop calls Shutdown (the client hanging up
+//     right after reading it) is reported first.
 //
-// Safe to call from any goroutine and any number of times.
+// Safe to call from any goroutine except run's own (route uses shutdown,
+// which does not wait), any number of times.
 func (b *Bridge) Shutdown(err error) {
+	b.shutdown(err)
+	<-b.done
+}
+
+// shutdown is Shutdown without the wait, for run, which closes done.
+func (b *Bridge) shutdown(err error) {
 	b.shutdownOnce.Do(func() {
 		b.logger.Warn("websocket: bridge shutting down", "err", err)
 
@@ -301,7 +311,6 @@ func (b *Bridge) Shutdown(err error) {
 		// "send on closed channel" panic if a readLoop goroutine concurrently tries
 		// to send. Context cancellation is the signal for readLoop to exit; the
 		// channel is garbage-collected once all goroutines have exited.
-		close(b.done)
 	})
 }
 
@@ -310,7 +319,17 @@ func (b *Bridge) Shutdown(err error) {
 // run is the main loop. It reads from msgChan, processes the message, and
 // writes it to the other side. The read loops feeding msgChan are started by
 // StartBridge; see there for why not here.
+//
+// Done closes only when run returns. Shutdown can come from a read loop while
+// run is mid-route — the client reads a frame and hangs up before route has
+// told the observer about it — and Done closing there left that frame's
+// Frame call, and the processor's events for it, landing after Done. The
+// deferred Shutdown also covers a run that panics.
 func (b *Bridge) run() {
+	defer func() {
+		b.shutdown(ErrBridgeContextCanceled)
+		close(b.done)
+	}()
 	b.logger.Info("websocket: bridge started")
 	if b.pongWait > 0 && b.pingPeriod > 0 {
 		safego.Go(b.logger, "websocket.ping", b.pingLoop)
@@ -325,7 +344,6 @@ func (b *Bridge) run() {
 			b.route(msg)
 
 		case <-b.ctx.Done():
-			b.Shutdown(ErrBridgeContextCanceled)
 			return
 		}
 	}
@@ -342,7 +360,7 @@ func (b *Bridge) route(msg message) {
 		processed, err := b.processor.ProcessClientMessage(msg.data)
 		if err != nil {
 			b.logger.Error("websocket: client message processing failed", "err", err)
-			b.Shutdown(fmt.Errorf("%w: %w", ErrBridgeMessageProcessing, err))
+			b.shutdown(fmt.Errorf("%w: %w", ErrBridgeMessageProcessing, err))
 			return
 		}
 		if processed == nil {
@@ -354,7 +372,7 @@ func (b *Bridge) route(msg message) {
 			// underneath it. Without a handler it is the old failure.
 			b.logger.Error("websocket: write to endpoint failed", "err", writeErr)
 			if b.endpointLost == nil {
-				b.Shutdown(fmt.Errorf("%w: write to endpoint: %w", ErrBridgeConnectionFailed, writeErr))
+				b.shutdown(fmt.Errorf("%w: write to endpoint: %w", ErrBridgeConnectionFailed, writeErr))
 			}
 			return
 		}
@@ -369,7 +387,7 @@ func (b *Bridge) route(msg message) {
 		processed, err := b.processor.ProcessEndpointMessage(msg.data)
 		if err != nil {
 			b.logger.Error("websocket: endpoint message processing failed", "err", err)
-			b.Shutdown(fmt.Errorf("%w: %w", ErrBridgeMessageProcessing, err))
+			b.shutdown(fmt.Errorf("%w: %w", ErrBridgeMessageProcessing, err))
 			return
 		}
 		if processed == nil {
@@ -377,7 +395,7 @@ func (b *Bridge) route(msg message) {
 		}
 		if writeErr := b.clientConn.WriteMessage(msg.messageType, processed); writeErr != nil {
 			b.logger.Error("websocket: write to client failed", "err", writeErr)
-			b.Shutdown(fmt.Errorf("%w: write to client: %w", ErrBridgeConnectionFailed, writeErr))
+			b.shutdown(fmt.Errorf("%w: write to client: %w", ErrBridgeConnectionFailed, writeErr))
 			return
 		}
 		if b.observer != nil {
