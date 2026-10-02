@@ -796,7 +796,7 @@ func (r *WSRelayer) handleEndpointFrame(
 	// session boundary it does not control. The observation still goes out,
 	// forced, because a client did receive a non-2xx and that is worth seeing.
 	if errors.Is(frameErr, ErrEndpointControlFrame) {
-		r.submitObservation(serviceID, endpointAddr, payload, latency)
+		r.submitObservation(serviceID, endpointAddr, payload)
 		return
 	}
 
@@ -806,7 +806,7 @@ func (r *WSRelayer) handleEndpointFrame(
 	if frameErr != nil {
 		_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket,
 			reputation.NewSignal(reputation.SignalMajorError, "ws_validate_err:"+frameErr.Error(), latency))
-		r.submitObservation(serviceID, endpointAddr, payload, latency)
+		r.submitObservation(serviceID, endpointAddr, payload)
 		return
 	}
 
@@ -820,7 +820,7 @@ func (r *WSRelayer) handleEndpointFrame(
 
 	// Always submit if heuristic penalized; otherwise sample.
 	if res.ShouldPenalize || rand.Float64() < r.deps.FrameObservationSampleRate {
-		r.submitObservation(serviceID, endpointAddr, payload, latency)
+		r.submitObservation(serviceID, endpointAddr, payload)
 	}
 }
 
@@ -836,7 +836,6 @@ func (r *WSRelayer) handleBridgeClose(
 	r.deps.Observe.Submit(observe.Observation{
 		ServiceID:    serviceID,
 		EndpointAddr: endpointAddr,
-		Timestamp:    time.Now(),
 		Source:       observe.SourceRelay,
 	})
 }
@@ -846,14 +845,11 @@ func (r *WSRelayer) submitObservation(
 	serviceID domain.ServiceID,
 	endpointAddr domain.EndpointAddr,
 	payload []byte,
-	latency time.Duration,
 ) {
 	obs := observe.Observation{
 		ServiceID:    serviceID,
 		EndpointAddr: endpointAddr,
-		Timestamp:    time.Now(),
 		Source:       observe.SourceRelay,
-		Latency:      latency,
 		ResponseBody: payload,
 	}
 	r.deps.Observe.Submit(obs)

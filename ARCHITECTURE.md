@@ -332,8 +332,8 @@ them would degrade endpoint selection — no block heights, no chain ID assertio
 
 - **Sampling**: 10% of relay responses are deep-parsed (health checks: 100%)
 - **Worker pool**: configurable concurrency
-- **Multi-instance**: Redis pub/sub shares observations across pods (JSON serialization, no proto)
-- **Extracted data**: block height, chain ID, sync status, archival capability
+- **Per-pod**: observations never leave the pod; what crosses pods is health-check probe results, through `healthcheck.ProbeSink`/`ProbeSource`
+- **Extracted data**: block height, chain ID, archival capability
 
 ### Response Caching
 
@@ -487,7 +487,7 @@ not implemented" section of the configuration reference.
 5. **Probation without fallback** — probation prepends, never replaces healthy endpoints
 6. **Retry/hedge bypassing QoS** — structurally impossible (middleware chain runs on every attempt)
 7. **sync_allowance silently ignored** — strict config validation at load time
-8. **Non-leader replicas start empty** — observation pub/sub shares state continuously
+8. **Non-leader replicas start empty** — the probe-result stream shares state continuously
 9. **Block height parsing bugs** — one parser per chain (plugin interface), uint64 everywhere, validation wrapper
 10. **Deceptive supplier detection** — response format validation
 11. **`result:null` false positive** — gjson parsing for critical checks, null != result

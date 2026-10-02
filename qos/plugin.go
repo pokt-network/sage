@@ -129,14 +129,13 @@ type DataExtractor interface {
 type ExtractedData struct {
 	BlockHeight *uint64
 	ChainID     *string
-	IsSyncing   *bool
 	IsArchival  *bool
 }
 
 // Empty reports that a response yielded no fact at all. For a probe that
 // exists to learn one, an empty answer is the endpoint failing to answer.
 func (d *ExtractedData) Empty() bool {
-	return d == nil || (d.BlockHeight == nil && d.ChainID == nil && d.IsSyncing == nil && d.IsArchival == nil)
+	return d == nil || (d.BlockHeight == nil && d.ChainID == nil && d.IsArchival == nil)
 }
 
 // ExternalFloorSetter is implemented by plugins whose block consensus can

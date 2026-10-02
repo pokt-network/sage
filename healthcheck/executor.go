@@ -1461,7 +1461,7 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 			signal.Probe = true
 			_ = e.repService.RecordSignal(ctx, r.ServiceID, r.Endpoint, rpcType, signal)
 		}
-		e.submitObservation(r.ServiceID, r.Endpoint, r.Request, nil, 0, latency, nil)
+		e.submitObservation(r.ServiceID, r.Endpoint, r.Request, nil)
 		return
 	}
 
@@ -1471,7 +1471,6 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 	//
 	// extractErr is carried down to the reputation signal below: what the body
 	// says is part of whether the check passed, not merely a parsing detail.
-	var extracted *observe.ExtractedData
 	var extractErr error
 	if extractor, ok := plugin.(qos.DataExtractor); ok {
 		var data *qos.ExtractedData
@@ -1489,12 +1488,6 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 			e.logger.Debug("healthcheck: extract error",
 				"service_id", r.ServiceID, "endpoint", r.Endpoint, "check", r.Check, "error", extractErr)
 		case data != nil:
-			extracted = &observe.ExtractedData{
-				BlockHeight: data.BlockHeight,
-				ChainID:     data.ChainID,
-				IsSyncing:   data.IsSyncing,
-				IsArchival:  data.IsArchival,
-			}
 			// Update block height tracker if available. The height belongs to
 			// the backend, so every registration in front of it reports it —
 			// otherwise the un-probed siblings would look permanently
@@ -1549,7 +1542,7 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 		}
 	}
 
-	e.submitObservation(r.ServiceID, r.Endpoint, r.Request, r.Body, r.StatusCode, latency, extracted)
+	e.submitObservation(r.ServiceID, r.Endpoint, r.Request, r.Body)
 }
 
 // severitySignal builds the signal a transport verdict carries.
@@ -1569,9 +1562,6 @@ func (e *Executor) submitObservation(
 	serviceID domain.ServiceID,
 	ep domain.EndpointAddr,
 	reqBody, respBody []byte,
-	statusCode int,
-	latency time.Duration,
-	extracted *observe.ExtractedData,
 ) {
 	if e.obsQueue == nil {
 		return
@@ -1579,12 +1569,8 @@ func (e *Executor) submitObservation(
 	e.obsQueue.Submit(observe.Observation{
 		ServiceID:    serviceID,
 		EndpointAddr: ep,
-		Timestamp:    time.Now(),
 		Source:       observe.SourceHealthCheck,
-		Latency:      latency,
-		HTTPStatus:   statusCode,
 		RequestBody:  reqBody,
 		ResponseBody: respBody,
-		Extracted:    extracted,
 	})
 }

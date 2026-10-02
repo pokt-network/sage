@@ -81,7 +81,7 @@ func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputatio
 
 			// Optionally submit to the observation pipeline.
 			if queue != nil && flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagObservationPipeline, ctx.ServiceID) {
-				obs := buildObservation(ctx, latency)
+				obs := buildObservation(ctx)
 				queue.Submit(obs)
 			}
 
@@ -192,17 +192,14 @@ func isSuccessStatus(ctx *relay.Context) bool {
 }
 
 // buildObservation constructs an observe.Observation from the relay context.
-func buildObservation(ctx *relay.Context, latency time.Duration) observe.Observation {
+func buildObservation(ctx *relay.Context) observe.Observation {
 	obs := observe.Observation{
 		ServiceID:    ctx.ServiceID,
 		EndpointAddr: ctx.Endpoint,
-		Timestamp:    time.Now(),
 		Source:       observe.SourceRelay,
-		Latency:      latency,
 	}
 
 	if ctx.Response != nil {
-		obs.HTTPStatus = ctx.Response.HTTPStatusCode
 		obs.ResponseBody = ctx.Response.Body
 	}
 
