@@ -19,9 +19,9 @@ func TestService_RebaseAfterDrainRestartsAtProbation(t *testing.T) {
 	ctx := context.Background()
 	top := domain.EndpointAddr("pokt1a-https://a.opa.example")
 	low := domain.EndpointAddr("pokt1b-https://b.opa.example")
-	require.NoError(t, svc.RecordSignal(ctx, "sei", top, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0)))
+	require.NoError(t, svc.RecordSignal(ctx, "sei", top, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0)))
 	for i := 0; i < 4; i++ {
-		require.NoError(t, svc.RecordSignal(ctx, "sei", low, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, "sei", low, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "bad", 0)))
 	}
 
 	n := svc.RebaseAfterDrain("sei", domain.EndpointAddrList{top, low}, domain.RPCTypeJSONRPC)
@@ -38,7 +38,7 @@ func TestService_RecordNoteIsTimelineOnly(t *testing.T) {
 	svc := newTestService(t, DefaultServiceConfig())
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1a-https://a.opa.example")
-	require.NoError(t, svc.RecordSignal(ctx, "sei", ep, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0)))
+	require.NoError(t, svc.RecordSignal(ctx, "sei", ep, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0)))
 	before, _ := svc.GetScore(ctx, "sei", ep, domain.RPCTypeJSONRPC)
 
 	svc.RecordNote("sei", ep, domain.RPCTypeJSONRPC, "server_error", "server error (code -32000): some node-specific failure")

@@ -39,7 +39,7 @@ func TestService_RecordSignal_UpdatesCache(t *testing.T) {
 	}
 
 	// Record a major error (-10).
-	err = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewMajorErrorSignal("timeout", 5*time.Second))
+	err = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSignal(SignalMajorError, "timeout", 5*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestService_ScoreClamping(t *testing.T) {
 
 	// Drive score below 0 with fatal errors.
 	for range 5 {
-		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewFatalErrorSignal("crash", 0))
+		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSignal(SignalFatalError, "crash", 0))
 	}
 
 	score, _ := svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
@@ -71,7 +71,7 @@ func TestService_ScoreClamping(t *testing.T) {
 	// Reset and drive above max with successes.
 	_ = svc.ResetScore(ctx, svcID, ep)
 	for range 10 {
-		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", time.Millisecond))
+		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", time.Millisecond))
 	}
 
 	score, _ = svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
@@ -87,7 +87,7 @@ func TestService_AsyncWriteToStorage(t *testing.T) {
 	svcID := domain.ServiceID("eth")
 	ep := domain.EndpointAddr("ep1")
 
-	_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewMinorErrorSignal("retry", 0))
+	_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSignal(SignalMinorError, "retry", 0))
 
 	// Stop flushes pending writes.
 	svc.Stop()
@@ -109,8 +109,8 @@ func TestService_GetScores(t *testing.T) {
 	ctx := context.Background()
 	svcID := domain.ServiceID("eth")
 
-	_ = svc.RecordSignal(ctx, svcID, domain.EndpointAddr("ep1"), domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0))
-	_ = svc.RecordSignal(ctx, svcID, domain.EndpointAddr("ep2"), domain.RPCTypeJSONRPC, NewMajorErrorSignal("fail", 0))
+	_ = svc.RecordSignal(ctx, svcID, domain.EndpointAddr("ep1"), domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0))
+	_ = svc.RecordSignal(ctx, svcID, domain.EndpointAddr("ep2"), domain.RPCTypeJSONRPC, NewSignal(SignalMajorError, "fail", 0))
 
 	scores, err := svc.GetScores(ctx, svcID)
 	if err != nil {
@@ -134,7 +134,7 @@ func TestService_SelectBest(t *testing.T) {
 	// Push ep1 below Tier 1 (100 → 75 via critical error, -25). ep2 stays
 	// at 100 in Tier 1; the tier cascade picks ep2 — on every relay the
 	// tier-2 trickle does not claim, so the trickle is off for this test.
-	_ = svc.RecordSignal(ctx, svcID, ep1, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("fail", 0))
+	_ = svc.RecordSignal(ctx, svcID, ep1, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "fail", 0))
 	svc.selector.cfg.Load().Tier2Pct = 0
 
 	best := svc.SelectBest(ctx, svcID, domain.EndpointAddrList{ep1, ep2}, domain.RPCTypeJSONRPC)
@@ -160,12 +160,12 @@ func TestService_SelectBest_ReturnsTheFirstTryPick(t *testing.T) {
 	}{
 		"tier-2 trickle": {
 			configure: func(c *SelectorConfig) { c.Tier2Pct = 100 },
-			demote:    NewCriticalErrorSignal("fail", 0), // 100 → 75, tier 2.
+			demote:    NewSignal(SignalCriticalError, "fail", 0), // 100 → 75, tier 2.
 			demotions: 1,
 		},
 		"probation share": {
 			configure: func(c *SelectorConfig) { c.ProbationPct = 100 },
-			demote:    NewCriticalErrorSignal("fail", 0), // 100 → 25, probation.
+			demote:    NewSignal(SignalCriticalError, "fail", 0), // 100 → 25, probation.
 			demotions: 3,
 		},
 	} {
@@ -177,7 +177,7 @@ func TestService_SelectBest_ReturnsTheFirstTryPick(t *testing.T) {
 			for range tc.demotions {
 				_ = svc.RecordSignal(ctx, svcID, other, domain.RPCTypeJSONRPC, tc.demote)
 			}
-			_ = svc.RecordSignal(ctx, svcID, top, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0))
+			_ = svc.RecordSignal(ctx, svcID, top, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0))
 
 			if got := svc.SelectBest(ctx, svcID, domain.EndpointAddrList{top, other}, domain.RPCTypeJSONRPC); got != other {
 				t.Fatalf("SelectBest = %s, want the prepended endpoint %s", got, other)
@@ -238,7 +238,7 @@ func TestService_ResetScore(t *testing.T) {
 	svcID := domain.ServiceID("eth")
 	ep := domain.EndpointAddr("ep1")
 
-	_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewFatalErrorSignal("crash", 0))
+	_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSignal(SignalFatalError, "crash", 0))
 	score, _ := svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
 	if score == 100 {
 		t.Fatal("score should have decreased")
@@ -262,8 +262,8 @@ func TestService_ResetMatching(t *testing.T) {
 	ep := domain.EndpointAddr("pokt1abc-https://rm02.opc.example")
 	other := domain.EndpointAddr("pokt1def-https://rm01.opc.example")
 	for _, rt := range []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeREST} {
-		require.NoError(t, svc.RecordSignal(ctx, svcID, ep, rt, NewCriticalErrorSignal("bad", 0)))
-		require.NoError(t, svc.RecordSignal(ctx, svcID, other, rt, NewCriticalErrorSignal("bad", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, svcID, ep, rt, NewSignal(SignalCriticalError, "bad", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, svcID, other, rt, NewSignal(SignalCriticalError, "bad", 0)))
 	}
 	restKey := svc.keyOf(ep, domain.RPCTypeREST)
 	jsonKey := svc.keyOf(ep, domain.RPCTypeJSONRPC)
@@ -279,7 +279,7 @@ func TestService_ResetMatching(t *testing.T) {
 	// nothing of the other host.
 	for _, target := range []string{"rm02.opc.example", "https://rm02.opc.example", string(ep)} {
 		for _, rt := range []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeREST} {
-			require.NoError(t, svc.RecordSignal(ctx, svcID, ep, rt, NewCriticalErrorSignal("bad", 0)))
+			require.NoError(t, svc.RecordSignal(ctx, svcID, ep, rt, NewSignal(SignalCriticalError, "bad", 0)))
 		}
 		keys, err := svc.ResetMatching(ctx, svcID, target)
 		require.NoError(t, err, target)
@@ -355,7 +355,7 @@ func TestService_Vouched(t *testing.T) {
 
 	// One success signal writes a real score at/above the probation
 	// threshold into the cache: now vouched for.
-	if err := svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", time.Millisecond)); err != nil {
+	if err := svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
 	if !svc.Vouched(ctx, svcID, ep, domain.RPCTypeJSONRPC) {
@@ -365,7 +365,7 @@ func TestService_Vouched(t *testing.T) {
 	// Enough failures to drop the recorded score below the probation
 	// threshold: not vouched for any more.
 	for range 2 {
-		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewFatalErrorSignal("crash", 0))
+		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSignal(SignalFatalError, "crash", 0))
 	}
 	score, _ := svc.GetScore(ctx, svcID, ep, domain.RPCTypeJSONRPC)
 	if score >= DefaultSelectorConfig().ProbationThreshold {
@@ -450,9 +450,9 @@ func TestService_RateTermLowersEffectiveScore(t *testing.T) {
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
 	// Additive term clamps at 100 no matter what; the rate term must not.
 	for i := 0; i < 50_000; i++ {
-		sig := NewSuccessSignal("ok", 0)
+		sig := NewSignal(SignalSuccess, "ok", 0)
 		if i%100 == 0 { // 1% critical
-			sig = NewCriticalErrorSignal("bad", 0)
+			sig = NewSignal(SignalCriticalError, "bad", 0)
 		}
 		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, sig))
 	}
@@ -486,9 +486,9 @@ func TestService_RateTermOff(t *testing.T) {
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
 	for i := 0; i < 20_000; i++ {
-		sig := NewSuccessSignal("ok", 0)
+		sig := NewSignal(SignalSuccess, "ok", 0)
 		if i%50 == 0 {
-			sig = NewCriticalErrorSignal("bad", 0)
+			sig = NewSignal(SignalCriticalError, "bad", 0)
 		}
 		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, sig))
 	}
@@ -502,14 +502,14 @@ func TestService_SignalImpactsConfigured(t *testing.T) {
 	svc := newTestService(t, cfg)
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
-	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)))
+	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "bad", 0)))
 	score, _ := svc.GetScore(ctx, "svc", ep, domain.RPCTypeJSONRPC)
 	assert.Equal(t, 50.0, score)
-	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0)))
+	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0)))
 	score, _ = svc.GetScore(ctx, "svc", ep, domain.RPCTypeJSONRPC)
 	assert.Equal(t, 51.0, score)
 	// Unset fields keep the default: minor is still -3.
-	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewMinorErrorSignal("meh", 0)))
+	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSignal(SignalMinorError, "meh", 0)))
 	score, _ = svc.GetScore(ctx, "svc", ep, domain.RPCTypeJSONRPC)
 	assert.Equal(t, 48.0, score)
 }
@@ -518,7 +518,7 @@ func TestService_ProbeSignalsCountButDoNotFeedLatency(t *testing.T) {
 	svc := newTestService(t, DefaultServiceConfig())
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
-	probe := NewSuccessSignal("hc", 900*time.Millisecond)
+	probe := NewSignal(SignalSuccess, "hc", 900*time.Millisecond)
 	probe.Probe = true
 	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, probe))
 	views, _ := svc.GetStates(ctx, "svc")
@@ -528,7 +528,7 @@ func TestService_ProbeSignalsCountButDoNotFeedLatency(t *testing.T) {
 	assert.True(t, v.ProbeOnly)
 	assert.Equal(t, 0.0, v.LatencyMS, "probe latency is not reported latency")
 
-	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 100*time.Millisecond)))
+	require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 100*time.Millisecond)))
 	views, _ = svc.GetStates(ctx, "svc")
 	v = views[svc.keyOf(ep, domain.RPCTypeJSONRPC)]
 	assert.False(t, v.ProbeOnly)
@@ -548,9 +548,9 @@ func TestService_VouchedUsesEffectiveScore(t *testing.T) {
 	svc := newTestService(t, cfg)
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
 	for i := 0; i < 40_000; i++ {
-		sig := NewSuccessSignal("ok", 0)
+		sig := NewSignal(SignalSuccess, "ok", 0)
 		if i%4 == 0 { // 25% critical -> rate term capped at -70
-			sig = NewCriticalErrorSignal("bad", 0)
+			sig = NewSignal(SignalCriticalError, "bad", 0)
 		}
 		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, sig))
 	}
@@ -564,7 +564,7 @@ func TestService_VouchedUsesEffectiveScore(t *testing.T) {
 	// where reading either term answers the same. Nudge the additive term down
 	// and they part company: 70 still clears probation, 70-70 does not.
 	for i := 0; i < 10; i++ {
-		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewMinorErrorSignal("meh", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSignal(SignalMinorError, "meh", 0)))
 	}
 	views, err := svc.GetStates(ctx, "svc")
 	require.NoError(t, err)
@@ -579,13 +579,13 @@ func TestService_VouchedUsesEffectiveScore(t *testing.T) {
 	fresh := newTestService(t, DefaultServiceConfig())
 	ep2 := domain.EndpointAddr("pokt1def-https://b.example")
 	for i := 0; i < 4; i++ { // 4 x -25 -> additive 0
-		require.NoError(t, fresh.RecordSignal(ctx, "svc", ep2, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)))
+		require.NoError(t, fresh.RecordSignal(ctx, "svc", ep2, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "bad", 0)))
 	}
 	score2, _ := fresh.GetScore(ctx, "svc", ep2, domain.RPCTypeJSONRPC)
 	assert.Equal(t, 0.0, score2)
 	assert.False(t, fresh.Vouched(ctx, "svc", ep2, domain.RPCTypeJSONRPC))
 	for i := 0; i < 10; i++ { // 10 x +5 -> additive 50, penalty still ~0
-		require.NoError(t, fresh.RecordSignal(ctx, "svc", ep2, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0)))
+		require.NoError(t, fresh.RecordSignal(ctx, "svc", ep2, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0)))
 	}
 	score2, _ = fresh.GetScore(ctx, "svc", ep2, domain.RPCTypeJSONRPC)
 	assert.Equal(t, 50.0, score2)
@@ -602,14 +602,14 @@ func TestService_RateTermDemotesButNeverRemoves(t *testing.T) {
 	svc := newTestService(t, cfg)
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
 	for i := 0; i < 40_000; i++ {
-		sig := NewSuccessSignal("ok", 0)
+		sig := NewSignal(SignalSuccess, "ok", 0)
 		if i%4 == 0 {
-			sig = NewCriticalErrorSignal("bad", 0)
+			sig = NewSignal(SignalCriticalError, "bad", 0)
 		}
 		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, sig))
 	}
 	for i := 0; i < 50; i++ { // additive 100 -> 50; penalty stays at -70
-		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "bad", 0)))
 	}
 	minT := svc.selector.cfg.Load().MinThreshold
 	score, _ := svc.GetScore(ctx, "svc", ep, domain.RPCTypeJSONRPC)
@@ -620,7 +620,7 @@ func TestService_RateTermDemotesButNeverRemoves(t *testing.T) {
 	// An additive term already below MinThreshold is the outage detector's
 	// verdict: the floor does not lift it into selection.
 	for i := 0; i < 45; i++ { // additive 50 -> 5
-		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "bad", 0)))
 	}
 	score, _ = svc.GetScore(ctx, "svc", ep, domain.RPCTypeJSONRPC)
 	assert.Equal(t, 5.0, score, "below MinThreshold the additive term alone decides")
@@ -632,7 +632,7 @@ func TestService_ResetClearsRate(t *testing.T) {
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
 	for i := 0; i < 1000; i++ {
-		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, "svc", ep, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "bad", 0)))
 	}
 	require.NoError(t, svc.ResetScore(ctx, "svc", ep))
 	views, _ := svc.GetStates(ctx, "svc")
@@ -649,10 +649,10 @@ func TestService_SignalHookSeesProbeFlag(t *testing.T) {
 		got = append(got, fmt.Sprintf("%s/%s/%s/%v", sid, rpc, st, probe))
 	})
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
-	p := NewMajorErrorSignal("hc", 0)
+	p := NewSignal(SignalMajorError, "hc", 0)
 	p.Probe = true
 	_ = svc.RecordSignal(context.Background(), "svc", ep, domain.RPCTypeREST, p)
-	_ = svc.RecordSignal(context.Background(), "svc", ep, domain.RPCTypeREST, NewSuccessSignal("ok", 0))
+	_ = svc.RecordSignal(context.Background(), "svc", ep, domain.RPCTypeREST, NewSignal(SignalSuccess, "ok", 0))
 	assert.Equal(t, []string{"svc/rest/major_error/true", "svc/rest/success/false"}, got)
 }
 
@@ -676,17 +676,17 @@ func TestRecordSignal_PruningKeepsPenalisedRate(t *testing.T) {
 	// before the next.
 	chronic := domain.EndpointAddr("pokt1chronic-https://chronic.example.com")
 	for range 20 {
-		require.NoError(t, svc.RecordSignal(ctx, "eth", chronic, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, "eth", chronic, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "bad", 0)))
 		for range 5 {
-			require.NoError(t, svc.RecordSignal(ctx, "eth", chronic, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0)))
+			require.NoError(t, svc.RecordSignal(ctx, "eth", chronic, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0)))
 		}
 	}
 	// Latent: one major error (half weight) leaves a rate far below the onset,
 	// and two successes clamp the additive term back to the ceiling.
 	latent := domain.EndpointAddr("pokt1latent-https://latent.example.com")
-	require.NoError(t, svc.RecordSignal(ctx, "eth", latent, domain.RPCTypeJSONRPC, NewMajorErrorSignal("timeout", 0)))
+	require.NoError(t, svc.RecordSignal(ctx, "eth", latent, domain.RPCTypeJSONRPC, NewSignal(SignalMajorError, "timeout", 0)))
 	for range 3 {
-		require.NoError(t, svc.RecordSignal(ctx, "eth", latent, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0)))
+		require.NoError(t, svc.RecordSignal(ctx, "eth", latent, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0)))
 	}
 
 	chronicKey := svc.keyOf(chronic, domain.RPCTypeJSONRPC)
@@ -727,7 +727,7 @@ func TestRecordSignalOnce_PerURLSiblingsAreOneAttempt(t *testing.T) {
 		"supplierC-https://node1.example.com",
 	}
 	require.NoError(t, svc.RecordSignalOnce(ctx, "eth", siblings, domain.RPCTypeJSONRPC,
-		NewCriticalErrorSignal("health_check", 0)))
+		NewSignal(SignalCriticalError, "health_check", 0)))
 
 	views, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
@@ -750,7 +750,7 @@ func TestRecordSignalOnce_PerEndpointScoresEveryRegistration(t *testing.T) {
 		"supplierC-https://node1.example.com",
 	}
 	require.NoError(t, svc.RecordSignalOnce(ctx, "eth", siblings, domain.RPCTypeJSONRPC,
-		NewCriticalErrorSignal("health_check", 0)))
+		NewSignal(SignalCriticalError, "health_check", 0)))
 
 	views, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
@@ -772,7 +772,7 @@ func TestRecordSignalOnce_MixedBackendsScoreEachKeyOnce(t *testing.T) {
 		"supplierC-https://node2.example.com",
 	}
 	require.NoError(t, svc.RecordSignalOnce(ctx, "eth", eps, domain.RPCTypeJSONRPC,
-		NewCriticalErrorSignal("health_check", 0)))
+		NewSignal(SignalCriticalError, "health_check", 0)))
 
 	views, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
@@ -786,14 +786,14 @@ func TestRecordSignalOnce_MixedBackendsScoreEachKeyOnce(t *testing.T) {
 func TestRecordSignalOnce_EmptyAndSingle(t *testing.T) {
 	svc := newTestService(t, DefaultServiceConfig())
 	ctx := context.Background()
-	require.NoError(t, svc.RecordSignalOnce(ctx, "eth", nil, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0)))
+	require.NoError(t, svc.RecordSignalOnce(ctx, "eth", nil, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0)))
 	views, err := svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
 	assert.Empty(t, views)
 
 	ep := domain.EndpointAddr("supplierA-https://node1.example.com")
 	require.NoError(t, svc.RecordSignalOnce(ctx, "eth", domain.EndpointAddrList{ep}, domain.RPCTypeJSONRPC,
-		NewCriticalErrorSignal("health_check", 0)))
+		NewSignal(SignalCriticalError, "health_check", 0)))
 	views, err = svc.GetStates(ctx, "eth")
 	require.NoError(t, err)
 	require.Len(t, views, 1)
@@ -814,7 +814,7 @@ func TestRecordSignal_FlooredScoreDoesNotAccrueRate(t *testing.T) {
 	// One day of health checks against a host that is simply down.
 	for range 5_760 {
 		require.NoError(t, svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC,
-			NewCriticalErrorSignal("health_check: eth_blockNumber", 0)))
+			NewSignal(SignalCriticalError, "health_check: eth_blockNumber", 0)))
 	}
 	floored, err := svc.GetScore(ctx, "eth", ep, domain.RPCTypeJSONRPC)
 	require.NoError(t, err)
@@ -823,7 +823,7 @@ func TestRecordSignal_FlooredScoreDoesNotAccrueRate(t *testing.T) {
 	// The host comes back. 20 successes refill the additive term.
 	for range 20 {
 		require.NoError(t, svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC,
-			NewSuccessSignal("health_check: eth_blockNumber", 0)))
+			NewSignal(SignalSuccess, "health_check: eth_blockNumber", 0)))
 	}
 
 	score, err := svc.GetScore(ctx, "eth", ep, domain.RPCTypeJSONRPC)
@@ -849,9 +849,9 @@ func TestRecordSignal_ChronicViolatorIsUnaffectedByTheFlooredGate(t *testing.T) 
 	ep := domain.EndpointAddr("pokt1chronic-https://chronic.example.com")
 
 	for i := range 100_000 {
-		sig := NewSuccessSignal("ok", 0)
+		sig := NewSignal(SignalSuccess, "ok", 0)
 		if i%500 == 0 { // 0.2% critical
-			sig = NewCriticalErrorSignal("fabricated", 0)
+			sig = NewSignal(SignalCriticalError, "fabricated", 0)
 		}
 		require.NoError(t, svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, sig))
 	}
@@ -870,15 +870,15 @@ func TestRecordSignal_LatencyEWMAIgnoresErrors(t *testing.T) {
 	svc := NewService(NewMemoryStorage(), NewTimeline(10), DefaultServiceConfig())
 	ctx := context.Background()
 	ep := domain.EndpointAddr("s-https://h.example")
-	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewMajorErrorSignal("upstream_5xx", 5*time.Millisecond))
+	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewSignal(SignalMajorError, "upstream_5xx", 5*time.Millisecond))
 	if ms, ok := svc.latencyForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC); ok {
 		t.Fatalf("an error's latency must not seed the EWMA, got %v", ms)
 	}
-	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewSuccessSignal("relay_ok", 300*time.Millisecond))
+	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "relay_ok", 300*time.Millisecond))
 	if ms, ok := svc.latencyForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC); !ok || ms != 300 {
 		t.Fatalf("success latency = %v,%v want 300,true", ms, ok)
 	}
-	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewMajorErrorSignal("upstream_5xx", 5*time.Millisecond))
+	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewSignal(SignalMajorError, "upstream_5xx", 5*time.Millisecond))
 	if ms, _ := svc.latencyForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC); ms != 300 {
 		t.Fatalf("a fast failure moved the EWMA to %v", ms)
 	}
@@ -893,7 +893,7 @@ func TestService_Retune(t *testing.T) {
 	svcID := domain.ServiceID("eth")
 	ep1, ep2 := domain.EndpointAddr("ep1"), domain.EndpointAddr("ep2")
 
-	_ = svc.RecordSignal(ctx, svcID, ep1, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("fail", 0))
+	_ = svc.RecordSignal(ctx, svcID, ep1, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "fail", 0))
 	before, _ := svc.GetScore(ctx, svcID, ep1, domain.RPCTypeJSONRPC)
 
 	sel := DefaultSelectorConfig()
@@ -904,7 +904,7 @@ func TestService_Retune(t *testing.T) {
 	after, _ := svc.GetScore(ctx, svcID, ep1, domain.RPCTypeJSONRPC)
 	assert.Equal(t, before, after, "a retune does not rewrite recorded scores")
 
-	_ = svc.RecordSignal(ctx, svcID, ep2, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("fail", 0))
+	_ = svc.RecordSignal(ctx, svcID, ep2, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "fail", 0))
 	got, _ := svc.GetScore(ctx, svcID, ep2, domain.RPCTypeJSONRPC)
 	assert.Equal(t, 95.0, got, "the next signal carries the retuned impact")
 
@@ -926,7 +926,7 @@ func TestService_ScoreOfAndGetScoresSince(t *testing.T) {
 	if _, ok := svc.ScoreOf("eth", seen, domain.RPCTypeJSONRPC); ok {
 		t.Fatal("an unscored endpoint must report no score")
 	}
-	_ = svc.RecordSignal(ctx, "eth", seen, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0))
+	_ = svc.RecordSignal(ctx, "eth", seen, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0))
 	if _, ok := svc.ScoreOf("eth", seen, domain.RPCTypeJSONRPC); !ok {
 		t.Fatal("a signalled endpoint must report its score")
 	}

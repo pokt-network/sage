@@ -64,7 +64,7 @@ func TestSelectSpread_CascadesToLowerTier(t *testing.T) {
 	// One critical error (-25) → score 75 → T2.
 	eps := domain.EndpointAddrList{"ep1", "ep2"}
 	for _, ep := range eps {
-		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("x", 0))
+		_ = svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "x", 0))
 	}
 
 	pick := svc.SelectSpread(ctx, svcID, eps, domain.RPCTypeJSONRPC, nil)

@@ -85,7 +85,7 @@ func TestService_PerURLGranularitySharesPenalties(t *testing.T) {
 	a := domain.EndpointAddr("pokt1aaa-https://rpc.example.net")
 	b := domain.EndpointAddr("pokt1bbb-https://rpc.example.net")
 
-	if err := svc.RecordSignal(ctx, svcID, a, domain.RPCTypeJSONRPC, NewMinorErrorSignal("retry", 0)); err != nil {
+	if err := svc.RecordSignal(ctx, svcID, a, domain.RPCTypeJSONRPC, NewSignal(SignalMinorError, "retry", 0)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -109,7 +109,7 @@ func TestService_PerEndpointGranularityKeepsPenaltiesSeparate(t *testing.T) {
 	a := domain.EndpointAddr("pokt1aaa-https://rpc.example.net")
 	b := domain.EndpointAddr("pokt1bbb-https://rpc.example.net")
 
-	if err := svc.RecordSignal(ctx, svcID, a, domain.RPCTypeJSONRPC, NewMinorErrorSignal("retry", 0)); err != nil {
+	if err := svc.RecordSignal(ctx, svcID, a, domain.RPCTypeJSONRPC, NewSignal(SignalMinorError, "retry", 0)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -145,7 +145,7 @@ func TestService_WebSocketFailureDoesNotPenalizeREST(t *testing.T) {
 	ep := domain.EndpointAddr("pokt1abc-https://rm.example.net")
 
 	for i := 0; i < 5; i++ {
-		if err := svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeWebSocket, NewCriticalErrorSignal("ws dead", 0)); err != nil {
+		if err := svc.RecordSignal(ctx, svcID, ep, domain.RPCTypeWebSocket, NewSignal(SignalCriticalError, "ws dead", 0)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -171,7 +171,7 @@ func TestService_ResetScoreClearsEveryRPCType(t *testing.T) {
 	ep := domain.EndpointAddr("pokt1abc-https://rm.example.net")
 
 	for _, rt := range domain.AllRPCTypes() {
-		_ = svc.RecordSignal(ctx, svcID, ep, rt, NewCriticalErrorSignal("bad", 0))
+		_ = svc.RecordSignal(ctx, svcID, ep, rt, NewSignal(SignalCriticalError, "bad", 0))
 	}
 	if err := svc.ResetScore(ctx, svcID, ep); err != nil {
 		t.Fatal(err)

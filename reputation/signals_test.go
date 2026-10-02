@@ -34,22 +34,11 @@ func TestSignalImpacts_Defaults(t *testing.T) {
 
 func TestSignalConstructors(t *testing.T) {
 	before := time.Now()
-	constructors := []struct {
-		name string
-		fn   func(string, time.Duration) Signal
-		typ  SignalType
-	}{
-		{"Success", NewSuccessSignal, SignalSuccess},
-		{"MinorError", NewMinorErrorSignal, SignalMinorError},
-		{"MajorError", NewMajorErrorSignal, SignalMajorError},
-		{"CriticalError", NewCriticalErrorSignal, SignalCriticalError},
-		{"FatalError", NewFatalErrorSignal, SignalFatalError},
-	}
-	for _, tc := range constructors {
-		t.Run(tc.name, func(t *testing.T) {
-			sig := tc.fn("test reason", 100*time.Millisecond)
-			if sig.Type != tc.typ {
-				t.Errorf("type = %s, want %s", sig.Type, tc.typ)
+	for _, typ := range []SignalType{SignalSuccess, SignalMinorError, SignalMajorError, SignalCriticalError, SignalFatalError} {
+		t.Run(string(typ), func(t *testing.T) {
+			sig := NewSignal(typ, "test reason", 100*time.Millisecond)
+			if sig.Type != typ {
+				t.Errorf("type = %s, want %s", sig.Type, typ)
 			}
 			if sig.Reason != "test reason" {
 				t.Errorf("reason = %q, want %q", sig.Reason, "test reason")
@@ -67,7 +56,7 @@ func TestSignalConstructors(t *testing.T) {
 // The constructors leave Probe false: a probe is marked by the caller that
 // knows it is one (the health-check executor), not by the signal's severity.
 func TestSignalConstructors_ProbeDefaultsFalse(t *testing.T) {
-	if NewSuccessSignal("ok", 0).Probe {
+	if NewSignal(SignalSuccess, "ok", 0).Probe {
 		t.Error("a constructed signal must not claim to be a probe")
 	}
 }

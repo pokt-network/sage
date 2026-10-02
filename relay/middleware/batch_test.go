@@ -661,9 +661,9 @@ func TestBatch_SetsSinkAndFlushesWorstOf(t *testing.T) {
 			return nil
 		}
 		i := atomic.AddInt32(&n, 1)
-		sig := reputation.NewSuccessSignal("ok", 0)
+		sig := reputation.NewSignal(reputation.SignalSuccess, "ok", 0)
 		if i == 3 {
-			sig = reputation.NewFatalErrorSignal("fabricated", 0)
+			sig = reputation.NewSignal(reputation.SignalFatalError, "fabricated", 0)
 		}
 		ctx.ScoreSink.Add("pokt1a-https://a", domain.RPCTypeJSONRPC, sig)
 		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`), HTTPStatusCode: 200}

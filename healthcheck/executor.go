@@ -841,27 +841,27 @@ func checkSignal(checkName string, statusCode int, statusOK bool, extractErr err
 	// to attribute a supplier's failures, and "beacon_head_header" alone made
 	// a 403 indistinguishable from a 500 there.
 	case !statusOK:
-		return reputation.NewMinorErrorSignal(fmt.Sprintf("%s: http %d", reason, statusCode), latency)
+		return reputation.NewSignal(reputation.SignalMinorError, fmt.Sprintf("%s: http %d", reason, statusCode), latency)
 
 	// A wrong chain is not a bad moment: the endpoint is healthy and confidently
 	// serving someone else's chain under this service's name. Nothing it reports
 	// is usable, and its block heights would otherwise sail through the height
 	// checks — so eject rather than penalize.
 	case errors.Is(extractErr, qos.ErrWrongChain):
-		return reputation.NewCriticalErrorSignal(reason+": wrong chain", latency)
+		return reputation.NewSignal(reputation.SignalCriticalError, reason+": wrong chain", latency)
 
 	// A 2xx that carried none of what the probe asked for: the endpoint is
 	// answering, and not the question.
 	case errors.Is(extractErr, errProbeAnsweredNothing):
-		return reputation.NewMinorErrorSignal(reason+": answered without the fact asked for", latency)
+		return reputation.NewSignal(reputation.SignalMinorError, reason+": answered without the fact asked for", latency)
 
 	// A 200 we cannot parse is a real failure but a milder one — most causes are
 	// transient or an endpoint quirk rather than an imposter.
 	case extractErr != nil:
-		return reputation.NewMinorErrorSignal(reason+": unparseable response", latency)
+		return reputation.NewSignal(reputation.SignalMinorError, reason+": unparseable response", latency)
 
 	default:
-		return reputation.NewSuccessSignal(reason, latency)
+		return reputation.NewSignal(reputation.SignalSuccess, reason, latency)
 	}
 }
 
@@ -1556,11 +1556,11 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 func severitySignal(severity, reason string, latency time.Duration) reputation.Signal {
 	switch severity {
 	case heuristic.SeverityCritical:
-		return reputation.NewCriticalErrorSignal(reason, latency)
+		return reputation.NewSignal(reputation.SignalCriticalError, reason, latency)
 	case heuristic.SeverityMajor:
-		return reputation.NewMajorErrorSignal(reason, latency)
+		return reputation.NewSignal(reputation.SignalMajorError, reason, latency)
 	default:
-		return reputation.NewMinorErrorSignal(reason, latency)
+		return reputation.NewSignal(reputation.SignalMinorError, reason, latency)
 	}
 }
 

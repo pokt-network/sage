@@ -19,13 +19,13 @@ func TestService_ProbeSuccessDoesNotOutvoteRecentTraffic(t *testing.T) {
 	ep := domain.EndpointAddr("pokt1a-https://a.example")
 	t0 := time.Now()
 
-	fail := NewMajorErrorSignal("http_408", 0)
+	fail := NewSignal(SignalMajorError, "http_408", 0)
 	fail.Timestamp = t0
 	require.NoError(t, svc.RecordSignal(ctx, "sei", ep, domain.RPCTypeJSONRPC, fail))
 	afterFail, _ := svc.GetScore(ctx, "sei", ep, domain.RPCTypeJSONRPC)
 	require.Less(t, afterFail, 100.0)
 
-	probe := NewSuccessSignal("health_check", 0)
+	probe := NewSignal(SignalSuccess, "health_check", 0)
 	probe.Probe = true
 	probe.Timestamp = t0.Add(time.Minute)
 	require.NoError(t, svc.RecordSignal(ctx, "sei", ep, domain.RPCTypeJSONRPC, probe))
@@ -47,14 +47,14 @@ func TestService_ProbesStillLiftABenchedKey(t *testing.T) {
 	ep := domain.EndpointAddr("pokt1a-https://a.example")
 	t0 := time.Now()
 	for i := 0; i < 4; i++ { // 4 criticals floor the additive term
-		fail := NewCriticalErrorSignal("transport_connect_failed", 0)
+		fail := NewSignal(SignalCriticalError, "transport_connect_failed", 0)
 		fail.Timestamp = t0
 		require.NoError(t, svc.RecordSignal(ctx, "solana", ep, domain.RPCTypeJSONRPC, fail))
 	}
 	floored, _ := svc.GetScore(ctx, "solana", ep, domain.RPCTypeJSONRPC)
 	require.Equal(t, 0.0, floored)
 
-	probe := NewSuccessSignal("health_check", 0)
+	probe := NewSignal(SignalSuccess, "health_check", 0)
 	probe.Probe = true
 	probe.Timestamp = t0.Add(time.Minute) // traffic is recent
 	for i := 0; i < 5; i++ {

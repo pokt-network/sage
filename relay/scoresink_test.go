@@ -15,11 +15,11 @@ func TestScoreSink_WorstOfPerEndpoint(t *testing.T) {
 	s := NewScoreSink()
 	a := domain.EndpointAddr("pokt1a-https://a")
 	b := domain.EndpointAddr("pokt1b-https://b")
-	s.Add(a, domain.RPCTypeJSONRPC, reputation.NewSuccessSignal("ok", 10*time.Millisecond))
-	s.Add(a, domain.RPCTypeJSONRPC, reputation.NewFatalErrorSignal("fabricated", 30*time.Millisecond))
-	s.Add(a, domain.RPCTypeJSONRPC, reputation.NewSuccessSignal("ok", 50*time.Millisecond))
-	s.Add(b, domain.RPCTypeJSONRPC, reputation.NewSuccessSignal("ok", 20*time.Millisecond))
-	s.Add(b, domain.RPCTypeREST, reputation.NewMinorErrorSignal("meh", 5*time.Millisecond))
+	s.Add(a, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalSuccess, "ok", 10*time.Millisecond))
+	s.Add(a, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalFatalError, "fabricated", 30*time.Millisecond))
+	s.Add(a, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalSuccess, "ok", 50*time.Millisecond))
+	s.Add(b, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalSuccess, "ok", 20*time.Millisecond))
+	s.Add(b, domain.RPCTypeREST, reputation.NewSignal(reputation.SignalMinorError, "meh", 5*time.Millisecond))
 
 	got := map[string]reputation.Signal{}
 	s.Flush(func(ep domain.EndpointAddr, rpc domain.RPCType, sig reputation.Signal) {
@@ -36,8 +36,8 @@ func TestScoreSink_WorstOfPerEndpoint(t *testing.T) {
 func TestScoreSink_SeverityOrder(t *testing.T) {
 	s := NewScoreSink()
 	ep := domain.EndpointAddr("pokt1a-https://a")
-	s.Add(ep, domain.RPCTypeJSONRPC, reputation.NewCriticalErrorSignal("c", 0))
-	s.Add(ep, domain.RPCTypeJSONRPC, reputation.NewMajorErrorSignal("m", 0))
+	s.Add(ep, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalCriticalError, "c", 0))
+	s.Add(ep, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalMajorError, "m", 0))
 	var got reputation.Signal
 	s.Flush(func(_ domain.EndpointAddr, _ domain.RPCType, sig reputation.Signal) { got = sig })
 	assert.Equal(t, reputation.SignalCriticalError, got.Type, "major must not overwrite critical")
@@ -55,7 +55,7 @@ func TestScoreSink_FlushEmpty(t *testing.T) {
 // nothing reads.
 func TestScoreSink_AddAfterFlushForwards(t *testing.T) {
 	s := NewScoreSink()
-	s.Add(domain.EndpointAddr("pokt1a-https://a"), domain.RPCTypeJSONRPC, reputation.NewSuccessSignal("ok", 0))
+	s.Add(domain.EndpointAddr("pokt1a-https://a"), domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalSuccess, "ok", 0))
 
 	var recorded []recordedSignal
 	record := func(ep domain.EndpointAddr, rpc domain.RPCType, sig reputation.Signal) {
@@ -65,7 +65,7 @@ func TestScoreSink_AddAfterFlushForwards(t *testing.T) {
 	require.Len(t, recorded, 1, "the flush itself emits the collapsed signal")
 
 	late := domain.EndpointAddr("pokt1b-https://b")
-	s.Add(late, domain.RPCTypeJSONRPC, reputation.NewCriticalErrorSignal("late arm", 7*time.Millisecond))
+	s.Add(late, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalCriticalError, "late arm", 7*time.Millisecond))
 
 	require.Len(t, recorded, 2, "an Add after Flush is forwarded, not stored")
 	assert.Equal(t, late, recorded[1].ep)

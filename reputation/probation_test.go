@@ -15,9 +15,9 @@ func TestService_OnProbation(t *testing.T) {
 	ctx := context.Background()
 	const demoted, fresh = domain.EndpointAddr("s1-https://slow.example"), domain.EndpointAddr("s2-https://ok.example")
 	for i := 0; i < 8; i++ { // 100 - 8×10 = 20: inside [10, 30)
-		_ = svc.RecordSignal(ctx, "eth", demoted, domain.RPCTypeJSONRPC, NewMajorErrorSignal("timeout", 0))
+		_ = svc.RecordSignal(ctx, "eth", demoted, domain.RPCTypeJSONRPC, NewSignal(SignalMajorError, "timeout", 0))
 	}
-	_ = svc.RecordSignal(ctx, "eth", fresh, domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0))
+	_ = svc.RecordSignal(ctx, "eth", fresh, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0))
 
 	if !checker.OnProbation(ctx, "eth", demoted, domain.RPCTypeJSONRPC) {
 		t.Error("a key at 20 is on probation")

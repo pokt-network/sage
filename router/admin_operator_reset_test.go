@@ -19,7 +19,7 @@ func TestAdmin_ResetOperatorForgetsTheOperatorRate(t *testing.T) {
 	rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.DefaultServiceConfig())
 	ep := domain.EndpointAddr("s1-https://rm01.op.example")
 	for i := 0; i < 300; i++ {
-		_ = rep.RecordSignal(context.Background(), "eth", ep, domain.RPCTypeJSONRPC, reputation.NewCriticalErrorSignal("down", 0))
+		_ = rep.RecordSignal(context.Background(), "eth", ep, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalCriticalError, "down", 0))
 	}
 	if _, ok := rep.OperatorRate("eth", domain.RPCTypeJSONRPC, "op.example"); !ok {
 		t.Fatal("setup: no operator rate recorded")

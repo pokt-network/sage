@@ -18,7 +18,7 @@ func stateOf(t *testing.T, s *serviceImpl, ep domain.EndpointAddr) State {
 }
 
 func timeoutAt(ts time.Time) Signal {
-	sig := NewMajorErrorSignal(reasonTransportTimeout, 0)
+	sig := NewSignal(SignalMajorError, reasonTransportTimeout, 0)
 	sig.Timestamp = ts
 	return sig
 }
@@ -61,7 +61,7 @@ func TestRecordSignal_CoalescesTimeoutBursts(t *testing.T) {
 		s, _ := newTestServiceStore()
 		t0 := time.Now()
 		for i := range 3 {
-			sig := NewMajorErrorSignal("upstream_5xx", 0)
+			sig := NewSignal(SignalMajorError, "upstream_5xx", 0)
 			sig.Timestamp = t0.Add(time.Duration(i) * 100 * time.Millisecond)
 			_ = s.RecordSignal(ctx, "solana", ep, domain.RPCTypeJSONRPC, sig)
 		}

@@ -195,13 +195,9 @@ func (c *ConfiguredChecks) SignalFor(checkName, reason string, latency time.Dura
 	if !ok {
 		return reputation.Signal{}, false
 	}
-	switch strings.ToLower(name) {
-	case "critical_error":
-		return reputation.NewCriticalErrorSignal(reason, latency), true
-	case "major_error":
-		return reputation.NewMajorErrorSignal(reason, latency), true
-	case "minor_error":
-		return reputation.NewMinorErrorSignal(reason, latency), true
+	switch t := reputation.SignalType(strings.ToLower(name)); t {
+	case reputation.SignalCriticalError, reputation.SignalMajorError, reputation.SignalMinorError:
+		return reputation.NewSignal(t, reason, latency), true
 	default:
 		return reputation.Signal{}, false
 	}

@@ -439,7 +439,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		lost := *current.Load()
 		if lossIsSuppliers(cause) {
 			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, lost, domain.RPCTypeWebSocket,
-				reputation.NewMajorErrorSignal("ws_endpoint_lost:"+cause.Error(), 0))
+				reputation.NewSignal(reputation.SignalMajorError, "ws_endpoint_lost:"+cause.Error(), 0))
 		}
 
 		next, _, err := r.resolveEndpoint(ctx, serviceID, tried, live)
@@ -449,7 +449,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		conn, err := websockets.ConnectEndpoint(logger, next.url, supplierHeaders)
 		if err != nil {
 			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, next.addr, domain.RPCTypeWebSocket,
-				reputation.NewMajorErrorSignal("ws_endpoint_unavailable:"+err.Error(), 0))
+				reputation.NewSignal(reputation.SignalMajorError, "ws_endpoint_unavailable:"+err.Error(), 0))
 			return nil, nil, nil, fmt.Errorf("dial %s: %w", next.addr, err)
 		}
 		swapMu.Lock()
@@ -492,7 +492,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		// advertised WS but isn't actually serving it — MAJOR error).
 		if errors.Is(err, websockets.ErrBridgeEndpointUnavailable) {
 			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket,
-				reputation.NewMajorErrorSignal("ws_endpoint_unavailable:"+err.Error(), 0))
+				reputation.NewSignal(reputation.SignalMajorError, "ws_endpoint_unavailable:"+err.Error(), 0))
 		}
 		logger.Error("ws open: start bridge", "err", err)
 		return fmt.Errorf("ws open: start bridge: %w", err)
@@ -805,7 +805,7 @@ func (r *WSRelayer) handleEndpointFrame(
 	// heuristic on the raw bytes.
 	if frameErr != nil {
 		_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket,
-			reputation.NewMajorErrorSignal("ws_validate_err:"+frameErr.Error(), latency))
+			reputation.NewSignal(reputation.SignalMajorError, "ws_validate_err:"+frameErr.Error(), latency))
 		r.submitObservation(serviceID, endpointAddr, payload, latency)
 		return
 	}
@@ -864,16 +864,16 @@ func (r *WSRelayer) submitObservation(
 // so a single bad frame never sinks an endpoint to probation from healthy.
 func frameSeverityToSignal(res heuristic.AnalysisResult, latency time.Duration) reputation.Signal {
 	if !res.ShouldPenalize {
-		return reputation.NewSuccessSignal("ws_frame_ok", latency)
+		return reputation.NewSignal(reputation.SignalSuccess, "ws_frame_ok", latency)
 	}
 	reason := "ws_" + res.Reason
 	switch res.PenaltySeverity {
 	case heuristic.SeverityFatal:
-		return reputation.NewCriticalErrorSignal(reason, latency)
+		return reputation.NewSignal(reputation.SignalCriticalError, reason, latency)
 	case heuristic.SeverityCritical:
-		return reputation.NewMajorErrorSignal(reason, latency)
+		return reputation.NewSignal(reputation.SignalMajorError, reason, latency)
 	default: // Major and below all land on Minor.
-		return reputation.NewMinorErrorSignal(reason, latency)
+		return reputation.NewSignal(reputation.SignalMinorError, reason, latency)
 	}
 }
 

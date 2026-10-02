@@ -39,50 +39,10 @@ type Signal struct {
 	Detail string
 }
 
-// NewSuccessSignal creates a signal indicating a successful relay.
-func NewSuccessSignal(reason string, latency time.Duration) Signal {
+// NewSignal creates a signal of type t, timestamped now.
+func NewSignal(t SignalType, reason string, latency time.Duration) Signal {
 	return Signal{
-		Type:      SignalSuccess,
-		Timestamp: time.Now(),
-		Latency:   latency,
-		Reason:    reason,
-	}
-}
-
-// NewMinorErrorSignal creates a signal indicating a minor error.
-func NewMinorErrorSignal(reason string, latency time.Duration) Signal {
-	return Signal{
-		Type:      SignalMinorError,
-		Timestamp: time.Now(),
-		Latency:   latency,
-		Reason:    reason,
-	}
-}
-
-// NewMajorErrorSignal creates a signal indicating a major error.
-func NewMajorErrorSignal(reason string, latency time.Duration) Signal {
-	return Signal{
-		Type:      SignalMajorError,
-		Timestamp: time.Now(),
-		Latency:   latency,
-		Reason:    reason,
-	}
-}
-
-// NewCriticalErrorSignal creates a signal indicating a critical error.
-func NewCriticalErrorSignal(reason string, latency time.Duration) Signal {
-	return Signal{
-		Type:      SignalCriticalError,
-		Timestamp: time.Now(),
-		Latency:   latency,
-		Reason:    reason,
-	}
-}
-
-// NewFatalErrorSignal creates a signal indicating a fatal error.
-func NewFatalErrorSignal(reason string, latency time.Duration) Signal {
-	return Signal{
-		Type:      SignalFatalError,
+		Type:      t,
 		Timestamp: time.Now(),
 		Latency:   latency,
 		Reason:    reason,

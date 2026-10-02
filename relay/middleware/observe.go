@@ -124,7 +124,7 @@ func buildSignal(ctx *relay.Context, relayErr error, latency time.Duration) repu
 	// DOES carry a penalty (the analyzer decided the endpoint is at fault as
 	// well) falls through unchanged.
 	if res := ctx.HeuristicResult; res != nil && res.Attribution == heuristic.AttrBlockchain && !res.ShouldPenalize {
-		return reputation.NewSuccessSignal(res.Reason, latency)
+		return reputation.NewSignal(reputation.SignalSuccess, res.Reason, latency)
 	}
 
 	// Check for a heuristic result stored by the Heuristic middleware.
@@ -149,10 +149,10 @@ func buildSignal(ctx *relay.Context, relayErr error, latency time.Duration) repu
 		if relayErr != nil {
 			reason = relayErr.Error()
 		}
-		return reputation.NewMinorErrorSignal(reason, latency)
+		return reputation.NewSignal(reputation.SignalMinorError, reason, latency)
 	}
 
-	return reputation.NewSuccessSignal("relay_ok", latency)
+	return reputation.NewSignal(reputation.SignalSuccess, "relay_ok", latency)
 }
 
 // penaltySignal maps a heuristic penalty severity to the appropriate signal
@@ -165,13 +165,13 @@ func penaltySignal(result heuristic.AnalysisResult, latency time.Duration) reput
 	var sig reputation.Signal
 	switch result.PenaltySeverity {
 	case heuristic.SeverityFatal:
-		sig = reputation.NewFatalErrorSignal(reason, latency)
+		sig = reputation.NewSignal(reputation.SignalFatalError, reason, latency)
 	case heuristic.SeverityCritical:
-		sig = reputation.NewCriticalErrorSignal(reason, latency)
+		sig = reputation.NewSignal(reputation.SignalCriticalError, reason, latency)
 	case heuristic.SeverityMajor:
-		sig = reputation.NewMajorErrorSignal(reason, latency)
+		sig = reputation.NewSignal(reputation.SignalMajorError, reason, latency)
 	default:
-		sig = reputation.NewMinorErrorSignal(reason, latency)
+		sig = reputation.NewSignal(reputation.SignalMinorError, reason, latency)
 	}
 	// The timeline is where an operator reads why a host was charged: the
 	// verdict's details (a refusal's block and depth, the node's words),

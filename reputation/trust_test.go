@@ -138,7 +138,7 @@ func TestTimelineKeepsTheVerdictDetail(t *testing.T) {
 	tl := NewTimeline(100)
 	s := NewService(NewMemoryStorage(), tl, ServiceConfig{})
 	ep := domain.EndpointAddr("pokt1a-https://r001.cache.example")
-	sig := NewMajorErrorSignal(reasonRefusedRecent, 0)
+	sig := NewSignal(SignalMajorError, reasonRefusedRecent, 0)
 	sig.Detail = "claims block 900 is gone, 100 behind the head: no state found for block"
 	_ = s.RecordSignal(context.Background(), "op", ep, domain.RPCTypeJSONRPC, sig)
 	evs := tl.GetAll("")

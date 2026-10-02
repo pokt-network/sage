@@ -42,7 +42,7 @@ func TestAdminResetReputation_FansOutToOtherReplicas(t *testing.T) {
 	fresh := domain.EndpointAddr("pokt1abc-https://supplier1-example.com")
 	stale := domain.EndpointAddr("pokt1old-https://old.example")
 	for _, ep := range []domain.EndpointAddr{fresh, stale} {
-		if err := svcB.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, reputation.NewCriticalErrorSignal("bad", 0)); err != nil {
+		if err := svcB.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalCriticalError, "bad", 0)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -82,7 +82,7 @@ func TestAdminResetReputation_FansOutToOtherReplicas(t *testing.T) {
 
 	// A second reset of the same target is a new announcement (new value)
 	// and is applied again.
-	if err := svcB.RecordSignal(ctx, "eth", fresh, domain.RPCTypeJSONRPC, reputation.NewCriticalErrorSignal("bad", 0)); err != nil {
+	if err := svcB.RecordSignal(ctx, "eth", fresh, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalCriticalError, "bad", 0)); err != nil {
 		t.Fatal(err)
 	}
 	if status, _ = doTuning(t, srv.URL, http.MethodPost, "/admin/reputation/reset/eth/supplier1-example.com", ""); status != http.StatusOK {

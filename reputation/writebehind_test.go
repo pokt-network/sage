@@ -66,7 +66,7 @@ func TestWriteBehind_StormHoldsOneWritePerKey(t *testing.T) {
 func TestWriteBehind_FollowerHoldsNothing(t *testing.T) {
 	store := NewLeaderOnlyStorage(NewMemoryStorage(), func() bool { return false })
 	svc := NewService(store, nil, DefaultServiceConfig())
-	_ = svc.RecordSignal(context.Background(), "eth", "supA-https://node.example.com", domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0))
+	_ = svc.RecordSignal(context.Background(), "eth", "supA-https://node.example.com", domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0))
 	if got := svc.WriteQueueDepth(); got != 0 {
 		t.Fatalf("follower pending = %d, want 0", got)
 	}
@@ -87,7 +87,7 @@ func TestWriteBehind_StorageErrorCountsDrops(t *testing.T) {
 	svc.Start()
 	defer svc.Stop()
 
-	_ = svc.RecordSignal(context.Background(), "eth", "supA-https://node.example.com", domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0))
+	_ = svc.RecordSignal(context.Background(), "eth", "supA-https://node.example.com", domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0))
 	deadline := time.Now().Add(2 * time.Second)
 	for drops.get(WriteDropStorageError) == 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -107,7 +107,7 @@ func TestWriteBehind_FollowerDiscardIsNotADrop(t *testing.T) {
 	svc.Start()
 	defer svc.Stop()
 
-	_ = svc.RecordSignal(context.Background(), "eth", "supA-https://node.example.com", domain.RPCTypeJSONRPC, NewSuccessSignal("ok", 0))
+	_ = svc.RecordSignal(context.Background(), "eth", "supA-https://node.example.com", domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0))
 	deadline := time.Now().Add(2 * time.Second)
 	for svc.WriteQueueDepth() > 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)

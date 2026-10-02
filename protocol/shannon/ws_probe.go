@@ -220,9 +220,9 @@ func (r *WSRelayer) probeEndpoint(ctx context.Context, t wsProbeTarget) {
 	}
 	failed := result != wsProbeOK && result != wsProbeOtherDialect
 	r.probeBackoff.record(string(t.serviceID)+"|"+t.url, failed, time.Now())
-	sig := reputation.NewSuccessSignal("ws_probe_"+result, 0)
+	sig := reputation.NewSignal(reputation.SignalSuccess, "ws_probe_"+result, 0)
 	if failed {
-		sig = reputation.NewMajorErrorSignal("ws_probe_"+result, 0)
+		sig = reputation.NewSignal(reputation.SignalMajorError, "ws_probe_"+result, 0)
 	}
 	sig.Probe = true
 	_ = r.deps.Reputation.RecordSignal(context.Background(), t.serviceID, t.addr, domain.RPCTypeWebSocket, sig)

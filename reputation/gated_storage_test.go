@@ -39,7 +39,7 @@ func TestResetScore_WritesThroughOnAFollower(t *testing.T) {
 
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1abc-https://rm.example.net")
-	if err := svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewCriticalErrorSignal("bad", 0)); err != nil {
+	if err := svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "bad", 0)); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.ResetScore(ctx, "eth", ep); err != nil {
