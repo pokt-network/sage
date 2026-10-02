@@ -389,7 +389,7 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 			r.logger.Info("relay: delivering the last upstream response after a retry verdict",
 				"service", ctx.ServiceID, "endpoint", ctx.Endpoint, "verdict", err)
 		} else {
-			r.logger.Error("relay chain error", "service", ctx.ServiceID, "endpoint", ctx.Endpoint, "error", err, "attempts", ctx.Attempts)
+			r.logger.Error("relay chain error", append([]any{"service", ctx.ServiceID, "endpoint", ctx.Endpoint, "error", err, "attempts", ctx.Attempts}, requestShape(ctx)...)...)
 			r.writeRelayError(rw, ctx, err)
 			return
 		}
@@ -741,3 +741,28 @@ func isJSONRPCRequest(ctx *relay.Context) bool {
 	ct := ctx.HTTPRequest.Header.Get("Content-Type")
 	return ct == "application/json" || ctx.HTTPRequest.Method == http.MethodPost
 }
+
+// requestShape is what a failed request asked for, for its error line: the
+// type it was relayed as and how that was settled, the method or path, and
+// the last attempt's verdict. Without it a service's 5xx could not be traced
+// to the requests behind it (mainnet chihuahua, 2026-10-02: 11% 5xx, every
+// guess at the request type wrong). The path is cut at its query and at
+// shapePathMax bytes; a body is never logged.
+func requestShape(ctx *relay.Context) []any {
+	attrs := []any{"rpc_type", ctx.RPCType, "rpc_type_source", ctx.RPCTypeSource, "rpc_type_detected", ctx.RPCTypeDetected, "payloads", len(ctx.Payloads)}
+	if len(ctx.Payloads) > 0 {
+		p := ctx.Payloads[0]
+		path, _, _ := strings.Cut(p.Path(), "?")
+		if len(path) > shapePathMax {
+			path = path[:shapePathMax]
+		}
+		attrs = append(attrs, "method", p.Method(), "http_method", p.HTTPMethod(), "path", path, "payload_rpc_type", p.RPCType())
+	}
+	if ctx.HeuristicResult != nil {
+		attrs = append(attrs, "last_verdict", ctx.HeuristicResult.Reason)
+	}
+	return attrs
+}
+
+// shapePathMax bounds the path requestShape logs.
+const shapePathMax = 80
