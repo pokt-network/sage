@@ -82,10 +82,6 @@ deadcode: ## Fail on unreachable functions (excluding test files)
 docs: ## Regenerate the reference docs under docs/ from source
 	go run ./cmd/docgen -root .
 
-.PHONY: docs_check
-docs_check: ## Fail if any generated doc is out of date (used by CI)
-	go run ./cmd/docgen -root . -check
-
 ##########################
 ### Docker              ###
 ##########################

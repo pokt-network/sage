@@ -20,7 +20,6 @@ import (
 
 func main() {
 	root := flag.String("root", ".", "repository root")
-	check := flag.Bool("check", false, "exit non-zero if any file is out of date, without writing")
 	flag.Parse()
 
 	files, err := docgen.GenerateAll(*root)
@@ -37,10 +36,6 @@ func main() {
 			continue
 		}
 		stale = true
-		if *check {
-			fmt.Fprintf(os.Stderr, "docgen: %s is out of date — run `make docs`\n", name)
-			continue
-		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			fmt.Fprintf(os.Stderr, "docgen: %v\n", err)
 			os.Exit(1)
@@ -52,10 +47,7 @@ func main() {
 		fmt.Printf("wrote %s\n", name)
 	}
 
-	if *check && stale {
-		os.Exit(1)
-	}
-	if !*check && !stale {
+	if !stale {
 		fmt.Println("docs already up to date")
 	}
 }

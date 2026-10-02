@@ -106,14 +106,10 @@ jobs:
         run: go mod download
 
       # The reference docs are generated from the config structs, the metrics
-      # collectors and the router's mux. This fails the build when they drift —
-      # which is the point of generating them rather than maintaining them by
-      # hand. Fix with `make docs`.
-      - name: Generated docs are current
-        run: make docs_check
-
-      # Covers the properties the golden file alone cannot: every yaml key
-      # reaches the reference, and every key has a description.
+      # collectors and the router's mux. TestGeneratedDocsAreCurrent fails the
+      # build when they drift (fix with `make docs`); the other tests cover what
+      # the golden comparison cannot: every yaml key reaches the reference, and
+      # every key has a description.
       - name: Docs tests
         run: go test ./internal/docgen/ -count=1
 
