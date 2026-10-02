@@ -44,13 +44,6 @@ type SessionManager interface {
 	IsReady(ctx context.Context) bool
 }
 
-// SupplierManager handles supplier blacklisting.
-type SupplierManager interface {
-	BlacklistSupplier(serviceID domain.ServiceID, addr string)
-	UnblacklistSupplier(serviceID domain.ServiceID, addr string) bool
-	IsBlacklisted(serviceID domain.ServiceID, addr string) bool
-}
-
 // Errors the debug probe routes map to HTTP statuses. A probe is evidence
 // gathering on the admin port, so its refusals must be distinguishable from a
 // supplier's failure.

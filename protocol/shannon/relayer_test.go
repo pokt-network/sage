@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -414,7 +413,7 @@ func TestAvailableEndpoints_FiltersBlacklisted(t *testing.T) {
 	// a supplier out without emptying the pool (mainnet persistence and
 	// shentu, 2026-09-15: a 15-minute blacklist on every supplier was a
 	// 15-minute outage), so it is still served.
-	p.BlacklistSupplier("eth", supplierAddr)
+	p.bl.BlacklistSupplier("eth", supplierAddr)
 
 	endpoints, err = p.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
 	if err != nil {
@@ -422,23 +421,6 @@ func TestAvailableEndpoints_FiltersBlacklisted(t *testing.T) {
 	}
 	if len(endpoints) != 1 {
 		t.Errorf("expected the only supplier still served after blacklisting, got %d endpoints", len(endpoints))
-	}
-}
-
-func TestProtocol_SupplierManager(t *testing.T) {
-	p := &Protocol{bl: newBlacklist(), logger: slog.Default()}
-
-	p.BlacklistSupplier("eth", "pokt1x")
-	if !p.IsBlacklisted("eth", "pokt1x") {
-		t.Error("should be blacklisted")
-	}
-
-	removed := p.UnblacklistSupplier("eth", "pokt1x")
-	if !removed {
-		t.Error("UnblacklistSupplier should return true")
-	}
-	if p.IsBlacklisted("eth", "pokt1x") {
-		t.Error("should not be blacklisted after removal")
 	}
 }
 

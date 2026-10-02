@@ -29,7 +29,6 @@ var (
 	_ protocol.Relayer          = (*Protocol)(nil)
 	_ protocol.EndpointProvider = (*Protocol)(nil)
 	_ protocol.SessionManager   = (*Protocol)(nil)
-	_ protocol.SupplierManager  = (*Protocol)(nil)
 )
 
 // fullNodeIface is the internal interface used by Protocol.
@@ -723,34 +722,6 @@ func (p *Protocol) SessionLayerReady() bool {
 		return false
 	}
 	return p.sessions.SessionLayerReady()
-}
-
-// BlacklistSupplier adds a supplier to the blacklist for a service.
-func (p *Protocol) BlacklistSupplier(serviceID domain.ServiceID, addr string) {
-	p.logger.Debug("blacklisting supplier",
-		"component", "shannon",
-		"service_id", serviceID,
-		"supplier_addr", addr,
-	)
-	p.bl.BlacklistSupplier(serviceID, addr)
-}
-
-// UnblacklistSupplier removes a supplier from the blacklist.
-func (p *Protocol) UnblacklistSupplier(serviceID domain.ServiceID, addr string) bool {
-	removed := p.bl.UnblacklistSupplier(serviceID, addr)
-	if removed {
-		p.logger.Debug("supplier removed from blacklist",
-			"component", "shannon",
-			"service_id", serviceID,
-			"supplier_addr", addr,
-		)
-	}
-	return removed
-}
-
-// IsBlacklisted returns true if the supplier is currently blacklisted for the service.
-func (p *Protocol) IsBlacklisted(serviceID domain.ServiceID, addr string) bool {
-	return p.bl.IsBlacklisted(serviceID, addr)
 }
 
 // EndpointURLFor implements protocol.URLResolver: the URL a relay of rpcType
