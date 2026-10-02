@@ -439,13 +439,7 @@ func (a *AdminAPI) handleResetReputation(w http.ResponseWriter, req *http.Reques
 	// Only recorded keys are reset (reputation.ResetMatching): a target that
 	// matches nothing is a 404 and creates nothing. The response names the
 	// keys touched when the service can say.
-	var keys []string
-	var err error
-	if kr, ok := a.repService.(reputation.KeyResetter); ok {
-		keys, err = kr.ResetMatching(req.Context(), serviceID, string(endpoint))
-	} else {
-		err = a.repService.ResetScore(req.Context(), serviceID, endpoint)
-	}
+	keys, err := applyReset(req.Context(), a.repService, serviceID, string(endpoint))
 	if errors.Is(err, reputation.ErrNoScore) {
 		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("no recorded score on %s matches %q; GET /admin/reputation/%s lists the keys, and a host, a URL, an endpoint address or a listed key all name one", serviceID, endpoint, serviceID))
 		return
@@ -648,7 +642,5 @@ func pluginTypeName(p qos.Plugin) string {
 	if p == nil {
 		return "nil"
 	}
-	// Use fmt.Sprintf with %T for the concrete type name.
-	// Avoid importing reflect; this is display-only.
-	return formatTypeName(p)
+	return fmt.Sprintf("%T", p)
 }

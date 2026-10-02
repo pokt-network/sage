@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/pokt-network/sage/blocklist"
@@ -100,7 +101,7 @@ func (a *AdminAPI) handleSetBlockedDomain(w http.ResponseWriter, req *http.Reque
 		}
 	}
 	for _, t := range body.RPCTypes {
-		if !validRPCType(domain.RPCType(strings.ToLower(strings.TrimSpace(t)))) {
+		if !slices.Contains(domain.AllRPCTypes(), domain.RPCType(strings.ToLower(strings.TrimSpace(t)))) {
 			writeJSONError(w, http.StatusBadRequest, "rpc_type "+strings.TrimSpace(t)+" is not recognised")
 			return
 		}

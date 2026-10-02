@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -86,7 +87,7 @@ func (a *AdminAPI) handleSetDrain(w http.ResponseWriter, req *http.Request) {
 	}
 
 	rpcType := domain.RPCType(body.RPCType)
-	if rpcType != "" && !validRPCType(rpcType) {
+	if rpcType != "" && !slices.Contains(domain.AllRPCTypes(), rpcType) {
 		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("rpc_type %q is not recognised", body.RPCType))
 		return
 	}
@@ -274,17 +275,7 @@ func (a *AdminAPI) registeredEndpoints(ctx context.Context, serviceID domain.Ser
 	if !ok {
 		return a.liveEndpoints(ctx, serviceID, rpcType)
 	}
-	out := map[domain.EndpointAddr]struct{}{}
-	for _, rt := range rpcTypesToCheck(rpcType) {
-		endpoints, err := lister.RegisteredEndpoints(ctx, serviceID, rt)
-		if err != nil {
-			continue
-		}
-		for _, addr := range endpoints {
-			out[addr] = struct{}{}
-		}
-	}
-	return out
+	return unionEndpoints(ctx, serviceID, rpcType, lister.RegisteredEndpoints)
 }
 
 // lastOperatorStanding reports whether draining targetDomain would leave some
@@ -324,13 +315,21 @@ func (a *AdminAPI) lastOperatorStanding(ctx context.Context, serviceID domain.Se
 // liveEndpoints yields the distinct endpoints available for serviceID over
 // rpcType, or over every RPC type when rpcType is unscoped ("").
 func (a *AdminAPI) liveEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) map[domain.EndpointAddr]struct{} {
-	out := map[domain.EndpointAddr]struct{}{}
 	if a.endpoints == nil {
-		return out
+		return map[domain.EndpointAddr]struct{}{}
 	}
+	return unionEndpoints(ctx, serviceID, rpcType, a.endpoints.AvailableEndpoints)
+}
 
+// unionEndpoints collects the distinct endpoints list returns for serviceID
+// over rpcType, or over every RPC type when rpcType is unscoped (""). A type
+// that errors contributes nothing.
+func unionEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType,
+	list func(context.Context, domain.ServiceID, domain.RPCType) (domain.EndpointAddrList, error),
+) map[domain.EndpointAddr]struct{} {
+	out := map[domain.EndpointAddr]struct{}{}
 	for _, rt := range rpcTypesToCheck(rpcType) {
-		endpoints, err := a.endpoints.AvailableEndpoints(ctx, serviceID, rt)
+		endpoints, err := list(ctx, serviceID, rt)
 		if err != nil {
 			continue
 		}
@@ -348,16 +347,6 @@ func rpcTypesToCheck(rpcType domain.RPCType) []domain.RPCType {
 		return domain.AllRPCTypes()
 	}
 	return []domain.RPCType{rpcType}
-}
-
-// validRPCType reports whether rpcType is one domain.AllRPCTypes() names.
-func validRPCType(rpcType domain.RPCType) bool {
-	for _, rt := range domain.AllRPCTypes() {
-		if rt == rpcType {
-			return true
-		}
-	}
-	return false
 }
 
 // describeRPCScope renders the RPC scope of a drain request for an error

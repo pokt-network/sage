@@ -4,6 +4,7 @@ package router
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -166,10 +167,10 @@ func New(
 		// PATH's defaults, so a config that sets none behaves the same behind
 		// either gateway. The 30s write timeout this used to carry cut off
 		// slow archival calls PATH would have served.
-		ReadTimeout:    withDefault(cfg.ReadTimeout, 60*time.Second),
-		WriteTimeout:   withDefault(cfg.WriteTimeout, 120*time.Second),
-		IdleTimeout:    withDefault(cfg.IdleTimeout, 180*time.Second),
-		MaxHeaderBytes: withDefaultInt(cfg.MaxRequestHeaderBytes, defaultMaxHeaderBytes),
+		ReadTimeout:    cmp.Or(cfg.ReadTimeout, 60*time.Second),
+		WriteTimeout:   cmp.Or(cfg.WriteTimeout, 120*time.Second),
+		IdleTimeout:    cmp.Or(cfg.IdleTimeout, 180*time.Second),
+		MaxHeaderBytes: cmp.Or(cfg.MaxRequestHeaderBytes, defaultMaxHeaderBytes),
 	}
 
 	return r
@@ -739,20 +740,4 @@ func isJSONRPCRequest(ctx *relay.Context) bool {
 	}
 	ct := ctx.HTTPRequest.Header.Get("Content-Type")
 	return ct == "application/json" || ctx.HTTPRequest.Method == http.MethodPost
-}
-
-// withDefault returns d if dur is zero.
-func withDefault(dur, d time.Duration) time.Duration {
-	if dur == 0 {
-		return d
-	}
-	return dur
-}
-
-// withDefaultInt returns d if n is zero.
-func withDefaultInt(n, d int) int {
-	if n == 0 {
-		return d
-	}
-	return n
 }
