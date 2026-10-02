@@ -15,8 +15,8 @@ func TestMemoryStore_IsEnabled_Default(t *testing.T) {
 	if !store.IsEnabled(ctx, "retry", "eth") {
 		t.Error("expected retry to be enabled by default")
 	}
-	if store.IsEnabled(ctx, "tracing", "eth") {
-		t.Error("expected tracing to be disabled by default")
+	if store.IsEnabled(ctx, FlagDebugLog, "eth") {
+		t.Error("expected debug_log to be disabled by default")
 	}
 }
 
@@ -33,11 +33,11 @@ func TestMemoryStore_Set(t *testing.T) {
 	store := NewMemoryStore(nil)
 	ctx := context.Background()
 
-	if err := store.Set(ctx, "tracing", true); err != nil {
+	if err := store.Set(ctx, FlagDebugLog, true); err != nil {
 		t.Fatal(err)
 	}
-	if !store.IsEnabled(ctx, "tracing", "eth") {
-		t.Error("expected tracing to be enabled after Set")
+	if !store.IsEnabled(ctx, FlagDebugLog, "eth") {
+		t.Error("expected debug_log to be enabled after Set")
 	}
 }
 
@@ -132,7 +132,7 @@ func TestMemoryStore_GetAll(t *testing.T) {
 	store := NewMemoryStore(nil)
 	ctx := context.Background()
 
-	_ = store.Set(ctx, "tracing", true)
+	_ = store.Set(ctx, FlagDebugLog, true)
 	_ = store.SetForService(ctx, "retry", "eth", false)
 
 	all, err := store.GetAll(ctx)
@@ -140,8 +140,8 @@ func TestMemoryStore_GetAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !all["tracing"].Enabled {
-		t.Error("expected tracing enabled in GetAll")
+	if !all[FlagDebugLog].Enabled {
+		t.Error("expected debug_log enabled in GetAll")
 	}
 
 	retryState := all["retry"]
@@ -168,19 +168,19 @@ func TestMemoryStore_UnknownFlag(t *testing.T) {
 // decision an operator made through the admin API.
 func TestMemoryStore_DeleteGlobal_KeepsServiceOverrides(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStore(map[string]bool{FlagTracing: true})
-	if err := store.SetForService(ctx, FlagTracing, "eth", true); err != nil {
+	store := NewMemoryStore(map[string]bool{FlagDebugLog: true})
+	if err := store.SetForService(ctx, FlagDebugLog, "eth", true); err != nil {
 		t.Fatalf("set for service: %v", err)
 	}
 
-	if err := store.DeleteGlobal(ctx, FlagTracing); err != nil {
+	if err := store.DeleteGlobal(ctx, FlagDebugLog); err != nil {
 		t.Fatalf("delete global: %v", err)
 	}
 
-	if store.IsEnabled(ctx, FlagTracing, "poly") {
+	if store.IsEnabled(ctx, FlagDebugLog, "poly") {
 		t.Error("the global value survived DeleteGlobal; DefaultFlags should apply again")
 	}
-	if !store.IsEnabled(ctx, FlagTracing, "eth") {
+	if !store.IsEnabled(ctx, FlagDebugLog, "eth") {
 		t.Error("DeleteGlobal wiped the per-service override too")
 	}
 }

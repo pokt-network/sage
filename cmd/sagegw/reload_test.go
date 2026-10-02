@@ -33,7 +33,7 @@ concurrency_config:
   max_concurrent_relays: 100
   max_batch_payloads: 10
 feature_flags:
-  tracing: true
+  debug_log: true
 gateway_config:
   gateway_mode: centralized
   defaults:
@@ -246,16 +246,16 @@ func TestReload_InvalidBlockedDomainChangesNothing(t *testing.T) {
 // has to go back to featureflag.DefaultFlags, which means Delete and not
 // merely re-Setting whatever is still written down.
 //
-// Revert-check: skip the Delete pass and this fails — tracing stays true
+// Revert-check: skip the Delete pass and this fails — debug_log stays true
 // forever, and removing a line from the config does nothing.
 func TestReload_RemovedFlagOverrideReturnsToDefault(t *testing.T) {
 	app, path := buildReloadApp(t, reloadTestYAML)
 
-	if !app.Flags.IsEnabled(t.Context(), featureflag.FlagTracing, "eth") {
-		t.Fatal("tracing should start enabled — the config file overrides it to true")
+	if !app.Flags.IsEnabled(t.Context(), featureflag.FlagDebugLog, "eth") {
+		t.Fatal("debug_log should start enabled — the config file overrides it to true")
 	}
 
-	rewriteReloadConfig(t, path, strings.Replace(reloadTestYAML, "feature_flags:\n  tracing: true\n", "", 1))
+	rewriteReloadConfig(t, path, strings.Replace(reloadTestYAML, "feature_flags:\n  debug_log: true\n", "", 1))
 
 	res, err := app.Reload(t.Context())
 	if err != nil {
@@ -264,8 +264,8 @@ func TestReload_RemovedFlagOverrideReturnsToDefault(t *testing.T) {
 	if !slices.Contains(res.Applied, "feature_flags") {
 		t.Errorf("applied = %v, want feature_flags", res.Applied)
 	}
-	if app.Flags.IsEnabled(t.Context(), featureflag.FlagTracing, "eth") {
-		t.Fatal("tracing is still on: the override was re-applied instead of deleted, so DefaultFlags never came back")
+	if app.Flags.IsEnabled(t.Context(), featureflag.FlagDebugLog, "eth") {
+		t.Fatal("debug_log is still on: the override was re-applied instead of deleted, so DefaultFlags never came back")
 	}
 }
 

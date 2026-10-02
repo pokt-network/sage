@@ -766,7 +766,6 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 
 	mwReg := relay.NewMiddlewareRegistry()
 	mwReg.Register(relay.MWShadow, func() relay.Middleware { return middleware.Shadow(flags) })
-	mwReg.Register(relay.MWTracing, func() relay.Middleware { return middleware.Tracing(flags) })
 	// relay_timeout is per attempt; the request deadline covers every attempt.
 	mwReg.Register(relay.MWTimeout, func() relay.Middleware {
 		return middleware.Timeout(middleware.AttemptScaledTimeout(timeoutFn, retryFn))
@@ -848,7 +847,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 
 	// A middleware that is registered but unnamed by the chain does not run. That
-	// is legitimate (a config may deliberately drop tracing), but it is also how
+	// is legitimate (a config may deliberately drop debug_log), but it is also how
 	// someone adds a middleware, forgets the order, and concludes it is broken.
 	for _, name := range mwReg.RegisteredNames() {
 		if !slices.Contains(order, name) {

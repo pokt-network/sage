@@ -13,7 +13,6 @@ const (
 	FlagHeuristic           = "heuristic"
 	FlagObservationPipeline = "observation_pipeline"
 	FlagHealthChecks        = "health_checks"
-	FlagTracing             = "tracing"
 	FlagSupplierAffinity    = "supplier_affinity"
 	FlagDebugLog            = "debug_log"
 	FlagShadowMode          = "shadow_mode"
@@ -235,7 +234,6 @@ var DefaultFlags = map[string]bool{
 	FlagHeuristic:           true,
 	FlagObservationPipeline: true,
 	FlagHealthChecks:        true,
-	FlagTracing:             false,
 	FlagSupplierAffinity:    true,
 	FlagDebugLog:            false,
 	FlagShadowMode:          false,

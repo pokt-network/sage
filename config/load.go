@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,6 +62,7 @@ func parse(data []byte) (*Config, error) {
 	cfg.Warnings = append(cfg.Warnings, ownedAppKeyWarnings(cfg.Gateway)...)
 	cfg.Warnings = append(cfg.Warnings, applyLogLevelEnv(&cfg, os.Getenv(EnvLogLevel))...)
 	cfg.Warnings = append(cfg.Warnings, applyPeerProbeSelf(&cfg)...)
+	cfg.Warnings = append(cfg.Warnings, dropRemovedMiddleware(&cfg.Gateway)...)
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
@@ -295,6 +297,29 @@ func applyPeerProbeSelf(cfg *Config) []string {
 		"active_health_checks.peer_probe_stream.db (%d) is this instance's own redis_config.db, so the peer stream is OFF: "+
 			"this instance probes every backend itself and runs its own auto-drain engine. Point db at the other instance's redis_config.db to follow it",
 		peer.DB)}
+}
+
+// removedMiddleware names middlewares SAGE once had. A deployed chain naming one
+// must still boot, and an unknown chain name is a startup error, so each is
+// dropped from the chain with a warning instead. The value says why it went.
+var removedMiddleware = map[string]string{
+	"tracing": "it only logged two debug lines per relay; debug_log and the stage timings cover it",
+}
+
+// dropRemovedMiddleware strips removedMiddleware names from both chain
+// locations and says so for each one it drops.
+func dropRemovedMiddleware(g *GatewayConfig) []string {
+	var warnings []string
+	for _, chain := range []*[]string{&g.MiddlewareChain, &g.UnifiedServices.MiddlewareChain} {
+		*chain = slices.DeleteFunc(*chain, func(name string) bool {
+			why, removed := removedMiddleware[name]
+			if removed {
+				warnings = append(warnings, fmt.Sprintf("middleware_chain names %q, which SAGE no longer has (%s); it is skipped", name, why))
+			}
+			return removed
+		})
+	}
+	return warnings
 }
 
 // knownRPCTypes is what a config may name where an RPC type is expected.

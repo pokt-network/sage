@@ -27,28 +27,27 @@ Every request flows through a composable chain of middleware components. Each mi
 ```
 HTTP Request
   [Shadow]           — dry-run mode (process but don't serve)
-    [Tracing]        — OpenTelemetry spans
-      [RequestID]    — correlation ID (X-Request-ID header)
-        [ClientIP]   — resolve the attributed client address (trusted-proxy aware)
-          [Parse]    — extract service ID, detect RPC type, load QoS plugin
-            [Validate]     — check RPC type is supported by service
-              [Timeout]    — per-request deadline (after Parse: resolved per service)
-                [Quorum]   — N operators at once when asked by header (flag, off by default)
-                  [Cache]    — LRU response cache for finalized data
-                    [Batch]  — decompose batch → fan-out → recombine
-                      [Singleflight] — coalesce identical concurrent requests
-                        [Observe]    — async reputation + deep parsing
-                          [Retry]  — retry with endpoint rotation
-                            [Hedge]    — race primary vs delayed secondary
-                              [Metrics]  — one sage_relay_total + latency observation per attempt
-                                [Affinity] — sticky supplier after writes
-                                  [CircuitBreak] — skip broken domains
-                                  [MethodBlocks] — skip hosts blocked for this method
-                                    [SelectEndpoint] — reputation + QoS filtering
-                                      [Score]        — one reputation signal per attempt
-                                        [DebugLog]   — full request/response logging
-                                          [Heuristic] — response quality analysis
-                                              [SendRelay] — sign, send, validate
+    [RequestID]    — correlation ID (X-Request-ID header)
+      [ClientIP]   — resolve the attributed client address (trusted-proxy aware)
+        [Parse]    — extract service ID, detect RPC type, load QoS plugin
+          [Validate]     — check RPC type is supported by service
+            [Timeout]    — per-request deadline (after Parse: resolved per service)
+              [Quorum]   — N operators at once when asked by header (flag, off by default)
+                [Cache]    — LRU response cache for finalized data
+                  [Batch]  — decompose batch → fan-out → recombine
+                    [Singleflight] — coalesce identical concurrent requests
+                      [Observe]    — async reputation + deep parsing
+                        [Retry]  — retry with endpoint rotation
+                          [Hedge]    — race primary vs delayed secondary
+                            [Metrics]  — one sage_relay_total + latency observation per attempt
+                              [Affinity] — sticky supplier after writes
+                                [CircuitBreak] — skip broken domains
+                                [MethodBlocks] — skip hosts blocked for this method
+                                  [SelectEndpoint] — reputation + QoS filtering
+                                    [Score]        — one reputation signal per attempt
+                                      [DebugLog]   — full request/response logging
+                                        [Heuristic] — response quality analysis
+                                            [SendRelay] — sign, send, validate
 ```
 
 Most middleware can be **enabled/disabled at runtime** per-service via feature flags (Redis-backed, no redeploy needed). The structural ones — request_id, client_ip, parse, validate, timeout, metrics, send_relay — always run; they are what makes a request a relay, not a policy about it. Every link where one middleware reads a field another writes is a `mustPrecede` rule in `relay/chain_order.go`, so a YAML chain cannot silently disable a reader by placing it before its writer.
@@ -276,7 +275,6 @@ likely a chain-wide slowdown than every operator down at once.
 | heuristic | on | Response quality analysis. Gates body analysis only: transport errors are graded on the way out regardless of the flag, because attribution is what the breaker, the method blocks and reputation key on |
 | observation_pipeline | on | Async deep parsing |
 | health_checks | on | Active endpoint health checks |
-| tracing | off | OpenTelemetry spans |
 | supplier_affinity | on | Sticky supplier after write operations |
 | websocket_relays | on | WebSocket relay path (bidirectional bridge) |
 | operator_aware_selection | on | Per-operator concentration cap; operator-aware retry/hedge |

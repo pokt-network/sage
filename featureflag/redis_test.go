@@ -68,20 +68,20 @@ func TestRedisStore_ParseKey(t *testing.T) {
 func TestRedisStore_NilClient_FallsBackToDefaults(t *testing.T) {
 	// Overrides are a partial map; anything absent falls back to DefaultFlags.
 	store := NewRedisStore(nil, map[string]bool{
-		FlagTracing: true, // override the compiled default (false)
+		FlagDebugLog: true, // override the compiled default (false)
 	})
 	ctx := context.Background()
 
 	if !store.IsEnabled(ctx, FlagRetry, "eth") {
 		t.Error("expected retry enabled from compiled default")
 	}
-	if !store.IsEnabled(ctx, FlagTracing, "eth") {
-		t.Error("expected tracing enabled from override")
+	if !store.IsEnabled(ctx, FlagDebugLog, "eth") {
+		t.Error("expected debug_log enabled from override")
 	}
 	// A flag the operator did not set keeps its compiled default without being
 	// dragged to false — the all-or-nothing bug the old struct had.
 	if !store.IsEnabled(ctx, FlagCache, "eth") {
-		t.Error("expected cache to keep its default (true) though only tracing was set")
+		t.Error("expected cache to keep its default (true) though only debug_log was set")
 	}
 	if store.IsEnabled(ctx, "nonexistent", "eth") {
 		t.Error("expected unknown flag disabled")
@@ -93,24 +93,24 @@ func TestRedisStore_NilClient_SetAndGet(t *testing.T) {
 	ctx := context.Background()
 
 	// Set should not error with nil client (caches locally).
-	if err := store.Set(ctx, FlagTracing, true); err != nil {
+	if err := store.Set(ctx, FlagDebugLog, true); err != nil {
 		t.Fatal(err)
 	}
-	if !store.IsEnabled(ctx, FlagTracing, "eth") {
-		t.Error("expected tracing enabled from local cache")
+	if !store.IsEnabled(ctx, FlagDebugLog, "eth") {
+		t.Error("expected debug_log enabled from local cache")
 	}
 }
 
 func TestRedisStore_NilClient_GetAll(t *testing.T) {
-	store := NewRedisStore(nil, map[string]bool{FlagTracing: true})
+	store := NewRedisStore(nil, map[string]bool{FlagDebugLog: true})
 	ctx := context.Background()
 
 	all, err := store.GetAll(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !all[FlagTracing].Enabled {
-		t.Error("expected tracing enabled in GetAll")
+	if !all[FlagDebugLog].Enabled {
+		t.Error("expected debug_log enabled in GetAll")
 	}
 	if !all[FlagRetry].Enabled {
 		t.Error("expected retry enabled in GetAll")
@@ -126,15 +126,15 @@ func TestRedisStore_NilClient_GetAll(t *testing.T) {
 // file — a removal that reports success and changes nothing.
 func TestRedisStore_DeleteGlobal_DropsTheConfigLayer(t *testing.T) {
 	ctx := context.Background()
-	store := NewRedisStore(nil, map[string]bool{FlagTracing: true})
+	store := NewRedisStore(nil, map[string]bool{FlagDebugLog: true})
 
-	if !store.IsEnabled(ctx, FlagTracing, "eth") {
+	if !store.IsEnabled(ctx, FlagDebugLog, "eth") {
 		t.Fatal("the config override should be in effect before the delete")
 	}
-	if err := store.DeleteGlobal(ctx, FlagTracing); err != nil {
+	if err := store.DeleteGlobal(ctx, FlagDebugLog); err != nil {
 		t.Fatalf("delete global: %v", err)
 	}
-	if store.IsEnabled(ctx, FlagTracing, "eth") {
+	if store.IsEnabled(ctx, FlagDebugLog, "eth") {
 		t.Fatal("the config override survived DeleteGlobal, so removing the line from the file did nothing")
 	}
 }
@@ -144,19 +144,19 @@ func TestRedisStore_DeleteGlobal_DropsTheConfigLayer(t *testing.T) {
 // per-service decision.
 func TestRedisStore_DeleteGlobal_KeepsServiceOverrides(t *testing.T) {
 	ctx := context.Background()
-	store := NewRedisStore(nil, map[string]bool{FlagTracing: true})
-	if err := store.SetForService(ctx, FlagTracing, "eth", true); err != nil {
+	store := NewRedisStore(nil, map[string]bool{FlagDebugLog: true})
+	if err := store.SetForService(ctx, FlagDebugLog, "eth", true); err != nil {
 		t.Fatalf("set for service: %v", err)
 	}
 
-	if err := store.DeleteGlobal(ctx, FlagTracing); err != nil {
+	if err := store.DeleteGlobal(ctx, FlagDebugLog); err != nil {
 		t.Fatalf("delete global: %v", err)
 	}
 
-	if !store.IsEnabled(ctx, FlagTracing, "eth") {
+	if !store.IsEnabled(ctx, FlagDebugLog, "eth") {
 		t.Error("DeleteGlobal cleared the per-service override")
 	}
-	if store.IsEnabled(ctx, FlagTracing, "poly") {
+	if store.IsEnabled(ctx, FlagDebugLog, "poly") {
 		t.Error("the global/config value survived DeleteGlobal")
 	}
 }

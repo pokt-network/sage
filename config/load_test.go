@@ -1013,3 +1013,32 @@ gateway_config:
 		t.Error("a type falling back to itself must be a startup error")
 	}
 }
+
+// A deployed chain may still name a middleware SAGE has since removed. An
+// unknown chain name is a startup error, so it is dropped with a warning
+// instead, from both chain locations.
+func TestMiddlewareChain_RemovedNameIsDroppedWithWarning(t *testing.T) {
+	cfg, err := parse([]byte(`
+full_node_config:
+  rpc_url: http://localhost:26657
+  grpc_config:
+    host_port: localhost:9090
+gateway_config:
+  gateway_mode: centralized
+  middleware_chain: [shadow, tracing, request_id]
+  unified_services:
+    middleware_chain: [tracing, parse]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Gateway.MiddlewareChain, ","); got != "shadow,request_id" {
+		t.Errorf("gateway chain = %s, want tracing dropped", got)
+	}
+	if got := strings.Join(cfg.Gateway.UnifiedServices.MiddlewareChain, ","); got != "parse" {
+		t.Errorf("unified chain = %s, want tracing dropped", got)
+	}
+	if n := strings.Count(strings.Join(cfg.Warnings, "\n"), `"tracing"`); n != 2 {
+		t.Errorf("want one warning per dropped name, got %d: %v", n, cfg.Warnings)
+	}
+}

@@ -9,7 +9,6 @@ import (
 // so the invariant validator can recognize each link.
 const (
 	MWShadow           = "shadow"
-	MWTracing          = "tracing"
 	MWTimeout          = "timeout"
 	MWRequestID        = "request_id"
 	MWClientIP         = "client_ip"
@@ -43,7 +42,6 @@ func DefaultChainOrder() []string {
 	return []string{
 		// --- Outermost (runs first) ---
 		MWShadow,
-		MWTracing,
 		MWRequestID,
 		MWClientIP,
 		MWParse,
