@@ -72,8 +72,6 @@ type ServiceConfig struct {
 	InitialScore float64
 	// MaxScore is the upper bound for scores. Default: 100.
 	MaxScore float64
-	// WriteQueueSize is the buffer size for async storage writes. Default: 4096.
-	WriteQueueSize int
 	// KeyGranularity selects what a score is attached to — see key.go. Empty
 	// means the default, per-URL.
 	KeyGranularity string
@@ -115,7 +113,6 @@ func DefaultServiceConfig() ServiceConfig {
 	return ServiceConfig{
 		InitialScore:   100,
 		MaxScore:       100,
-		WriteQueueSize: 4096,
 	}
 }
 
@@ -198,8 +195,11 @@ type serviceImpl struct {
 	// In-memory score cache, striped by key hash.
 	shards [scoreShards]scoreShard
 
-	// Async write queue.
-	writeCh chan writeOp
+	// pending is the write-behind: the latest state of each key changed
+	// since the last flush, under pendMu. A map, not a queue, so it holds at
+	// most one entry per key however many signals arrive (see enqueue).
+	pendMu  sync.Mutex
+	pending map[string]State
 	// dropHook, when set, is told of each write that never reached storage.
 	// Atomic because wire installs it after Start.
 	dropHook atomic.Pointer[func(reason string)]
@@ -216,9 +216,6 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	if cfg.MaxScore == 0 {
 		cfg.MaxScore = 100
 	}
-	if cfg.WriteQueueSize == 0 {
-		cfg.WriteQueueSize = 4096
-	}
 	if cfg.StateIdleTTL == 0 {
 		cfg.StateIdleTTL = DefaultIdleTTL
 	}
@@ -229,7 +226,7 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 		cfg:      cfg,
 		storage:  storage,
 		timeline: timeline,
-		writeCh:  make(chan writeOp, cfg.WriteQueueSize),
+		pending:  make(map[string]State),
 		stopCh:   make(chan struct{}),
 	}
 	for i := range s.shards {
@@ -914,7 +911,7 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 		})
 	}
 
-	// Enqueue async write (non-blocking: drop if queue full).
+	// Write-behind: the latest state of the key goes out on the next flush.
 	s.enqueue(writeOp{key: key, state: st})
 
 	if s.signalHook != nil {
@@ -1247,20 +1244,24 @@ func (s *serviceImpl) ResetMatching(_ context.Context, serviceID domain.ServiceI
 			}
 			sh.cache[serviceID][key] = fresh
 			reset = append(reset, key)
-			if !s.enqueue(writeOp{key: scoreKey(serviceID, key), state: fresh, force: true}) {
-				dropped = true
-			}
 		}
 		sh.mu.Unlock()
 	}
 	if len(reset) == 0 {
 		return nil, fmt.Errorf("%w: %q on %s", ErrNoScore, target, serviceID)
 	}
+	// Written after the shard locks are released: a forced write is a storage
+	// round trip, and relays on those shards must not wait for it.
+	for _, key := range reset {
+		if !s.enqueue(writeOp{key: scoreKey(serviceID, key), state: fresh, force: true}) {
+			dropped = true
+		}
+	}
 	sort.Strings(reset)
 	if dropped {
 		// Said, not swallowed: the local cache is reset either way, but the
 		// other replicas learn of it through storage.
-		return reset, fmt.Errorf("reset of %s applied locally, but a storage write was dropped (write queue full); other replicas may keep the old score", target)
+		return reset, fmt.Errorf("reset of %s applied locally, but a storage write failed; other replicas may keep the old score", target)
 	}
 	return reset, nil
 }
@@ -1386,13 +1387,12 @@ func (s *serviceImpl) drainWrites() {
 		defer ticker.Stop()
 		flush = ticker.C
 	}
-	// One batch map, reused: only this goroutine touches it, and a fresh map
-	// per pass would allocate thousands a second under load.
-	batch := make(map[string]State, 256)
+	tick := time.NewTicker(writeFlushInterval)
+	defer tick.Stop()
 	for {
 		select {
-		case op := <-s.writeCh:
-			s.writeBatch(op, batch)
+		case <-tick.C:
+			s.flushPending()
 		case now := <-sweep:
 			// Errors are dropped like write errors are: storage is write-behind
 			// that nothing reads back, and a sweep that failed runs again next
@@ -1403,21 +1403,18 @@ func (s *serviceImpl) drainWrites() {
 		case now := <-flush:
 			safego.Run(nil, "reputation.opstats", func() { s.flushOperatorStats(opStore, now) })
 		case <-s.stopCh:
-			// Drain remaining writes. One batch takes the whole queue, so this
-			// is a round trip or two rather than one per queued write — the
-			// difference between a 10s shutdown budget spent on writes and a
-			// shutdown that loses them.
-			for {
-				select {
-				case op := <-s.writeCh:
-					s.writeBatch(op, batch)
-				default:
-					return
-				}
-			}
+			// What is pending goes out in one pass: a round trip or two, not
+			// a 10s shutdown budget spent on writes.
+			s.flushPending()
+			return
 		}
 	}
 }
+
+// writeFlushInterval paces the write-behind. A second's worth of changes per
+// key is one write; a hard kill loses at most that much, which the 1h idle
+// TTL and the next signal both absorb.
+const writeFlushInterval = time.Second
 
 // operatorFlushInterval paces the operator write-behind. Losing at most this
 // much evidence to a hard kill is acceptable; the counters decay over hours.
@@ -1437,9 +1434,9 @@ func (s *serviceImpl) flushOperatorStats(store OperatorStatStore, now time.Time)
 // Write-behind drop reasons, the reason label of
 // sage_reputation_writes_dropped_total. A follower's write that
 // LeaderOnlyStorage discards is not a drop: only the leader writes, by design.
+// (queue_full, a write the old fixed queue had no room for, ended with the
+// per-key write-behind on 2026-10-02.)
 const (
-	// WriteDropQueueFull is a write the full queue had no room for.
-	WriteDropQueueFull = "queue_full"
 	// WriteDropStorageError is a write storage refused, a Redis error.
 	WriteDropStorageError = "storage_error"
 )
@@ -1454,22 +1451,68 @@ func (s *serviceImpl) SetWriteDropHook(fn func(reason string)) {
 	s.dropHook.Store(&fn)
 }
 
-// WriteQueueDepth is how many writes are waiting in the write-behind queue,
-// whose capacity is ServiceConfig.WriteQueueSize.
-func (s *serviceImpl) WriteQueueDepth() int { return len(s.writeCh) }
+// WriteQueueDepth is how many keys are waiting for the next write-behind
+// flush.
+func (s *serviceImpl) WriteQueueDepth() int {
+	s.pendMu.Lock()
+	defer s.pendMu.Unlock()
+	return len(s.pending)
+}
 
 // enqueue hands a write to the write-behind without blocking the caller,
-// reporting whether it was queued. Every write goes through here so every
-// drop is counted: a full queue used to lose writes with nothing to show for
-// it, and a hydrating pod then read the loss as keys gone stale.
+// reporting whether it will reach storage.
+//
+// It keeps the latest state per key until the next flush rather than queueing
+// every change. A fixed queue of 4,096 writes, one per signal, filled under
+// bursts on the leader and dropped 4,315 writes in a day (mainnet,
+// 2026-10-01), though only the last state of each key ever matters. A map
+// holds one entry per key changed in a second, whatever the signal rate.
+//
+// On a follower nothing is kept: storage discards a follower's writes
+// (LeaderOnlyStorage), so holding them only spent memory and a flush. A
+// forced write (an operator's reset) is a decision about the fleet's view and
+// goes straight through, past the gate.
 func (s *serviceImpl) enqueue(op writeOp) bool {
-	select {
-	case s.writeCh <- op:
-		return true
-	default:
-		s.dropped(WriteDropQueueFull)
-		return false
+	if op.force {
+		return s.write(op)
 	}
+	if g, ok := s.storage.(leaderGate); ok && !g.IsLeader() {
+		return true
+	}
+	s.pendMu.Lock()
+	s.pending[op.key] = op.state
+	s.pendMu.Unlock()
+	return true
+}
+
+// leaderGate is a storage that writes only on the leader (LeaderOnlyStorage).
+type leaderGate interface {
+	IsLeader() bool
+}
+
+// flushPending takes everything pending and writes it, in batches of at most
+// maxWriteBatch where storage can batch.
+func (s *serviceImpl) flushPending() {
+	s.pendMu.Lock()
+	if len(s.pending) == 0 {
+		s.pendMu.Unlock()
+		return
+	}
+	batch := s.pending
+	s.pending = make(map[string]State, len(batch))
+	s.pendMu.Unlock()
+
+	now := time.Now().Unix()
+	chunk := make(map[string]State, min(len(batch), maxWriteBatch))
+	for key, st := range batch {
+		st.UpdatedAt = now
+		chunk[key] = st
+		if len(chunk) == maxWriteBatch {
+			s.flush(chunk)
+			clear(chunk)
+		}
+	}
+	s.flush(chunk)
 }
 
 // dropped reports one lost write to the hook, if any.
@@ -1479,61 +1522,9 @@ func (s *serviceImpl) dropped(reason string) {
 	}
 }
 
-// maxWriteBatch bounds one batched write. It is the queue's own capacity, so a
-// single pass can take everything waiting and no more: one HSET of 4,096 fields
-// is around half a megabyte, which is one round trip Redis answers in the time
-// it used to answer one field.
+// maxWriteBatch bounds one batched write: one HSET of 4,096 fields is around
+// half a megabyte, one round trip.
 const maxWriteBatch = 4096
-
-// writeBatch drains one pass: op, plus whatever else is already queued, folded
-// per key and written in one round trip.
-//
-// This is what makes the write-behind keep up. One write per round trip caps it
-// at 1/RTT — about 2,650 a second against a Redis 0.38ms away — and mainnet
-// arrived at 3,119 on 2026-09-18, so a full queue dropped 472 a second for as
-// long as the traffic lasted. A queue cannot fix a rate deficit; it only picks
-// how many seconds pass before the loss starts.
-//
-// The pass is opportunistic rather than timed: it blocks for one write (the
-// caller's select already did), then takes what is waiting without blocking. So
-// a quiet gateway writes immediately, exactly as before, and a saturated one
-// batches thousands — the batch grows precisely when it needs to, with no tick
-// to tune and no durability traded away.
-//
-// Folding per key is the second saving and it is free: the map keeps the last
-// state per key, and a hot endpoint written many times in one pass costs one
-// field. Last-in-the-channel wins, which is the same rule storage applied
-// before, since concurrent writers for one key were already last-writer-wins.
-//
-// A forced write is not batched: ForceSetState bypasses the leader gate on
-// purpose, so putting one in a batch would carry every ordinary write in it
-// through the gate as well. They are rare (an operator's reset) and go alone.
-func (s *serviceImpl) writeBatch(first writeOp, batch map[string]State) {
-	clear(batch)
-	s.collect(first, batch)
-	for len(batch) < maxWriteBatch {
-		select {
-		case op := <-s.writeCh:
-			s.collect(op, batch)
-		default:
-			// Nothing waiting: write what we have rather than idling for more.
-			s.flush(batch)
-			return
-		}
-	}
-	s.flush(batch)
-}
-
-// collect stamps one write and folds it into the batch. A forced write goes
-// straight through instead, for the reason writeBatch gives.
-func (s *serviceImpl) collect(op writeOp, batch map[string]State) {
-	if op.force {
-		s.write(op)
-		return
-	}
-	op.state.UpdatedAt = time.Now().Unix()
-	batch[op.key] = op.state
-}
 
 // flush hands the batch to storage in one operation where storage can, and one
 // per key where it cannot. A failed batch is counted per key it carried: the
@@ -1561,7 +1552,7 @@ func (s *serviceImpl) flush(batch map[string]State) {
 // write stamps the state and hands it to storage. The stamp is what the
 // sweep keys on; it is set here, at write time, rather than at enqueue, so
 // it says when storage last heard about the key.
-func (s *serviceImpl) write(op writeOp) {
+func (s *serviceImpl) write(op writeOp) bool {
 	op.state.UpdatedAt = time.Now().Unix()
 	var err error
 	if f, ok := s.storage.(forcedWriter); ok && op.force {
@@ -1571,7 +1562,9 @@ func (s *serviceImpl) write(op writeOp) {
 	}
 	if err != nil {
 		s.dropped(WriteDropStorageError)
+		return false
 	}
+	return true
 }
 
 // forcedWriter is a storage that can be told to write regardless of its

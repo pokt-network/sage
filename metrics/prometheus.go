@@ -286,7 +286,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "reputation_writes_dropped_total",
-				Help:      "Reputation state writes that never reached storage, by reason: queue_full (the write-behind queue, sized 4096, had no room) or storage_error (storage refused the write, e.g. Redis unreachable). A dropped write leaves storage one signal behind this replica and, if it keeps happening, lets a key's stored stamp age past the 1h idle TTL, so the next pod's warm-up skips it as stale. A follower's writes are discarded by storage by design, since only the leader writes, and are not counted; a queue_full on a follower lost nothing persistent but shows the same queue pressure. Compare with sage_reputation_write_queue_depth.",
+				Help:      "Reputation state writes that never reached storage, by reason: storage_error (storage refused the write, e.g. Redis unreachable), counted per key in the failed flush. A dropped write leaves storage behind this replica until the key's next flush and, if it keeps happening, lets a key's stored stamp age past the 1h idle TTL, so the next pod's warm-up skips it as stale. Only the leader writes; a follower holds nothing. (queue_full, a write the old fixed queue had no room for, ended with the per-key write-behind on 2026-10-02.)",
 			},
 			[]string{"reason"},
 		),

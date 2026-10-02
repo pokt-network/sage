@@ -203,9 +203,14 @@ func TestService_StampsWritesAndSweepsStorage(t *testing.T) {
 		return len(store.cutoffs) >= 2
 	}, 2*time.Second, 5*time.Millisecond, "sweep did not run on its interval")
 
-	states, err := store.GetStates(context.Background(), "eth:")
-	require.NoError(t, err)
-	require.Len(t, states, 1, "a just-written key must survive a sweep at 1h TTL")
+	// The write-behind flushes once a second; the key must then survive the
+	// sweeps that keep running at a 1h TTL.
+	var states map[string]State
+	require.Eventually(t, func() bool {
+		var err error
+		states, err = store.GetStates(context.Background(), "eth:")
+		return err == nil && len(states) == 1
+	}, 3*time.Second, 10*time.Millisecond, "a just-written key must reach storage and survive a sweep at 1h TTL")
 	for _, st := range states {
 		assert.GreaterOrEqual(t, st.UpdatedAt, before, "write must be stamped")
 	}

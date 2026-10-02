@@ -24,6 +24,10 @@ func NewLeaderOnlyStorage(inner Storage, isLeader func() bool) *LeaderOnlyStorag
 	return &LeaderOnlyStorage{inner: inner, isLeader: isLeader}
 }
 
+// IsLeader reports whether this replica writes, for the service's write-behind
+// to skip holding writes that would be discarded.
+func (s *LeaderOnlyStorage) IsLeader() bool { return s.isLeader == nil || s.isLeader() }
+
 // GetState reads through.
 func (s *LeaderOnlyStorage) GetState(ctx context.Context, key string) (State, error) {
 	return s.inner.GetState(ctx, key)

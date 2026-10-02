@@ -271,13 +271,13 @@ func NewOperatorStatsGauge(count func() int) prometheus.Collector {
 	)
 }
 
-// NewReputationWriteQueueDepth exposes how many reputation writes are waiting
-// in the write-behind queue, read at scrape time from depth.
+// NewReputationWriteQueueDepth exposes how many reputation keys are waiting for
+// the next write-behind flush, read at scrape time from depth.
 func NewReputationWriteQueueDepth(depth func() int) prometheus.Collector {
 	return prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Namespace: "sage",
 		Name:      "reputation_write_queue_depth",
-		Help:      "Reputation state writes waiting in this replica's write-behind queue, at scrape time. The queue holds 4096; a write that arrives when it is full is dropped and counted in sage_reputation_writes_dropped_total{reason=\"queue_full\"}. A scrape is a sample, so a burst that fills and drains between scrapes shows only in the drop counter. Followers queue writes too, and storage discards them at write time without a Redis call, so a follower's queue drains fast; the leader's is the one to watch.",
+		Help:      "Reputation keys waiting for this replica's next write-behind flush (once a second), at scrape time: one per key changed since the last flush, however many signals it took. Always 0 on a follower, which does not write.",
 	}, func() float64 { return float64(depth()) })
 }
 
