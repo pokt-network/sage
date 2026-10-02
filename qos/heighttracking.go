@@ -15,10 +15,10 @@ import (
 // A plugin embeds it, sets Consensus in its constructor and calls
 // SetSyncAllowance once with the configured value.
 //
-// The sync allowance here is the plugin's selection bound, the value the
-// tuning knob moves. It is deliberately not BlockConsensus's own allowance,
-// which is fixed at construction; embedding *BlockConsensus directly would
-// promote methods with that other meaning.
+// The sync allowance is one value with two readers: the plugin's selection
+// bound and Consensus's outlier tolerance and external-floor offset. The
+// tuning knob moves both, so a service tuned at runtime behaves as one
+// configured with that value from boot.
 type HeightTracking struct {
 	// Consensus owns the height observations and the perceived head.
 	Consensus     *BlockConsensus
@@ -56,7 +56,10 @@ func (h *HeightTracking) SyncAllowance() uint64 { return h.syncAllowance.Load() 
 
 // SetSyncAllowance implements SyncAllowanceTuner: the tuning knob
 // qos.sync_allowance, per service, without a restart.
-func (h *HeightTracking) SetSyncAllowance(blocks uint64) { h.syncAllowance.Store(blocks) }
+func (h *HeightTracking) SetSyncAllowance(blocks uint64) {
+	h.syncAllowance.Store(blocks)
+	h.Consensus.syncAllowance.Store(blocks)
+}
 
 // AllStaleBy reports whether every endpoint in eps is known, by getHeight, to
 // sit below the relaxed height bound: twice the sync allowance behind the

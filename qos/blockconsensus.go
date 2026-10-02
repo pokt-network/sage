@@ -25,7 +25,9 @@ type BlockConsensus struct {
 	observations    []blockObs
 	windowDuration  time.Duration
 	maxObservations int
-	syncAllowance   uint64
+	// syncAllowance is the service's sync allowance, moved at runtime with
+	// the plugin's selection bound (HeightTracking.SetSyncAllowance).
+	syncAllowance atomic.Uint64
 
 	perceived atomic.Uint64 // lock-free read on hot path
 
@@ -65,15 +67,16 @@ func NewBlockConsensus(logger *slog.Logger, syncAllowance uint64) *BlockConsensu
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &BlockConsensus{
+	bc := &BlockConsensus{
 		logger:          logger,
 		observations:    make([]blockObs, 0, 64),
 		windowDuration:  defaultWindowDuration,
 		maxObservations: defaultMaxObservations,
-		syncAllowance:   syncAllowance,
 		graceStart:      time.Now(),
 		gracePeriod:     defaultGracePeriod,
 	}
+	bc.syncAllowance.Store(syncAllowance)
+	return bc
 }
 
 // AddObservation records a block height observation from an endpoint and recomputes perceived.
@@ -234,7 +237,7 @@ func (bc *BlockConsensus) computePerceived(now time.Time) uint64 {
 		return bc.applyExternalFloor(0, now)
 	}
 
-	tolerance := saturatingMul(bc.syncAllowance, 3)
+	tolerance := saturatingMul(bc.syncAllowance.Load(), 3)
 	anchor := partyAnchor(bc.observations, tolerance)
 
 	// Outlier threshold: anchor + (syncAllowance * 3).
@@ -331,8 +334,8 @@ func (bc *BlockConsensus) applyExternalFloor(perceived uint64, now time.Time) ui
 		return perceived
 	}
 	effective := floor
-	if floor > bc.syncAllowance {
-		effective = floor - bc.syncAllowance
+	if allowance := bc.syncAllowance.Load(); floor > allowance {
+		effective = floor - allowance
 	}
 	if effective > perceived {
 		return effective
