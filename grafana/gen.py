@@ -250,11 +250,14 @@ table(
         ("P50", f'histogram_quantile(0.50, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
         ("P95", f'histogram_quantile(0.95, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
         ("P99", f'histogram_quantile(0.99, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
-        ("Eps", f'max by ({by}) (sage_session_endpoints{{{S}}})'),
-        ("MeanScore", f'avg by ({by}) (sage_operator_reputation_mean{{{S}}})'),
-        ("Low", f'max by ({by}) (sage_session_endpoints_low{{{S}}})'),
-        ("URLs", f'max by ({by}) (sage_operator_reputation_keys{{{S}}})'),
-        ("Drained", f'max by (service_id, operator, rpc_type) (label_replace(sage_drained_operators{{{S}}}, "operator", "$1", "domain", "(.*)"))'),
+        # Reputation rows for WebSocket keys belong in the WebSocket table
+        # below: joined here they showed with RPS 0 (HTTP metrics), which
+        # read as an operator carrying no WebSocket traffic at all.
+        ("Eps", f'max by ({by}) (sage_session_endpoints{{{S}, rpc_type!="websocket"}})'),
+        ("MeanScore", f'avg by ({by}) (sage_operator_reputation_mean{{{S}, rpc_type!="websocket"}})'),
+        ("Low", f'max by ({by}) (sage_session_endpoints_low{{{S}, rpc_type!="websocket"}})'),
+        ("URLs", f'max by ({by}) (sage_operator_reputation_keys{{{S}, rpc_type!="websocket"}})'),
+        ("Drained", f'max by (service_id, operator, rpc_type) (label_replace(sage_drained_operators{{{S}, rpc_type!="websocket"}}, "operator", "$1", "domain", "(.*)"))'),
     ],
     {"service_id": 1, "operator": 0, "rpc_type": 2, "Value #RPS": 3, "Value #Success": 4, "Value #SupplierErr": 5,
      "Value #P50": 6, "Value #P95": 7, "Value #P99": 8, "Value #Eps": 9, "Value #MeanScore": 10,
@@ -489,12 +492,21 @@ table(
         ("Bad", f'sum by ({wsby}) (rate(sage_websocket_supplier_notifications_total{{{S}, grade=~"duplicate|unsolicited"}}[{RI}])) / '
                 f'sum by ({wsby}) (rate(sage_websocket_supplier_notifications_total{{{S}}}[{RI}])) * 100'),
         ("Tenure", f'histogram_quantile(0.50, sum by ({wsby}, le) (rate(sage_websocket_supplier_tenure_seconds_bucket{{{S}}}[1h])))'),
+        # WebSocket reputation beside WebSocket volume: the same columns the
+        # HTTP table carries, for the websocket face only.
+        ("MeanScore", f'avg by ({wsby}) (sage_operator_reputation_mean{{{S}, rpc_type="websocket"}})'),
+        ("Eps", f'max by ({wsby}) (sage_session_endpoints{{{S}, rpc_type="websocket"}})'),
+        ("Low", f'max by ({wsby}) (sage_session_endpoints_low{{{S}, rpc_type="websocket"}})'),
+        ("URLs", f'max by ({wsby}) (sage_operator_reputation_keys{{{S}, rpc_type="websocket"}})'),
+        ("Drained", f'max by ({wsby}) (label_replace(sage_drained_operators{{{S}, rpc_type=~"websocket|"}}, "operator", "$1", "domain", "(.*)"))'),
     ],
     {"operator": 0, "service_id": 1, "Value #Conns": 2, "Value #Down": 3, "Value #Up": 4, "Value #Bad": 5,
-     "Value #Tenure": 6},
+     "Value #Tenure": 6, "Value #MeanScore": 7, "Value #Eps": 8, "Value #Low": 9, "Value #URLs": 10,
+     "Value #Drained": 11},
     {"operator": "Operator", "service_id": "Service", "Value #Conns": "WS conns",
      "Value #Down": "Frames/s to client", "Value #Up": "Frames/s to supplier", "Value #Bad": "Dup+unsolicited %",
-     "Value #Tenure": "Median tenure (1h)"},
+     "Value #Tenure": "Median tenure (1h)", "Value #MeanScore": "WS Mean Score", "Value #Eps": "WS session eps",
+     "Value #Low": "WS eps < 80", "Value #URLs": "WS URLs (1h)", "Value #Drained": "Drained"},
     0, 24, 10, sort="Frames/s to client",
     extra_tx=[{"id": "calculateField", "options": {"alias": "Frames /conn", "mode": "binary", "replaceFields": False,
                                                    "binary": {"left": "Frames/s to client", "operator": "/",
@@ -503,7 +515,10 @@ table(
          "push rate on a subscription is chosen by the supplier being paid, so Frames /conn is worth comparing "
          "across operators on the same service: from inside the gateway a busy feed and an inflated one look "
          "alike. Dup+unsolicited % is notifications nobody asked for. Frame columns show only while the operator "
-         "holds a live connection, so a rate window cannot outlive the connection that produced it.",
+         "holds a live connection, so a rate window cannot outlive the connection that produced it. The WS "
+         "columns are the operator's WebSocket reputation (its websocket keys only, as the HTTP table above "
+         "carries the rest): mean score, registrations in the session, how many sit below tier 1, distinct URLs "
+         "in the last hour, and whether it is drained.",
     overrides=[
         col("WS conns", decimals=0, novalue="0", steps=((0, "green"), (10, "blue")), cell=BG, width=100),
         col("Frames/s to client", unit="short", decimals=1, novalue="0", width=150),
@@ -513,6 +528,12 @@ table(
         col("Median tenure (1h)", unit="s", novalue="—", width=150),
         col("Frames /conn", unit="short", decimals=1, novalue="0", steps=((0, "green"), (50, "yellow"), (200, "red")),
             cell=BG, width=120),
+        col("WS Mean Score", mn=0, mx=100, decimals=1, novalue="—", steps=((0, "red"), (50, "yellow"), (80, "green")),
+            cell={"mode": "lcd", "type": "gauge", "valueDisplayMode": "color"}, width=130),
+        col("WS session eps", decimals=0, novalue="—", width=120),
+        col("WS eps < 80", decimals=0, novalue="0", steps=((0, "green"), (1, "yellow"), (10, "red")), cell=BG, width=100),
+        col("WS URLs (1h)", decimals=0, novalue="—", width=100),
+        col("Drained", novalue="—", steps=((0, "green"), (1, "red")), cell=BG, width=80),
         col("Operator", width=150), col("Service", width=100),
     ],
 )

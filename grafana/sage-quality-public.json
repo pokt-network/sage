@@ -1753,7 +1753,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (service_id, operator, rpc_type) (sage_session_endpoints{job=\"sage\", environment=\"mainnet-sage\"})",
+          "expr": "max by (service_id, operator, rpc_type) (sage_session_endpoints{job=\"sage\", environment=\"mainnet-sage\", rpc_type!=\"websocket\"})",
           "refId": "Eps",
           "format": "table",
           "instant": true,
@@ -1765,7 +1765,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "avg by (service_id, operator, rpc_type) (sage_operator_reputation_mean{job=\"sage\", environment=\"mainnet-sage\"})",
+          "expr": "avg by (service_id, operator, rpc_type) (sage_operator_reputation_mean{job=\"sage\", environment=\"mainnet-sage\", rpc_type!=\"websocket\"})",
           "refId": "MeanScore",
           "format": "table",
           "instant": true,
@@ -1777,7 +1777,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (service_id, operator, rpc_type) (sage_session_endpoints_low{job=\"sage\", environment=\"mainnet-sage\"})",
+          "expr": "max by (service_id, operator, rpc_type) (sage_session_endpoints_low{job=\"sage\", environment=\"mainnet-sage\", rpc_type!=\"websocket\"})",
           "refId": "Low",
           "format": "table",
           "instant": true,
@@ -1789,7 +1789,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (service_id, operator, rpc_type) (sage_operator_reputation_keys{job=\"sage\", environment=\"mainnet-sage\"})",
+          "expr": "max by (service_id, operator, rpc_type) (sage_operator_reputation_keys{job=\"sage\", environment=\"mainnet-sage\", rpc_type!=\"websocket\"})",
           "refId": "URLs",
           "format": "table",
           "instant": true,
@@ -1801,7 +1801,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (service_id, operator, rpc_type) (label_replace(sage_drained_operators{job=\"sage\", environment=\"mainnet-sage\"}, \"operator\", \"$1\", \"domain\", \"(.*)\"))",
+          "expr": "max by (service_id, operator, rpc_type) (label_replace(sage_drained_operators{job=\"sage\", environment=\"mainnet-sage\", rpc_type!=\"websocket\"}, \"operator\", \"$1\", \"domain\", \"(.*)\"))",
           "refId": "Drained",
           "format": "table",
           "instant": true,
@@ -4582,7 +4582,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per operator and service. Every frame in either direction is a relay the supplier can claim, and the push rate on a subscription is chosen by the supplier being paid, so Frames /conn is worth comparing across operators on the same service: from inside the gateway a busy feed and an inflated one look alike. Dup+unsolicited % is notifications nobody asked for. Frame columns show only while the operator holds a live connection, so a rate window cannot outlive the connection that produced it.",
+      "description": "Per operator and service. Every frame in either direction is a relay the supplier can claim, and the push rate on a subscription is chosen by the supplier being paid, so Frames /conn is worth comparing across operators on the same service: from inside the gateway a busy feed and an inflated one look alike. Dup+unsolicited % is notifications nobody asked for. Frame columns show only while the operator holds a live connection, so a rate window cannot outlive the connection that produced it. The WS columns are the operator's WebSocket reputation (its websocket keys only, as the HTTP table above carries the rest): mean score, registrations in the session, how many sit below tier 1, distinct URLs in the last hour, and whether it is drained.",
       "type": "table",
       "title": "WebSocket Supplier Quality by Operator/Service",
       "id": 52,
@@ -4830,6 +4830,188 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "WS Mean Score"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "\u2014"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": 0
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 50
+                    },
+                    {
+                      "color": "green",
+                      "value": 80
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "lcd",
+                  "type": "gauge",
+                  "valueDisplayMode": "color"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "WS session eps"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "\u2014"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "WS eps < 80"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "0"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 10
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "WS URLs (1h)"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "\u2014"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Drained"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "\u2014"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "Operator"
             },
             "properties": [
@@ -4924,6 +5106,66 @@
           "format": "table",
           "instant": true,
           "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "avg by (service_id, operator) (sage_operator_reputation_mean{job=\"sage\", environment=\"mainnet-sage\", rpc_type=\"websocket\"})",
+          "refId": "MeanScore",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service_id, operator) (sage_session_endpoints{job=\"sage\", environment=\"mainnet-sage\", rpc_type=\"websocket\"})",
+          "refId": "Eps",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service_id, operator) (sage_session_endpoints_low{job=\"sage\", environment=\"mainnet-sage\", rpc_type=\"websocket\"})",
+          "refId": "Low",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service_id, operator) (sage_operator_reputation_keys{job=\"sage\", environment=\"mainnet-sage\", rpc_type=\"websocket\"})",
+          "refId": "URLs",
+          "format": "table",
+          "instant": true,
+          "range": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service_id, operator) (label_replace(sage_drained_operators{job=\"sage\", environment=\"mainnet-sage\", rpc_type=~\"websocket|\"}, \"operator\", \"$1\", \"domain\", \"(.*)\"))",
+          "refId": "Drained",
+          "format": "table",
+          "instant": true,
+          "range": false
         }
       ],
       "transformations": [
@@ -4954,7 +5196,12 @@
               "Value #Down": 3,
               "Value #Up": 4,
               "Value #Bad": 5,
-              "Value #Tenure": 6
+              "Value #Tenure": 6,
+              "Value #MeanScore": 7,
+              "Value #Eps": 8,
+              "Value #Low": 9,
+              "Value #URLs": 10,
+              "Value #Drained": 11
             },
             "renameByName": {
               "operator": "Operator",
@@ -4963,7 +5210,12 @@
               "Value #Down": "Frames/s to client",
               "Value #Up": "Frames/s to supplier",
               "Value #Bad": "Dup+unsolicited %",
-              "Value #Tenure": "Median tenure (1h)"
+              "Value #Tenure": "Median tenure (1h)",
+              "Value #MeanScore": "WS Mean Score",
+              "Value #Eps": "WS session eps",
+              "Value #Low": "WS eps < 80",
+              "Value #URLs": "WS URLs (1h)",
+              "Value #Drained": "Drained"
             }
           }
         },
