@@ -174,7 +174,7 @@ func main() {
 	// dump contains whatever the process holds in memory, signing keys
 	// included, and /debug/pprof/profile will happily block for 30s on request.
 	if cfg.Metrics.PprofAddr != "" {
-		if !isLoopbackAddr(cfg.Metrics.PprofAddr) {
+		if !config.IsLoopbackAddr(cfg.Metrics.PprofAddr) {
 			logger.Warn("pprof is reachable from outside this host: /debug/pprof exposes heap dumps (which contain signing keys) and has no authentication — bind it to localhost or firewall the port",
 				"addr", cfg.Metrics.PprofAddr,
 			)
@@ -398,23 +398,11 @@ func loadConfig(path string) (*config.Config, error) {
 // about severity to win an argument with a config. Anything logged after this
 // point still honours the configured level.
 func startupReporter(configured string) *slog.Logger {
-	level := parseLogLevel(configured)
-	if level <= slog.LevelWarn {
-		return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
-	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	level := min(parseLogLevel(configured), slog.LevelWarn)
+	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 }
 
 func parseLogLevel(level string) slog.Level {
 	lvl, _ := config.ParseLogLevel(level)
 	return lvl
-}
-
-// isLoopbackAddr reports whether a listen address reaches only this host.
-//
-// A bare port (":6060") binds every interface, so an empty host counts as
-// exposed, not as loopback — that is the case worth warning about, and the one
-// that looks harmless in a config file.
-func isLoopbackAddr(addr string) bool {
-	return config.IsLoopbackAddr(addr)
 }

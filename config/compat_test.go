@@ -263,7 +263,7 @@ func TestConfigCompatibility_Gateway(t *testing.T) {
 		if g.Retry != want {
 			t.Errorf("retry_config = %+v, want %+v", g.Retry, want)
 		}
-		if !g.Retry.IsEnabled() || !g.Retry.HedgeEnabled() {
+		if !g.Retry.IsEnabled() || g.Retry.HedgeDelay <= 0 {
 			t.Error("retry should report enabled and hedging")
 		}
 	})

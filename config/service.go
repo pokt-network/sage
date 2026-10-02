@@ -506,9 +506,6 @@ func (c *RetryConfig) disable() {
 	c.MaxRetries = 0
 }
 
-// HedgeEnabled returns true if hedge racing is configured.
-func (c RetryConfig) HedgeEnabled() bool { return c.HedgeDelay > 0 }
-
 // ExternalBlockSource defines an external RPC endpoint for ground-truth block
 // heights. Its height is a floor under the perceived head, applied as
 // "the pool may not sit more than sync_allowance behind this node": when the

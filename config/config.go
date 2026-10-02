@@ -522,24 +522,21 @@ const (
 //
 // A deployment that genuinely wants no sampling sets a negative value.
 func (c WebSocketConfig) EffectiveFrameObservationSampleRate() float64 {
-	if c.FrameObservationSampleRate == 0 {
-		return DefaultFrameObservationSampleRate
-	}
-	if c.FrameObservationSampleRate < 0 {
-		return 0
-	}
-	return c.FrameObservationSampleRate
+	return effectiveSampleRate(c.FrameObservationSampleRate, DefaultFrameObservationSampleRate)
 }
 
 // EffectiveCloseObservationSampleRate resolves the bridge-close sample rate.
 // Zero takes the default; a negative value disables sampling. See
 // EffectiveFrameObservationSampleRate for why zero cannot mean "off".
 func (c WebSocketConfig) EffectiveCloseObservationSampleRate() float64 {
-	if c.CloseObservationSampleRate == 0 {
-		return DefaultCloseObservationSampleRate
+	return effectiveSampleRate(c.CloseObservationSampleRate, DefaultCloseObservationSampleRate)
+}
+
+// effectiveSampleRate is the rule both WebSocket sample rates share: zero takes
+// def, a negative value is off.
+func effectiveSampleRate(rate, def float64) float64 {
+	if rate == 0 {
+		return def
 	}
-	if c.CloseObservationSampleRate < 0 {
-		return 0
-	}
-	return c.CloseObservationSampleRate
+	return max(rate, 0)
 }

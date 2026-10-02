@@ -149,16 +149,10 @@ func TestRetryConfig(t *testing.T) {
 	if !r.IsEnabled() {
 		t.Error("should be enabled")
 	}
-	if !r.HedgeEnabled() {
-		t.Error("hedge should be enabled")
-	}
 
 	r2 := RetryConfig{}
 	if r2.IsEnabled() {
 		t.Error("zero value should be disabled")
-	}
-	if r2.HedgeEnabled() {
-		t.Error("zero value hedge should be disabled")
 	}
 }
 
