@@ -114,7 +114,9 @@ const (
 	// as method_block_408 does for a 408: a supplier claiming a block is
 	// pruned when it is between max(16 blocks, 30s) and max(128 blocks,
 	// 10 min; 128 for state methods) behind the head, over at most ten
-	// blocks, keeps that method off that host for the client TTL. On mainnet
+	// blocks (any span, judged by its oldest block, for a per-block claim
+	// such as "no state found for block" on a log or receipt query), keeps
+	// that method off that host for the client TTL. On mainnet
 	// (2026-10-01) one owner answered heavy calls about blocks a few minutes
 	// old with "requested height has been pruned" (sei), "No state available
 	// for block" (gnosis) and "no state found for block" (op) in 15-25ms,

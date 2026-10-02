@@ -59,10 +59,24 @@ var refusalClaims = []string{
 	"height is not available",
 }
 
+// perBlockClaims name one block as gone. A node refusing a range on policy
+// words it as a policy ("range too large", "requires an address filter",
+// "historical state is not available"), never this way; on mainnet
+// (2026-10-02) one owner answered eth_getLogs ranges hundreds of blocks wide,
+// on base and op, with "no state found for block", and no other party used
+// the wording on logs at all. For a history method such a claim is judged
+// over any span, by its oldest block (see RefusalVerdict).
+var perBlockClaims = []string{
+	"no state found for block",
+	"no state available for block",
+	"requested height has been pruned",
+}
+
 // stateMethods read state, which geth-style nodes keep for only the last 128
 // blocks; for them the window never reaches past refusalMaxBlocks, however
-// fast the chain (where ten minutes would be more blocks than that). History (logs, receipts, bodies) is kept far longer, so the
-// time ceiling applies to the rest. On mainnet (2026-10-01) an honest node
+// fast the chain (where ten minutes would be more blocks than that). History
+// (logs, receipts, bodies) is kept far longer, so the time ceiling applies to
+// the rest. On mainnet (2026-10-01) an honest node
 // answered eth_getBalance 128-178 blocks back on a fast chain with "historical
 // state is not available", inside the ten-minute window.
 var stateMethods = map[string]bool{
@@ -95,15 +109,21 @@ var methodsWithLeadingBlock = map[string]bool{
 // skip names why a claim was not judged ("" when there was none to judge, or
 // it was): for a plugin's debug log, to see what the rule leaves out.
 //
+// A per-block claim (perBlockClaims) on a history method is judged over any
+// span, by its OLDEST block: a node may be unable to serve the newest blocks
+// of a range touching the head, but it cannot truthfully claim a block
+// minutes old is gone.
+//
 // The answering host's own reported head is deliberately not consulted. A
 // cache reports a stale head too, minutes behind on sei, and every lie about
 // a block newer than that was exempt; the floor already covers a node a few
 // blocks behind.
 func RefusalVerdict(payload domain.Payload, result heuristic.AnalysisResult, head uint64, blocksIn func(time.Duration) uint64) (refined heuristic.AnalysisResult, ok bool, skip string) {
-	if head == 0 || result.Attribution == heuristic.AttrSupplier || !claimsDiscarded(result.Details) {
+	if head == 0 || result.Attribution == heuristic.AttrSupplier || !claimsAny(result.Details, refusalClaims) {
 		return result, false, ""
 	}
 	method := payload.Method()
+	perBlock := !stateMethods[method] && claimsAny(result.Details, perBlockClaims)
 	minBack, maxBack := uint64(refusalMinBlocks), uint64(refusalMaxBlocks)
 	if blocksIn != nil {
 		minBack = max(minBack, blocksIn(refusalMinAge))
@@ -112,24 +132,29 @@ func RefusalVerdict(payload domain.Payload, result heuristic.AnalysisResult, hea
 		}
 	}
 	from, to, named := requestedBlocks(method, gjson.GetBytes(payload.Bytes(), "params"), head)
+	// The block the floor is measured on: the newest, or for a per-block
+	// claim the oldest.
+	floorBlock := to
+	if perBlock {
+		floorBlock = from
+	}
 	switch {
 	case !named || to < from:
 		return result, false, "no block number"
-	case to-from > refusalMaxSpan:
+	case !perBlock && to-from > refusalMaxSpan:
 		return result, false, "span"
-	case to+minBack > head:
+	case floorBlock+minBack > head:
 		return result, false, "too new"
 	case from+maxBack < head:
 		return result, false, "too old"
 	}
-	return heuristic.RefusedRecent(fmt.Sprintf("%s blocks %d-%d, %d-%d behind the head %d: %s", method, from, to, head-to, head-from, head, result.Details)), true, ""
+	return heuristic.RefusedRecent(fmt.Sprintf("%s blocks %d-%d, %d-%d behind the head %d: %s", method, from, to, head-min(to, head), head-from, head, result.Details)), true, ""
 }
 
-// claimsDiscarded reports whether a verdict's details carry one of
-// refusalClaims.
-func claimsDiscarded(details string) bool {
+// claimsAny reports whether a verdict's details carry one of wordings.
+func claimsAny(details string, wordings []string) bool {
 	lower := strings.ToLower(details)
-	for _, w := range refusalClaims {
+	for _, w := range wordings {
 		if strings.Contains(lower, w) {
 			return true
 		}

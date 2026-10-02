@@ -154,3 +154,35 @@ func TestRefusalVerdict_StateMethodsStopAt128(t *testing.T) {
 		}
 	}
 }
+
+// A per-block claim on a history method is judged over any span, by its
+// oldest block; policy wordings, softer claims and state methods keep the
+// span rule. The owner refused eth_getLogs ranges on base and op this way.
+func TestRefusalVerdict_PerBlockClaimsOverRanges(t *testing.T) {
+	const head = 1_000_000
+	rate := func(d time.Duration) uint64 { return uint64(0.5 * d.Seconds()) } // base: 2s blocks
+	logs := func(fromBack, toBack uint64) domain.Payload {
+		return rpc("eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x%x","toBlock":"0x%x"}]`, head-fromBack, head-toBack))
+	}
+	toLatest := rpc("eth_getLogs", fmt.Sprintf(`[{"fromBlock":"0x%x","toBlock":"latest"}]`, head-150))
+	for _, tc := range []struct {
+		name    string
+		payload domain.Payload
+		message string
+		refused bool
+	}{
+		{"owner: 150-block range up to the head", toLatest, "no state found for block", true},
+		{"owner: 100 to 20 back", logs(100, 20), "no state available for block", true},
+		{"policy wording on the same range", toLatest, "historical state is not available", false},
+		{"range-too-large policy", toLatest, "query returned more than 10000 results; range too large", false},
+		{"address-filter policy", toLatest, "requires an 'address' filter", false},
+		{"a softer claim over a wide range keeps the span rule", logs(150, 20), "block is pruned", false},
+		{"oldest block 30 minutes back: may be a real prune", logs(900, 20), "no state found for block", false},
+		{"oldest block 10s back: too new", logs(5, 0), "no state found for block", false},
+		{"a state method keeps its own rules", rpc("eth_getBalance", fmt.Sprintf(`["0x1","0x%x"]`, head-150)), "no state found for block", false},
+	} {
+		if _, ok, _ := RefusalVerdict(tc.payload, verdict(tc.message), head, rate); ok != tc.refused {
+			t.Errorf("%s: refused=%v, want %v", tc.name, ok, tc.refused)
+		}
+	}
+}

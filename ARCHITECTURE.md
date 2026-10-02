@@ -254,7 +254,7 @@ likely a chain-wide slowdown than every operator down at once.
 | circuit_breaker | on | Domain-wide broken tracking |
 | circuit_break_upstream | off | A relay miner's 408/5xx counts toward the circuit breaker's rate gate |
 | method_block_408 | off | A supplier's 408 keeps that method away from that host for the client TTL; never escalates to a host-wide block |
-| method_block_refusal | off | A refused_recent verdict (a prune claim about a block 16 blocks/30s to 128 blocks/10 min behind the head, 128 blocks for state methods, span ≤10) keeps that method off that host for the client TTL; never escalates to a host-wide block |
+| method_block_refusal | off | A refused_recent verdict (a prune claim about a block 16 blocks/30s to 128 blocks/10 min behind the head, 128 blocks for state methods, span ≤10; any span by its oldest block for a per-block claim on a history method) keeps that method off that host for the client TTL; never escalates to a host-wide block |
 | cosmos_evm_height | off | A Cosmos service learns block heights from its EVM face (eth_blockNumber probe and answers); only for chains whose EVM block number is the Cosmos height |
 | ws_share_cap | off | No party placed into more than half of a service's WebSocket frames on a pod, at open and every rebind, while another vouched party is in the session |
 | stale_response | off | A head answer too far behind the perceived head is a major supplier verdict (feeds the failure rate) and is retried; the freshest answer is delivered if every attempt is stale |
