@@ -15,7 +15,7 @@ import (
 
 func TestHeuristic_SuccessResponse_NoError(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags, nil)
+	mw := middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -46,7 +46,7 @@ func TestHeuristic_SuccessResponse_NoError(t *testing.T) {
 // an operator turns it off: the flag is the live undo.
 func TestHeuristic_Penalize408FlagIsTheUndo(t *testing.T) {
 	for _, on := range []bool{true, false} {
-		mw := middleware.Heuristic(newMockFlags(map[string]bool{"heuristic": true, "penalize_408": on}), nil)
+		mw := middleware.Heuristic(newMockFlags(map[string]bool{"heuristic": true, "penalize_408": on}), nil, middleware.HeuristicOptions{})
 		ctx := newCtx(newPOSTRequest("/v1", ""))
 		ctx.ServiceID = "bsc"
 		ctx.RPCType = domain.RPCTypeJSONRPC
@@ -88,7 +88,7 @@ func TestHeuristic_CircuitBreakUpstreamFlag(t *testing.T) {
 			ctx := newCtx(newPOSTRequest("/v1", ""))
 			ctx.ServiceID = "bsc"
 			ctx.RPCType = domain.RPCTypeJSONRPC
-			_ = middleware.Heuristic(flags, nil)(tc.inner).HandleRelay(ctx)
+			_ = middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})(tc.inner).HandleRelay(ctx)
 			if r := ctx.HeuristicResult; r == nil || r.ShouldCircuitBreak != (tc.want && on) {
 				t.Errorf("%s, flag %v: result %+v", tc.name, on, r)
 			}
@@ -99,7 +99,7 @@ func TestHeuristic_CircuitBreakUpstreamFlag(t *testing.T) {
 // method_block_408 makes a supplier's 408 method-blocking; off, it is not.
 func TestHeuristic_MethodBlock408Flag(t *testing.T) {
 	for _, on := range []bool{true, false} {
-		mw := middleware.Heuristic(newMockFlags(map[string]bool{"heuristic": true, "penalize_408": true, "method_block_408": on}), nil)
+		mw := middleware.Heuristic(newMockFlags(map[string]bool{"heuristic": true, "penalize_408": true, "method_block_408": on}), nil, middleware.HeuristicOptions{})
 		ctx := newCtx(newPOSTRequest("/v1", ""))
 		ctx.ServiceID = "arb-one"
 		ctx.RPCType = domain.RPCTypeJSONRPC
@@ -115,7 +115,7 @@ func TestHeuristic_MethodBlock408Flag(t *testing.T) {
 
 func TestHeuristic_500Response_TriggersRetry(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags, nil)
+	mw := middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -146,7 +146,7 @@ func TestHeuristic_500Response_TriggersRetry(t *testing.T) {
 
 func TestHeuristic_EmptyBody_TriggersRetry(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags, nil)
+	mw := middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -174,7 +174,7 @@ func TestHeuristic_EmptyBody_TriggersRetry(t *testing.T) {
 
 func TestHeuristic_FlagDisabled_NoAnalysis(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": false})
-	mw := middleware.Heuristic(flags, nil)
+	mw := middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -198,7 +198,7 @@ func TestHeuristic_FlagDisabled_NoAnalysis(t *testing.T) {
 
 func TestHeuristic_NilResponse_NoAnalysis(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags, nil)
+	mw := middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -218,7 +218,7 @@ func TestHeuristic_NilResponse_NoAnalysis(t *testing.T) {
 
 func TestHeuristic_InnerHandlerError_Propagated(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags, nil)
+	mw := middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -238,7 +238,7 @@ func TestHeuristic_InnerHandlerError_Propagated(t *testing.T) {
 
 func TestHeuristic_4xxResponse_NoRetry(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	mw := middleware.Heuristic(flags, nil)
+	mw := middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -275,7 +275,7 @@ func TestHeuristic_TransportErrorIsGraded(t *testing.T) {
 		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.DeadlineExceeded, true)
 	})
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	h := middleware.Heuristic(flags, nil)(inner)
+	h := middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})(inner)
 
 	ctx := newCtx(newPOSTRequest("/v1", ""))
 	err := h.HandleRelay(ctx)
@@ -299,7 +299,7 @@ func TestHeuristic_ClientCancelIsAttributedToClient(t *testing.T) {
 		return domain.NewRelayError(domain.ErrTransport, "HTTP relay failed", context.Canceled, true)
 	})
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	h := middleware.Heuristic(flags, nil)(inner)
+	h := middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})(inner)
 
 	ctx := newCtx(newPOSTRequest("/v1", ""))
 	ctx.Ctx = goCtx
@@ -341,7 +341,7 @@ func TestHeuristic_PluginRefinesA5xxResponse(t *testing.T) {
 	ctx.Response = &domain.Response{Body: []byte(`{"code":2,"message":"query wasm contract failed"}`), HTTPStatusCode: 500}
 	flags := newMockFlags(map[string]bool{"heuristic": true})
 
-	if err := middleware.Heuristic(flags, reg)(relay.Noop).HandleRelay(ctx); err != nil {
+	if err := middleware.Heuristic(flags, reg, middleware.HeuristicOptions{})(relay.Noop).HandleRelay(ctx); err != nil {
 		t.Fatalf("a refined 5xx must be delivered, got %v", err)
 	}
 	if ctx.HeuristicResult == nil || ctx.HeuristicResult.Reason != "query_5xx" || ctx.HeuristicResult.Attribution != heuristic.AttrBlockchain {
@@ -351,7 +351,7 @@ func TestHeuristic_PluginRefinesA5xxResponse(t *testing.T) {
 	// The same 5xx on a route the plugin does not refine is still retried.
 	ctx.Payloads = []domain.Payload{domain.NewPayload(nil, domain.RPCTypeREST, "").WithHTTP("/cosmos/bank/v1beta1/balances/osmo1abc", "GET")}
 	ctx.Response = &domain.Response{Body: []byte(`oops`), HTTPStatusCode: 500}
-	if err := middleware.Heuristic(flags, reg)(relay.Noop).HandleRelay(ctx); !errors.Is(err, domain.ErrRetryVerdict) {
+	if err := middleware.Heuristic(flags, reg, middleware.HeuristicOptions{})(relay.Noop).HandleRelay(ctx); !errors.Is(err, domain.ErrRetryVerdict) {
 		t.Fatalf("an unrefined 5xx must still carry the retry verdict, got %v", err)
 	}
 }
@@ -366,7 +366,7 @@ func TestHeuristic_PluginRefinesAnUpstream5xxError(t *testing.T) {
 	})
 	flags := newMockFlags(map[string]bool{"heuristic": true})
 
-	err := middleware.Heuristic(flags, reg)(inner).HandleRelay(ctx)
+	err := middleware.Heuristic(flags, reg, middleware.HeuristicOptions{})(inner).HandleRelay(ctx)
 	if err == nil {
 		t.Fatal("the transport error must still propagate")
 	}
@@ -386,7 +386,7 @@ func TestHeuristic_PluginRefinesAnUpstream5xxError(t *testing.T) {
 // that has nothing to deliver.
 func TestHeuristic_RetryVerdict_IsIdentifiable(t *testing.T) {
 	flags := newMockFlags(map[string]bool{"heuristic": true})
-	handler := middleware.Heuristic(flags, nil)(relay.Noop)
+	handler := middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})(relay.Noop)
 
 	ctx := newCtx(newPOSTRequest("/v1", ""))
 	ctx.ServiceID = "eth"

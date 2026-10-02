@@ -369,8 +369,9 @@ func (e *Executor) SetTrafficSkip(counter reputation.TrafficCounter, flags featu
 func (e *Executor) SetResultRecorder(r ResultRecorder) { e.recorder = r }
 
 // SetHeadLagRecorder installs the hook a graded head answer goes to: the same
-// one client head answers reach (middleware.WithHeadLag), so a check marked
-// qos.HealthCheck.GradesHead counts toward a party's stale share. Wire time.
+// one client head answers reach (middleware.HeuristicOptions.HeadLag), so a
+// check marked qos.HealthCheck.GradesHead counts toward a party's stale share.
+// Wire time.
 func (e *Executor) SetHeadLagRecorder(fn func(serviceID domain.ServiceID, party, method string, lag uint64, stale bool)) {
 	e.headLag = fn
 }

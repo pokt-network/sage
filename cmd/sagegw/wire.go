@@ -802,7 +802,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		return middleware.Observe(flags, obsQueue, repSvc, sampler)
 	})
 	mwReg.Register(relay.MWRetry, func() relay.Middleware {
-		return middleware.Retry(flags, retryFn, recorder, middleware.RetryVouchedBy(repSvc), middleware.RetryEndpointsFrom(proto))
+		return middleware.Retry(flags, retryFn, recorder, middleware.RetryOptions{Reputation: repSvc, Endpoints: proto})
 	})
 	mwReg.Register(relay.MWHedge, func() relay.Middleware { return middleware.Hedge(flags, retryFn, recorder, proto) })
 	mwReg.Register(relay.MWSupplierAffinity, func() relay.Middleware {
@@ -827,8 +827,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		repSvc.RecordHeadAnswer(serviceID, party, stale)
 	}
 	mwReg.Register(relay.MWHeuristic, func() relay.Middleware {
-		return middleware.Heuristic(flags, qosReg, middleware.WithAttemptTimeout(timeoutFn),
-			middleware.WithHeadLag(recordHeadAnswer))
+		return middleware.Heuristic(flags, qosReg, middleware.HeuristicOptions{AttemptTimeout: timeoutFn, HeadLag: recordHeadAnswer})
 	})
 	mwReg.Register(relay.MWSendRelay, func() relay.Middleware { return middleware.SendRelay(proto) })
 

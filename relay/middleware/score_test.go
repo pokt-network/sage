@@ -82,7 +82,7 @@ func TestScore_RetriedButUnscoredVerdictIsNoSignal(t *testing.T) {
 	} {
 		rep := &recordingRepService{}
 		flags := newFlags(append(tc.flags, featureflag.FlagScoringV2)...)
-		inner := Heuristic(flags, nil)(relay.HandlerFunc(func(ctx *relay.Context) error {
+		inner := Heuristic(flags, nil, HeuristicOptions{})(relay.HandlerFunc(func(ctx *relay.Context) error {
 			ctx.Response = &domain.Response{Body: []byte(tc.body), HTTPStatusCode: tc.status}
 			return nil
 		}))
@@ -115,7 +115,7 @@ func TestScore_ClientAttributedErrorIsNoSignal(t *testing.T) {
 func TestScore_ClientAttributedAnswerIsNoSignal(t *testing.T) {
 	rep := &recordingRepService{}
 	body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"the method trace_call does not exist/is not available"}}`)
-	inner := Heuristic(newFlags(featureflag.FlagHeuristic), nil)(relay.HandlerFunc(func(ctx *relay.Context) error {
+	inner := Heuristic(newFlags(featureflag.FlagHeuristic), nil, HeuristicOptions{})(relay.HandlerFunc(func(ctx *relay.Context) error {
 		ctx.Response = &domain.Response{Body: body, HTTPStatusCode: 200}
 		return nil
 	}))
@@ -130,7 +130,7 @@ func TestScore_ClientAttributedAnswerIsNoSignal(t *testing.T) {
 // success silently going unrecorded.
 func TestScore_AnalyzerSuccessVerdictIsStillScored(t *testing.T) {
 	rep := &recordingRepService{}
-	inner := Heuristic(newFlags(featureflag.FlagHeuristic), nil)(relay.HandlerFunc(func(ctx *relay.Context) error {
+	inner := Heuristic(newFlags(featureflag.FlagHeuristic), nil, HeuristicOptions{})(relay.HandlerFunc(func(ctx *relay.Context) error {
 		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"0x10"}`), HTTPStatusCode: 200}
 		return nil
 	}))

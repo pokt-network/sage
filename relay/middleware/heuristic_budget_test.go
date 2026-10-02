@@ -21,7 +21,7 @@ func TestHeuristic_TimeoutGradedByTheBudgetTheAttemptHad(t *testing.T) {
 		t.Cleanup(cancel)
 		ctx.Ctx = c
 		inner := relay.HandlerFunc(func(*relay.Context) error { return timeoutErr })
-		mw := Heuristic(nil, nil, WithAttemptTimeout(func(domain.ServiceID) time.Duration { return 5 * time.Second }))
+		mw := Heuristic(nil, nil, HeuristicOptions{AttemptTimeout: func(domain.ServiceID) time.Duration { return 5 * time.Second }})
 		_ = mw(inner).HandleRelay(ctx)
 		return ctx
 	}

@@ -35,8 +35,7 @@ func TestRetry_OperatorPreferenceNeverNarrowsIntoJunk(t *testing.T) {
 		})
 		ctx := baseContext()
 		ctx.Endpoints = domain.EndpointAddrList{a1, a2, junk}
-		mw := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0), nil,
-			RetryVouchedBy(&stubRepService{scores: scores}))
+		mw := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0), nil, RetryOptions{Reputation: &stubRepService{scores: scores}})
 		if err := mw(h).HandleRelay(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -153,8 +152,7 @@ func TestRetry_OperatorPreferenceNeverNarrowsIntoStale(t *testing.T) {
 	ctx.Endpoints = domain.EndpointAddrList{a1, a2, behind}
 	ctx.Plugin = stalePlugin{stale: map[domain.EndpointAddr]bool{behind: true}}
 	scores := map[domain.EndpointAddr]float64{a1: 100, a2: 100, behind: 100}
-	mw := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0), nil,
-		RetryVouchedBy(&stubRepService{scores: scores}))
+	mw := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0), nil, RetryOptions{Reputation: &stubRepService{scores: scores}})
 	if err := mw(h).HandleRelay(ctx); err != nil {
 		t.Fatal(err)
 	}

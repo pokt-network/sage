@@ -23,7 +23,7 @@ func retryCfg(maxRetries int, maxLatency time.Duration) func(domain.ServiceID) c
 
 func TestRetry_SucceedsOnFirstTry(t *testing.T) {
 	handler := newMockHandler(nil)
-	mw := Retry(newFlags("retry"), retryCfg(2, 0), nil)
+	mw := Retry(newFlags("retry"), retryCfg(2, 0), nil, RetryOptions{})
 	h := mw(handler)
 
 	ctx := baseContext()
@@ -37,7 +37,7 @@ func TestRetry_SucceedsOnFirstTry(t *testing.T) {
 
 func TestRetry_SucceedsOnRetry(t *testing.T) {
 	handler := newMockHandler(retryableErr("temporary"), nil)
-	mw := Retry(newFlags("retry"), retryCfg(2, 0), nil)
+	mw := Retry(newFlags("retry"), retryCfg(2, 0), nil, RetryOptions{})
 	h := mw(handler)
 
 	ctx := baseContext()
@@ -55,7 +55,7 @@ func TestRetry_ExhaustsRetries(t *testing.T) {
 		retryableErr("fail2"),
 		retryableErr("fail3"),
 	)
-	mw := Retry(newFlags("retry"), retryCfg(2, 0), nil)
+	mw := Retry(newFlags("retry"), retryCfg(2, 0), nil, RetryOptions{})
 	h := mw(handler)
 
 	ctx := baseContext()
@@ -80,7 +80,7 @@ func TestRetry_RespectsMaxLatencyBudget(t *testing.T) {
 	}
 
 	// MaxLatency = 1ms; the first attempt takes 5ms, so budget is immediately gone.
-	mw := Retry(newFlags("retry"), retryCfg(5, 1*time.Millisecond), nil)
+	mw := Retry(newFlags("retry"), retryCfg(5, 1*time.Millisecond), nil, RetryOptions{})
 	h := mw(slowHandler)
 
 	ctx := baseContext()
@@ -99,7 +99,7 @@ func TestRetry_NonRetryableErrorStopsImmediately(t *testing.T) {
 		nonRetryableErr("bad request"),
 		nil, // would succeed if retried
 	)
-	mw := Retry(newFlags("retry"), retryCfg(3, 0), nil)
+	mw := Retry(newFlags("retry"), retryCfg(3, 0), nil, RetryOptions{})
 	h := mw(handler)
 
 	ctx := baseContext()
@@ -117,7 +117,7 @@ func TestRetry_ExcludesTriedEndpoints(t *testing.T) {
 		responses: []error{retryableErr("fail1"), retryableErr("fail2"), nil},
 	}
 
-	mw := Retry(newFlags("retry"), retryCfg(3, 0), nil)
+	mw := Retry(newFlags("retry"), retryCfg(3, 0), nil, RetryOptions{})
 	h := mw(th)
 
 	ctx := baseContext()
@@ -137,7 +137,7 @@ func TestRetry_ExcludesTriedEndpoints(t *testing.T) {
 
 func TestRetry_FlagDisabled_PassesThrough(t *testing.T) {
 	handler := newMockHandler(nil)
-	mw := Retry(newFlags( /* no "retry" flag */ ), retryCfg(3, 0), nil)
+	mw := Retry(newFlags( /* no "retry" flag */ ), retryCfg(3, 0), nil, RetryOptions{})
 	h := mw(handler)
 
 	ctx := baseContext()
@@ -151,7 +151,7 @@ func TestRetry_FlagDisabled_PassesThrough(t *testing.T) {
 
 func TestRetry_MaxRetriesZero_PassesThrough(t *testing.T) {
 	handler := newMockHandler(retryableErr("fail"))
-	mw := Retry(newFlags("retry"), retryCfg(0, 0), nil)
+	mw := Retry(newFlags("retry"), retryCfg(0, 0), nil, RetryOptions{})
 	h := mw(handler)
 
 	ctx := baseContext()
@@ -230,7 +230,7 @@ func firstEndpointHandler(seen *[]domain.EndpointAddr) relay.Handler {
 // rack, same upstream, same outage.
 func TestRetry_PrefersADifferentOperator(t *testing.T) {
 	var seen []domain.EndpointAddr
-	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(2, 0), nil)(firstEndpointHandler(&seen))
+	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(2, 0), nil, RetryOptions{})(firstEndpointHandler(&seen))
 
 	ctx := baseContext()
 	ctx.Endpoints = multiOperatorEndpoints()
@@ -254,7 +254,7 @@ func TestRetry_PrefersADifferentOperator(t *testing.T) {
 // narrowing compounded, the last attempt would find nothing left to try.
 func TestRetry_OperatorPreferenceDoesNotStrandLaterAttempts(t *testing.T) {
 	var seen []domain.EndpointAddr
-	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(2, 0), nil)(firstEndpointHandler(&seen))
+	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(2, 0), nil, RetryOptions{})(firstEndpointHandler(&seen))
 
 	ctx := baseContext()
 	ctx.Endpoints = multiOperatorEndpoints()
@@ -272,7 +272,7 @@ func TestRetry_OperatorPreferenceDoesNotStrandLaterAttempts(t *testing.T) {
 // Flag off restores per-endpoint-only exclusion.
 func TestRetry_OperatorAwarenessIsFlagGated(t *testing.T) {
 	var seen []domain.EndpointAddr
-	h := Retry(newFlags("retry"), retryCfg(2, 0), nil)(firstEndpointHandler(&seen))
+	h := Retry(newFlags("retry"), retryCfg(2, 0), nil, RetryOptions{})(firstEndpointHandler(&seen))
 
 	ctx := baseContext()
 	ctx.Endpoints = multiOperatorEndpoints()
@@ -290,7 +290,7 @@ func TestRetry_OperatorAwarenessIsFlagGated(t *testing.T) {
 // a preference, and having nowhere else to go is not a reason to stop.
 func TestRetry_SingleOperatorPoolStillRetries(t *testing.T) {
 	var seen []domain.EndpointAddr
-	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(2, 0), nil)(firstEndpointHandler(&seen))
+	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(2, 0), nil, RetryOptions{})(firstEndpointHandler(&seen))
 
 	ctx := baseContext() // testEndpoints: three hostnames, one operator
 	_ = h.HandleRelay(ctx)
@@ -324,7 +324,7 @@ func TestRetry_StopsWhenRequestContextIsDone(t *testing.T) {
 		cancel() // the client hangs up while this attempt is in flight
 		return retryableErr("context canceled")
 	})
-	h := Retry(newFlags("retry"), retryCfg(3, 0), nil)(inner)
+	h := Retry(newFlags("retry"), retryCfg(3, 0), nil, RetryOptions{})(inner)
 
 	ctx := baseContext()
 	ctx.Ctx = goCtx
@@ -355,7 +355,7 @@ func TestRetry_ResetsHeuristicResultPerAttempt(t *testing.T) {
 		ctx.Response = &domain.Response{HTTPStatusCode: 200}
 		return nil
 	})
-	h := Retry(newFlags("retry"), retryCfg(2, 0), nil)(inner)
+	h := Retry(newFlags("retry"), retryCfg(2, 0), nil, RetryOptions{})(inner)
 
 	ctx := baseContext()
 	if err := h.HandleRelay(ctx); err != nil {
@@ -390,7 +390,7 @@ func TestRetry_SkipsAttemptWithNoBudgetLeft(t *testing.T) {
 	ctx := baseContext()
 	ctx.Ctx = deadlineCtx
 
-	err := Retry(newFlags("retry"), retryCfg(2, 0), nil)(slowFail).HandleRelay(ctx)
+	err := Retry(newFlags("retry"), retryCfg(2, 0), nil, RetryOptions{})(slowFail).HandleRelay(ctx)
 	if err != failErr {
 		t.Fatalf("expected the last attempt's own error, got %v", err)
 	}
@@ -413,7 +413,7 @@ func TestRetry_RetriesWhenBudgetRemains(t *testing.T) {
 	ctx := baseContext()
 	ctx.Ctx = deadlineCtx
 
-	_ = Retry(newFlags("retry"), retryCfg(2, 0), nil)(fastFail).HandleRelay(ctx)
+	_ = Retry(newFlags("retry"), retryCfg(2, 0), nil, RetryOptions{})(fastFail).HandleRelay(ctx)
 	if n := atomic.LoadInt32(&calls); n != 3 {
 		t.Fatalf("expected 3 attempts with budget to spare, got %d", n)
 	}
@@ -425,7 +425,7 @@ func TestRetry_RetriesWhenBudgetRemains(t *testing.T) {
 // the inner chain reselects from the fresh session.
 func TestRetry_StaleEndpointsForcesRefetch(t *testing.T) {
 	th := &staleThenOKHandler{}
-	mw := Retry(newFlags("retry"), retryCfg(2, 0), nil)
+	mw := Retry(newFlags("retry"), retryCfg(2, 0), nil, RetryOptions{})
 	h := mw(th)
 
 	ctx := baseContext()
@@ -482,7 +482,7 @@ func (r *recordingRetryRec) RecordRetryResolution(_ domain.ServiceID, reason, ou
 func TestRetry_RecordsOneResolutionPerRetriedRequest(t *testing.T) {
 	rec := &recordingRetryRec{}
 	th := &trackingMockHandler{responses: []error{retryableErr("fail1"), retryableErr("fail2"), nil}}
-	mw := Retry(newFlags("retry"), retryCfg(3, 0), rec)
+	mw := Retry(newFlags("retry"), retryCfg(3, 0), rec, RetryOptions{})
 	if err := mw(th).HandleRelay(baseContext()); err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +496,7 @@ func TestRetry_RecordsOneResolutionPerRetriedRequest(t *testing.T) {
 func TestRetry_RecordsExhaustedWhenNoAttemptSucceeds(t *testing.T) {
 	rec := &recordingRetryRec{}
 	th := &trackingMockHandler{responses: []error{retryableErr("f1"), retryableErr("f2"), retryableErr("f3")}}
-	mw := Retry(newFlags("retry"), retryCfg(2, 0), rec)
+	mw := Retry(newFlags("retry"), retryCfg(2, 0), rec, RetryOptions{})
 	if err := mw(th).HandleRelay(baseContext()); err == nil {
 		t.Fatal("want the last error")
 	}
@@ -510,7 +510,7 @@ func TestRetry_RecordsExhaustedWhenNoAttemptSucceeds(t *testing.T) {
 func TestRetry_FirstAttemptSuccessRecordsNoResolution(t *testing.T) {
 	rec := &recordingRetryRec{}
 	th := &trackingMockHandler{responses: []error{nil}}
-	mw := Retry(newFlags("retry"), retryCfg(3, 0), rec)
+	mw := Retry(newFlags("retry"), retryCfg(3, 0), rec, RetryOptions{})
 	if err := mw(th).HandleRelay(baseContext()); err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +525,7 @@ func TestRetry_FirstAttemptSuccessRecordsNoResolution(t *testing.T) {
 func TestRetry_ResolutionLabelIsTheHeuristicVerdict(t *testing.T) {
 	rec := &recordingRetryRec{}
 	th := &trackingMockHandler{responses: []error{retryableErr("supplier 408"), nil}}
-	mw := Retry(newFlags("retry"), retryCfg(2, 0), rec)
+	mw := Retry(newFlags("retry"), retryCfg(2, 0), rec, RetryOptions{})
 	ctx := baseContext()
 	ctx.HeuristicResult = &heuristic.AnalysisResult{Reason: "http_408"}
 	if err := mw(th).HandleRelay(ctx); err != nil {
@@ -545,7 +545,7 @@ func TestRetry_ResolutionLabelIsTheHeuristicVerdict(t *testing.T) {
 func TestRetry_NoEndpointLeftRecordsNoResolution(t *testing.T) {
 	rec := &recordingRetryRec{}
 	th := &trackingMockHandler{responses: []error{retryableErr("f1"), nil}}
-	mw := Retry(newFlags("retry"), retryCfg(3, 0), rec)
+	mw := Retry(newFlags("retry"), retryCfg(3, 0), rec, RetryOptions{})
 	ctx := baseContext()
 	ctx.Endpoints = testEndpoints(1)
 	if err := mw(th).HandleRelay(ctx); err == nil {
@@ -564,7 +564,7 @@ func TestRetry_NoEndpointLeftRecordsNoResolution(t *testing.T) {
 func TestRetry_RecordsMetricPerRetry(t *testing.T) {
 	rec := &recordingRetryRec{}
 	th := &trackingMockHandler{responses: []error{retryableErr("fail1"), retryableErr("fail2"), nil}}
-	mw := Retry(newFlags("retry"), retryCfg(3, 0), rec)
+	mw := Retry(newFlags("retry"), retryCfg(3, 0), rec, RetryOptions{})
 	if err := mw(th).HandleRelay(baseContext()); err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +577,7 @@ func TestRetry_RecordsMetricPerRetry(t *testing.T) {
 func TestRetry_RolloverReasonLabel(t *testing.T) {
 	rec := &recordingRetryRec{}
 	th := &staleThenOKHandler{}
-	mw := Retry(newFlags("retry"), retryCfg(2, 0), rec)
+	mw := Retry(newFlags("retry"), retryCfg(2, 0), rec, RetryOptions{})
 	ctx := baseContext()
 	ctx.Endpoints = domain.EndpointAddrList{"pokt1old-https://old.example.com"}
 	if err := mw(th).HandleRelay(ctx); err != nil {
@@ -620,7 +620,7 @@ func (h *blackholeThenOK) HandleRelay(ctx *relay.Context) error {
 // "awaiting headers" timeouts that ate the full 5s and starved the retry.
 func TestRetry_PerAttemptTimeoutLeavesRoomToRetry(t *testing.T) {
 	h := &blackholeThenOK{}
-	mw := Retry(newFlags("retry"), retryCfg(1, 0), nil) // 2 attempts
+	mw := Retry(newFlags("retry"), retryCfg(1, 0), nil, RetryOptions{}) // 2 attempts
 	deadline := 400 * time.Millisecond
 	ctx := baseContext()
 	c, cancel := context.WithTimeout(context.Background(), deadline)
@@ -672,7 +672,7 @@ func TestRetryOverHedge_RecoversAfterBlackhole(t *testing.T) {
 	})
 
 	flags := newFlags("retry", "hedge")
-	chain := Retry(flags, retryCfg(1, 0), nil)(Hedge(flags, hedgeCfg(2*time.Millisecond), nil, nil)(inner))
+	chain := Retry(flags, retryCfg(1, 0), nil, RetryOptions{})(Hedge(flags, hedgeCfg(2*time.Millisecond), nil, nil)(inner))
 
 	ctx := baseContext()
 	c, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -700,7 +700,7 @@ func TestRetry_TreatsAnOwnersBrandsAsOneProvider(t *testing.T) {
 	domain.RecordOwner("supplierZ", "pokt1ownerZ", "independent.net")
 
 	var seen []domain.EndpointAddr
-	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0), nil)(firstEndpointHandler(&seen))
+	h := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0), nil, RetryOptions{})(firstEndpointHandler(&seen))
 	ctx := baseContext()
 	ctx.Endpoints = domain.EndpointAddrList{
 		"supplierQ1-https://s001.brand-q1.net",
@@ -726,7 +726,7 @@ func (p probationOnly) OnProbation(_ context.Context, _ domain.ServiceID, ep dom
 // first attempt succeeded carries none.
 func TestRetry_RecordsTheAttemptTrail(t *testing.T) {
 	var seen []domain.EndpointAddr
-	h := Retry(newFlags("retry"), retryCfg(1, 0), nil)(firstEndpointHandler(&seen))
+	h := Retry(newFlags("retry"), retryCfg(1, 0), nil, RetryOptions{})(firstEndpointHandler(&seen))
 	ctx := baseContext()
 	ctx.Endpoints = multiOperatorEndpoints()
 	_ = h.HandleRelay(ctx)
@@ -741,7 +741,7 @@ func TestRetry_RecordsTheAttemptTrail(t *testing.T) {
 
 	ok := baseContext()
 	okHandler := newMockHandler(nil)
-	_ = Retry(newFlags("retry"), retryCfg(1, 0), nil)(okHandler).HandleRelay(ok)
+	_ = Retry(newFlags("retry"), retryCfg(1, 0), nil, RetryOptions{})(okHandler).HandleRelay(ok)
 	if ok.Attempts != nil {
 		t.Errorf("a first-try success carries trail %v, want none", ok.Attempts)
 	}
@@ -783,7 +783,7 @@ func TestRetryOverHedge_RecoversWithNoPoolBeforeTheFirstAttempt(t *testing.T) {
 	})
 
 	flags := newFlags("retry", "hedge")
-	chain := Retry(flags, retryCfg(1, 0), nil, RetryEndpointsFrom(provider))(Hedge(flags, hedgeCfg(2*time.Millisecond), nil, nil)(inner))
+	chain := Retry(flags, retryCfg(1, 0), nil, RetryOptions{Endpoints: provider})(Hedge(flags, hedgeCfg(2*time.Millisecond), nil, nil)(inner))
 
 	ctx := baseContext()
 	ctx.Endpoints = nil

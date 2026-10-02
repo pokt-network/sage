@@ -35,9 +35,9 @@ func TestHeuristic_RecordsHeadLag(t *testing.T) {
 		stale         bool
 	}
 	var got []rec
-	mw := Heuristic(newFlags(), nil, WithHeadLag(func(_ domain.ServiceID, party, method string, lag uint64, stale bool) {
+	mw := Heuristic(newFlags(), nil, HeuristicOptions{HeadLag: func(_ domain.ServiceID, party, method string, lag uint64, stale bool) {
 		got = append(got, rec{party, method, lag, stale})
-	}))
+	}})
 	run := func(method string, status int) {
 		ctx := baseContext()
 		ctx.Plugin = headPlugin{}
@@ -93,7 +93,7 @@ func TestHeuristic_StaleResponse(t *testing.T) {
 	run := func(flags *mockFlags, lag int) (*relay.Context, int, error) {
 		recorded := 0
 		ctx := headCtx()
-		mw := Heuristic(flags, nil, WithHeadLag(func(domain.ServiceID, string, string, uint64, bool) { recorded++ }))
+		mw := Heuristic(flags, nil, HeuristicOptions{HeadLag: func(domain.ServiceID, string, string, uint64, bool) { recorded++ }})
 		err := mw(relay.HandlerFunc(func(c *relay.Context) error {
 			c.Endpoint = "s1-https://r1.cache.example.xyz"
 			c.Response = &domain.Response{HTTPStatusCode: 200, Body: answerWithLag(lag)}
@@ -134,7 +134,7 @@ func TestRetry_DeliversTheFreshestStaleAnswer(t *testing.T) {
 			c.Response = &domain.Response{HTTPStatusCode: 200, Body: answerWithLag(lag)}
 			return nil
 		})
-		h := Retry(flags, retryCfg(len(lags)-1, 0), nil)(Heuristic(flags, nil)(send))
+		h := Retry(flags, retryCfg(len(lags)-1, 0), nil, RetryOptions{})(Heuristic(flags, nil, HeuristicOptions{})(send))
 		err := h.HandleRelay(ctx)
 		return ctx, err
 	}
@@ -171,7 +171,7 @@ func TestHeuristic_RefusalMarksBehindItsFlag(t *testing.T) {
 		ctx.Plugin = refusingPlugin{}
 		ctx.RPCType = domain.RPCTypeJSONRPC
 		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{}]}`), domain.RPCTypeJSONRPC, "eth_getLogs")}
-		_ = Heuristic(flags, nil)(relay.HandlerFunc(func(c *relay.Context) error {
+		_ = Heuristic(flags, nil, HeuristicOptions{})(relay.HandlerFunc(func(c *relay.Context) error {
 			c.Endpoint = "s1-https://r1.cache.example.xyz"
 			c.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"requested height has been pruned"}}`)}
 			return nil

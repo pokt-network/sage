@@ -22,37 +22,24 @@ type RetryRecorder interface {
 	RecordRetryResolution(serviceID domain.ServiceID, reason, outcome string)
 }
 
-// RetryOption configures Retry.
-type RetryOption func(*retryOptions)
-
-type retryOptions struct {
-	repSvc    reputation.Service
-	endpoints protocol.EndpointProvider
-}
-
-// RetryEndpointsFrom has Retry fetch the pool before the first attempt, so it
-// has one to retry from whatever the attempt merged back (fillEndpoints).
-func RetryEndpointsFrom(p protocol.EndpointProvider) RetryOption {
-	return func(o *retryOptions) { o.endpoints = p }
-}
-
-// RetryVouchedBy lets the operator-aware retry check that the operators it
-// narrows to still hold an endpoint reputation vouches for. Without it the
-// narrowing always applies, as before.
-func RetryVouchedBy(repSvc reputation.Service) RetryOption {
-	return func(o *retryOptions) { o.repSvc = repSvc }
+// RetryOptions carries Retry's optional collaborators. Every field has a
+// working zero value.
+type RetryOptions struct {
+	// Reputation lets the operator-aware retry check that the operators it
+	// narrows to still hold an endpoint reputation vouches for. Nil means the
+	// narrowing always applies.
+	Reputation reputation.Service
+	// Endpoints has Retry fetch the pool before the first attempt, so it has
+	// one to retry from whatever the attempt merged back (fillEndpoints).
+	Endpoints protocol.EndpointProvider
 }
 
 // Retry returns a middleware that retries failed relay attempts up to
 // MaxRetries additional times, each on a different endpoint, recording
 // sage_retry_total on each retry when rec is non-nil. If the "retry" flag is
 // disabled or MaxRetries==0 the middleware passes through.
-func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec RetryRecorder, opts ...RetryOption) relay.Middleware {
-	var o retryOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
-	probation, _ := o.repSvc.(reputation.ProbationChecker)
+func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec RetryRecorder, o RetryOptions) relay.Middleware {
+	probation, _ := o.Reputation.(reputation.ProbationChecker)
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) (retErr error) {
 			if ctx.QuorumArm || !flags.IsEnabled(ctx.Ctx, featureflag.FlagRetry, ctx.ServiceID) {
@@ -87,7 +74,7 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			// from the previous attempt's list: operator preference narrows the
 			// pool for one attempt only, and compounding those narrowings across
 			// attempts would strand later retries with nothing to pick from.
-			fillEndpoints(ctx, o.endpoints)
+			fillEndpoints(ctx, o.Endpoints)
 			var pool domain.EndpointAddrList
 			operatorAware := flags.IsEnabled(ctx.Ctx, featureflag.FlagOperatorAwareSelection, ctx.ServiceID)
 			start := time.Now()
@@ -294,7 +281,7 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					if operatorAware {
 						narrowed := available.ExcludeAffiliates(triedAffiliates)
 						// Nor into a chain head left behind: see qos.StaleChecker.
-						if (anyVouched(o.repSvc, ctx, narrowed) || !anyVouched(o.repSvc, ctx, available)) &&
+						if (anyVouched(o.Reputation, ctx, narrowed) || !anyVouched(o.Reputation, ctx, available)) &&
 							!narrowsIntoStale(ctx, narrowed, available) {
 							available = narrowed
 						}
@@ -314,7 +301,7 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 								other = append(other, ep)
 							}
 						}
-						if len(other) == 0 || !anyVouched(o.repSvc, ctx, other) || narrowsIntoStale(ctx, other, available) {
+						if len(other) == 0 || !anyVouched(o.Reputation, ctx, other) || narrowsIntoStale(ctx, other, available) {
 							retriedFor, limited = pendingCause, true
 							return lastErr
 						}

@@ -390,7 +390,7 @@ func TestRetry_AfterHedgeBothFail_ExcludesFailedEndpoint(t *testing.T) {
 		return retryableErr("down")
 	})
 
-	chain := Retry(newFlags("retry", "hedge"), retryCfg(1, 0), nil)(
+	chain := Retry(newFlags("retry", "hedge"), retryCfg(1, 0), nil, RetryOptions{})(
 		Hedge(newFlags("retry", "hedge"), hedgeCfg(1*time.Millisecond), nil, nil)(selectFirst))
 
 	ctx := baseContext()
@@ -553,7 +553,7 @@ func TestHedge_MergesTheCandidatePoolSoRetryCanRetry(t *testing.T) {
 		ctx.Ctx = t.Context()
 		ctx.ServiceID = "eth"
 		ctx.Endpoints = domain.EndpointAddrList{}
-		_ = Retry(newFlags(names...), retryCfg(3, 0), nil)(inner).HandleRelay(ctx)
+		_ = Retry(newFlags(names...), retryCfg(3, 0), nil, RetryOptions{})(inner).HandleRelay(ctx)
 		return h.calls
 	}
 	off, on := run(false), run(true)
@@ -584,7 +584,7 @@ func TestHedge_ArmsAreBoundedByTheAttemptDeadline(t *testing.T) {
 	})
 
 	flags := newFlags("retry", "hedge")
-	chain := Retry(flags, retryCfg(1, 0), nil)(Hedge(flags, hedgeCfg(2*time.Millisecond), nil, nil)(hang))
+	chain := Retry(flags, retryCfg(1, 0), nil, RetryOptions{})(Hedge(flags, hedgeCfg(2*time.Millisecond), nil, nil)(hang))
 
 	ctx := baseContext()
 	c, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)

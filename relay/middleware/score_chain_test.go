@@ -117,11 +117,11 @@ func buildChain(rep reputation.Service, b *scriptedBackend, hedgeDelay time.Dura
 	}
 	var h relay.Handler = relay.HandlerFunc(okJSON)
 	h = b.sendMW(h)
-	h = Heuristic(flags, nil)(h)
+	h = Heuristic(flags, nil, HeuristicOptions{})(h)
 	h = Score(flags, rep)(h)
 	h = b.selectMW(h)
 	h = Hedge(flags, retryCfg, nil, nil)(h)
-	h = Retry(flags, retryCfg, nil)(h)
+	h = Retry(flags, retryCfg, nil, RetryOptions{})(h)
 	h = Observe(flags, nil, rep, nil)(h)
 	h = Batch(fixedLimits(0, 0), flags, rep, nil)(h)
 	return h
@@ -318,10 +318,10 @@ func TestChain_FlagOffObserveScoresOncePerRequest(t *testing.T) {
 	flags := newFlags(featureflag.FlagRetry, featureflag.FlagHeuristic) // no scoring_v2
 	retryCfg := func(domain.ServiceID) config.RetryConfig { return config.RetryConfig{Enabled: true, MaxRetries: 2} }
 	h := b.sendMW(relay.HandlerFunc(okJSON))
-	h = Heuristic(flags, nil)(h)
+	h = Heuristic(flags, nil, HeuristicOptions{})(h)
 	h = Score(flags, rep)(h)
 	h = b.selectMW(h)
-	h = Retry(flags, retryCfg, nil)(h)
+	h = Retry(flags, retryCfg, nil, RetryOptions{})(h)
 	h = Observe(flags, nil, rep, nil)(h)
 	require.NoError(t, h.HandleRelay(chainCtx(1)))
 	got := rep.all()

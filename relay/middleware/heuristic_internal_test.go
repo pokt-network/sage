@@ -26,7 +26,7 @@ func TestHeuristic_MethodNotFound_RetriesOnlyCataloguedMethods(t *testing.T) {
 
 	t.Run("catalogued method retries", func(t *testing.T) {
 		ctx := methodCtx("eth_blockNumber", eps)
-		err := Heuristic(newFlags("heuristic"), registryWith(t))(relay.HandlerFunc(notFound)).HandleRelay(ctx)
+		err := Heuristic(newFlags("heuristic"), registryWith(t), HeuristicOptions{})(relay.HandlerFunc(notFound)).HandleRelay(ctx)
 		if err == nil || !errors.Is(err, domain.ErrRetryVerdict) || !domain.IsRetryable(err) {
 			t.Fatalf("err = %v, want a retryable retry verdict", err)
 		}
@@ -41,7 +41,7 @@ func TestHeuristic_MethodNotFound_RetriesOnlyCataloguedMethods(t *testing.T) {
 
 	t.Run("uncatalogued method does not retry", func(t *testing.T) {
 		ctx := methodCtx("", eps) // normPlugin reports "" as no method
-		if err := Heuristic(newFlags("heuristic"), registryWith(t))(relay.HandlerFunc(notFound)).HandleRelay(ctx); err != nil {
+		if err := Heuristic(newFlags("heuristic"), registryWith(t), HeuristicOptions{})(relay.HandlerFunc(notFound)).HandleRelay(ctx); err != nil {
 			t.Fatalf("err = %v, want none: a name the catalogue does not know is the client's", err)
 		}
 		if ctx.HeuristicResult == nil || ctx.HeuristicResult.ShouldRetry {
@@ -51,7 +51,7 @@ func TestHeuristic_MethodNotFound_RetriesOnlyCataloguedMethods(t *testing.T) {
 
 	t.Run("no registry does not retry", func(t *testing.T) {
 		ctx := methodCtx("eth_blockNumber", eps)
-		if err := Heuristic(newFlags("heuristic"), nil)(relay.HandlerFunc(notFound)).HandleRelay(ctx); err != nil {
+		if err := Heuristic(newFlags("heuristic"), nil, HeuristicOptions{})(relay.HandlerFunc(notFound)).HandleRelay(ctx); err != nil {
 			t.Fatalf("err = %v, want none without a catalogue to consult", err)
 		}
 	})

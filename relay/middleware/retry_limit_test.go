@@ -43,7 +43,7 @@ func TestRetry_RateLimitRetriesOnlyOnAnotherOperator(t *testing.T) {
 		})
 		ctx := baseContext()
 		ctx.Endpoints = pool
-		err := Retry(newFlags("retry"), retryCfg(2, 0), rec, RetryVouchedBy(rep))(h).HandleRelay(ctx)
+		err := Retry(newFlags("retry"), retryCfg(2, 0), rec, RetryOptions{Reputation: rep})(h).HandleRelay(ctx)
 		return attempts, ctx, rec, err
 	}
 

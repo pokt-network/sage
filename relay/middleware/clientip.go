@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/pokt-network/sage/relay"
@@ -107,12 +108,7 @@ func parseIP(s string) netip.Addr {
 }
 
 func ipInAny(addr netip.Addr, prefixes []netip.Prefix) bool {
-	for _, p := range prefixes {
-		if p.Contains(addr) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(prefixes, func(p netip.Prefix) bool { return p.Contains(addr) })
 }
 
 // ParseTrustedProxies parses CIDR strings into prefixes, failing on the first

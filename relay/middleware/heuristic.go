@@ -23,11 +23,7 @@ import (
 // "heuristic" feature flag — grading a transport error is attribution, not
 // response analysis, and the circuit breaker, the method blocks and
 // reputation all key on it. The flag gates body analysis only.
-func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, opts ...HeuristicOption) relay.Middleware {
-	var o heuristicOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
+func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicOptions) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			budget, full := o.budget(ctx)
@@ -150,25 +146,22 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, opts ...Heur
 	}
 }
 
-// HeuristicOption tunes the Heuristic middleware.
-type HeuristicOption func(*heuristicOptions)
-
-type heuristicOptions struct {
-	attemptTimeout func(domain.ServiceID) time.Duration
-	headLag        func(serviceID domain.ServiceID, party, method string, lag uint64, stale bool)
-}
-
-// WithHeadLag receives, for every answer that names the chain head, how far
-// it lagged the head the service's plugin expected (qos.HeadLagReader).
-func WithHeadLag(fn func(serviceID domain.ServiceID, party, method string, lag uint64, stale bool)) HeuristicOption {
-	return func(o *heuristicOptions) { o.headLag = fn }
+// HeuristicOptions tunes the Heuristic middleware. Every field has a working
+// zero value.
+type HeuristicOptions struct {
+	// AttemptTimeout gives each service's per-attempt relay timeout, the
+	// budget an attempt is owed. Nil grades every timeout as the host's own.
+	AttemptTimeout func(domain.ServiceID) time.Duration
+	// HeadLag receives, for every answer that names the chain head, how far
+	// it lagged the head the service's plugin expected (qos.HeadLagReader).
+	HeadLag func(serviceID domain.ServiceID, party, method string, lag uint64, stale bool)
 }
 
 // observeHeadLag reads how far a single-payload answer that names the chain
 // head lags the perceived head, hands it to the head-lag recorder when one is
 // set, and returns it for the stale_response verdict. The recording is
 // measurement only, before and apart from the heuristic flag.
-func (o heuristicOptions) observeHeadLag(registry *qos.Registry, ctx *relay.Context) (lag uint64, stale bool) {
+func (o HeuristicOptions) observeHeadLag(registry *qos.Registry, ctx *relay.Context) (lag uint64, stale bool) {
 	if len(ctx.Payloads) != 1 || ctx.Response.HTTPStatusCode != 200 {
 		return 0, false
 	}
@@ -180,27 +173,20 @@ func (o heuristicOptions) observeHeadLag(registry *qos.Registry, ctx *relay.Cont
 	if !ok {
 		return 0, false
 	}
-	if o.headLag != nil {
-		o.headLag(ctx.ServiceID, ctx.Endpoint.Party(), ctx.Payloads[0].Method(), lag, stale)
+	if o.HeadLag != nil {
+		o.HeadLag(ctx.ServiceID, ctx.Endpoint.Party(), ctx.Payloads[0].Method(), lag, stale)
 	}
 	return lag, stale
-}
-
-// WithAttemptTimeout gives the middleware each service's per-attempt relay
-// timeout, the budget an attempt is owed. Without it every timeout is graded
-// as the host's own.
-func WithAttemptTimeout(fn func(domain.ServiceID) time.Duration) HeuristicOption {
-	return func(o *heuristicOptions) { o.attemptTimeout = fn }
 }
 
 // budget is the time this attempt has (the smaller of the per-attempt timeout
 // and what is left of the request) and the time it is owed. Zero owed means
 // unknown.
-func (o heuristicOptions) budget(ctx *relay.Context) (have, owed time.Duration) {
-	if o.attemptTimeout == nil {
+func (o HeuristicOptions) budget(ctx *relay.Context) (have, owed time.Duration) {
+	if o.AttemptTimeout == nil {
 		return 0, 0
 	}
-	owed = o.attemptTimeout(ctx.ServiceID)
+	owed = o.AttemptTimeout(ctx.ServiceID)
 	have = owed
 	if dl, ok := ctx.Ctx.Deadline(); ok {
 		if left := time.Until(dl); left < have || have <= 0 {
