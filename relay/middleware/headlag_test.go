@@ -134,7 +134,7 @@ func TestRetry_DeliversTheFreshestStaleAnswer(t *testing.T) {
 			c.Response = &domain.Response{HTTPStatusCode: 200, Body: answerWithLag(lag)}
 			return nil
 		})
-		h := Retry(flags, retryCfg(len(lags)-1, 0))(Heuristic(flags, nil)(send))
+		h := Retry(flags, retryCfg(len(lags)-1, 0), nil)(Heuristic(flags, nil)(send))
 		err := h.HandleRelay(ctx)
 		return ctx, err
 	}

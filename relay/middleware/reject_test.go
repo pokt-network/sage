@@ -59,7 +59,7 @@ func noNext(t *testing.T) relay.Handler {
 }
 
 func TestParse_MissingHeader_IsPlainJSONWithContentType(t *testing.T) {
-	mw := middleware.Parse(qos.NewRegistry())
+	mw := middleware.Parse(qos.NewRegistry(), middleware.ParseOptions{})
 	ctx := newCtx(newPOSTRequest("/v1", `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`))
 	if err := mw(noNext(t)).HandleRelay(ctx); err == nil {
 		t.Fatal("expected an error")
@@ -78,7 +78,7 @@ func TestParse_MissingHeader_IsPlainJSONWithContentType(t *testing.T) {
 func TestParse_PluginRejection_IsJSONRPCEnvelopeWithIDAndReason(t *testing.T) {
 	registry := qos.NewRegistry()
 	_ = registry.Register("eth", &mockPlugin{parseErr: domain.NewRelayError(domain.ErrValidation, "EVM plugin: batch array is empty", nil, false)})
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	req := newPOSTRequest("/v1", `{"jsonrpc":"2.0","id":"abc","method":"eth_blockNumber"}`)
 	req.Header.Set("Target-Service-Id", "eth")
@@ -103,7 +103,7 @@ func TestParse_PluginRejection_IsJSONRPCEnvelopeWithIDAndReason(t *testing.T) {
 }
 
 func TestParse_BodyOverCap_Is413(t *testing.T) {
-	mw := middleware.ParseWithOptions(qos.NewRegistry(), middleware.ParseOptions{MaxBodyBytes: func() int64 { return 16 }})
+	mw := middleware.Parse(qos.NewRegistry(), middleware.ParseOptions{MaxBodyBytes: func() int64 { return 16 }})
 	req := newPOSTRequest("/v1", `{"jsonrpc":"2.0","id":7,"method":"eth_blockNumber","params":[]}`)
 	req.Header.Set("Target-Service-Id", "eth")
 	ctx := newCtx(req)
@@ -122,7 +122,7 @@ func TestParse_BodyOverCap_Is413(t *testing.T) {
 }
 
 func TestParse_RPCTypeHeader_OverridesDetection(t *testing.T) {
-	mw := middleware.Parse(qos.NewRegistry())
+	mw := middleware.Parse(qos.NewRegistry(), middleware.ParseOptions{})
 	// A JSON-RPC-looking body, but the client says REST: the client wins.
 	req := newPOSTRequest("/v1/wallet/getnowblock", `{"visible":true}`)
 	req.Header.Set("Target-Service-Id", "tron")
@@ -147,7 +147,7 @@ func TestParse_RPCTypeHeader_OverridesDetection(t *testing.T) {
 }
 
 func TestParse_NoHeader_RecordsDetectedSource(t *testing.T) {
-	mw := middleware.Parse(qos.NewRegistry())
+	mw := middleware.Parse(qos.NewRegistry(), middleware.ParseOptions{})
 	req := newPOSTRequest("/v1", `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`)
 	req.Header.Set("Target-Service-Id", "eth")
 	ctx := newCtx(req)
@@ -165,7 +165,7 @@ func TestParse_NoHeader_RecordsDetectedSource(t *testing.T) {
 // A header SAGE cannot parse is refused before classification, so nothing
 // about the request's type is recorded as decided.
 func TestParse_RPCTypeHeader_Unknown_LeavesSourceEmpty(t *testing.T) {
-	mw := middleware.Parse(qos.NewRegistry())
+	mw := middleware.Parse(qos.NewRegistry(), middleware.ParseOptions{})
 	req := newPOSTRequest("/v1", `{}`)
 	req.Header.Set("Target-Service-Id", "eth")
 	req.Header.Set("RPC-Type", "carrier-pigeon")
@@ -179,7 +179,7 @@ func TestParse_RPCTypeHeader_Unknown_LeavesSourceEmpty(t *testing.T) {
 }
 
 func TestParse_RPCTypeHeader_Unknown_Is400WithAllowedList(t *testing.T) {
-	mw := middleware.Parse(qos.NewRegistry())
+	mw := middleware.Parse(qos.NewRegistry(), middleware.ParseOptions{})
 	req := newPOSTRequest("/v1", `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`)
 	req.Header.Set("Target-Service-Id", "eth")
 	req.Header.Set("RPC-Type", "carrier-pigeon")
@@ -277,7 +277,7 @@ func TestParse_PluginClassifierRefinesDetection(t *testing.T) {
 	if err := registry.Register("atomone", plugin); err != nil {
 		t.Fatal(err)
 	}
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	// Generic detection says json_rpc (a JSON-RPC envelope); the plugin
 	// says comet_bft. The plugin's answer is the type, and the payload
@@ -308,7 +308,7 @@ func TestParse_RPCTypeHeader_WinsOverPluginClassifier(t *testing.T) {
 	if err := registry.Register("atomone", plugin); err != nil {
 		t.Fatal(err)
 	}
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	req := newPOSTRequest("/", `{"jsonrpc":"2.0","method":"status","id":1}`)
 	req.Header.Set("Target-Service-Id", "atomone")

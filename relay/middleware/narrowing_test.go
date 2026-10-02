@@ -35,7 +35,7 @@ func TestRetry_OperatorPreferenceNeverNarrowsIntoJunk(t *testing.T) {
 		})
 		ctx := baseContext()
 		ctx.Endpoints = domain.EndpointAddrList{a1, a2, junk}
-		mw := RetryWithRecorder(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0), nil,
+		mw := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0), nil,
 			RetryVouchedBy(&stubRepService{scores: scores}))
 		if err := mw(h).HandleRelay(ctx); err != nil {
 			t.Fatal(err)
@@ -153,7 +153,7 @@ func TestRetry_OperatorPreferenceNeverNarrowsIntoStale(t *testing.T) {
 	ctx.Endpoints = domain.EndpointAddrList{a1, a2, behind}
 	ctx.Plugin = stalePlugin{stale: map[domain.EndpointAddr]bool{behind: true}}
 	scores := map[domain.EndpointAddr]float64{a1: 100, a2: 100, behind: 100}
-	mw := RetryWithRecorder(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0), nil,
+	mw := Retry(newFlags("retry", "operator_aware_selection"), retryCfg(1, 0), nil,
 		RetryVouchedBy(&stubRepService{scores: scores}))
 	if err := mw(h).HandleRelay(ctx); err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestHedge_NeverNarrowsIntoStale(t *testing.T) {
 		ctx := baseContext()
 		ctx.Endpoints = pool
 		ctx.Plugin = stalePlugin{stale: map[domain.EndpointAddr]bool{behind: true}}
-		h := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond))(slow)
+		h := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond), nil, nil)(slow)
 		if err := h.HandleRelay(ctx); err != nil {
 			t.Fatal(err)
 		}

@@ -22,7 +22,7 @@ type RetryRecorder interface {
 	RecordRetryResolution(serviceID domain.ServiceID, reason, outcome string)
 }
 
-// RetryOption configures RetryWithRecorder.
+// RetryOption configures Retry.
 type RetryOption func(*retryOptions)
 
 type retryOptions struct {
@@ -44,16 +44,10 @@ func RetryVouchedBy(repSvc reputation.Service) RetryOption {
 }
 
 // Retry returns a middleware that retries failed relay attempts up to
-// MaxRetries additional times, each on a different endpoint. It is
-// RetryWithRecorder with no metric recorder. If the "retry" flag is disabled
-// or MaxRetries==0 the middleware passes through.
-func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig) relay.Middleware {
-	return RetryWithRecorder(flags, configFn, nil)
-}
-
-// RetryWithRecorder returns the retry middleware, recording sage_retry_total
-// on each retry when rec is non-nil.
-func RetryWithRecorder(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec RetryRecorder, opts ...RetryOption) relay.Middleware {
+// MaxRetries additional times, each on a different endpoint, recording
+// sage_retry_total on each retry when rec is non-nil. If the "retry" flag is
+// disabled or MaxRetries==0 the middleware passes through.
+func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec RetryRecorder, opts ...RetryOption) relay.Middleware {
 	var o retryOptions
 	for _, opt := range opts {
 		opt(&o)

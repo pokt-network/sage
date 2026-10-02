@@ -34,7 +34,7 @@ func makeRelayCtx(svc domain.ServiceID, payload domain.Payload, plugin qos.Plugi
 
 func TestCache_Miss_ThenHit(t *testing.T) {
 	c := responsecache.NewCache(100)
-	mw := Cache(&staticFlags{enabled: true}, c)
+	mw := Cache(&staticFlags{enabled: true}, c, nil)
 
 	relays := 0
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
@@ -79,7 +79,7 @@ func TestCache_Miss_ThenHit(t *testing.T) {
 
 func TestCache_ExpiredEntry_Miss(t *testing.T) {
 	c := responsecache.NewCache(100)
-	mw := Cache(&staticFlags{enabled: true}, c)
+	mw := Cache(&staticFlags{enabled: true}, c, nil)
 
 	relays := 0
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
@@ -110,7 +110,7 @@ func TestCache_ExpiredEntry_Miss(t *testing.T) {
 
 func TestCache_NoCachePolicy_NotStored(t *testing.T) {
 	c := responsecache.NewCache(100)
-	mw := Cache(&staticFlags{enabled: true}, c)
+	mw := Cache(&staticFlags{enabled: true}, c, nil)
 
 	relays := 0
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
@@ -139,7 +139,7 @@ func TestCache_NoCachePolicy_NotStored(t *testing.T) {
 
 func TestCache_FlagDisabled_PassThrough(t *testing.T) {
 	c := responsecache.NewCache(100)
-	mw := Cache(&staticFlags{enabled: false}, c)
+	mw := Cache(&staticFlags{enabled: false}, c, nil)
 
 	relays := 0
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
@@ -169,7 +169,7 @@ func TestCache_FlagDisabled_PassThrough(t *testing.T) {
 func TestCache_LRUEviction(t *testing.T) {
 	// Cache with capacity 2; third entry should evict the LRU.
 	c := responsecache.NewCache(2)
-	mw := Cache(&staticFlags{enabled: true}, c)
+	mw := Cache(&staticFlags{enabled: true}, c, nil)
 
 	const svc = domain.ServiceID("eth")
 
@@ -226,7 +226,7 @@ func TestCache_RecordsHitAndMiss(t *testing.T) {
 		ctx.Response = &domain.Response{Body: []byte(`{"result":"0x1"}`), HTTPStatusCode: 200}
 		return nil
 	})
-	h := CacheWithRecorder(&staticFlags{enabled: true}, c, rec)(inner)
+	h := Cache(&staticFlags{enabled: true}, c, rec)(inner)
 	plugin := &cachePolicyPlugin{ttl: time.Minute}
 	p := domain.NewPayload([]byte(`params`), domain.RPCTypeJSONRPC, "eth_blockNumber")
 	_ = h.HandleRelay(makeRelayCtx("eth", p, plugin)) // miss

@@ -473,7 +473,7 @@ func TestMethodBlocks_LosingHedgeArmMarksAndNextHedgeAvoids(t *testing.T) {
 		return nil
 	})
 	cfg := func(domain.ServiceID) config.RetryConfig { return config.RetryConfig{HedgeDelay: hedgeDelay} }
-	chain := Hedge(newFlags("hedge", "method_blocks"), cfg)(
+	chain := Hedge(newFlags("hedge", "method_blocks"), cfg, nil, nil)(
 		MethodBlocks(store, registryWith(t), nil, newFlags("hedge", "method_blocks"), nil, nil)(inner))
 
 	// Request 1: primary picks slow, hedge picks a healthy one and wins; the

@@ -48,7 +48,7 @@ func TestArchival_EveryAttemptThatSaysStateIsGoneIsRemembered(t *testing.T) {
 	})
 	flags := newMockFlags(nil)
 	cfgFn := func(domain.ServiceID) config.RetryConfig { return config.RetryConfig{Enabled: true, MaxRetries: 4} }
-	chain := middleware.RetryWithRecorder(flags, cfgFn, nil, middleware.RetryVouchedBy(rep))(
+	chain := middleware.Retry(flags, cfgFn, nil, middleware.RetryVouchedBy(rep))(
 		middleware.Score(flags, rep)(
 			middleware.SelectEndpoint(rep, nil, reg, flags)(
 				middleware.Heuristic(flags, reg)(send))))

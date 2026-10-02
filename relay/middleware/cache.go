@@ -19,17 +19,12 @@ type CacheRecorder interface {
 
 // Cache returns a middleware that serves repeated identical relay requests
 // from an in-memory response cache, bypassing the upstream relay entirely on
-// a cache hit. It is CacheWithRecorder with no metric recorder.
+// a cache hit, recording sage_cache_hits_total / sage_cache_misses_total when
+// rec is non-nil.
 //
 // Caching is only applied when the "cache" feature flag is enabled for the
 // service and the QoS plugin implements CachePolicy with a positive TTL.
-func Cache(flags featureflag.FlagStore, cache *responsecache.Cache) relay.Middleware {
-	return CacheWithRecorder(flags, cache, nil)
-}
-
-// CacheWithRecorder returns the cache middleware, recording
-// sage_cache_hits_total / sage_cache_misses_total when rec is non-nil.
-func CacheWithRecorder(flags featureflag.FlagStore, cache *responsecache.Cache, rec CacheRecorder) relay.Middleware {
+func Cache(flags featureflag.FlagStore, cache *responsecache.Cache, rec CacheRecorder) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			if ctx.QuorumArm || !flags.IsEnabled(ctx.Ctx, featureflag.FlagCache, ctx.ServiceID) {

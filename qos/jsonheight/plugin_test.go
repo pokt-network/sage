@@ -201,7 +201,7 @@ func TestSelectEndpoints_FiltersOnceHeightsAreKnown(t *testing.T) {
 // The probe is the only source of the fact this plugin exists for, so it must
 // be Essential or traffic-informed probing could skip it away.
 func TestHealthChecks_TheProbeIsEssential(t *testing.T) {
-	for name, chain := range Declared() {
+	for name, chain := range byServiceType {
 		checks := NewPlugin(nil, chain, 100).HealthChecks()
 		if len(checks) != 1 {
 			t.Errorf("%s: %d checks, want 1", name, len(checks))
@@ -234,7 +234,7 @@ func TestChains_RESTProbesCarryTheirPath(t *testing.T) {
 // Every declared chain has to be a type config reporting recognises, or a
 // service either claims QoS it does not get or gets QoS nobody is told about.
 func TestEveryDeclaredChainIsAKnownType(t *testing.T) {
-	for serviceType := range Declared() {
+	for serviceType := range byServiceType {
 		if !domain.IsKnownServiceType(serviceType) {
 			t.Errorf("%q has a plugin but domain.KnownServiceTypes does not list it: "+
 				"the startup report would call it a passthrough service", serviceType)

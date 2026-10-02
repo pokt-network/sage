@@ -12,7 +12,7 @@ import (
 
 func TestParse_MissingServiceHeader(t *testing.T) {
 	registry := qos.NewRegistry()
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	req := newPOSTRequest("/v1", `{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`)
 	ctx := newCtx(req)
@@ -45,7 +45,7 @@ func TestParse_MissingServiceHeader(t *testing.T) {
 
 func TestParse_ValidServiceHeader_NoPlugin(t *testing.T) {
 	registry := qos.NewRegistry()
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	req := newPOSTRequest("/v1", `{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`)
 	req.Header.Set("Target-Service-Id", "eth")
@@ -81,7 +81,7 @@ func TestParse_ValidServiceHeader_WithPlugin(t *testing.T) {
 	}
 	_ = registry.Register("eth", plugin)
 
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	req := newPOSTRequest("/v1", `{"jsonrpc":"2.0","method":"eth_blockNumber","id":1}`)
 	req.Header.Set("Target-Service-Id", "eth")
@@ -108,7 +108,7 @@ func TestParse_PluginParseError(t *testing.T) {
 	plugin := &mockPlugin{parseErr: domain.NewRelayError(domain.ErrValidation, "bad request", nil, false)}
 	_ = registry.Register("eth", plugin)
 
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	req := newPOSTRequest("/v1", `bad body`)
 	req.Header.Set("Target-Service-Id", "eth")
@@ -155,7 +155,7 @@ func TestParse_RPCTypeDetection_JSONRPC(t *testing.T) {
 	}
 
 	registry := qos.NewRegistry()
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,7 +175,7 @@ func TestParse_RPCTypeDetection_JSONRPC(t *testing.T) {
 
 func TestParse_RPCTypeDetection_REST(t *testing.T) {
 	registry := qos.NewRegistry()
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	req := newGETRequest("/cosmos/bank/v1beta1/balances/addr")
 	req.Header.Set("Target-Service-Id", "xrplevm")
@@ -197,7 +197,7 @@ func TestParse_RPCTypeDetection_CometBFT(t *testing.T) {
 	paths := []string{"/status", "/health", "/block", "/validators"}
 
 	registry := qos.NewRegistry()
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
@@ -221,7 +221,7 @@ func TestParse_RPCTypeDetection_CometBFT(t *testing.T) {
 
 func TestParse_RPCTypeDetection_WebSocket(t *testing.T) {
 	registry := qos.NewRegistry()
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	req := newWSRequest()
 	req.Header.Set("Target-Service-Id", "eth")
@@ -254,7 +254,7 @@ func TestParse_RPCTypeDetection_GRPC(t *testing.T) {
 	}
 
 	registry := qos.NewRegistry()
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	for _, ct := range framings {
 		t.Run(ct, func(t *testing.T) {
@@ -280,7 +280,7 @@ func TestParse_RPCTypeDetection_GRPC(t *testing.T) {
 // nor the Cosmos REST paths served by grpc-gateway.
 func TestParse_GRPCDetectionDoesNotCatchOtherTransports(t *testing.T) {
 	registry := qos.NewRegistry()
-	mw := middleware.Parse(registry)
+	mw := middleware.Parse(registry, middleware.ParseOptions{})
 
 	tests := []struct {
 		name        string
@@ -335,7 +335,7 @@ func TestParse_RPCTypeDetection_NativeREST(t *testing.T) {
 		}
 		return nil
 	}
-	mw := middleware.ParseWithServices(qos.NewRegistry(), rpcTypes)
+	mw := middleware.Parse(qos.NewRegistry(), middleware.ParseOptions{RPCTypes: rpcTypes})
 
 	cases := []struct {
 		name string

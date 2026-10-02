@@ -105,6 +105,3 @@ func ByServiceType(serviceType domain.ServiceType) (Chain, bool) {
 	chain, ok := byServiceType[serviceType]
 	return chain, ok
 }
-
-// Declared returns every chain this package serves.
-func Declared() map[domain.ServiceType]Chain { return byServiceType }

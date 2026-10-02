@@ -12,6 +12,12 @@ import (
 	"github.com/pokt-network/sage/relay"
 )
 
+// SingleflightRecorder is notified of each request served from another's
+// in-flight relay. metrics.Recorder satisfies it. Nil disables recording.
+type SingleflightRecorder interface {
+	RecordSingleflightCoalesced(serviceID domain.ServiceID)
+}
+
 // Singleflight returns a middleware that coalesces concurrent identical
 // requests into a single upstream relay. When two or more requests for the
 // same service + method + params arrive simultaneously, only one relay is
@@ -22,20 +28,11 @@ import (
 //   - The request carries exactly one payload.
 //   - The QoS plugin for the service (ctx.Plugin, resolved by Parse)
 //     implements CoalescenceClassifier and reports the method as coalescable.
-func Singleflight(flags featureflag.FlagStore) relay.Middleware {
-	return SingleflightWithRecorder(flags, nil)
-}
-
-// SingleflightRecorder is notified of each request served from another's
-// in-flight relay. metrics.Recorder satisfies it. Nil disables recording.
-type SingleflightRecorder interface {
-	RecordSingleflightCoalesced(serviceID domain.ServiceID)
-}
-
-// SingleflightWithRecorder is Singleflight feeding sage_singleflight_coalesced_total.
-// The counter was registered and documented from the start and incremented by
-// nothing until 2026-09-04: the middleware took no recorder.
-func SingleflightWithRecorder(flags featureflag.FlagStore, rec SingleflightRecorder) relay.Middleware {
+//
+// rec, when non-nil, feeds sage_singleflight_coalesced_total. The counter was
+// registered and documented from the start and incremented by nothing until
+// 2026-09-04: the middleware took no recorder.
+func Singleflight(flags featureflag.FlagStore, rec SingleflightRecorder) relay.Middleware {
 	// groups maps domain.ServiceID → *singleflight.Group (created on demand).
 	var groups sync.Map
 

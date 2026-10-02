@@ -45,30 +45,13 @@ var cosmosPaths = []string{
 	"/ibc/",
 }
 
-// Parse returns a middleware that reads the Target-Service-Id header, looks up
-// the QoS plugin, detects the RPC type, and calls plugin.ParseRequest to
-// extract payloads. It sets ctx.ServiceID, ctx.RPCType, ctx.Plugin, and
-// ctx.Payloads.
-// Parse is ParseWithServices with no rpc_types resolver, so an unrecognised
-// path defaults to JSON-RPC (the pre-multi-surface behaviour).
-func Parse(registry *qos.Registry) relay.Middleware {
-	return ParseWithServices(registry, nil)
-}
-
-// ParseWithServices returns the parse middleware. rpcTypes, when non-nil,
-// reports the RPC types a service declares in config, so a request to a
-// REST-capable service on a path that is not a JSON-RPC entry point is
-// classified REST rather than defaulting to JSON-RPC. Nil keeps the old
-// default.
-func ParseWithServices(registry *qos.Registry, rpcTypes func(domain.ServiceID) []string) relay.Middleware {
-	return ParseWithOptions(registry, ParseOptions{RPCTypes: rpcTypes})
-}
-
 // ParseOptions carries what Parse needs from config. Every field has a
-// working zero value so the two older constructors stay valid.
+// working zero value.
 type ParseOptions struct {
-	// RPCTypes reports the RPC types a service declares in config; nil means
-	// nothing is known and an unrecognised path defaults to JSON-RPC.
+	// RPCTypes reports the RPC types a service declares in config, so a
+	// request to a REST-capable service on a path that is not a JSON-RPC
+	// entry point is classified REST; nil means nothing is known and an
+	// unrecognised path defaults to JSON-RPC.
 	RPCTypes func(domain.ServiceID) []string
 	// MaxBodyBytes reports the request body cap, read per request so a config
 	// apply moves it. Nil, or a result <= 0, takes DefaultMaxBodyBytes.
@@ -79,8 +62,11 @@ type ParseOptions struct {
 // is addressing, ahead of any detection. PATH reads the same header.
 const rpcTypeHeader = "RPC-Type"
 
-// ParseWithOptions returns the parse middleware with every knob supplied.
-func ParseWithOptions(registry *qos.Registry, opts ParseOptions) relay.Middleware {
+// Parse returns a middleware that reads the Target-Service-Id header, looks up
+// the QoS plugin, detects the RPC type, and calls plugin.ParseRequest to
+// extract payloads. It sets ctx.ServiceID, ctx.RPCType, ctx.Plugin, and
+// ctx.Payloads.
+func Parse(registry *qos.Registry, opts ParseOptions) relay.Middleware {
 	rpcTypes := opts.RPCTypes
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {

@@ -83,7 +83,7 @@ func TestSingleflight_TwoConcurrentRequests_OneRelay(t *testing.T) {
 	})
 
 	rec := &countingSingleflightRecorder{}
-	mw := SingleflightWithRecorder(&staticFlags{enabled: true}, rec)
+	mw := Singleflight(&staticFlags{enabled: true}, rec)
 	handler := mw(inner)
 
 	ctx1 := newRelayContext(svc, plugin, payload)
@@ -169,7 +169,7 @@ func TestSingleflight_NonCoalescable_NoCoalescing(t *testing.T) {
 		return nil
 	})
 
-	mw := Singleflight(&staticFlags{enabled: true})
+	mw := Singleflight(&staticFlags{enabled: true}, nil)
 	handler := mw(inner)
 
 	ctx1 := newRelayContext(svc, plugin, payload)
@@ -204,7 +204,7 @@ func TestSingleflight_NoClassifier_PassThrough(t *testing.T) {
 		return nil
 	})
 
-	mw := Singleflight(&staticFlags{enabled: true})
+	mw := Singleflight(&staticFlags{enabled: true}, nil)
 	handler := mw(inner)
 
 	ctx1 := newRelayContext(svc, plugin, payload)
@@ -232,7 +232,7 @@ func TestSingleflight_DifferentMethods_SeparateRelays(t *testing.T) {
 		return nil
 	})
 
-	mw := Singleflight(&staticFlags{enabled: true})
+	mw := Singleflight(&staticFlags{enabled: true}, nil)
 	handler := mw(inner)
 
 	_ = handler.HandleRelay(newRelayContext(svc, plugin, p1))
@@ -255,7 +255,7 @@ func TestSingleflight_FlagDisabled_PassThrough(t *testing.T) {
 		return nil
 	})
 
-	mw := Singleflight(&staticFlags{enabled: false})
+	mw := Singleflight(&staticFlags{enabled: false}, nil)
 	handler := mw(inner)
 
 	_ = handler.HandleRelay(newRelayContext(svc, plugin, payload))

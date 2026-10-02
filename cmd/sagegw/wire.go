@@ -780,7 +780,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		return nil
 	}
 	mwReg.Register(relay.MWParse, func() relay.Middleware {
-		return middleware.ParseWithOptions(qosReg, middleware.ParseOptions{
+		return middleware.Parse(qosReg, middleware.ParseOptions{
 			RPCTypes:     rpcTypesFn,
 			MaxBodyBytes: func() int64 { return app.Config.Load().Router.MaxRequestBodyBytes },
 		})
@@ -791,21 +791,21 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	mwReg.Register(relay.MWQuorum, func() relay.Middleware {
 		return middleware.Quorum(flags, proto, repSvc, recorder)
 	})
-	mwReg.Register(relay.MWCache, func() relay.Middleware { return middleware.CacheWithRecorder(flags, respCache, recorder) })
+	mwReg.Register(relay.MWCache, func() relay.Middleware { return middleware.Cache(flags, respCache, recorder) })
 	mwReg.Register(relay.MWBatch, func() relay.Middleware {
 		return middleware.Batch(func() (int, int, int, int) {
 			c := app.Config.Load().Concurrency
 			return c.MaxConcurrentRelays, c.MaxBatchPayloads, c.MaxBatchConcurrency, c.MaxBatchWindow
 		}, flags, repSvc, recorder)
 	})
-	mwReg.Register(relay.MWSingleflight, func() relay.Middleware { return middleware.SingleflightWithRecorder(flags, recorder) })
+	mwReg.Register(relay.MWSingleflight, func() relay.Middleware { return middleware.Singleflight(flags, recorder) })
 	mwReg.Register(relay.MWObserve, func() relay.Middleware {
 		return middleware.Observe(flags, obsQueue, repSvc, sampler)
 	})
 	mwReg.Register(relay.MWRetry, func() relay.Middleware {
-		return middleware.RetryWithRecorder(flags, retryFn, recorder, middleware.RetryVouchedBy(repSvc), middleware.RetryEndpointsFrom(proto))
+		return middleware.Retry(flags, retryFn, recorder, middleware.RetryVouchedBy(repSvc), middleware.RetryEndpointsFrom(proto))
 	})
-	mwReg.Register(relay.MWHedge, func() relay.Middleware { return middleware.HedgeWithRecorder(flags, retryFn, recorder, proto) })
+	mwReg.Register(relay.MWHedge, func() relay.Middleware { return middleware.Hedge(flags, retryFn, recorder, proto) })
 	mwReg.Register(relay.MWSupplierAffinity, func() relay.Middleware {
 		return middleware.SupplierAffinity(flags, 10*time.Second)
 	})

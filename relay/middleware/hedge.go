@@ -30,19 +30,13 @@ type HedgeRecorder interface {
 
 // Hedge returns a middleware that issues a speculative second ("hedge")
 // request after HedgeDelay if the primary has not yet completed. The first
-// successful response wins; if both fail, the primary error is returned. It is
-// HedgeWithRecorder with no metric recorder. If the "hedge" flag is disabled
-// or HedgeDelay==0 the middleware passes through.
-func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig) relay.Middleware {
-	return HedgeWithRecorder(flags, configFn, nil, nil)
-}
-
-// HedgeWithRecorder returns the hedge middleware, recording sage_hedge_total
-// on each resolved race when rec is non-nil.
+// successful response wins; if both fail, the primary error is returned. If the
+// "hedge" flag is disabled or HedgeDelay==0 the middleware passes through.
 //
+// rec, when non-nil, records sage_hedge_total on each resolved race.
 // endpoints, when non-nil, fetches the pool before the race so the hedge can
 // steer away from the primary on a first attempt (fillEndpoints).
-func HedgeWithRecorder(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec HedgeRecorder, endpoints protocol.EndpointProvider) relay.Middleware {
+func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.RetryConfig, rec HedgeRecorder, endpoints protocol.EndpointProvider) relay.Middleware {
 	recordHedge := func(ctx *relay.Context, result string) {
 		if rec != nil {
 			rec.RecordHedge(ctx.ServiceID, result)

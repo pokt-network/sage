@@ -30,7 +30,7 @@ func TestHedge_PrimaryWinsBeforeDelay(t *testing.T) {
 		return nil
 	})
 
-	mw := Hedge(newFlags("hedge"), hedgeCfg(50*time.Millisecond))
+	mw := Hedge(newFlags("hedge"), hedgeCfg(50*time.Millisecond), nil, nil)
 	h := mw(fast)
 
 	ctx := baseContext()
@@ -63,7 +63,7 @@ func TestHedge_HedgeWinsAfterDelay(t *testing.T) {
 		return nil
 	})
 
-	mw := Hedge(newFlags("hedge"), hedgeCfg(20*time.Millisecond))
+	mw := Hedge(newFlags("hedge"), hedgeCfg(20*time.Millisecond), nil, nil)
 	h := mw(slow)
 
 	ctx := baseContext()
@@ -98,7 +98,7 @@ func TestHedge_BothFail_ReturnsPrimaryError(t *testing.T) {
 		return hedgeErr
 	})
 
-	mw := Hedge(newFlags("hedge"), hedgeCfg(2*time.Millisecond))
+	mw := Hedge(newFlags("hedge"), hedgeCfg(2*time.Millisecond), nil, nil)
 	h := mw(handler)
 
 	ctx := baseContext()
@@ -139,7 +139,7 @@ func TestHedge_LoserContextDetachedFromCaller(t *testing.T) {
 		return nil
 	})
 
-	mw := Hedge(newFlags("hedge"), hedgeCfg(10*time.Millisecond))
+	mw := Hedge(newFlags("hedge"), hedgeCfg(10*time.Millisecond), nil, nil)
 	h := mw(handler)
 
 	ctx := baseContext()
@@ -172,7 +172,7 @@ func TestHedge_FlagDisabled_PassesThrough(t *testing.T) {
 		return nil
 	})
 
-	mw := Hedge(newFlags( /* no "hedge" flag */ ), hedgeCfg(5*time.Millisecond))
+	mw := Hedge(newFlags( /* no "hedge" flag */ ), hedgeCfg(5*time.Millisecond), nil, nil)
 	h := mw(handler)
 
 	ctx := baseContext()
@@ -192,7 +192,7 @@ func TestHedge_HedgeDelayZero_PassesThrough(t *testing.T) {
 		return nil
 	})
 
-	mw := Hedge(newFlags("hedge"), hedgeCfg(0))
+	mw := Hedge(newFlags("hedge"), hedgeCfg(0), nil, nil)
 	h := mw(handler)
 
 	ctx := baseContext()
@@ -227,7 +227,7 @@ func TestHedge_PrefersADifferentOperator(t *testing.T) {
 		return nil
 	})
 
-	h := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond))(slow)
+	h := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond), nil, nil)(slow)
 
 	ctx := baseContext()
 	ctx.Endpoints = multiOperatorEndpoints()
@@ -267,7 +267,7 @@ func TestHedge_SingleOperatorPoolStillHedges(t *testing.T) {
 		return nil
 	})
 
-	h := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond))(slow)
+	h := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond), nil, nil)(slow)
 
 	ctx := baseContext() // one operator, three hostnames
 	if err := h.HandleRelay(ctx); err != nil {
@@ -297,7 +297,7 @@ func TestHedge_PanicOnPrimaryDoesNotCrashOrHang(t *testing.T) {
 		panic("supplier response parser hit a nil map")
 	})
 
-	mw := Hedge(newFlags("hedge"), hedgeCfg(20*time.Millisecond))
+	mw := Hedge(newFlags("hedge"), hedgeCfg(20*time.Millisecond), nil, nil)
 	h := mw(panicking)
 
 	done := make(chan error, 1)
@@ -334,7 +334,7 @@ func TestHedge_PanicOnHedgeArmStillLetsPrimaryWin(t *testing.T) {
 		return nil
 	})
 
-	mw := Hedge(newFlags("hedge"), hedgeCfg(10*time.Millisecond))
+	mw := Hedge(newFlags("hedge"), hedgeCfg(10*time.Millisecond), nil, nil)
 	ctx := baseContext()
 
 	if err := mw(handler).HandleRelay(ctx); err != nil {
@@ -362,7 +362,7 @@ func TestHedge_BothFail_MergesPrimaryContext(t *testing.T) {
 		return retryableErr("hedge failed")
 	})
 
-	mw := Hedge(newFlags("hedge"), hedgeCfg(2*time.Millisecond))
+	mw := Hedge(newFlags("hedge"), hedgeCfg(2*time.Millisecond), nil, nil)
 	ctx := baseContext()
 	if err := mw(handler).HandleRelay(ctx); err == nil {
 		t.Fatal("expected error when both arms fail")
@@ -390,8 +390,8 @@ func TestRetry_AfterHedgeBothFail_ExcludesFailedEndpoint(t *testing.T) {
 		return retryableErr("down")
 	})
 
-	chain := Retry(newFlags("retry", "hedge"), retryCfg(1, 0))(
-		Hedge(newFlags("retry", "hedge"), hedgeCfg(1*time.Millisecond))(selectFirst))
+	chain := Retry(newFlags("retry", "hedge"), retryCfg(1, 0), nil)(
+		Hedge(newFlags("retry", "hedge"), hedgeCfg(1*time.Millisecond), nil, nil)(selectFirst))
 
 	ctx := baseContext()
 	if err := chain.HandleRelay(ctx); err == nil {
@@ -429,7 +429,7 @@ func TestHedge_ReturnsWhenRequestContextDone(t *testing.T) {
 	defer wg.Wait()
 
 	chain := Timeout(func(domain.ServiceID) time.Duration { return 30 * time.Millisecond })(
-		Hedge(newFlags("hedge"), hedgeCfg(5*time.Millisecond))(slow))
+		Hedge(newFlags("hedge"), hedgeCfg(5*time.Millisecond), nil, nil)(slow))
 
 	ctx := baseContext()
 	start := time.Now()
@@ -454,7 +454,7 @@ func TestHedge_RecordsOutcome(t *testing.T) {
 	rec := &recordingHedgeRec{}
 	// Primary answers before the delay: no hedge sent, one primary_before_delay.
 	handler := newMockHandler(nil)
-	mw := HedgeWithRecorder(newFlags("hedge"), hedgeCfg(50*time.Millisecond), rec, nil)
+	mw := Hedge(newFlags("hedge"), hedgeCfg(50*time.Millisecond), rec, nil)
 	if err := mw(handler).HandleRelay(baseContext()); err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +474,7 @@ func TestHedge_DeadlineIsRetryable(t *testing.T) {
 		<-ctx.Ctx.Done()
 		return retryableErr("arm hung")
 	})
-	mw := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(5*time.Millisecond))
+	mw := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(5*time.Millisecond), nil, nil)
 	ctx := baseContext()
 	c, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()
@@ -495,7 +495,7 @@ func TestHedge_CancelIsNotRetryable(t *testing.T) {
 		<-ctx.Ctx.Done()
 		return retryableErr("arm hung")
 	})
-	mw := Hedge(newFlags("hedge"), hedgeCfg(5*time.Millisecond))
+	mw := Hedge(newFlags("hedge"), hedgeCfg(5*time.Millisecond), nil, nil)
 	ctx := baseContext()
 	c, cancel := context.WithCancel(context.Background())
 	ctx.Ctx = c
@@ -547,13 +547,13 @@ func TestHedge_MergesTheCandidatePoolSoRetryCanRetry(t *testing.T) {
 		inner := relay.Handler(h)
 		if hedgeOn {
 			names = append(names, "hedge")
-			inner = Hedge(newFlags(names...), hedgeCfg(5*time.Millisecond))(h)
+			inner = Hedge(newFlags(names...), hedgeCfg(5*time.Millisecond), nil, nil)(h)
 		}
 		ctx := &relay.Context{}
 		ctx.Ctx = t.Context()
 		ctx.ServiceID = "eth"
 		ctx.Endpoints = domain.EndpointAddrList{}
-		_ = RetryWithRecorder(newFlags(names...), retryCfg(3, 0), nil)(inner).HandleRelay(ctx)
+		_ = Retry(newFlags(names...), retryCfg(3, 0), nil)(inner).HandleRelay(ctx)
 		return h.calls
 	}
 	off, on := run(false), run(true)
@@ -584,7 +584,7 @@ func TestHedge_ArmsAreBoundedByTheAttemptDeadline(t *testing.T) {
 	})
 
 	flags := newFlags("retry", "hedge")
-	chain := Retry(flags, retryCfg(1, 0))(Hedge(flags, hedgeCfg(2*time.Millisecond))(hang))
+	chain := Retry(flags, retryCfg(1, 0), nil)(Hedge(flags, hedgeCfg(2*time.Millisecond), nil, nil)(hang))
 
 	ctx := baseContext()
 	c, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
@@ -626,7 +626,7 @@ func TestHedge_ArmKeepsAFlushWindowPastTheDeadline(t *testing.T) {
 		return retryableErr("hung")
 	})
 
-	mw := Hedge(newFlags("hedge"), hedgeCfg(2*time.Millisecond))
+	mw := Hedge(newFlags("hedge"), hedgeCfg(2*time.Millisecond), nil, nil)
 	ctx := baseContext()
 	c, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()
@@ -689,7 +689,7 @@ func TestHedge_SuppressedForLargeBatchItems(t *testing.T) {
 			}
 			ctx := baseContext()
 			ctx.BatchSize = tc.batchSize
-			if err := HedgeWithRecorder(newFlags("hedge"), cfgFn, rec, nil)(slow).HandleRelay(ctx); err != nil {
+			if err := Hedge(newFlags("hedge"), cfgFn, rec, nil)(slow).HandleRelay(ctx); err != nil {
 				t.Fatal(err)
 			}
 			<-primaryDone
@@ -722,7 +722,7 @@ func TestHedge_DeadlineNamesTheArmsInFlight(t *testing.T) {
 	c, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	ctx.Ctx = c
-	err := Hedge(newFlags("hedge"), hedgeCfg(10*time.Millisecond))(inner).HandleRelay(ctx)
+	err := Hedge(newFlags("hedge"), hedgeCfg(10*time.Millisecond), nil, nil)(inner).HandleRelay(ctx)
 	if err == nil || !strings.Contains(err.Error(), "slow-a.example") || !strings.Contains(err.Error(), "slow-b.example") {
 		t.Fatalf("error %v does not name both arms in flight", err)
 	}
@@ -760,7 +760,7 @@ func TestHedge_SteersOnAFirstAttemptWithNoPool(t *testing.T) {
 		return nil
 	})
 
-	h := HedgeWithRecorder(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond), nil, provider)(slow)
+	h := Hedge(newFlags("hedge", "operator_aware_selection"), hedgeCfg(10*time.Millisecond), nil, provider)(slow)
 	ctx := baseContext()
 	ctx.Endpoints = nil
 	if err := h.HandleRelay(ctx); err != nil {

@@ -294,7 +294,7 @@ func TestMetrics_AttemptKindWrittenByTheChain(t *testing.T) {
 		cfg := func(domain.ServiceID) config.RetryConfig {
 			return config.RetryConfig{Enabled: true, MaxRetries: 1, HedgeDelay: delay}
 		}
-		return Retry(flags, cfg)(Hedge(flags, cfg)(Metrics(rec)(SelectEndpoint(rep, nil, nil, flags)(send))))
+		return Retry(flags, cfg, nil)(Hedge(flags, cfg, nil, nil)(Metrics(rec)(SelectEndpoint(rep, nil, nil, flags)(send))))
 	}
 
 	// A failed first attempt, then a retry. The hedge delay is long enough

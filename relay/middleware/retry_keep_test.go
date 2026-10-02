@@ -31,7 +31,7 @@ func TestRetry_KeepsTheLastUpstreamAnswerWhenLaterAttemptsHaveNone(t *testing.T)
 
 	ctx := baseContext()
 	ctx.Endpoints = eps
-	err := Retry(newFlags("retry"), retryCfg(1, 0))(h).HandleRelay(ctx)
+	err := Retry(newFlags("retry"), retryCfg(1, 0), nil)(h).HandleRelay(ctx)
 
 	if attempt != 2 {
 		t.Fatalf("attempts = %d, want the retry to have run", attempt)
@@ -65,7 +65,7 @@ func TestRetry_DoesNotKeepASuppliersOwnPage(t *testing.T) {
 
 	ctx := baseContext()
 	ctx.Endpoints = eps
-	err := Retry(newFlags("retry"), retryCfg(1, 0))(h).HandleRelay(ctx)
+	err := Retry(newFlags("retry"), retryCfg(1, 0), nil)(h).HandleRelay(ctx)
 	if err == nil || errors.Is(err, domain.ErrRetryVerdict) {
 		t.Fatalf("err = %v, want the last attempt's own error, not the page's retry verdict", err)
 	}
@@ -94,7 +94,7 @@ func TestRetry_ALaterAnswerReplacesTheKeptOne(t *testing.T) {
 
 	ctx := baseContext()
 	ctx.Endpoints = eps
-	_ = Retry(newFlags("retry"), retryCfg(1, 0))(h).HandleRelay(ctx)
+	_ = Retry(newFlags("retry"), retryCfg(1, 0), nil)(h).HandleRelay(ctx)
 	if ctx.Response != second {
 		t.Fatalf("response = %s, want the last attempt's own answer", ctx.Response.Body)
 	}
@@ -126,7 +126,7 @@ func TestRetry_KeepsTheLastUpstreamAnswerOverASuppliers408Page(t *testing.T) {
 
 	ctx := baseContext()
 	ctx.Endpoints = eps
-	err := Retry(newFlags("retry"), retryCfg(1, 0))(h).HandleRelay(ctx)
+	err := Retry(newFlags("retry"), retryCfg(1, 0), nil)(h).HandleRelay(ctx)
 
 	if attempt != 2 {
 		t.Fatalf("attempts = %d, want the retry to have run", attempt)
