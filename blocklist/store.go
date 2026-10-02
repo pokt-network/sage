@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -266,28 +267,11 @@ func (m *Manager) applyLocked() error {
 }
 
 func (m *Manager) entriesLocked() []Entry {
-	out := make([]Entry, 0, len(m.entries))
-	for _, e := range m.entries {
-		out = append(out, e)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Domain < out[j].Domain })
-	return out
+	return slices.SortedFunc(maps.Values(m.entries), func(a, b Entry) int { return strings.Compare(a.Domain, b.Domain) })
 }
 
 func sameEntries(a, b map[string]Entry) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, ea := range a {
-		eb, ok := b[k]
-		if !ok || ea.Reason != eb.Reason || !ea.Since.Equal(eb.Since) || len(ea.RPCTypes) != len(eb.RPCTypes) {
-			return false
-		}
-		for i := range ea.RPCTypes {
-			if ea.RPCTypes[i] != eb.RPCTypes[i] {
-				return false
-			}
-		}
-	}
-	return true
+	return maps.EqualFunc(a, b, func(ea, eb Entry) bool {
+		return ea.Reason == eb.Reason && ea.Since.Equal(eb.Since) && slices.Equal(ea.RPCTypes, eb.RPCTypes)
+	})
 }

@@ -236,9 +236,7 @@ func (t *trafficSkipper) skip(
 		return false
 	}
 	delta := signals - before.signals
-	if delta > t.lastDecision.maxDelta {
-		t.lastDecision.maxDelta = delta
-	}
+	t.lastDecision.maxDelta = max(t.lastDecision.maxDelta, delta)
 	if delta < t.minSignals {
 		return false
 	}

@@ -217,9 +217,7 @@ func (f *ExternalBlockFetcher) fetchMax(ctx context.Context) (uint64, error) {
 			continue
 		}
 		successCount++
-		if r.height > maxHeight {
-			maxHeight = r.height
-		}
+		maxHeight = max(maxHeight, r.height)
 	}
 	if successCount == 0 {
 		return 0, fmt.Errorf("all external sources failed for %s: %w", f.serviceID, lastErr)

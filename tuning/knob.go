@@ -17,7 +17,8 @@ package tuning
 
 import (
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -221,12 +222,7 @@ func Lookup(name string) (Knob, bool) {
 // KnobNames returns every registered name, sorted — for error messages that
 // tell the caller what they could have said instead.
 func KnobNames() []string {
-	out := make([]string, 0, len(knobsByName))
-	for name := range knobsByName {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(knobsByName))
 }
 
 // Value is a parsed knob value. Only the field matching the knob's Kind is

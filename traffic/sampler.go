@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"hash/fnv"
+	"maps"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -467,12 +469,7 @@ func (s *Sampler) Services() []domain.ServiceID {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	ids := make([]domain.ServiceID, 0, len(s.services))
-	for id := range s.services {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	return ids
+	return slices.Sorted(maps.Keys(s.services))
 }
 
 // windowFor snapshots the requested window under the service's lock. It
@@ -534,9 +531,7 @@ func summarize(serviceID domain.ServiceID, w *fpWindow) Summary {
 	if w.sampled > 0 {
 		maxCount := 0
 		for _, rec := range w.fingerprints {
-			if rec.count > maxCount {
-				maxCount = rec.count
-			}
+			maxCount = max(maxCount, rec.count)
 		}
 		top1Share = float64(maxCount) / float64(w.sampled)
 	}

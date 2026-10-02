@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -275,12 +277,7 @@ func (c *CheckOverrides) applyLocked() []string {
 			merged.Local = append(merged.Local, b)
 		}
 	}
-	ids := make([]domain.ServiceID, 0, len(c.admin))
-	for id := range c.admin {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	for _, id := range ids {
+	for _, id := range slices.Sorted(maps.Keys(c.admin)) {
 		merged.Local = append(merged.Local, c.admin[id].block)
 	}
 	checks, warnings := BuildConfiguredChecks(merged)
