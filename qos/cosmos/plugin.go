@@ -532,29 +532,6 @@ func (p *Plugin) assertChainID(endpoint domain.EndpointAddr, reported string) er
 	return fmt.Errorf("%w: want %s, got %s", qos.ErrWrongChain, p.expectedChainID, reported)
 }
 
-// --- qos.LifecycleHooks --- //
-
-// OnSessionChange is called when endpoints are added or removed from a session.
-func (p *Plugin) OnSessionChange(_ domain.ServiceID, added, removed domain.EndpointAddrList) {
-	p.store.Touch(added)
-	for _, addr := range removed {
-		p.logger.Debug("cosmos: endpoint removed from session", "endpoint", addr)
-	}
-}
-
-// OnEndpointDiscovered is called when a new endpoint is seen for the first time.
-func (p *Plugin) OnEndpointDiscovered(_ domain.ServiceID, endpoint domain.EndpointAddr) {
-	p.logger.Debug("cosmos: endpoint discovered", "endpoint", endpoint)
-	// Ensure the endpoint exists in the store with zero values so subsequent
-	// updates via Update() always have a record to modify.
-	p.store.Update(endpoint, func(_ *cosmosEndpoint) {})
-}
-
-// OnEndpointEvicted is called when an endpoint is removed from the known set.
-func (p *Plugin) OnEndpointEvicted(_ domain.ServiceID, endpoint domain.EndpointAddr) {
-	p.logger.Debug("cosmos: endpoint evicted", "endpoint", endpoint)
-}
-
 // --- qos.StateResetter ---
 
 // ResetState discards the block consensus and every per-endpoint observation

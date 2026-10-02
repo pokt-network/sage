@@ -475,39 +475,6 @@ func TestUpdateBlockHeight_UpdatesPerceivedHeight(t *testing.T) {
 	}
 }
 
-// --- LifecycleHooks tests --- //
-
-func TestOnSessionChange_TouchesAddedEndpoints(t *testing.T) {
-	p := newPlugin(10)
-	ep := endpointAddr("pokt1abc-https://node.example.com")
-
-	// Pre-populate so we can verify it isn't overwritten.
-	p.UpdateBlockHeight(ep, 500)
-
-	added := domain.EndpointAddrList{ep}
-	p.OnSessionChange("cosmos", added, nil)
-
-	stored, ok := p.store.Get(ep)
-	if !ok {
-		t.Fatal("endpoint should still be in store after OnSessionChange")
-	}
-	if stored.BlockHeight != 500 {
-		t.Errorf("block height should be preserved, got %d", stored.BlockHeight)
-	}
-}
-
-func TestOnEndpointDiscovered_CreatesStoreEntry(t *testing.T) {
-	p := newPlugin(10)
-	ep := endpointAddr("pokt1new-https://new.example.com")
-
-	p.OnEndpointDiscovered("cosmos", ep)
-
-	_, ok := p.store.Get(ep)
-	if !ok {
-		t.Error("expected endpoint to be in store after OnEndpointDiscovered")
-	}
-}
-
 // --- StartSync smoke test --- //
 
 func TestStartSync_DoesNotPanic(t *testing.T) {

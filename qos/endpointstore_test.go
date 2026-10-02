@@ -64,21 +64,6 @@ func TestEndpointStore_Update(t *testing.T) {
 	}
 }
 
-func TestEndpointStore_Touch(t *testing.T) {
-	s := newTestStore()
-	a1 := domain.EndpointAddr("pokt1-https://node1.com")
-	a2 := domain.EndpointAddr("pokt2-https://node2.com")
-
-	s.Set(a1, epData{})
-	s.Set(a2, epData{})
-
-	// Touch only a1; a2 should not be affected (but we mainly test no panic).
-	s.Touch(domain.EndpointAddrList{a1})
-
-	// Touch non-existent should not panic.
-	s.Touch(domain.EndpointAddrList{domain.EndpointAddr("missing")})
-}
-
 func TestEndpointStore_SweepStale(t *testing.T) {
 	s := newTestStore()
 	a1 := domain.EndpointAddr("pokt1-https://node1.com")

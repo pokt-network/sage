@@ -512,30 +512,6 @@ func validateHexString(method string, result json.RawMessage) error {
 	return nil
 }
 
-// --- qos.LifecycleHooks ---
-
-// OnSessionChange touches known endpoints and sweeps those that have left the session.
-func (p *Plugin) OnSessionChange(serviceID domain.ServiceID, added, removed domain.EndpointAddrList) {
-	p.store.Touch(added)
-	for _, addr := range removed {
-		p.logger.Debug("endpoint removed from session",
-			"service", serviceID,
-			"endpoint", addr,
-		)
-	}
-}
-
-// OnEndpointDiscovered initialises a zero-valued store entry for a newly seen endpoint.
-func (p *Plugin) OnEndpointDiscovered(serviceID domain.ServiceID, endpoint domain.EndpointAddr) {
-	p.store.Update(endpoint, func(_ *evmEndpoint) {})
-	p.logger.Debug("endpoint discovered", "service", serviceID, "endpoint", endpoint)
-}
-
-// OnEndpointEvicted logs the eviction; the store entry is kept until SweepStale removes it.
-func (p *Plugin) OnEndpointEvicted(serviceID domain.ServiceID, endpoint domain.EndpointAddr) {
-	p.logger.Debug("endpoint evicted", "service", serviceID, "endpoint", endpoint)
-}
-
 // --- qos.StateResetter ---
 
 // ResetState discards the block consensus and every per-endpoint observation

@@ -22,7 +22,6 @@ import (
 // solanaEndpoint holds per-endpoint state for a Solana session endpoint.
 type solanaEndpoint struct {
 	BlockHeight uint64
-	Slot        uint64
 }
 
 // Plugin is the Solana QoS plugin.
@@ -216,25 +215,6 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 func (p *Plugin) IsCoalescable(method string) bool {
 	return coalescableMethods[method]
 }
-
-// --- qos.LifecycleHooks --- //
-
-// OnSessionChange sweeps stale endpoints that were removed from the session.
-func (p *Plugin) OnSessionChange(_ domain.ServiceID, _, removed domain.EndpointAddrList) {
-	for _, addr := range removed {
-		// Evict removed endpoints so stale data doesn't pollute consensus.
-		p.store.Update(addr, func(ep *solanaEndpoint) {
-			ep.BlockHeight = 0
-			ep.Slot = 0
-		})
-	}
-}
-
-// OnEndpointDiscovered is called when a new endpoint enters a session.
-func (p *Plugin) OnEndpointDiscovered(_ domain.ServiceID, _ domain.EndpointAddr) {}
-
-// OnEndpointEvicted is called when an endpoint is permanently evicted.
-func (p *Plugin) OnEndpointEvicted(_ domain.ServiceID, _ domain.EndpointAddr) {}
 
 // --- qos.StateResetter --- //
 

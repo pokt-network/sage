@@ -156,19 +156,6 @@ func (s *EndpointStore[T]) ObserveHeight(addr domain.EndpointAddr, fn func(*T)) 
 	}
 }
 
-// Touch updates LastSeen for all given addresses. Addresses not in the store are ignored.
-func (s *EndpointStore[T]) Touch(addrs domain.EndpointAddrList) {
-	now := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, addr := range addrs {
-		if ep, ok := s.endpoints[addr]; ok {
-			ep.LastSeen = now
-			s.endpoints[addr] = ep
-		}
-	}
-}
-
 // SweepStale removes endpoints not seen within the given TTL and returns their addresses.
 func (s *EndpointStore[T]) SweepStale(ttl time.Duration) []domain.EndpointAddr {
 	cutoff := time.Now().Add(-ttl)
