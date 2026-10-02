@@ -71,17 +71,6 @@ const (
 	timelineSweepInterval = time.Minute
 )
 
-// TimelineConfig sets the per-key ring length and the key bounds. Zero values
-// take the defaults.
-type TimelineConfig struct {
-	// MaxLen is the number of events kept per key.
-	MaxLen int
-	// IdleTTL drops a key whose last event is older than this.
-	IdleTTL time.Duration
-	// MaxKeys is the ceiling on distinct keys across the whole timeline.
-	MaxKeys int
-}
-
 type timelineShard struct {
 	mu     sync.RWMutex
 	events map[string][]TimelineEvent // key = serviceID:endpoint
@@ -106,24 +95,13 @@ type Timeline struct {
 // NewTimeline creates a timeline with the given maximum events per endpoint
 // and the default key bounds.
 func NewTimeline(maxLen int) *Timeline {
-	return NewTimelineWithConfig(TimelineConfig{MaxLen: maxLen})
-}
-
-// NewTimelineWithConfig creates a timeline with explicit bounds.
-func NewTimelineWithConfig(cfg TimelineConfig) *Timeline {
-	if cfg.MaxLen <= 0 {
-		cfg.MaxLen = 100
-	}
-	if cfg.IdleTTL <= 0 {
-		cfg.IdleTTL = DefaultTimelineIdleTTL
-	}
-	if cfg.MaxKeys <= 0 {
-		cfg.MaxKeys = DefaultTimelineMaxKeys
+	if maxLen <= 0 {
+		maxLen = 100
 	}
 	t := &Timeline{
-		maxLen:  cfg.MaxLen,
-		idleTTL: cfg.IdleTTL,
-		maxKeys: cfg.MaxKeys,
+		maxLen:  maxLen,
+		idleTTL: DefaultTimelineIdleTTL,
+		maxKeys: DefaultTimelineMaxKeys,
 		now:     time.Now,
 	}
 	for i := range t.shards {
@@ -197,10 +175,7 @@ func (t *Timeline) maybeSweep(now time.Time) {
 //
 // Must be called with the shard locked, before inserting a new key.
 func (t *Timeline) capLocked(s *timelineShard) {
-	perShard := t.maxKeys / timelineShards
-	if perShard < 1 {
-		perShard = 1
-	}
+	perShard := max(t.maxKeys/timelineShards, 1)
 	// +1: the caller is about to insert one more key.
 	excess := len(s.lastSeen) + 1 - perShard
 	if excess <= 0 {

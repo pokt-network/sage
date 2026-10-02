@@ -185,7 +185,7 @@ func TestOperatorStatsPersistAcrossARestart(t *testing.T) {
 	store := NewMemoryStorage()
 	first := opService(t, store)
 	feedOperator(first, "pokt1a-https://r001.opa.example", 400, 80)
-	first.flushOperatorStats(store, time.Now())
+	first.flushOperatorStats(time.Now())
 
 	next := opService(t, store)
 	if _, ok := next.OperatorRate(rateSvc, domain.RPCTypeJSONRPC, "opa.example"); ok {

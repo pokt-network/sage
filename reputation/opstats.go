@@ -1,7 +1,6 @@
 package reputation
 
 import (
-	"context"
 	"math"
 	"strings"
 	"sync"
@@ -130,18 +129,6 @@ func (s OperatorStat) RateAt(now time.Time) float64 {
 		return r
 	}
 	return r * math.Exp(-math.Ln2*since.Seconds()/operatorHealHalfLife.Seconds())
-}
-
-// OperatorStatStore is the optional half of Storage that persists operator
-// evidence. A backend that does not implement it keeps the counters in memory
-// only, which costs the fleet's shared view and a pod's history across a
-// restart — the same degradation the rest of the service accepts without
-// Redis.
-type OperatorStatStore interface {
-	// GetOperatorStats returns every stored stat, keyed by OperatorField.
-	GetOperatorStats(ctx context.Context) (map[string]OperatorStat, error)
-	// SetOperatorStat writes one, keyed by OperatorField.
-	SetOperatorStat(ctx context.Context, field string, st OperatorStat) error
 }
 
 // OperatorField is the storage key for one (service, operator, rpc_type).

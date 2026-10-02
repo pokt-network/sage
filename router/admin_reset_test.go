@@ -36,7 +36,7 @@ func TestAdminResetReputation_FansOutToOtherReplicas(t *testing.T) {
 	store := override.NewMemoryStore()
 
 	// Replica B: a real reputation service with two penalised hosts.
-	svcB := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.DefaultServiceConfig())
+	svcB := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.ServiceConfig{})
 	svcB.Start()
 	defer svcB.Stop()
 	fresh := domain.EndpointAddr("pokt1abc-https://supplier1-example.com")
@@ -68,7 +68,7 @@ func TestAdminResetReputation_FansOutToOtherReplicas(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		score, _ := svcB.GetScore(ctx, "eth", fresh, domain.RPCTypeJSONRPC)
-		if score == reputation.DefaultServiceConfig().InitialScore {
+		if score == 100 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -76,7 +76,7 @@ func TestAdminResetReputation_FansOutToOtherReplicas(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if score, _ := svcB.GetScore(ctx, "eth", stale, domain.RPCTypeJSONRPC); score == reputation.DefaultServiceConfig().InitialScore {
+	if score, _ := svcB.GetScore(ctx, "eth", stale, domain.RPCTypeJSONRPC); score == 100 {
 		t.Fatal("an announcement older than the replica was replayed onto it")
 	}
 
@@ -91,7 +91,7 @@ func TestAdminResetReputation_FansOutToOtherReplicas(t *testing.T) {
 	deadline = time.Now().Add(3 * time.Second)
 	for {
 		score, _ := svcB.GetScore(ctx, "eth", fresh, domain.RPCTypeJSONRPC)
-		if score == reputation.DefaultServiceConfig().InitialScore {
+		if score == 100 {
 			break
 		}
 		if time.Now().After(deadline) {

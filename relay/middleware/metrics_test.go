@@ -288,7 +288,7 @@ func TestMetrics_RecordsOperatorAttemptPerAttempt(t *testing.T) {
 // attempt reads first, the one after a failure reads retry, and the second arm
 // of a fired hedge reads hedge.
 func TestMetrics_AttemptKindWrittenByTheChain(t *testing.T) {
-	rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.DefaultServiceConfig())
+	rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.ServiceConfig{})
 	flags := newFlags(featureflag.FlagRetry, featureflag.FlagHedge)
 	chain := func(delay time.Duration, rec *operatorRecorder, send relay.HandlerFunc) relay.Handler {
 		cfg := func(domain.ServiceID) config.RetryConfig {

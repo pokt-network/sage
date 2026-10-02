@@ -25,6 +25,18 @@ type Storage interface {
 	GetStates(ctx context.Context, prefix string) (map[string]State, error)
 	// DeleteState removes the state for the given key.
 	DeleteState(ctx context.Context, key string) error
+
+	// GetOperatorStats returns every stored operator stat, keyed by
+	// OperatorField. Operator evidence is adopted at Hydrate like the
+	// per-key state, and written on its own cadence (opstats.go).
+	GetOperatorStats(ctx context.Context) (map[string]OperatorStat, error)
+	// SetOperatorStat writes one, keyed by OperatorField.
+	SetOperatorStat(ctx context.Context, field string, st OperatorStat) error
+
+	// GetPartyPenalties returns the leader's priced parties (partystore.go).
+	GetPartyPenalties(ctx context.Context) (PartyPenalties, error)
+	// SetPartyPenalties replaces them.
+	SetPartyPenalties(ctx context.Context, p PartyPenalties) error
 }
 
 // BatchWriter is the optional half of Storage that writes many states in one

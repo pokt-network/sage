@@ -36,7 +36,7 @@ func (d *dropCounts) get(reason string) int {
 // never more, and storage ends with each key's latest state: the fixed queue
 // it replaced dropped 4,315 leader writes in a day (mainnet, 2026-10-01).
 func TestWriteBehind_StormHoldsOneWritePerKey(t *testing.T) {
-	store := &slowStorage{batched: true}
+	store := &slowStorage{MemoryStorage: NewMemoryStorage(), batched: true}
 	svc := NewService(store, nil, ServiceConfig{StateIdleTTL: -1})
 	var drops dropCounts
 	svc.SetWriteDropHook(drops.hook)
@@ -65,7 +65,7 @@ func TestWriteBehind_StormHoldsOneWritePerKey(t *testing.T) {
 // A follower holds nothing: storage would discard it.
 func TestWriteBehind_FollowerHoldsNothing(t *testing.T) {
 	store := NewLeaderOnlyStorage(NewMemoryStorage(), func() bool { return false })
-	svc := NewService(store, nil, DefaultServiceConfig())
+	svc := NewService(store, nil, ServiceConfig{})
 	_ = svc.RecordSignal(context.Background(), "eth", "supA-https://node.example.com", domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0))
 	if got := svc.WriteQueueDepth(); got != 0 {
 		t.Fatalf("follower pending = %d, want 0", got)
@@ -81,7 +81,7 @@ func (failingStorage) SetState(context.Context, string, State) error {
 
 // A write storage refuses is lost as surely as one the queue refused.
 func TestWriteBehind_StorageErrorCountsDrops(t *testing.T) {
-	svc := NewService(failingStorage{NewMemoryStorage()}, nil, DefaultServiceConfig())
+	svc := NewService(failingStorage{NewMemoryStorage()}, nil, ServiceConfig{})
 	var drops dropCounts
 	svc.SetWriteDropHook(drops.hook)
 	svc.Start()
@@ -101,7 +101,7 @@ func TestWriteBehind_StorageErrorCountsDrops(t *testing.T) {
 // not a drop, and it is not counted.
 func TestWriteBehind_FollowerDiscardIsNotADrop(t *testing.T) {
 	store := NewLeaderOnlyStorage(NewMemoryStorage(), func() bool { return false })
-	svc := NewService(store, nil, DefaultServiceConfig())
+	svc := NewService(store, nil, ServiceConfig{})
 	var drops dropCounts
 	svc.SetWriteDropHook(drops.hook)
 	svc.Start()
@@ -120,8 +120,10 @@ func TestWriteBehind_FollowerDiscardIsNotADrop(t *testing.T) {
 
 // slowStorage answers every call after rtt, so a test can put a real Redis's
 // round trip in front of the write-behind. batched decides whether a pass costs
-// one round trip or one per key.
+// one round trip or one per key. The operator and party halves of Storage are
+// the embedded MemoryStorage's; only the per-key state is slowed.
 type slowStorage struct {
+	*MemoryStorage
 	rtt     time.Duration
 	batched bool
 
@@ -175,7 +177,10 @@ func (s *slowStorage) counts() (writes, calls int) {
 // the service's BatchWriter assertion fails and it falls back to one write per
 // round trip — the behaviour before batching. It must NOT embed slowStorage,
 // which would promote SetStates and quietly make both halves of the test batch.
-type unbatchedStorage struct{ inner *slowStorage }
+type unbatchedStorage struct {
+	*MemoryStorage // the operator and party halves; MemoryStorage has no SetStates
+	inner          *slowStorage
+}
 
 func (u unbatchedStorage) GetState(ctx context.Context, key string) (State, error) {
 	return u.inner.GetState(ctx, key)
@@ -201,8 +206,8 @@ var (
 // The fallback has to be the fallback: a storage that cannot batch must not
 // somehow reach SetStates, or the load test below proves nothing.
 func TestWriteBehind_StorageWithoutBatchingFallsBackPerKey(t *testing.T) {
-	slow := &slowStorage{rtt: 0}
-	svc := NewService(unbatchedStorage{slow}, nil, ServiceConfig{StateIdleTTL: -1})
+	slow := &slowStorage{MemoryStorage: NewMemoryStorage()}
+	svc := NewService(unbatchedStorage{MemoryStorage: NewMemoryStorage(), inner: slow}, nil, ServiceConfig{StateIdleTTL: -1})
 	svc.Start()
 	svc.enqueue(writeOp{key: scoreKey("eth", "a"), state: State{Score: 1}})
 	svc.Stop()

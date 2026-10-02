@@ -16,7 +16,7 @@ import (
 // The route forgets the operator's counters: its rate is there before and gone
 // after, and an operator with nothing recorded is a 404.
 func TestAdmin_ResetOperatorForgetsTheOperatorRate(t *testing.T) {
-	rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.DefaultServiceConfig())
+	rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.ServiceConfig{})
 	ep := domain.EndpointAddr("s1-https://rm01.op.example")
 	for i := 0; i < 300; i++ {
 		_ = rep.RecordSignal(context.Background(), "eth", ep, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalCriticalError, "down", 0))

@@ -16,7 +16,7 @@ import (
 func newTestServiceStore() (*serviceImpl, *MemoryStorage) {
 	store := NewMemoryStorage()
 	tl := NewTimeline(100)
-	svc := NewService(store, tl, DefaultServiceConfig())
+	svc := NewService(store, tl, ServiceConfig{})
 	svc.Start()
 	return svc, store
 }
@@ -170,7 +170,7 @@ func TestService_SelectBest_ReturnsTheFirstTryPick(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			cfg := DefaultServiceConfig()
+			cfg := ServiceConfig{}
 			cfg.Selector = DefaultSelectorConfig() // A partial SelectorConfig is taken literally: zero thresholds.
 			tc.configure(&cfg.Selector)
 			svc := newTestService(t, cfg)
@@ -445,7 +445,7 @@ func newTestService(t *testing.T, cfg ServiceConfig) *serviceImpl {
 }
 
 func TestService_RateTermLowersEffectiveScore(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
 	// Additive term clamps at 100 no matter what; the rate term must not.
@@ -480,7 +480,7 @@ func TestService_RateTermLowersEffectiveScore(t *testing.T) {
 }
 
 func TestService_RateTermOff(t *testing.T) {
-	cfg := DefaultServiceConfig()
+	cfg := ServiceConfig{}
 	cfg.Rate.HalfLifeAttempts = -1
 	svc := newTestService(t, cfg)
 	ctx := context.Background()
@@ -497,7 +497,7 @@ func TestService_RateTermOff(t *testing.T) {
 }
 
 func TestService_SignalImpactsConfigured(t *testing.T) {
-	cfg := DefaultServiceConfig()
+	cfg := ServiceConfig{}
 	cfg.Impacts = SignalImpacts{Success: 1, CriticalError: -50}
 	svc := newTestService(t, cfg)
 	ctx := context.Background()
@@ -515,7 +515,7 @@ func TestService_SignalImpactsConfigured(t *testing.T) {
 }
 
 func TestService_ProbeSignalsCountButDoNotFeedLatency(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
 	probe := NewSignal(SignalSuccess, "hc", 900*time.Millisecond)
@@ -543,7 +543,7 @@ func TestService_VouchedUsesEffectiveScore(t *testing.T) {
 	// A zero CriticalError impact would be "unset" and fall back to -25, which
 	// drains the additive term too; -1 is set, and success at +5 refills it, so
 	// only the rate term moves.
-	cfg := DefaultServiceConfig()
+	cfg := ServiceConfig{}
 	cfg.Impacts = SignalImpacts{CriticalError: -1}
 	svc := newTestService(t, cfg)
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
@@ -576,7 +576,7 @@ func TestService_VouchedUsesEffectiveScore(t *testing.T) {
 
 	// Second key, default impacts, additive term only: below the threshold and
 	// then back above it.
-	fresh := newTestService(t, DefaultServiceConfig())
+	fresh := newTestService(t, ServiceConfig{})
 	ep2 := domain.EndpointAddr("pokt1def-https://b.example")
 	for i := 0; i < 4; i++ { // 4 x -25 -> additive 0
 		require.NoError(t, fresh.RecordSignal(ctx, "svc", ep2, domain.RPCTypeJSONRPC, NewSignal(SignalCriticalError, "bad", 0)))
@@ -597,7 +597,7 @@ func TestService_VouchedUsesEffectiveScore(t *testing.T) {
 // its cap, and before the floor an effective 0 that emptied the pool.
 func TestService_RateTermDemotesButNeverRemoves(t *testing.T) {
 	ctx := context.Background()
-	cfg := DefaultServiceConfig()
+	cfg := ServiceConfig{}
 	cfg.Impacts = SignalImpacts{CriticalError: -1} // only the rate term moves
 	svc := newTestService(t, cfg)
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
@@ -628,7 +628,7 @@ func TestService_RateTermDemotesButNeverRemoves(t *testing.T) {
 }
 
 func TestService_ResetClearsRate(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
 	for i := 0; i < 1000; i++ {
@@ -643,7 +643,7 @@ func TestService_ResetClearsRate(t *testing.T) {
 }
 
 func TestService_SignalHookSeesProbeFlag(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	var got []string
 	svc.SetSignalHook(func(sid domain.ServiceID, rpc domain.RPCType, _ domain.EndpointAddr, st SignalType, probe bool) {
 		got = append(got, fmt.Sprintf("%s/%s/%s/%v", sid, rpc, st, probe))
@@ -719,7 +719,7 @@ func TestRecordSignal_PruningKeepsPenalisedRate(t *testing.T) {
 // principle 4, ruling F1). At per-URL granularity the three siblings below are
 // one key, so the additive term moves once.
 func TestRecordSignalOnce_PerURLSiblingsAreOneAttempt(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	siblings := domain.EndpointAddrList{
 		"supplierA-https://node1.example.com",
@@ -740,7 +740,7 @@ func TestRecordSignalOnce_PerURLSiblingsAreOneAttempt(t *testing.T) {
 // At per-endpoint each registration is its own key, so each one gets the
 // attempt — the dedupe is on the key, not on the address list.
 func TestRecordSignalOnce_PerEndpointScoresEveryRegistration(t *testing.T) {
-	cfg := DefaultServiceConfig()
+	cfg := ServiceConfig{}
 	cfg.KeyGranularity = KeyPerEndpoint
 	svc := newTestService(t, cfg)
 	ctx := context.Background()
@@ -764,7 +764,7 @@ func TestRecordSignalOnce_PerEndpointScoresEveryRegistration(t *testing.T) {
 
 // A mixed list is deduped per key, not collapsed to the first one.
 func TestRecordSignalOnce_MixedBackendsScoreEachKeyOnce(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	eps := domain.EndpointAddrList{
 		"supplierA-https://node1.example.com",
@@ -784,7 +784,7 @@ func TestRecordSignalOnce_MixedBackendsScoreEachKeyOnce(t *testing.T) {
 
 // The degenerate lists must not panic or record anything unexpected.
 func TestRecordSignalOnce_EmptyAndSingle(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	require.NoError(t, svc.RecordSignalOnce(ctx, "eth", nil, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0)))
 	views, err := svc.GetStates(ctx, "eth")
@@ -807,7 +807,7 @@ func TestRecordSignalOnce_EmptyAndSingle(t *testing.T) {
 // half-lives of clean attempts to clear. A host that comes back must be back in
 // tier 1 within a handful of successes, which is what the additive term is for.
 func TestRecordSignal_FlooredScoreDoesNotAccrueRate(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1dead-https://dead.example.com")
 
@@ -844,7 +844,7 @@ func TestRecordSignal_FlooredScoreDoesNotAccrueRate(t *testing.T) {
 // floors its additive term, so every one of its attempts feeds the rate and it
 // still lands on the §7.3 number.
 func TestRecordSignal_ChronicViolatorIsUnaffectedByTheFlooredGate(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1chronic-https://chronic.example.com")
 
@@ -867,7 +867,7 @@ func TestRecordSignal_ChronicViolatorIsUnaffectedByTheFlooredGate(t *testing.T) 
 // The latency EWMA moves on successes only: a host that fails fast must not
 // read as a fast host to the selection tie-break.
 func TestRecordSignal_LatencyEWMAIgnoresErrors(t *testing.T) {
-	svc := NewService(NewMemoryStorage(), NewTimeline(10), DefaultServiceConfig())
+	svc := NewService(NewMemoryStorage(), NewTimeline(10), ServiceConfig{})
 	ctx := context.Background()
 	ep := domain.EndpointAddr("s-https://h.example")
 	_ = svc.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, NewSignal(SignalMajorError, "upstream_5xx", 5*time.Millisecond))
@@ -920,7 +920,7 @@ func TestService_Retune(t *testing.T) {
 // ScoreOf says whether a score was recorded instead of answering InitialScore,
 // and GetScoresSince leaves out keys nothing has signalled since the cut.
 func TestService_ScoreOfAndGetScoresSince(t *testing.T) {
-	svc := NewService(NewMemoryStorage(), nil, DefaultServiceConfig())
+	svc := NewService(NewMemoryStorage(), nil, ServiceConfig{})
 	ctx := context.Background()
 	seen := domain.EndpointAddr("s1-https://seen.example.com")
 	if _, ok := svc.ScoreOf("eth", seen, domain.RPCTypeJSONRPC); ok {

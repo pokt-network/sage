@@ -1,6 +1,7 @@
 package reputation
 
 import (
+	"cmp"
 	"sync"
 	"sync/atomic"
 
@@ -57,21 +58,25 @@ type URLResolverFn func(domain.EndpointAddr, domain.RPCType) (string, bool)
 // change how scores are grouped, so callers should validate the name separately
 // (see ValidKeyGranularity) rather than relying on this fallback.
 func keyFnFor(granularity string, resolve URLResolverFn) KeyFn {
+	// cmp.Or(extracted, string(ep)) below degrades a malformed address to
+	// per-endpoint granularity for that one address rather than collapsing
+	// every malformed address onto the empty key, which would score them as
+	// if they were the same host.
 	var base func(domain.EndpointAddr) string
 	switch granularity {
 	case KeyPerEndpoint:
 		base = func(ep domain.EndpointAddr) string { return string(ep) }
 	case KeyPerDomain:
-		base = func(ep domain.EndpointAddr) string { return fallbackToAddr(ep, ep.Domain()) }
+		base = func(ep domain.EndpointAddr) string { return cmp.Or(ep.Domain(), string(ep)) }
 	case KeyPerSupplier:
-		base = func(ep domain.EndpointAddr) string { return fallbackToAddr(ep, ep.Supplier()) }
+		base = func(ep domain.EndpointAddr) string { return cmp.Or(ep.Supplier(), string(ep)) }
 	default: // KeyPerURL
 		base = func(ep domain.EndpointAddr) string {
 			url, err := ep.URL()
 			if err != nil {
 				return string(ep)
 			}
-			return fallbackToAddr(ep, url)
+			return cmp.Or(url, string(ep))
 		}
 	}
 	return func(ep domain.EndpointAddr, rpcType domain.RPCType) string {
@@ -136,16 +141,6 @@ func memoize(fn KeyFn) KeyFn {
 		}
 		return key
 	}
-}
-
-// fallbackToAddr degrades a malformed address to per-endpoint granularity for
-// that one address rather than collapsing every malformed address onto the
-// empty key, which would score them as if they were the same host.
-func fallbackToAddr(ep domain.EndpointAddr, extracted string) string {
-	if extracted == "" {
-		return string(ep)
-	}
-	return extracted
 }
 
 // ValidKeyGranularity reports whether name is a granularity SAGE implements.

@@ -36,21 +36,9 @@ type StoredTrust struct {
 	Until int64  `json:"until"`
 }
 
-// PartyPenaltyStore is the optional half of Storage that keeps the leader's
-// priced parties. A storage without it starts every pod from nothing, as
-// before.
-type PartyPenaltyStore interface {
-	GetPartyPenalties(ctx context.Context) (PartyPenalties, error)
-	SetPartyPenalties(ctx context.Context, p PartyPenalties) error
-}
-
 // storePartyPenalties writes the view's priced parties. Called on every
 // refresh; LeaderOnlyStorage keeps a follower's copy out.
 func (s *serviceImpl) storePartyPenalties(v *chronicView) {
-	store, ok := s.storage.(PartyPenaltyStore)
-	if !ok {
-		return
-	}
 	var p PartyPenalties
 	for _, st := range v.stale {
 		if st.Penalty < 0 {
@@ -62,7 +50,7 @@ func (s *serviceImpl) storePartyPenalties(v *chronicView) {
 			p.Trust = append(p.Trust, StoredTrust{Party: t.Party, Until: t.until.Unix()})
 		}
 	}
-	_ = store.SetPartyPenalties(context.Background(), p)
+	_ = s.storage.SetPartyPenalties(context.Background(), p)
 }
 
 // adoptPartyPenalties seeds the view with the stored priced parties as the
@@ -71,11 +59,7 @@ func (s *serviceImpl) storePartyPenalties(v *chronicView) {
 // penalty until its stored end. Anything already past those is dropped by
 // the same rules. It reports how many parties were adopted.
 func (s *serviceImpl) adoptPartyPenalties(ctx context.Context) int {
-	store, ok := s.storage.(PartyPenaltyStore)
-	if !ok {
-		return 0
-	}
-	p, err := store.GetPartyPenalties(ctx)
+	p, err := s.storage.GetPartyPenalties(ctx)
 	if err != nil || len(p.Stale)+len(p.Trust) == 0 {
 		return 0
 	}

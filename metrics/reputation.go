@@ -85,7 +85,7 @@ type ScoreCollector struct {
 }
 
 // NewScoreCollector returns a collector for the given services. fullScore is
-// the reputation ceiling (ServiceConfig.MaxScore); keys at it are not
+// the reputation ceiling (100, reputation's maximum score); keys at it are not
 // exported. It does not register itself; the caller decides which registry it
 // belongs to.
 func NewScoreCollector(lister ScoreLister, services []domain.ServiceID, fullScore float64) *ScoreCollector {

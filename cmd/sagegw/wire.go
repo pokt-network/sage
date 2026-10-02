@@ -316,7 +316,6 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	})
 	repSvc := reputation.NewService(repStorage, timeline, reputation.ServiceConfig{
 		InitialScore:   initialScore,
-		MaxScore:       100,
 		KeyGranularity: cfg.Gateway.Reputation.KeyGranularity,
 		Impacts:        cfg.Gateway.Reputation.Impacts(),
 		Rate:           cfg.Gateway.Reputation.RateConfig(),

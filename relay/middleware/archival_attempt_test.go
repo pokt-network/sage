@@ -19,7 +19,7 @@ import (
 // state was gone were never the ones observed.
 func TestArchival_EveryAttemptThatSaysStateIsGoneIsRemembered(t *testing.T) {
 	plugin := evm.NewPlugin(nil, evm.Config{SyncAllowance: 150})
-	rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.DefaultServiceConfig())
+	rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.ServiceConfig{})
 	reg := qos.NewRegistry()
 	if err := reg.Register("base", plugin); err != nil {
 		t.Fatal(err)

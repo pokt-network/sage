@@ -15,7 +15,7 @@ import (
 // froze at 100 does not walk straight back into tier 1. A key already lower
 // is left where it is.
 func TestService_RebaseAfterDrainRestartsAtProbation(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	top := domain.EndpointAddr("pokt1a-https://a.opa.example")
 	low := domain.EndpointAddr("pokt1b-https://b.opa.example")
@@ -35,7 +35,7 @@ func TestService_RebaseAfterDrainRestartsAtProbation(t *testing.T) {
 // An unscored attempt leaves a timeline event naming the host's answer, and
 // no score change.
 func TestService_RecordNoteIsTimelineOnly(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1a-https://a.opa.example")
 	require.NoError(t, svc.RecordSignal(ctx, "sei", ep, domain.RPCTypeJSONRPC, NewSignal(SignalSuccess, "ok", 0)))

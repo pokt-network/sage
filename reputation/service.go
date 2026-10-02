@@ -70,8 +70,6 @@ type OnceRecorder interface {
 type ServiceConfig struct {
 	// InitialScore is the score assigned to newly seen endpoints. Default: 100.
 	InitialScore float64
-	// MaxScore is the upper bound for scores. Default: 100.
-	MaxScore float64
 	// KeyGranularity selects what a score is attached to — see key.go. Empty
 	// means the default, per-URL.
 	KeyGranularity string
@@ -92,29 +90,12 @@ type ServiceConfig struct {
 	// StateSweepInterval is how often the write-behind goroutine runs the
 	// sweep. Zero means defaultStateSweepInterval.
 	StateSweepInterval time.Duration
-	// OperatorHalfLife is how long an operator's failure evidence takes to
-	// lose half its weight. Zero means DefaultOperatorHalfLife. Decay is by
-	// time, not by attempts, because an operator's endpoints are redrawn every
-	// session and an attempt count is not a clock (opstats.go).
-	OperatorHalfLife time.Duration
-	// URLResolver, when set, keys per-URL scores on the host a face is
-	// actually dialed from rather than the address's public URL. Wire sets
-	// it from the protocol after construction (SetURLResolver).
-	URLResolver URLResolverFn
 }
 
 // defaultStateSweepInterval paces the storage sweep. The sweep is one HSCAN
 // over the hash on the leader; every few minutes is far more often than the
 // TTL needs and cheap enough not to think about.
 const defaultStateSweepInterval = 5 * time.Minute
-
-// DefaultServiceConfig returns a ServiceConfig with sensible defaults.
-func DefaultServiceConfig() ServiceConfig {
-	return ServiceConfig{
-		InitialScore: 100,
-		MaxScore:     100,
-	}
-}
 
 // scoreKey produces the storage key for a service plus an already-derived
 // reputation key.
@@ -189,7 +170,7 @@ type serviceImpl struct {
 	refusals  *opTracker
 	// ops is the per-operator evidence the chronic term actually reads: an
 	// identity that does not rotate with the session draw (operator.go,
-	// opstats.go). Persisted through OperatorStatStore when storage has one.
+	// opstats.go). Persisted through Storage.
 	ops *opTracker
 
 	// In-memory score cache, striped by key hash.
@@ -213,9 +194,6 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	if cfg.InitialScore == 0 {
 		cfg.InitialScore = 100
 	}
-	if cfg.MaxScore == 0 {
-		cfg.MaxScore = 100
-	}
 	if cfg.StateIdleTTL == 0 {
 		cfg.StateIdleTTL = DefaultIdleTTL
 	}
@@ -233,12 +211,12 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 		s.shards[i].cache = make(map[domain.ServiceID]map[string]State)
 	}
 	s.scoring.Store(newScoring(cfg.Impacts, cfg.Rate))
-	s.ops = newOpTracker(cfg.OperatorHalfLife)
+	s.ops = newOpTracker(DefaultOperatorHalfLife)
 	s.heads = newOpTracker(staleShareHalfLife)
 	s.heads.dirty = nil // never persisted, so nothing takes the marks
 	s.refusals = newOpTracker(refusalHalfLife)
 	s.refusals.dirty = nil
-	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, cfg.URLResolver)))
+	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, nil)))
 	selCfg := cfg.Selector
 	if selCfg == (SelectorConfig{}) {
 		selCfg = DefaultSelectorConfig()
@@ -1356,15 +1334,12 @@ func (s *serviceImpl) RuledOut(serviceID domain.ServiceID, endpoint domain.Endpo
 	return ok && score < s.selector.cfg.Load().MinThreshold
 }
 
-// clamp constrains a score to [0, MaxScore].
+// maxScore is the upper bound for scores.
+const maxScore = 100
+
+// clamp constrains a score to [0, maxScore].
 func (s *serviceImpl) clamp(score float64) float64 {
-	if score < 0 {
-		return 0
-	}
-	if score > s.cfg.MaxScore {
-		return s.cfg.MaxScore
-	}
-	return score
+	return max(0, min(score, maxScore))
 }
 
 // drainWrites processes the async write queue until Stop is called.
@@ -1381,13 +1356,8 @@ func (s *serviceImpl) drainWrites() {
 	// Operator evidence is written on its own cadence rather than per signal:
 	// it is one row per (service, operator, RPC type), so a flush is tens of
 	// writes, not one per relay.
-	opStore, canFlush := s.storage.(OperatorStatStore)
-	var flush <-chan time.Time
-	if canFlush {
-		ticker := time.NewTicker(operatorFlushInterval)
-		defer ticker.Stop()
-		flush = ticker.C
-	}
+	flush := time.NewTicker(operatorFlushInterval)
+	defer flush.Stop()
 	tick := time.NewTicker(writeFlushInterval)
 	defer tick.Stop()
 	for {
@@ -1401,8 +1371,8 @@ func (s *serviceImpl) drainWrites() {
 			safego.Run(nil, "reputation.sweep", func() {
 				_, _ = sweeper.DeleteStale(context.Background(), now.Add(-s.cfg.StateIdleTTL))
 			})
-		case now := <-flush:
-			safego.Run(nil, "reputation.opstats", func() { s.flushOperatorStats(opStore, now) })
+		case now := <-flush.C:
+			safego.Run(nil, "reputation.opstats", func() { s.flushOperatorStats(now) })
 		case <-s.stopCh:
 			// What is pending goes out in one pass: a round trip or two, not
 			// a 10s shutdown budget spent on writes.
@@ -1425,9 +1395,9 @@ const operatorFlushInterval = 15 * time.Second
 // flush. Errors are dropped like every other write-behind error: the dirty
 // mark is cleared when the value is taken, so a failed row waits for its next
 // change, and the counters decay over hours.
-func (s *serviceImpl) flushOperatorStats(store OperatorStatStore, now time.Time) {
+func (s *serviceImpl) flushOperatorStats(now time.Time) {
 	for id, st := range s.ops.takeDirty(now) {
-		_ = store.SetOperatorStat(context.Background(),
+		_ = s.storage.SetOperatorStat(context.Background(),
 			OperatorField(id.svc, id.op, domain.RPCType(id.rpc)), st)
 	}
 }

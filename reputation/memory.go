@@ -27,8 +27,6 @@ func NewMemoryStorage() *MemoryStorage {
 	}
 }
 
-var _ OperatorStatStore = (*MemoryStorage)(nil)
-
 // GetOperatorStats returns every stored operator stat.
 func (m *MemoryStorage) GetOperatorStats(_ context.Context) (map[string]OperatorStat, error) {
 	m.mu.RLock()
@@ -102,8 +100,6 @@ func (m *MemoryStorage) DeleteStale(_ context.Context, olderThan time.Time) (int
 	}
 	return n, nil
 }
-
-var _ PartyPenaltyStore = (*MemoryStorage)(nil)
 
 // GetPartyPenalties returns the stored priced parties.
 func (m *MemoryStorage) GetPartyPenalties(_ context.Context) (PartyPenalties, error) {

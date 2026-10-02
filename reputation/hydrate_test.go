@@ -26,7 +26,7 @@ func TestHydrate_LoadsPersistedScores(t *testing.T) {
 	stored(t, store, "eth", "https://node2.example.com|json_rpc", 71, time.Minute)
 	stored(t, store, "poly", "https://node3.example.com|json_rpc", 13, time.Minute)
 
-	svc := NewService(store, nil, DefaultServiceConfig())
+	svc := NewService(store, nil, ServiceConfig{})
 
 	// Before hydration a cold service claims every endpoint is perfect.
 	if got, _ := svc.scoreForSelector(context.Background(), "eth", "supA-https://node1.example.com", domain.RPCTypeJSONRPC); got != svc.cfg.InitialScore {
@@ -68,7 +68,7 @@ func TestHydrate_SkipsStaleAndUnstamped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewService(store, nil, DefaultServiceConfig())
+	svc := NewService(store, nil, ServiceConfig{})
 	res, err := svc.Hydrate(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestHydrate_DoesNotOverwriteLiveState(t *testing.T) {
 	store := NewMemoryStorage()
 	stored(t, store, "eth", "https://node1.example.com|json_rpc", 42, time.Minute)
 
-	svc := NewService(store, nil, DefaultServiceConfig())
+	svc := NewService(store, nil, ServiceConfig{})
 	ep := domain.EndpointAddr("supA-https://node1.example.com")
 	if err := svc.RecordSignal(context.Background(), "eth", ep, domain.RPCTypeJSONRPC,
 		Signal{Type: SignalMajorError, Timestamp: time.Now()}); err != nil {
@@ -154,7 +154,7 @@ func TestHydrate_CountsUnparseableApart(t *testing.T) {
 	if err := store.SetState(context.Background(), "nocolon", State{Score: 9, UpdatedAt: time.Now().Unix()}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := NewService(store, nil, DefaultServiceConfig()).Hydrate(context.Background())
+	res, err := NewService(store, nil, ServiceConfig{}).Hydrate(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

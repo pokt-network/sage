@@ -236,11 +236,11 @@ func cappedPickWeighted(
 
 	waterFill(buf.groups, capShare, ceiling)
 
-	g := pickByWeight(buf.groups)
-	if g == nil {
+	i := pickIndex(len(buf.groups), func(i int) float64 { return buf.groups[i].weight })
+	if i < 0 {
 		return "", "", false
 	}
-	return g.operator, g.pick, true
+	return buf.groups[i].operator, buf.groups[i].pick, true
 }
 
 // waterFill redistributes any share above capShare onto the operators that have
@@ -268,13 +268,10 @@ func waterFill(groups []opGroup, capShare, ceiling float64) {
 	// Headroom is bounded by the cap and, if enabled, by the displacement
 	// ceiling — how far past its own entitlement an operator may be pushed.
 	limit := func(g opGroup) float64 {
-		lim := capShare
 		if ceiling > 0 {
-			if c := ceiling * g.entitlement; c < lim {
-				lim = c
-			}
+			return min(capShare, ceiling*g.entitlement)
 		}
-		return lim
+		return capShare
 	}
 
 	var headroom float64
@@ -284,10 +281,7 @@ func waterFill(groups []opGroup, capShare, ceiling float64) {
 		}
 	}
 
-	give := excess
-	if give > headroom {
-		give = headroom
-	}
+	give := min(excess, headroom)
 	if give > eps {
 		for i := range groups {
 			if h := limit(groups[i]) - groups[i].weight; h > 0 {
@@ -306,31 +300,4 @@ func waterFill(groups []opGroup, capShare, ceiling float64) {
 			}
 		}
 	}
-}
-
-// pickByWeight chooses an operator with probability proportional to its weight.
-func pickByWeight(groups []opGroup) *opGroup {
-	var total float64
-	for i := range groups {
-		if groups[i].weight > 0 {
-			total += groups[i].weight
-		}
-	}
-	if total <= 0 {
-		return nil
-	}
-
-	r := rand.Float64() * total
-	var cum float64
-	for i := range groups {
-		if groups[i].weight <= 0 {
-			continue
-		}
-		cum += groups[i].weight
-		if r < cum {
-			return &groups[i]
-		}
-	}
-	// Floating-point rounding safety net.
-	return &groups[len(groups)-1]
 }

@@ -37,18 +37,6 @@ type HydrateResult struct {
 	Operators int
 }
 
-// Hydrator is the optional half of Service that loads persisted state back
-// into memory at startup.
-//
-// It is optional because the memory-backed service satisfies it trivially
-// (there is nothing to load) and because a caller that does not want a cold
-// pod adopting another pod's scores can simply not call it.
-type Hydrator interface {
-	Hydrate(ctx context.Context) (HydrateResult, error)
-}
-
-var _ Hydrator = (*serviceImpl)(nil)
-
 // Hydrate loads persisted reputation state into the in-memory cache.
 //
 // Without it a restarted or newly rolled pod starts every key at InitialScore
@@ -89,7 +77,7 @@ func (s *serviceImpl) Hydrate(ctx context.Context) (HydrateResult, error) {
 	var (
 		result HydrateResult
 		seen   = make(map[domain.ServiceID]struct{})
-		cutoff = time.Now().Add(-s.stateIdleTTL())
+		cutoff = time.Now().Add(-s.cfg.StateIdleTTL)
 	)
 
 	for field, st := range states {
@@ -116,11 +104,8 @@ func (s *serviceImpl) Hydrate(ctx context.Context) (HydrateResult, error) {
 	// to a cold pod: per-key state ages out with the session draw, while an
 	// operator's counters are the fleet's accumulated view of who answers
 	// (opstats.go).
-	if store, ok := s.storage.(OperatorStatStore); ok {
-		stored, opErr := store.GetOperatorStats(ctx)
-		if opErr == nil {
-			result.Operators = s.ops.merge(stored, time.Now())
-		}
+	if stored, opErr := s.storage.GetOperatorStats(ctx); opErr == nil {
+		result.Operators = s.ops.merge(stored, time.Now())
 	}
 
 	// The leader's priced parties, so this pod charges them from its first
@@ -144,15 +129,6 @@ func (s *serviceImpl) fresh(st State, cutoff time.Time) bool {
 		return false
 	}
 	return time.Unix(st.UpdatedAt, 0).After(cutoff)
-}
-
-// stateIdleTTL is the age at which storage entries are swept, and so the age
-// beyond which one must not be adopted.
-func (s *serviceImpl) stateIdleTTL() time.Duration {
-	if s.cfg.StateIdleTTL == 0 {
-		return DefaultIdleTTL
-	}
-	return s.cfg.StateIdleTTL
 }
 
 // loadState places one state in the cache. It returns nil when the state

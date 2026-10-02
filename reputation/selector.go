@@ -309,8 +309,8 @@ func (s *TieredSelector) Select(ctx context.Context, serviceID domain.ServiceID,
 		}
 	}
 	if weights != nil {
-		if ep, ok := weightedPick(endpoints, weights); ok {
-			selected = ep
+		if i := pickIndex(len(endpoints), func(i int) float64 { return weights[i] }); i >= 0 {
+			selected = endpoints[i]
 		}
 	}
 
@@ -444,30 +444,33 @@ func (s *TieredSelector) tier1Weights(
 	return weights, true
 }
 
-// weightedPick draws one endpoint with probability proportional to its
-// weight; zero-weight endpoints are not candidates.
-func weightedPick(endpoints domain.EndpointAddrList, weights []float64) (domain.EndpointAddr, bool) {
+// pickIndex draws an index in [0, n) with probability proportional to
+// weight(i); non-positive weights are never drawn. It returns -1 when no
+// weight is positive. A func rather than a slice so the capped selection can
+// draw over its pooled groups without allocating.
+func pickIndex(n int, weight func(i int) float64) int {
 	var total float64
-	for _, w := range weights {
-		total += w
+	for i := range n {
+		if w := weight(i); w > 0 {
+			total += w
+		}
 	}
 	if total <= 0 {
-		return "", false
+		return -1
 	}
 	r := rand.Float64() * total
-	for i, ep := range endpoints {
-		if weights[i] == 0 {
+	last := -1
+	for i := range n {
+		w := weight(i)
+		if w <= 0 {
 			continue
 		}
-		r -= weights[i]
-		if r <= 0 {
-			return ep, true
+		if r < w {
+			return i
 		}
+		r -= w
+		last = i
 	}
-	for i := len(endpoints) - 1; i >= 0; i-- {
-		if weights[i] != 0 {
-			return endpoints[i], true
-		}
-	}
-	return "", false
+	// Floating-point rounding safety net.
+	return last
 }

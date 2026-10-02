@@ -26,25 +26,12 @@ func pickWeightedByInverseLoad(candidates domain.EndpointAddrList, load map[doma
 		return candidates[rand.IntN(len(candidates))]
 	}
 
-	weights := make([]float64, len(candidates))
-	var total float64
-	for i, ep := range candidates {
-		w := 1.0 / float64(1+load[ep])
-		weights[i] = w
-		total += w
-	}
-	if total <= 0 {
-		// Shouldn't happen (all weights ≥ some positive value), but guard anyway.
+	i := pickIndex(len(candidates), func(i int) float64 {
+		return 1.0 / float64(1+load[candidates[i]])
+	})
+	if i < 0 {
+		// Only a negative load can get here; fall back to uniform.
 		return candidates[rand.IntN(len(candidates))]
 	}
-	r := rand.Float64() * total
-	var cum float64
-	for i, w := range weights {
-		cum += w
-		if r < cum {
-			return candidates[i]
-		}
-	}
-	// Floating-point rounding safety net.
-	return candidates[len(candidates)-1]
+	return candidates[i]
 }

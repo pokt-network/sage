@@ -14,7 +14,7 @@ import (
 // A probe success cannot lift a key that traffic is failing: the key keeps
 // the score traffic gave it until probeDefer has passed without traffic.
 func TestService_ProbeSuccessDoesNotOutvoteRecentTraffic(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1a-https://a.example")
 	t0 := time.Now()
@@ -42,7 +42,7 @@ func TestService_ProbeSuccessDoesNotOutvoteRecentTraffic(t *testing.T) {
 // with recent traffic: the collapse fallback's occasional pick must not trap
 // it at 0. Probes lift it into probation; from there traffic decides.
 func TestService_ProbesStillLiftABenchedKey(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	ep := domain.EndpointAddr("pokt1a-https://a.example")
 	t0 := time.Now()
@@ -68,7 +68,7 @@ func TestService_ProbesStillLiftABenchedKey(t *testing.T) {
 // The chronic penalty is measured from the pool's best rate when the relative
 // term is on: the best key pays nothing, a worse one pays the difference.
 func TestService_ChronicPenaltyIsRelativeToThePool(t *testing.T) {
-	svc := newTestService(t, DefaultServiceConfig())
+	svc := newTestService(t, ServiceConfig{})
 	ctx := context.Background()
 	best := domain.EndpointAddr("pokt1a-https://a.example")
 	worse := domain.EndpointAddr("pokt1b-https://b.example")

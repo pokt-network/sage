@@ -55,11 +55,6 @@ func NewRedisStorage(client RedisClient, hashKey string) (*RedisStorage, error) 
 	}, nil
 }
 
-// ScoreField returns the Redis HASH field name for a given score key.
-func ScoreField(key string) string {
-	return key
-}
-
 // encodeState is the hash field value: JSON, so a field can grow without a
 // key-format migration.
 func encodeState(st State) string {
@@ -84,8 +79,6 @@ func decodeState(val string) (State, error) {
 	}
 	return State{Score: f}, nil
 }
-
-var _ OperatorStatStore = (*RedisStorage)(nil)
 
 // operatorHashKey is the HASH holding per-operator evidence, beside the
 // per-key scores. A separate hash rather than reserved fields in the same one:
@@ -127,7 +120,7 @@ func (r *RedisStorage) SetOperatorStat(ctx context.Context, field string, st Ope
 
 // GetState retrieves the state for the given key from the Redis HASH.
 func (r *RedisStorage) GetState(ctx context.Context, key string) (State, error) {
-	val, err := r.client.HGet(ctx, r.hashKey, ScoreField(key)).Result()
+	val, err := r.client.HGet(ctx, r.hashKey, key).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return State{}, ErrStateNotFound
@@ -143,7 +136,7 @@ func (r *RedisStorage) GetState(ctx context.Context, key string) (State, error) 
 
 // SetState stores the state for the given key in the Redis HASH.
 func (r *RedisStorage) SetState(ctx context.Context, key string, st State) error {
-	err := r.client.HSet(ctx, r.hashKey, ScoreField(key), encodeState(st)).Err()
+	err := r.client.HSet(ctx, r.hashKey, key, encodeState(st)).Err()
 	if err != nil {
 		return fmt.Errorf("redis HSet %s: %w", key, err)
 	}
@@ -162,7 +155,7 @@ func (r *RedisStorage) SetStates(ctx context.Context, states map[string]State) e
 	}
 	pairs := make([]any, 0, len(states)*2)
 	for key, st := range states {
-		pairs = append(pairs, ScoreField(key), encodeState(st))
+		pairs = append(pairs, key, encodeState(st))
 	}
 	if err := r.client.HSet(ctx, r.hashKey, pairs...).Err(); err != nil {
 		return fmt.Errorf("redis HSet %d fields: %w", len(states), err)
@@ -196,7 +189,7 @@ func (r *RedisStorage) GetStates(ctx context.Context, prefix string) (map[string
 
 // DeleteState removes the state for the given key from the Redis HASH.
 func (r *RedisStorage) DeleteState(ctx context.Context, key string) error {
-	err := r.client.HDel(ctx, r.hashKey, ScoreField(key)).Err()
+	err := r.client.HDel(ctx, r.hashKey, key).Err()
 	if err != nil {
 		return fmt.Errorf("redis HDel %s: %w", key, err)
 	}
@@ -252,8 +245,6 @@ func (r *RedisStorage) DeleteStale(ctx context.Context, olderThan time.Time) (in
 	}
 	return deleted, flush()
 }
-
-var _ PartyPenaltyStore = (*RedisStorage)(nil)
 
 // partiesKey holds the leader's priced parties: one small JSON value in its
 // own hash (partiesField), beside the score and operator hashes and, like the

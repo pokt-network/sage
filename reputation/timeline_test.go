@@ -107,7 +107,8 @@ func TestTimeline_GetReturnsCopy(t *testing.T) {
 // growing for the life of the process.
 func TestTimeline_EvictsIdleKeys(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
-	tl := NewTimelineWithConfig(TimelineConfig{MaxLen: 5, IdleTTL: time.Hour, MaxKeys: 100_000})
+	tl := NewTimeline(5)
+	tl.idleTTL, tl.maxKeys = time.Hour, 100_000
 	tl.now = func() time.Time { return now }
 
 	tl.Record("eth:old", TimelineEvent{Timestamp: now, Event: "signal"})
@@ -133,7 +134,8 @@ func TestTimeline_EvictsIdleKeys(t *testing.T) {
 // events is never idle, however old its first event is.
 func TestTimeline_ActivityKeepsKeyAlive(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
-	tl := NewTimelineWithConfig(TimelineConfig{MaxLen: 5, IdleTTL: time.Hour, MaxKeys: 100_000})
+	tl := NewTimeline(5)
+	tl.idleTTL, tl.maxKeys = time.Hour, 100_000
 	tl.now = func() time.Time { return now }
 
 	for i := 0; i < 5; i++ {
@@ -153,7 +155,8 @@ func TestTimeline_ActivityKeepsKeyAlive(t *testing.T) {
 func TestTimeline_HardCapEvictsOldest(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	const maxKeys = 64
-	tl := NewTimelineWithConfig(TimelineConfig{MaxLen: 5, IdleTTL: 24 * time.Hour, MaxKeys: maxKeys})
+	tl := NewTimeline(5)
+	tl.idleTTL, tl.maxKeys = 24*time.Hour, maxKeys
 	tl.now = func() time.Time { return now }
 
 	for i := 0; i < 4*maxKeys; i++ {

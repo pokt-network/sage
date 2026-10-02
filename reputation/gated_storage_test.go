@@ -34,7 +34,7 @@ func TestLeaderOnlyStorage_DropsFollowerWrites(t *testing.T) {
 func TestResetScore_WritesThroughOnAFollower(t *testing.T) {
 	inner := NewMemoryStorage()
 	gated := NewLeaderOnlyStorage(inner, func() bool { return false })
-	svc := NewService(gated, NewTimeline(100), DefaultServiceConfig())
+	svc := NewService(gated, NewTimeline(100), ServiceConfig{})
 	svc.Start()
 
 	ctx := context.Background()

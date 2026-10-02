@@ -10,7 +10,7 @@ import (
 // OnProbation reads the same band the selector routes by: a key driven into
 // probation is on it, a fresh key and a key taken out of selection are not.
 func TestService_OnProbation(t *testing.T) {
-	svc := NewService(NewMemoryStorage(), nil, DefaultServiceConfig())
+	svc := NewService(NewMemoryStorage(), nil, ServiceConfig{})
 	var checker ProbationChecker = svc
 	ctx := context.Background()
 	const demoted, fresh = domain.EndpointAddr("s1-https://slow.example"), domain.EndpointAddr("s2-https://ok.example")
