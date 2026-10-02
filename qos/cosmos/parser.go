@@ -84,6 +84,23 @@ func isCosmosRESTPath(path string) bool {
 	return false
 }
 
+// allCometBFTMethods reports whether body is a non-empty JSON array whose
+// every element names a CometBFT method.
+func allCometBFTMethods(body []byte) bool {
+	r := gjson.ParseBytes(body)
+	if !r.IsArray() {
+		return false
+	}
+	n := 0
+	all := true
+	r.ForEach(func(_, el gjson.Result) bool {
+		n++
+		all = isCometBFTMethod(el.Get("method").String())
+		return all
+	})
+	return n > 0 && all
+}
+
 // isCometBFTMethod returns true if the JSON-RPC method name is a CometBFT method.
 func isCometBFTMethod(method string) bool {
 	return cometBFTMethods[strings.ToLower(method)]
@@ -130,12 +147,28 @@ func classifyRPCType(req *http.Request, body []byte, detected domain.RPCType, su
 	if isCometBFTPath(path) {
 		return faceType(domain.RPCTypeREST)
 	}
+	// The root fetched over HTTP is the node's HTTP face too: a CometBFT node
+	// answers GET / with the HTML index of its routes. Generic detection
+	// calls it json_rpc ("/" is a JSON-RPC entry point), where every stake
+	// answered HTML and each was retried into a 500: on mainnet chihuahua
+	// (2026-10-02) the larger part of an 11% 5xx rate was uptime checks and
+	// wallets fetching the base URL. A WebSocket upgrade keeps its type.
+	if req.Method != http.MethodPost && (path == "/" || path == "") && detected != domain.RPCTypeWebSocket {
+		return faceType(domain.RPCTypeREST)
+	}
 	if req.Method == http.MethodPost && len(body) > 0 && gjson.ValidBytes(body) {
 		if method := gjson.GetBytes(body, "method").String(); method != "" {
 			if isCometBFTMethod(method) {
 				return faceType(domain.RPCTypeJSONRPC)
 			}
 			return domain.RPCTypeJSONRPC
+		}
+		// A batch names its methods per element: one of CometBFT calls is
+		// the same face as a single one (CosmJS's batch client sends these).
+		// It used to keep the generic json_rpc and reach that pool even
+		// where comet_bft is declared.
+		if allCometBFTMethods(body) {
+			return faceType(domain.RPCTypeJSONRPC)
 		}
 	}
 	if detected != domain.RPCTypeUnknown && detected != "" {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -749,6 +750,12 @@ func TestClassifyRPCType_CometBFTFacesFollowDeclaredTypes(t *testing.T) {
 		{"unknown GET path is rest", all, http.MethodGet, "/poktroll/session/params", "", domain.RPCTypeREST},
 		{"non-JSON POST keeps detection", all, http.MethodPost, "/poktroll/thing", "not json", domain.RPCTypeREST},
 		{"undeclared result is returned as is for ParseRequest to refuse", []domain.RPCType{domain.RPCTypeREST}, http.MethodPost, "/", statusJSONRPC, domain.RPCTypeCometBFT},
+		{"GET / is the HTTP face (route index): comet_bft", all, http.MethodGet, "/", "", domain.RPCTypeCometBFT},
+		{"GET / on pocket style is rest", pocketStyle, http.MethodGet, "/", "", domain.RPCTypeREST},
+		{"batch of CometBFT calls is the comet face", all, http.MethodPost, "/", `[` + statusJSONRPC + `,{"jsonrpc":"2.0","method":"abci_info","id":2}]`, domain.RPCTypeCometBFT},
+		{"batch of CometBFT calls on pocket style is json_rpc", pocketStyle, http.MethodPost, "/", `[` + statusJSONRPC + `]`, domain.RPCTypeJSONRPC},
+		{"mixed batch stays json_rpc", all, http.MethodPost, "/", `[` + statusJSONRPC + `,` + evmJSONRPC + `]`, domain.RPCTypeJSONRPC},
+		{"empty batch stays json_rpc", all, http.MethodPost, "/", `[]`, domain.RPCTypeJSONRPC},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -756,6 +763,10 @@ func TestClassifyRPCType_CometBFTFacesFollowDeclaredTypes(t *testing.T) {
 			detected := domain.RPCTypeUnknown
 			if tc.name == "non-JSON POST keeps detection" {
 				detected = domain.RPCTypeREST
+			}
+			// Generic detection calls any array body json_rpc.
+			if strings.HasPrefix(tc.body, "[") {
+				detected = domain.RPCTypeJSONRPC
 			}
 			if got := classifyRPCType(req, []byte(tc.body), detected, tc.declared); got != tc.want {
 				t.Errorf("classifyRPCType = %q, want %q", got, tc.want)
