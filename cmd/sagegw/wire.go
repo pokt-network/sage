@@ -270,7 +270,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	var flags featureflag.FlagStore
 	flags = featureflag.NewMemoryStore(cfg.FeatureFlags)
 	if redisClient != nil {
-		rs := featureflag.NewRedisStore(redisClient, cfg.FeatureFlags, featureflag.WithKeyPrefix(cfg.Redis.Key("flags:")))
+		rs := featureflag.NewRedisStore(redisClient, cfg.Redis.Key("flags:"), cfg.FeatureFlags)
 		// Poll the flag keys into a snapshot so the relay path never waits
 		// on Redis; changes from any replica land within one cache TTL.
 		rs.Start(ctx)

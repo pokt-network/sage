@@ -13,6 +13,9 @@ import (
 	"github.com/pokt-network/sage/domain"
 )
 
+// testPrefix is what cmd/sagegw passes by default: config.RedisConfig.Key("flags:").
+const testPrefix = "sage:flags:"
+
 func TestRedisStore_KeyFormat(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -28,12 +31,12 @@ func TestRedisStore_KeyFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.serviceID == "" {
-				got := (&RedisStore{}).globalKey(tt.flag)
+				got := (&RedisStore{prefix: testPrefix}).globalKey(tt.flag)
 				if got != tt.wantKey {
 					t.Errorf("globalKey(%q) = %q, want %q", tt.flag, got, tt.wantKey)
 				}
 			} else {
-				got := (&RedisStore{}).serviceKey(tt.flag, domain.ServiceID(tt.serviceID))
+				got := (&RedisStore{prefix: testPrefix}).serviceKey(tt.flag, domain.ServiceID(tt.serviceID))
 				if got != tt.wantKey {
 					t.Errorf("serviceKey(%q, %q) = %q, want %q", tt.flag, tt.serviceID, got, tt.wantKey)
 				}
@@ -57,7 +60,7 @@ func TestRedisStore_ParseKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
-			flag, svcID := (&RedisStore{}).parseKey(tt.key)
+			flag, svcID := (&RedisStore{prefix: testPrefix}).parseKey(tt.key)
 			if flag != tt.wantFlag || svcID != tt.wantSvcID {
 				t.Errorf("parseKey(%q) = (%q, %q), want (%q, %q)", tt.key, flag, svcID, tt.wantFlag, tt.wantSvcID)
 			}
@@ -67,7 +70,7 @@ func TestRedisStore_ParseKey(t *testing.T) {
 
 func TestRedisStore_NilClient_FallsBackToDefaults(t *testing.T) {
 	// Overrides are a partial map; anything absent falls back to DefaultFlags.
-	store := NewRedisStore(nil, map[string]bool{
+	store := NewRedisStore(nil, testPrefix, map[string]bool{
 		FlagDebugLog: true, // override the compiled default (false)
 	})
 	ctx := context.Background()
@@ -89,7 +92,7 @@ func TestRedisStore_NilClient_FallsBackToDefaults(t *testing.T) {
 }
 
 func TestRedisStore_NilClient_SetAndGet(t *testing.T) {
-	store := NewRedisStore(nil, nil)
+	store := NewRedisStore(nil, testPrefix, nil)
 	ctx := context.Background()
 
 	// Set should not error with nil client (caches locally).
@@ -102,7 +105,7 @@ func TestRedisStore_NilClient_SetAndGet(t *testing.T) {
 }
 
 func TestRedisStore_NilClient_GetAll(t *testing.T) {
-	store := NewRedisStore(nil, map[string]bool{FlagDebugLog: true})
+	store := NewRedisStore(nil, testPrefix, map[string]bool{FlagDebugLog: true})
 	ctx := context.Background()
 
 	all, err := store.GetAll(ctx)
@@ -126,7 +129,7 @@ func TestRedisStore_NilClient_GetAll(t *testing.T) {
 // file — a removal that reports success and changes nothing.
 func TestRedisStore_DeleteGlobal_DropsTheConfigLayer(t *testing.T) {
 	ctx := context.Background()
-	store := NewRedisStore(nil, map[string]bool{FlagDebugLog: true})
+	store := NewRedisStore(nil, testPrefix, map[string]bool{FlagDebugLog: true})
 
 	if !store.IsEnabled(ctx, FlagDebugLog, "eth") {
 		t.Fatal("the config override should be in effect before the delete")
@@ -144,7 +147,7 @@ func TestRedisStore_DeleteGlobal_DropsTheConfigLayer(t *testing.T) {
 // per-service decision.
 func TestRedisStore_DeleteGlobal_KeepsServiceOverrides(t *testing.T) {
 	ctx := context.Background()
-	store := NewRedisStore(nil, map[string]bool{FlagDebugLog: true})
+	store := NewRedisStore(nil, testPrefix, map[string]bool{FlagDebugLog: true})
 	if err := store.SetForService(ctx, FlagDebugLog, "eth", true); err != nil {
 		t.Fatalf("set for service: %v", err)
 	}
@@ -225,13 +228,13 @@ func (f *fakeFlagRedis) Scan(ctx context.Context, cursor uint64, match string, _
 // ignoring a key the walk repeats.
 func TestRedisStore_GetAllScansTheNamespace(t *testing.T) {
 	fake := &fakeFlagRedis{data: map[string]string{
-		(&RedisStore{}).globalKey(FlagHedge):          "0",
-		(&RedisStore{}).globalKey(FlagCache):          "1",
-		(&RedisStore{}).serviceKey(FlagHedge, "eth"):  "1",
-		(&RedisStore{}).serviceKey(FlagRetry, "poly"): "0",
-		"sage:other:namespace":                        "1",
+		(&RedisStore{prefix: testPrefix}).globalKey(FlagHedge):          "0",
+		(&RedisStore{prefix: testPrefix}).globalKey(FlagCache):          "1",
+		(&RedisStore{prefix: testPrefix}).serviceKey(FlagHedge, "eth"):  "1",
+		(&RedisStore{prefix: testPrefix}).serviceKey(FlagRetry, "poly"): "0",
+		"sage:other:namespace": "1",
 	}}
-	store := NewRedisStore(fake, nil)
+	store := NewRedisStore(fake, testPrefix, nil)
 
 	all, err := store.GetAll(context.Background())
 	if err != nil {

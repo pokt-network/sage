@@ -68,12 +68,13 @@ func (f *snapshotRedis) Scan(_ context.Context, _ uint64, match string, _ int64)
 // own writes and deletes at once.
 func TestRedisStore_SnapshotServesTheHotPath(t *testing.T) {
 	shared := &snapshotRedis{m: map[string]string{}}
-	writer := NewRedisStore(shared, nil)
+	writer := NewRedisStore(shared, testPrefix, nil)
 	if err := writer.SetForService(context.Background(), FlagDebugLog, "kava", true); err != nil {
 		t.Fatal(err)
 	}
 
-	reader := NewRedisStore(shared, nil, func(s *RedisStore) { s.cacheTTL = 20 * time.Millisecond })
+	reader := NewRedisStore(shared, testPrefix, nil)
+	reader.cacheTTL = 20 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	reader.Start(ctx)

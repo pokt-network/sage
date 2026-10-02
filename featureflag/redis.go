@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/pokt-network/sage/internal/safego"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,10 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const (
-	defaultCacheTTL = 5 * time.Second
-	keyPrefix       = "sage:flags:"
-)
+const defaultCacheTTL = 5 * time.Second
 
 // RedisClient is the subset of redis.Cmdable used by RedisStore.
 type RedisClient interface {
@@ -38,8 +36,7 @@ type cacheEntry struct {
 
 // RedisStore is a Redis-backed FlagStore with a local cache.
 type RedisStore struct {
-	// prefix namespaces this store's keys. Empty means keyPrefix, the literal
-	// every release before the prefix was configurable used.
+	// prefix namespaces this store's keys, e.g. "sage:flags:".
 	prefix   string
 	client   RedisClient
 	cacheTTL time.Duration
@@ -69,31 +66,19 @@ type RedisStore struct {
 	snapshot atomic.Pointer[map[string]bool]
 }
 
-// RedisStoreOption configures a RedisStore.
-type RedisStoreOption func(*RedisStore)
-
-// WithKeyPrefix namespaces the store's keys, for a deployment sharing a Redis
-// database with another. Empty keeps the historical "sage:flags:".
-func WithKeyPrefix(prefix string) RedisStoreOption {
-	return func(s *RedisStore) { s.prefix = prefix }
-}
-
-// prefixOr is the store's prefix, or the historical default.
-func (s *RedisStore) prefixOr() string {
-	if s.prefix == "" {
-		return keyPrefix
-	}
-	return s.prefix
-}
-
 // NewRedisStore creates a Redis-backed flag store.
 // If client is nil, all reads fall back to defaults.
+//
+// prefix namespaces every key the store reads and writes ("sage:flags:" by
+// default, via config.RedisConfig.Key), for a deployment sharing a Redis
+// database with another.
 //
 // overrides are the flags set in config (a partial map); any flag not present
 // falls back to DefaultFlags at read time. Pass nil to use the compiled defaults
 // for everything.
-func NewRedisStore(client RedisClient, overrides map[string]bool, opts ...RedisStoreOption) *RedisStore {
+func NewRedisStore(client RedisClient, prefix string, overrides map[string]bool) *RedisStore {
 	s := &RedisStore{
+		prefix:   prefix,
 		client:   client,
 		cacheTTL: defaultCacheTTL,
 		cache:    make(map[string]cacheEntry),
@@ -103,9 +88,6 @@ func NewRedisStore(client RedisClient, overrides map[string]bool, opts ...RedisS
 		copied[flag] = enabled
 	}
 	s.defaults.Store(&copied)
-	for _, opt := range opts {
-		opt(s)
-	}
 	return s
 }
 
@@ -232,7 +214,7 @@ func (s *RedisStore) scanKeys(ctx context.Context) ([]string, error) {
 		cursor uint64
 	)
 	for {
-		page, next, err := s.client.Scan(ctx, cursor, s.prefixOr()+"*", scanCount).Result()
+		page, next, err := s.client.Scan(ctx, cursor, s.prefix+"*", scanCount).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -440,25 +422,20 @@ func (s *RedisStore) refresh(ctx context.Context) {
 }
 
 func (s *RedisStore) globalKey(flag string) string {
-	return s.prefixOr() + flag
+	return s.prefix + flag
 }
 
 func (s *RedisStore) serviceKey(flag string, serviceID domain.ServiceID) string {
-	return s.prefixOr() + flag + ":" + string(serviceID)
+	return s.prefix + flag + ":" + string(serviceID)
 }
 
 // parseKey extracts flag name and optional serviceID from a Redis key.
-// Key format: "sage:flags:{flag}" or "sage:flags:{flag}:{serviceID}"
+// Key format: "{prefix}{flag}" or "{prefix}{flag}:{serviceID}"
 func (s *RedisStore) parseKey(key string) (flag string, serviceID string) {
-	if len(key) <= len(s.prefixOr()) {
+	rest, ok := strings.CutPrefix(key, s.prefix)
+	if !ok || rest == "" {
 		return "", ""
 	}
-	rest := key[len(s.prefixOr()):]
-	// Find the first colon which separates flag from serviceID.
-	for i := 0; i < len(rest); i++ {
-		if rest[i] == ':' {
-			return rest[:i], rest[i+1:]
-		}
-	}
-	return rest, ""
+	flag, serviceID, _ = strings.Cut(rest, ":")
+	return flag, serviceID
 }
