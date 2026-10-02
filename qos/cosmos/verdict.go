@@ -1,6 +1,7 @@
 package cosmos
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/pokt-network/sage/domain"
@@ -51,6 +52,16 @@ func (p *Plugin) RefineVerdict(endpoint domain.EndpointAddr, payload domain.Payl
 		if skip != "" {
 			p.logger.Debug("prune claim not judged", "endpoint", endpoint, "method", payload.Method(), "skip", skip, "detail", result.Details)
 		}
+	}
+	// The node's route index: HTML is the answer to GET / on a CometBFT
+	// node, not a proxy error page (classifyRPCType).
+	if result.Reason == "html_response" && payload.HTTPMethod() != http.MethodPost && (payload.Path() == "/" || payload.Path() == "") {
+		return heuristic.AnalysisResult{
+			Attribution: heuristic.AttrClient,
+			Confidence:  0.8,
+			Reason:      heuristic.ReasonSuccess,
+			Details:     "the node's HTML route index, the answer to GET /",
+		}, true
 	}
 	if result.Reason != "http_5xx" && result.Reason != "upstream_5xx" {
 		return result, false

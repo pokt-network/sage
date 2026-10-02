@@ -1,6 +1,7 @@
 package cosmos
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/pokt-network/sage/domain"
@@ -48,5 +49,20 @@ func TestRefineVerdict_Query5xx(t *testing.T) {
 		if got.Reason != ReasonQuery5xx || got.Attribution != heuristic.AttrBlockchain || got.ShouldRetry || got.ShouldPenalize || got.ShouldCircuitBreak || got.MethodBlocking {
 			t.Errorf("%s: refined verdict %+v", tc.name, got)
 		}
+	}
+}
+
+// GET / answered with the node's HTML route index is an answer, not a proxy
+// error page; HTML anywhere else keeps its verdict.
+func TestRefineVerdict_RootIndexHTMLIsAnAnswer(t *testing.T) {
+	p := NewPlugin(nil, Config{})
+	html := heuristic.AnalysisResult{Reason: "html_response", ShouldRetry: true, ShouldPenalize: true, Attribution: heuristic.AttrSupplier}
+	root := domain.NewPayload(nil, domain.RPCTypeCometBFT, "").WithHTTP("/", http.MethodGet)
+	if got, ok := p.RefineVerdict("", root, html); !ok || !got.IsSuccess() {
+		t.Fatalf("GET / HTML: %+v ok=%v, want success", got, ok)
+	}
+	status := domain.NewPayload(nil, domain.RPCTypeCometBFT, "").WithHTTP("/status", http.MethodGet)
+	if _, ok := p.RefineVerdict("", status, html); ok {
+		t.Fatal("HTML on /status refined, want the html_response verdict kept")
 	}
 }
