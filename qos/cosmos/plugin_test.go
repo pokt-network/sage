@@ -151,13 +151,12 @@ func TestParseRequest_UnsupportedRPCType_Rejected(t *testing.T) {
 	}
 }
 
-// --- ParseBlockHeight tests --- //
+// --- parseBlockHeight tests --- //
 
 func TestParseBlockHeight_CometBFT(t *testing.T) {
-	p := newPlugin(10)
 	resp := []byte(`{"jsonrpc":"2.0","id":-1,"result":{"sync_info":{"latest_block_height":"98765"}}}`)
 
-	h, err := p.ParseBlockHeight(resp)
+	h, err := parseBlockHeight(resp)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -167,10 +166,9 @@ func TestParseBlockHeight_CometBFT(t *testing.T) {
 }
 
 func TestParseBlockHeight_CosmosREST(t *testing.T) {
-	p := newPlugin(10)
 	resp := []byte(`{"height":"12345","hash":"AABBCC"}`)
 
-	h, err := p.ParseBlockHeight(resp)
+	h, err := parseBlockHeight(resp)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -181,10 +179,9 @@ func TestParseBlockHeight_CosmosREST(t *testing.T) {
 
 func TestParseBlockHeight_CometBFT_TakesPriorityOverREST(t *testing.T) {
 	// Both fields present — CometBFT sync_info should win.
-	p := newPlugin(10)
 	resp := []byte(`{"height":"100","result":{"sync_info":{"latest_block_height":"200"}}}`)
 
-	h, err := p.ParseBlockHeight(resp)
+	h, err := parseBlockHeight(resp)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,26 +191,23 @@ func TestParseBlockHeight_CometBFT_TakesPriorityOverREST(t *testing.T) {
 }
 
 func TestParseBlockHeight_EmptyResponse(t *testing.T) {
-	p := newPlugin(10)
-	_, err := p.ParseBlockHeight(nil)
+	_, err := parseBlockHeight(nil)
 	if err == nil {
 		t.Fatal("expected error for empty response")
 	}
 }
 
 func TestParseBlockHeight_NoHeightField(t *testing.T) {
-	p := newPlugin(10)
 	resp := []byte(`{"foo":"bar"}`)
-	_, err := p.ParseBlockHeight(resp)
+	_, err := parseBlockHeight(resp)
 	if err == nil {
 		t.Fatal("expected error when no height field present")
 	}
 }
 
 func TestParseBlockHeight_InvalidDecimal(t *testing.T) {
-	p := newPlugin(10)
 	resp := []byte(`{"height":"not-a-number"}`)
-	_, err := p.ParseBlockHeight(resp)
+	_, err := parseBlockHeight(resp)
 	if err == nil {
 		t.Fatal("expected error for non-decimal height")
 	}

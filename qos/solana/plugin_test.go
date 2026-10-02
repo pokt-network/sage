@@ -63,44 +63,6 @@ func TestParseRequest_EmptyBody(t *testing.T) {
 	}
 }
 
-// --- ParseBlockHeight --- //
-
-func TestParseBlockHeight_BlockHeightField(t *testing.T) {
-	p := solana.NewPlugin(nil, 10)
-	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":{"blockHeight":123456,"absoluteSlot":200000}}`)
-
-	h, err := p.ParseBlockHeight(resp)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if h != 123456 {
-		t.Errorf("expected 123456, got %d", h)
-	}
-}
-
-// A slot is not a block height — absoluteSlot runs ahead of blockHeight by the
-// number of skipped slots, so accepting it as a height poisons the perceived
-// height that every other endpoint is compared against.
-func TestParseBlockHeight_AbsoluteSlotIsNotAHeight(t *testing.T) {
-	p := solana.NewPlugin(nil, 10)
-	// blockHeight missing, only absoluteSlot present
-	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":{"absoluteSlot":99999}}`)
-
-	if _, err := p.ParseBlockHeight(resp); err == nil {
-		t.Fatal("expected error when only absoluteSlot is present, got nil")
-	}
-}
-
-func TestParseBlockHeight_NoHeightData(t *testing.T) {
-	p := solana.NewPlugin(nil, 10)
-	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":"ok"}`)
-
-	_, err := p.ParseBlockHeight(resp)
-	if err == nil {
-		t.Fatal("expected error when no height data, got nil")
-	}
-}
-
 // --- IsCoalescable --- //
 
 func TestIsCoalescable_ReadOnlyMethods(t *testing.T) {

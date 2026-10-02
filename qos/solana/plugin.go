@@ -142,15 +142,6 @@ func (p *Plugin) PerceivedBlockHeight() uint64 {
 // StartSync is a no-op for Solana; health checks drive updates externally.
 func (p *Plugin) StartSync(_ context.Context) {}
 
-// --- qos.BlockHeightParser --- //
-
-// ParseBlockHeight extracts a block height from a Solana JSON-RPC response.
-// It handles getEpochInfo responses (result.blockHeight only — see
-// extractBlockHeightFromResponse for why absoluteSlot is not accepted).
-func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
-	return extractBlockHeightFromResponse(response)
-}
-
 // --- qos.HealthChecker --- //
 
 // HealthChecks returns the health check payloads for the given endpoint.

@@ -245,13 +245,6 @@ func (p *Plugin) PerceivedBlockHeight() uint64 {
 // StartSync is a no-op for EVM; block heights are updated via health checks.
 func (p *Plugin) StartSync(ctx context.Context) {}
 
-// --- qos.BlockHeightParser ---
-
-// ParseBlockHeight extracts a block number from an eth_blockNumber response.
-func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
-	return ParseBlockNumber(response)
-}
-
 // --- Archival routing ---
 
 // IsArchivalRequest returns true if any payload in the batch requests archival state.
@@ -263,15 +256,6 @@ func (p *Plugin) IsArchivalRequest(payloads []domain.Payload) bool {
 		}
 	}
 	return false
-}
-
-// IsArchivalEndpoint returns true if the endpoint is known to support archival
-// data. An endpoint nothing has observed serving historical state returns
-// false: this asks what is known, not what is allowed. Selection uses the
-// weaker question — see the archival filter in SelectEndpoints.
-func (p *Plugin) IsArchivalEndpoint(endpoint domain.EndpointAddr) bool {
-	archival, known := p.archival.get(hostKey(endpoint))
-	return known && archival
 }
 
 // observeArchival records what a relay says about an endpoint's history
@@ -486,30 +470,6 @@ func (p *Plugin) CacheTTL(method string, params []byte, response []byte) time.Du
 	}
 
 	return 0
-}
-
-// --- qos.ResponseFormatValidator ---
-
-// ValidateResponseFormat checks that the result field matches the expected type for the method.
-func (p *Plugin) ValidateResponseFormat(method string, result json.RawMessage) error {
-	switch method {
-	case "eth_blockNumber", "eth_chainId", "eth_gasPrice", "eth_maxPriorityFeePerGas":
-		return validateHexString(method, result)
-	}
-	return nil
-}
-
-// validateHexString returns an error if result is not a JSON string containing a hex value.
-func validateHexString(method string, result json.RawMessage) error {
-	parsed := gjson.ParseBytes(result)
-	if parsed.Type != gjson.String {
-		return fmt.Errorf("%s: expected hex string result, got %s", method, parsed.Type)
-	}
-	s := parsed.String()
-	if _, err := parseHexUint64(s); err != nil {
-		return fmt.Errorf("%s: result is not valid hex: %w", method, err)
-	}
-	return nil
 }
 
 // --- qos.StateResetter ---

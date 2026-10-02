@@ -341,14 +341,6 @@ func (p *Plugin) sweepLoop(ctx context.Context) {
 	}
 }
 
-// --- qos.BlockHeightParser --- //
-
-// ParseBlockHeight extracts a block height from a relay response.
-// Handles both CometBFT sync_info format and Cosmos REST height format.
-func (p *Plugin) ParseBlockHeight(response []byte) (uint64, error) {
-	return parseBlockHeight(response)
-}
-
 // --- qos.HealthChecker --- //
 
 // HealthChecks returns health check payloads for the given endpoint.

@@ -221,10 +221,9 @@ func TestSelectEndpoints_EmptyInput(t *testing.T) {
 	}
 }
 
-// --- ParseBlockHeight (BlockHeightParser) ---
+// --- ParseBlockNumber ---
 
-func TestParseBlockHeight_Valid(t *testing.T) {
-	p := newTestPlugin(5)
+func TestParseBlockNumber_Valid(t *testing.T) {
 	cases := []struct {
 		response string
 		expected uint64
@@ -235,7 +234,7 @@ func TestParseBlockHeight_Valid(t *testing.T) {
 		{`{"jsonrpc":"2.0","id":1,"result":"0x1194af2"}`, 0x1194af2},
 	}
 	for _, tc := range cases {
-		got, err := p.ParseBlockHeight([]byte(tc.response))
+		got, err := ParseBlockNumber([]byte(tc.response))
 		if err != nil && tc.expected != 0 {
 			t.Errorf("unexpected error for %q: %v", tc.response, err)
 			continue
@@ -246,8 +245,7 @@ func TestParseBlockHeight_Valid(t *testing.T) {
 	}
 }
 
-func TestParseBlockHeight_Invalid(t *testing.T) {
-	p := newTestPlugin(5)
+func TestParseBlockNumber_Invalid(t *testing.T) {
 	cases := []string{
 		`{"jsonrpc":"2.0","id":1,"result":100}`,      // number, not string
 		`{"jsonrpc":"2.0","id":1,"result":{"a":1}}`,  // object
@@ -255,7 +253,7 @@ func TestParseBlockHeight_Invalid(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"result":"notHex"}`, // not hex
 	}
 	for _, tc := range cases {
-		_, err := p.ParseBlockHeight([]byte(tc))
+		_, err := ParseBlockNumber([]byte(tc))
 		if err == nil {
 			t.Errorf("expected error for %q", tc)
 		}
@@ -368,50 +366,6 @@ func TestCacheTTL(t *testing.T) {
 		if ttl := p.CacheTTL(m, nil, nil); ttl != 0 {
 			t.Errorf("%s: expected 0, got %v", m, ttl)
 		}
-	}
-}
-
-// --- ValidateResponseFormat ---
-
-func TestValidateResponseFormat_HexString(t *testing.T) {
-	p := newTestPlugin(5)
-
-	validCases := []struct {
-		method string
-		result string
-	}{
-		{"eth_blockNumber", `"0x1194af2"`},
-		{"eth_chainId", `"0x1"`},
-		{"eth_gasPrice", `"0x3b9aca00"`},
-	}
-	for _, tc := range validCases {
-		if err := p.ValidateResponseFormat(tc.method, json.RawMessage(tc.result)); err != nil {
-			t.Errorf("%s valid hex: unexpected error: %v", tc.method, err)
-		}
-	}
-
-	invalidCases := []struct {
-		method string
-		result string
-	}{
-		{"eth_blockNumber", `100`},             // number
-		{"eth_blockNumber", `{"value":"0x1"}`}, // object
-		{"eth_blockNumber", `["0x1"]`},         // array
-		{"eth_blockNumber", `"notHex"`},        // non-hex string
-		{"eth_chainId", `null`},                // null
-	}
-	for _, tc := range invalidCases {
-		if err := p.ValidateResponseFormat(tc.method, json.RawMessage(tc.result)); err == nil {
-			t.Errorf("%s invalid %q: expected error", tc.method, tc.result)
-		}
-	}
-}
-
-func TestValidateResponseFormat_UnknownMethod(t *testing.T) {
-	p := newTestPlugin(5)
-	// Unknown methods should not error (plugin doesn't know the shape).
-	if err := p.ValidateResponseFormat("eth_getLogs", json.RawMessage(`[{"blockNumber":"0x1"}]`)); err != nil {
-		t.Fatalf("unexpected error for unknown method: %v", err)
 	}
 }
 
@@ -780,7 +734,7 @@ func TestSelectEndpoints_ArchivalObservationExpires(t *testing.T) {
 	if len(selected) != 1 || selected[0] != stale {
 		t.Fatalf("expected the expired observation to read as unknown, got %v", selected)
 	}
-	if p.IsArchivalEndpoint(stale) {
+	if isArchivalEndpoint(p, stale) {
 		t.Fatal("expired observation must not read as archival either")
 	}
 }
@@ -859,8 +813,8 @@ func TestExtractData_ArchivalInference(t *testing.T) {
 			if *data.IsArchival != tt.wantArchival {
 				t.Fatalf("archival = %v, want %v", *data.IsArchival, tt.wantArchival)
 			}
-			if got := p.IsArchivalEndpoint("ep"); got != tt.wantArchival {
-				t.Fatalf("IsArchivalEndpoint = %v, want %v", got, tt.wantArchival)
+			if got := isArchivalEndpoint(p, "ep"); got != tt.wantArchival {
+				t.Fatalf("isArchivalEndpoint = %v, want %v", got, tt.wantArchival)
 			}
 		})
 	}
@@ -971,7 +925,7 @@ func TestArchivalMemory_SharedAcrossAddressesOfOneHost(t *testing.T) {
 	if _, observed := p.observeArchival(a, "eth_getBalance", req, missing); !observed {
 		t.Fatal("a missing-state answer to a historical query is an observation")
 	}
-	if p.IsArchivalEndpoint(b) {
+	if isArchivalEndpoint(p, b) {
 		t.Fatal("b shares a's host and must read as not archival")
 	}
 	payloads := []domain.Payload{domain.NewPayload(req, domain.RPCTypeJSONRPC, "eth_getBalance")}
@@ -1035,4 +989,11 @@ func TestSelectEndpoints_RolloverAddressOfStaleHostFiltered(t *testing.T) {
 	if len(got) != 1 || got[0] != "a2-https://rm01.fresh.tech" {
 		t.Fatalf("selected %v, want only the fresh host's new address", got)
 	}
+}
+
+// isArchivalEndpoint reports whether the endpoint's host is known to serve
+// historical state: an endpoint nothing has observed returns false.
+func isArchivalEndpoint(p *Plugin, endpoint domain.EndpointAddr) bool {
+	archival, known := p.archival.get(hostKey(endpoint))
+	return known && archival
 }

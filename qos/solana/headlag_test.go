@@ -46,3 +46,38 @@ func TestHeadLag_SkipsUnfinalizedCommitment(t *testing.T) {
 		t.Fatal("processed answer must not feed consensus")
 	}
 }
+
+// --- extractBlockHeightFromResponse --- //
+
+func TestExtractBlockHeightFromResponse_BlockHeightField(t *testing.T) {
+	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":{"blockHeight":123456,"absoluteSlot":200000}}`)
+
+	h, err := extractBlockHeightFromResponse(resp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if h != 123456 {
+		t.Errorf("expected 123456, got %d", h)
+	}
+}
+
+// A slot is not a block height — absoluteSlot runs ahead of blockHeight by the
+// number of skipped slots, so accepting it as a height poisons the perceived
+// height that every other endpoint is compared against.
+func TestExtractBlockHeightFromResponse_AbsoluteSlotIsNotAHeight(t *testing.T) {
+	// blockHeight missing, only absoluteSlot present
+	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":{"absoluteSlot":99999}}`)
+
+	if _, err := extractBlockHeightFromResponse(resp); err == nil {
+		t.Fatal("expected error when only absoluteSlot is present, got nil")
+	}
+}
+
+func TestExtractBlockHeightFromResponse_NoHeightData(t *testing.T) {
+	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":"ok"}`)
+
+	_, err := extractBlockHeightFromResponse(resp)
+	if err == nil {
+		t.Fatal("expected error when no height data, got nil")
+	}
+}
