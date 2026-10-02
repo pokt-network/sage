@@ -99,8 +99,8 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			}()
 
 			// Wait for HedgeDelay or primary completion.
-			timer := acquireTimer(cfg.HedgeDelay)
-			defer releaseTimer(timer)
+			timer := time.NewTimer(cfg.HedgeDelay)
+			defer timer.Stop()
 
 			select {
 			case res := <-primaryCh:
