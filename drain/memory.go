@@ -1,8 +1,9 @@
 package drain
 
 import (
+	"cmp"
 	"context"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -95,13 +96,13 @@ func (s *MemoryStore) Active(_ context.Context, serviceID domain.ServiceID) []En
 			out = append(out, e)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Operator != out[j].Operator {
-			return out[i].Operator < out[j].Operator
-		}
-		return out[i].RPCType < out[j].RPCType
-	})
+	slices.SortFunc(out, cmpEntry)
 	return out
+}
+
+// cmpEntry orders entries by Operator then RPCType.
+func cmpEntry(a, b Entry) int {
+	return cmp.Or(cmp.Compare(a.Operator, b.Operator), cmp.Compare(a.RPCType, b.RPCType))
 }
 
 // replaceAll swaps the whole entry map for next in one lock, so a reader sees

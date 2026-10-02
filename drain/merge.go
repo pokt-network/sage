@@ -2,7 +2,7 @@ package drain
 
 import (
 	"context"
-	"sort"
+	"slices"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -29,11 +29,6 @@ func (m merged) Active(ctx context.Context, serviceID domain.ServiceID) []Entry 
 	if len(out) == 0 {
 		return nil
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Operator != out[j].Operator {
-			return out[i].Operator < out[j].Operator
-		}
-		return out[i].RPCType < out[j].RPCType
-	})
+	slices.SortFunc(out, cmpEntry)
 	return out
 }
