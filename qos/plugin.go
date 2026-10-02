@@ -250,6 +250,16 @@ type HeadLagReader interface {
 	HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool)
 }
 
+// ResultValidator is implemented by a plugin that knows a method's result
+// encoding. InvalidResult reports a successful answer whose result no node
+// produces for that method (an EVM DATA result that is not hex bytes), with
+// a detail for the verdict. The heuristic middleware grades it
+// invalid_result, a supplier failure retried elsewhere, behind
+// featureflag.FlagInvalidResult; the answer is counted either way.
+type ResultValidator interface {
+	InvalidResult(payload domain.Payload, response []byte) (detail string, invalid bool)
+}
+
 // StaleChecker is implemented by plugins that filter on block height. AllStale
 // reports whether every endpoint in eps is known to sit below the relaxed
 // (tier-2) height bound: a list SelectEndpoints can serve only by abandoning

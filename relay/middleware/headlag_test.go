@@ -185,3 +185,45 @@ func TestHeuristic_RefusalMarksBehindItsFlag(t *testing.T) {
 		t.Fatalf("flag off: %+v, want a scored refusal and no mark", r)
 	}
 }
+
+// resultPlugin says every eth_call result of "0x0" is one no node produces.
+type resultPlugin struct{ normPlugin }
+
+func (resultPlugin) InvalidResult(payload domain.Payload, body []byte) (string, bool) {
+	return "bad", payload.Method() == "eth_call" && gjson.GetBytes(body, "result").Str == "0x0"
+}
+
+var _ qos.ResultValidator = resultPlugin{}
+
+// Behind invalid_result an answer the plugin says no node produces is a
+// retried major supplier verdict; with the flag off it is delivered and
+// still counted.
+func TestHeuristic_InvalidResult(t *testing.T) {
+	run := func(flags *mockFlags, result string) (*relay.Context, int, error) {
+		counted := 0
+		ctx := baseContext()
+		ctx.Plugin = resultPlugin{}
+		ctx.RPCType = domain.RPCTypeJSONRPC
+		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call"}`), domain.RPCTypeJSONRPC, "eth_call")}
+		mw := Heuristic(flags, nil, HeuristicOptions{InvalidResult: func(domain.ServiceID, string, string) { counted++ }})
+		err := mw(relay.HandlerFunc(func(c *relay.Context) error {
+			c.Endpoint = "s1-https://r1.example.xyz"
+			c.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"` + result + `"}`)}
+			return nil
+		})).HandleRelay(ctx)
+		return ctx, counted, err
+	}
+	ctx, n, err := run(newFlags("heuristic", "invalid_result"), "0x0")
+	if ctx.HeuristicResult == nil || ctx.HeuristicResult.Reason != heuristic.ReasonInvalidResult ||
+		ctx.HeuristicResult.Attribution != heuristic.AttrSupplier || !domain.IsRetryable(err) || n != 1 {
+		t.Fatalf("invalid: verdict %+v err %v counted %d, want a retried supplier invalid_result", ctx.HeuristicResult, err, n)
+	}
+	ctx, n, err = run(newFlags("heuristic", "invalid_result"), "0x")
+	if err != nil || !ctx.HeuristicResult.IsSuccess() || n != 0 {
+		t.Fatalf("valid: verdict %+v err %v counted %d, want success", ctx.HeuristicResult, err, n)
+	}
+	ctx, n, err = run(newFlags("heuristic"), "0x0")
+	if err != nil || !ctx.HeuristicResult.IsSuccess() || n != 1 {
+		t.Fatalf("flag off: verdict %+v err %v counted %d, want success and still counted", ctx.HeuristicResult, err, n)
+	}
+}

@@ -113,6 +113,16 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 				result = heuristic.StaleResponse(headLag)
 			}
 
+			// An answer the analyzer passed whose result no node produces for
+			// its method (qos.ResultValidator): counted always, graded
+			// invalid_result and retried behind featureflag.FlagInvalidResult.
+			if result.IsSuccess() {
+				if detail, invalid := o.invalidResult(registry, ctx); invalid &&
+					flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagInvalidResult, ctx.ServiceID) {
+					result = heuristic.InvalidResult(detail)
+				}
+			}
+
 			breakUpstream(flags, ctx, &result)
 			if result.Reason == "http_408" && result.Attribution == heuristic.AttrSupplier &&
 				flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagMethodBlock408, ctx.ServiceID) {
@@ -155,6 +165,26 @@ type HeuristicOptions struct {
 	// HeadLag receives, for every answer that names the chain head, how far
 	// it lagged the head the service's plugin expected (qos.HeadLagReader).
 	HeadLag func(serviceID domain.ServiceID, party, method string, lag uint64, stale bool)
+	// InvalidResult receives every single-payload answer whose result the
+	// service's plugin says no node produces (qos.ResultValidator).
+	InvalidResult func(serviceID domain.ServiceID, party, method string)
+}
+
+// invalidResult asks the service's plugin whether a single-payload answer's
+// result is one no node produces, and reports it to o.InvalidResult.
+func (o HeuristicOptions) invalidResult(registry *qos.Registry, ctx *relay.Context) (string, bool) {
+	if ctx.Response == nil || len(ctx.Payloads) != 1 {
+		return "", false
+	}
+	v, ok := pluginOf(registry, ctx).(qos.ResultValidator)
+	if !ok {
+		return "", false
+	}
+	detail, invalid := v.InvalidResult(ctx.Payloads[0], ctx.Response.Body)
+	if invalid && o.InvalidResult != nil {
+		o.InvalidResult(ctx.ServiceID, ctx.Endpoint.Party(), ctx.Payloads[0].Method())
+	}
+	return detail, invalid
 }
 
 // observeHeadLag reads how far a single-payload answer that names the chain

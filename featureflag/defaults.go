@@ -155,6 +155,15 @@ const (
 	// every retry is stale too, the freshest answer is delivered rather than
 	// an error. Needs the heuristic flag. Off by default.
 	FlagStaleResponse = "stale_response"
+	// FlagInvalidResult grades a successful answer whose result no node
+	// produces for its method (qos.ResultValidator: an EVM DATA result such
+	// as eth_call's that is not "0x" plus an even number of hex digits) as
+	// invalid_result: a major supplier penalty and a retry on another party.
+	// On mainnet base (2026-10-02) one operator answered a reverting eth_call
+	// with "0x0" on every attempt, which a client took for an empty result.
+	// Such answers are counted in sage_invalid_results_total whatever this
+	// says. Needs the heuristic flag. Off by default.
+	FlagInvalidResult = "invalid_result"
 	// FlagStaleShare charges a party (the owner when its domain is dedicated,
 	// else the operator) for the share of its chain-head answers that are
 	// stale, on every one of its reputation keys in the service: 0 within 15
@@ -257,6 +266,7 @@ var DefaultFlags = map[string]bool{
 	FlagCosmosEVMHeight:        false,
 	FlagWSShareCap:             false,
 	FlagStaleResponse:          false,
+	FlagInvalidResult:          false,
 	FlagStaleShare:             false,
 	FlagStateCanary:            false,
 	FlagTrustPenalty:           false,

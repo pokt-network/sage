@@ -122,6 +122,24 @@ func StaleResponse(lag uint64) AnalysisResult {
 	}
 }
 
+// ReasonInvalidResult is the verdict on an answer whose result no node
+// produces for its method (qos.ResultValidator, featureflag.FlagInvalidResult).
+const ReasonInvalidResult = "invalid_result"
+
+// InvalidResult is the verdict for such an answer: the supplier's (a layer in
+// front of the node rewrote it), a major penalty, retried on another party.
+func InvalidResult(details string) AnalysisResult {
+	return AnalysisResult{
+		ShouldRetry:     true,
+		ShouldPenalize:  true,
+		PenaltySeverity: SeverityMajor,
+		Attribution:     AttrSupplier,
+		Confidence:      0.95,
+		Reason:          ReasonInvalidResult,
+		Details:         details,
+	}
+}
+
 // ReasonSuccess is the Reason a verdict carries when the response passed every
 // check. Callers ask IsSuccess rather than comparing against it.
 const ReasonSuccess = "success"

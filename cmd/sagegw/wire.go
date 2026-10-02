@@ -840,7 +840,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		repSvc.RecordHeadAnswer(serviceID, party, stale)
 	}
 	mwReg.Register(relay.MWHeuristic, func() relay.Middleware {
-		return middleware.Heuristic(flags, qosReg, middleware.HeuristicOptions{AttemptTimeout: timeoutFn, HeadLag: recordHeadAnswer})
+		return middleware.Heuristic(flags, qosReg, middleware.HeuristicOptions{AttemptTimeout: timeoutFn, HeadLag: recordHeadAnswer, InvalidResult: recorder.RecordInvalidResult})
 	})
 	mwReg.Register(relay.MWSendRelay, func() relay.Middleware { return middleware.SendRelay(proto) })
 

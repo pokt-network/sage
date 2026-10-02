@@ -71,6 +71,7 @@ type Recorder struct {
 	quorumRequests         *prometheus.CounterVec
 	selectionTiers         *prometheus.CounterVec
 	staleAnswers           *prometheus.CounterVec
+	invalidResults         *prometheus.CounterVec
 	answerHeadLag          *prometheus.HistogramVec
 	reputationWriteDrops   *prometheus.CounterVec
 	quorumDissent          *prometheus.CounterVec
@@ -303,6 +304,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Namespace: "sage",
 				Name:      "stale_answers_total",
 				Help:      "Answers naming the chain head (eth_blockNumber, eth_getBlockByNumber(\"latest\"), Solana getEpochInfo, getBlockHeight, getLatestBlockhash; CometBFT status and block with no height and the REST latest-block route, graded by the block's time; NEAR block for a finality and Sui's latest checkpoint; and, with state_canary on, the health checks' eth_call_canary and rest_head_canary, graded by block time against the clock, and near_canary, graded by the height its state was read at) that lagged the head this pod expected at receive time by more than max(2 blocks, 10 seconds of blocks), by service, party (the owner when its domain is dedicated, else the operator) and method. The expected head is the perceived height advanced at the chain's block rate since it last moved. A response cache in front of a node serves such answers fast; the height filter cannot see it while the lag stays inside the sync allowance. Counted whatever the flags say; with stale_response on, the same answers are also graded stale_response and retried.",
+			},
+			[]string{"service_id", "party", "method"},
+		),
+		invalidResults: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "invalid_results_total",
+				Help:      "Successful answers whose result no node produces for the method (an EVM DATA result such as eth_call's that is not \"0x\" followed by an even number of hex digits, like \"0x0\"), by service, party (the owner when its domain is dedicated, else the operator) and method. Counted whatever the flags say; with invalid_result on, the same answers are graded invalid_result and retried.",
 			},
 			[]string{"service_id", "party", "method"},
 		),
@@ -539,6 +548,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.quorumRequests,
 		r.selectionTiers,
 		r.staleAnswers,
+		r.invalidResults,
 		r.answerHeadLag,
 		r.reputationWriteDrops,
 		r.quorumDissent,
@@ -670,6 +680,12 @@ func (r *Recorder) RecordAnswerHead(serviceID domain.ServiceID, party, method st
 	if stale {
 		r.staleAnswers.WithLabelValues(service, party, method).Inc()
 	}
+}
+
+// RecordInvalidResult counts one answer whose result no node produces for
+// its method. method is a DATA method a plugin names, so it is bounded.
+func (r *Recorder) RecordInvalidResult(serviceID domain.ServiceID, party, method string) {
+	r.invalidResults.WithLabelValues(r.services.serviceValue(serviceID), r.operators.value(party), method).Inc()
 }
 
 // RecordSelectionTier counts one endpoint selection by its height tier. Tiers
