@@ -19,10 +19,9 @@ type endpoint struct {
 	// rotate operator addresses and domains freely; the owner is the stake
 	// they cannot move without unstaking, so it is what a ban and a per-owner
 	// metric key on. Empty when the session did not carry it.
-	ownerAddr  string
-	urls       map[domain.RPCType]string // rpc type → URL
-	session    *sessiontypes.Session
-	isFallback bool
+	ownerAddr string
+	urls      map[domain.RPCType]string // rpc type → URL
+	session   *sessiontypes.Session
 }
 
 // Supplier returns the supplier's operator address.
@@ -84,11 +83,6 @@ func (e *endpoint) PublicURL() string {
 // Session returns the session this endpoint belongs to.
 func (e *endpoint) Session() *sessiontypes.Session {
 	return e.session
-}
-
-// IsFallback returns whether this is a fallback (non-protocol) endpoint.
-func (e *endpoint) IsFallback() bool {
-	return e.isFallback
 }
 
 // Addr returns the unique address for this endpoint in "supplierAddr-url" format.

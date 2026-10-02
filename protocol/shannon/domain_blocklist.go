@@ -118,9 +118,11 @@ func newDomainBlocklist(entries []config.BlockedDomain) (*domainBlocklist, error
 			set = make(map[domain.RPCType]struct{}, len(e.RPCTypes))
 		}
 		for _, t := range e.RPCTypes {
-			rpcType, err := parseRPCType(t)
-			if err != nil {
-				return nil, fmt.Errorf("blocked_domains: domain %q: %w", host, err)
+			// Unknown is not accepted: it is what SAGE calls "we could not
+			// tell", not something an operator can ban.
+			rpcType, ok := domain.ParseRPCType(strings.TrimSpace(t))
+			if !ok {
+				return nil, fmt.Errorf("blocked_domains: domain %q: unknown rpc_type %q (want one of %v)", host, t, domain.AllRPCTypes())
 			}
 			set[rpcType] = struct{}{}
 		}
@@ -128,18 +130,6 @@ func newDomainBlocklist(entries []config.BlockedDomain) (*domainBlocklist, error
 	}
 
 	return &domainBlocklist{blocked: blocked}, nil
-}
-
-// parseRPCType maps a config string to an RPC type. Unknown is not accepted: it
-// is what SAGE calls "we could not tell", not something an operator can ban.
-func parseRPCType(s string) (domain.RPCType, error) {
-	candidate := domain.RPCType(strings.ToLower(strings.TrimSpace(s)))
-	for _, t := range domain.AllRPCTypes() {
-		if candidate == t {
-			return t, nil
-		}
-	}
-	return "", fmt.Errorf("unknown rpc_type %q (want one of %v)", s, domain.AllRPCTypes())
 }
 
 // parseBlockedDomainsEnv parses an envBlockedDomains value into config entries.
@@ -171,18 +161,12 @@ func parseBlockedDomainsEnv(raw string) []config.BlockedDomain {
 	return entries
 }
 
-// IsBlocked reports whether an endpoint at rawURL is banned from serving
-// rpcType.
+// IsBlockedEndpoint reports whether an endpoint at rawURL, staked by owner, is
+// banned from serving rpcType.
 //
 // Matching is on the URL rather than on an EndpointAddr or a supplier address,
 // which is what makes the ban survive session rollover: supplier registrations
-// rotate and one operator holds many, but the URL is the machine.
-func (b *domainBlocklist) IsBlocked(rawURL string, rpcType domain.RPCType) bool {
-	return b.IsBlockedEndpoint(rawURL, "", rpcType)
-}
-
-// IsBlockedEndpoint is IsBlocked with the supplier's owner address as a
-// second key. An entry naming an owner ("pokt1…") bans every endpoint that
+// rotate and one operator holds many, but the URL is the machine. An entry naming an owner ("pokt1…") bans every endpoint that
 // owner stakes, whatever domain it serves from: the URL is the machine, but
 // the owner is the stake, and a ban an operator can step around by
 // registering a new domain has to key on the thing they cannot change without

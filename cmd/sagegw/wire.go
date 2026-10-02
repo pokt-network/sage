@@ -170,7 +170,7 @@ const sessionPrefetchTimeout = 30 * time.Second
 // its session cache before taking traffic. The mock backend has no sessions
 // and does not implement it.
 type sessionPrefetcher interface {
-	PrefetchSessions(ctx context.Context, cfg shannon.PrefetchConfig) shannon.PrefetchResult
+	PrefetchSessions(ctx context.Context) shannon.PrefetchResult
 }
 
 // serviceIDsFrom lists every configured service ID. It bounds the service_id
@@ -979,7 +979,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	pf, prefetchSupported := proto.(sessionPrefetcher)
 	if prefetchSupported {
 		prefetchCtx, cancelPrefetch := context.WithTimeout(ctx, sessionPrefetchTimeout)
-		res := pf.PrefetchSessions(prefetchCtx, shannon.PrefetchConfig{})
+		res := pf.PrefetchSessions(prefetchCtx)
 		cancelPrefetch()
 		for _, svc := range res.Ready {
 			prefetched[svc] = struct{}{}

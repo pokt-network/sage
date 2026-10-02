@@ -37,9 +37,6 @@ func buildBlockedSuppliers(services []config.ServiceConfig) blockedSupplierTable
 
 // blocked reports whether the supplier is blocked for the service.
 func (t blockedSupplierTable) blocked(serviceID domain.ServiceID, supplier string) bool {
-	if t == nil {
-		return false
-	}
 	_, ok := t[serviceID][supplier]
 	return ok
 }

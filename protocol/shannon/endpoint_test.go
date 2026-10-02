@@ -55,18 +55,6 @@ func TestEndpoint_Supplier(t *testing.T) {
 	}
 }
 
-func TestEndpoint_IsFallback(t *testing.T) {
-	ep := &endpoint{isFallback: false}
-	if ep.IsFallback() {
-		t.Error("expected IsFallback() = false")
-	}
-
-	epFallback := &endpoint{isFallback: true}
-	if !epFallback.IsFallback() {
-		t.Error("expected IsFallback() = true")
-	}
-}
-
 func TestEndpoint_PublicURL_Empty(t *testing.T) {
 	ep := &endpoint{
 		supplierAddr: "pokt1abc",

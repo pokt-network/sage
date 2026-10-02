@@ -213,7 +213,7 @@ func TestProtocol_SetBlockedDomainsInvalidEntryLeavesOldListUntouched(t *testing
 		t.Fatal("expected an error for an entry with an empty domain")
 	}
 
-	if !p.blockedDomains.Load().IsBlocked("https://good.example", domain.RPCTypeJSONRPC) {
+	if !p.blockedDomains.Load().IsBlockedEndpoint("https://good.example", "", domain.RPCTypeJSONRPC) {
 		t.Error("a failed SetBlockedDomains call must leave the previous list in place")
 	}
 }

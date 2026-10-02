@@ -24,7 +24,7 @@ func TestDomainBlocklist_NilBlocksNothing(t *testing.T) {
 	if b != nil {
 		t.Fatalf("empty config should compile to a nil blocklist, got %v", b)
 	}
-	if b.IsBlocked("https://node.example.com", domain.RPCTypeJSONRPC) {
+	if b.IsBlockedEndpoint("https://node.example.com", "", domain.RPCTypeJSONRPC) {
 		t.Error("a nil blocklist must block nothing")
 	}
 	if got := b.entries(); got != nil {
@@ -56,8 +56,8 @@ func TestDomainBlocklist_Matching(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := b.IsBlocked(tc.url, tc.rpcType); got != tc.want {
-				t.Errorf("IsBlocked(%q, %s) = %v, want %v", tc.url, tc.rpcType, got, tc.want)
+			if got := b.IsBlockedEndpoint(tc.url, "", tc.rpcType); got != tc.want {
+				t.Errorf("IsBlockedEndpoint(%q, %s) = %v, want %v", tc.url, tc.rpcType, got, tc.want)
 			}
 		})
 	}
@@ -69,8 +69,8 @@ func TestDomainBlocklist_CachedDecisionMatchesFirst(t *testing.T) {
 	b := mustBlocklist(t, config.BlockedDomain{Domain: "op-alpha.example"})
 
 	const url = "https://rpc-1.op-alpha.example"
-	first := b.IsBlocked(url, domain.RPCTypeJSONRPC)
-	second := b.IsBlocked(url, domain.RPCTypeJSONRPC)
+	first := b.IsBlockedEndpoint(url, "", domain.RPCTypeJSONRPC)
+	second := b.IsBlockedEndpoint(url, "", domain.RPCTypeJSONRPC)
 	if !first || !second {
 		t.Fatalf("IsBlocked = %v then %v, want true both times", first, second)
 	}
@@ -86,7 +86,7 @@ func TestDomainBlocklist_AllTypesAbsorbsNarrowerEntry(t *testing.T) {
 	for _, entries := range orders {
 		b := mustBlocklist(t, entries...)
 		for _, rpcType := range domain.AllRPCTypes() {
-			if !b.IsBlocked("https://op.example", rpcType) {
+			if !b.IsBlockedEndpoint("https://op.example", "", rpcType) {
 				t.Errorf("entries %v: %s not blocked", entries, rpcType)
 			}
 		}
@@ -127,8 +127,8 @@ func TestDomainBlocklist_EnvUnionsWithConfig(t *testing.T) {
 		{"https://rpc.evil.example", domain.RPCTypeGRPC, true},        // env entry, no types = all
 	}
 	for _, tc := range cases {
-		if got := b.IsBlocked(tc.url, tc.rpcType); got != tc.want {
-			t.Errorf("IsBlocked(%q, %s) = %v, want %v", tc.url, tc.rpcType, got, tc.want)
+		if got := b.IsBlockedEndpoint(tc.url, "", tc.rpcType); got != tc.want {
+			t.Errorf("IsBlockedEndpoint(%q, %s) = %v, want %v", tc.url, tc.rpcType, got, tc.want)
 		}
 	}
 }
@@ -139,7 +139,7 @@ func TestDomainBlocklist_EnvCannotNarrowAConfigBan(t *testing.T) {
 
 	b := mustBlocklist(t, config.BlockedDomain{Domain: "op-alpha.example"})
 
-	if !b.IsBlocked("https://rpc.op-alpha.example", domain.RPCTypeJSONRPC) {
+	if !b.IsBlockedEndpoint("https://rpc.op-alpha.example", "", domain.RPCTypeJSONRPC) {
 		t.Error("a narrower env entry must not un-ban an RPC type the config banned")
 	}
 }

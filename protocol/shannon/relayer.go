@@ -149,7 +149,6 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 		ownedApps:        ownedApps,
 		httpClient:       httpClient,
 		grpc:             newGRPCRelayTransport(cfg.Protocol.GRPCMode, httpClient, logger.With("component", "shannon_grpc")),
-		metrics:          noopSupplierMetrics{},
 		rpcFallbacks:     buildRPCFallbacks(cfg.Gateway.AllServices()),
 		debugLimits:      newDebugLimits(),
 		blockedSuppliers: buildBlockedSuppliers(cfg.Gateway.AllServices()),

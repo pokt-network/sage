@@ -9,32 +9,22 @@ import (
 	"github.com/pokt-network/sage/internal/safego"
 )
 
-// PrefetchConfig paces the startup session prefetch against the full node.
-//
 // The full node is a shared, rate-limited dependency: one gateway asking for
 // every service's session at once, across a rolling fleet, is a burst it has
-// no reason to absorb. Both knobs are about being a good citizen, not about
+// no reason to absorb. Both bounds are about being a good citizen, not about
 // speed — the prefetch has a whole readiness window to finish in.
-type PrefetchConfig struct {
-	// Concurrency is how many session fetches may be in flight at once. Zero
-	// means DefaultPrefetchConcurrency.
-	Concurrency int
-	// MinInterval is the minimum spacing between two fetches leaving this
-	// process, applied across all workers. Zero means
-	// DefaultPrefetchMinInterval; negative disables pacing.
-	MinInterval time.Duration
-}
-
 const (
-	// DefaultPrefetchConcurrency matches the health-check executor's worker
-	// count, which has been the fleet's steady-state concurrency against the
-	// same full node for months. Prefetch is a startup burst, so it has less
+	// prefetchConcurrency matches the health-check executor's worker count,
+	// which has been the fleet's steady-state concurrency against the same
+	// full node for months. Prefetch is a startup burst, so it has less
 	// licence than that, not more.
-	DefaultPrefetchConcurrency = 4
-	// DefaultPrefetchMinInterval spaces fetches at 20 per second. Seventy-odd
-	// services then take under four seconds — well inside a readiness window,
-	// and a rate no full node notices.
-	DefaultPrefetchMinInterval = 50 * time.Millisecond
+	prefetchConcurrency = 4
+	// prefetchMinInterval spaces fetches at 20 per second, across all
+	// workers. Seventy-odd services then take under four seconds — well
+	// inside a readiness window, and a rate no full node notices. A ticker
+	// rather than a token bucket: the point is a floor on the gap between
+	// requests, not an average.
+	prefetchMinInterval = 50 * time.Millisecond
 )
 
 // PrefetchResult reports what the prefetch achieved.
@@ -68,14 +58,14 @@ type PrefetchResult struct {
 // Failures are counted, not returned: a service with no staked suppliers has
 // no session to fetch and must not hold up a pod that can serve the other
 // seventy. The caller decides what to do with a short Ready list.
-func (p *Protocol) PrefetchSessions(ctx context.Context, cfg PrefetchConfig) PrefetchResult {
+func (p *Protocol) PrefetchSessions(ctx context.Context) PrefetchResult {
+	return p.prefetchSessions(ctx, prefetchConcurrency, prefetchMinInterval)
+}
+
+func (p *Protocol) prefetchSessions(ctx context.Context, concurrency int, interval time.Duration) PrefetchResult {
 	start := time.Now()
 	services := p.sessions.ConfiguredServices()
 
-	concurrency := cfg.Concurrency
-	if concurrency <= 0 {
-		concurrency = DefaultPrefetchConcurrency
-	}
 	if concurrency > len(services) {
 		concurrency = len(services)
 	}
@@ -83,8 +73,8 @@ func (p *Protocol) PrefetchSessions(ctx context.Context, cfg PrefetchConfig) Pre
 		return PrefetchResult{Elapsed: time.Since(start)}
 	}
 
-	pace := newPacer(cfg.MinInterval)
-	defer pace.stop()
+	pace := time.NewTicker(interval)
+	defer pace.Stop()
 
 	var (
 		mu     sync.Mutex
@@ -98,7 +88,9 @@ func (p *Protocol) PrefetchSessions(ctx context.Context, cfg PrefetchConfig) Pre
 		safego.Go(p.logger, "shannon.prefetch", func() {
 			defer wg.Done()
 			for serviceID := range work {
-				if !pace.wait(ctx) {
+				select {
+				case <-pace.C:
+				case <-ctx.Done():
 					return
 				}
 				err := p.prefetchOne(ctx, serviceID)
@@ -142,42 +134,4 @@ func (p *Protocol) prefetchOne(ctx context.Context, serviceID domain.ServiceID) 
 	}
 	_, err = p.sessions.getEndpoints(ctx, string(serviceID), appAddr)
 	return err
-}
-
-// pacer spaces outbound fetches so a startup burst does not arrive at the full
-// node as a burst. A ticker rather than a token bucket: there is no credit to
-// accumulate here — the point is a floor on the gap between requests, not an
-// average.
-type pacer struct {
-	ticker *time.Ticker
-}
-
-func newPacer(interval time.Duration) *pacer {
-	if interval == 0 {
-		interval = DefaultPrefetchMinInterval
-	}
-	if interval < 0 {
-		return &pacer{}
-	}
-	return &pacer{ticker: time.NewTicker(interval)}
-}
-
-// wait blocks until the next fetch may leave, reporting false if the context
-// ended first.
-func (p *pacer) wait(ctx context.Context) bool {
-	if p.ticker == nil {
-		return ctx.Err() == nil
-	}
-	select {
-	case <-p.ticker.C:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-func (p *pacer) stop() {
-	if p.ticker != nil {
-		p.ticker.Stop()
-	}
 }

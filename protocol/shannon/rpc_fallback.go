@@ -34,9 +34,6 @@ func buildRPCFallbacks(services []config.ServiceConfig) rpcFallbackTable {
 // resolve returns the fallback type for the service and requested type, or
 // "" when there is none.
 func (t rpcFallbackTable) resolve(serviceID domain.ServiceID, rpcType domain.RPCType) domain.RPCType {
-	if t == nil {
-		return ""
-	}
 	return t[serviceID][rpcType]
 }
 

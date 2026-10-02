@@ -3,6 +3,7 @@ package shannon
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -175,9 +176,5 @@ func (c *pubKeyCache) store(address string, pubKey cryptotypes.PubKey) {
 
 // sweepExpired drops entries older than ttl. Callers hold the mutex.
 func sweepExpired(m map[string]time.Time, now time.Time, ttl time.Duration) {
-	for addr, ts := range m {
-		if now.Sub(ts) >= ttl {
-			delete(m, addr)
-		}
-	}
+	maps.DeleteFunc(m, func(_ string, ts time.Time) bool { return now.Sub(ts) >= ttl })
 }

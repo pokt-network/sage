@@ -1,6 +1,7 @@
 package shannon
 
 import (
+	"maps"
 	"sync"
 	"time"
 
@@ -39,11 +40,7 @@ func (b *blacklist) BlacklistSupplier(serviceID domain.ServiceID, addr string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	now := time.Now()
-	for key, expiry := range b.blocked {
-		if now.After(expiry) {
-			delete(b.blocked, key)
-		}
-	}
+	maps.DeleteFunc(b.blocked, func(_ blacklistKey, expiry time.Time) bool { return now.After(expiry) })
 	b.blocked[blacklistKey{serviceID, addr}] = now.Add(b.duration)
 }
 

@@ -85,7 +85,7 @@ func TestPrefetchSessions_WarmsEveryService(t *testing.T) {
 	fn := &prefetchFullNode{}
 	p := newPrefetchProtocol(t, fn, "eth", "poly", "kava", "sei")
 
-	res := p.PrefetchSessions(context.Background(), PrefetchConfig{MinInterval: -1})
+	res := p.prefetchSessions(context.Background(), prefetchConcurrency, time.Microsecond)
 
 	if len(res.Ready) != 4 {
 		t.Fatalf("ready = %v, want all 4 services", res.Ready)
@@ -110,7 +110,7 @@ func TestPrefetchSessions_FailuresDoNotBlockTheRest(t *testing.T) {
 	fn := &prefetchFullNode{failFor: map[string]bool{"dead": true}}
 	p := newPrefetchProtocol(t, fn, "eth", "poly", "dead")
 
-	res := p.PrefetchSessions(context.Background(), PrefetchConfig{MinInterval: -1})
+	res := p.prefetchSessions(context.Background(), prefetchConcurrency, time.Microsecond)
 
 	if res.Failed != 1 {
 		t.Errorf("failed = %d, want 1", res.Failed)
@@ -136,7 +136,7 @@ func TestPrefetchSessions_RespectsConcurrencyAndPace(t *testing.T) {
 		}
 		p := newPrefetchProtocol(t, fn, services...)
 
-		p.PrefetchSessions(context.Background(), PrefetchConfig{Concurrency: 3, MinInterval: -1})
+		p.prefetchSessions(context.Background(), 3, time.Microsecond)
 
 		fn.mu.Lock()
 		peak := fn.peak
@@ -151,7 +151,7 @@ func TestPrefetchSessions_RespectsConcurrencyAndPace(t *testing.T) {
 		p := newPrefetchProtocol(t, fn, "eth", "poly", "kava", "sei", "bsc")
 
 		const interval = 20 * time.Millisecond
-		res := p.PrefetchSessions(context.Background(), PrefetchConfig{Concurrency: 5, MinInterval: interval})
+		res := p.prefetchSessions(context.Background(), 5, interval)
 
 		// Five fetches at one per interval cannot finish faster than four
 		// intervals, however many workers are free.
@@ -178,7 +178,7 @@ func TestPrefetchSessions_StopsOnContextEnd(t *testing.T) {
 	defer cancel()
 
 	done := make(chan PrefetchResult, 1)
-	go func() { done <- p.PrefetchSessions(ctx, PrefetchConfig{Concurrency: 2, MinInterval: -1}) }()
+	go func() { done <- p.prefetchSessions(ctx, 2, time.Microsecond) }()
 
 	select {
 	case res := <-done:
@@ -195,7 +195,7 @@ func TestPrefetchSessions_NoServices(t *testing.T) {
 	fn := &prefetchFullNode{}
 	p := newPrefetchProtocol(t, fn)
 
-	res := p.PrefetchSessions(context.Background(), PrefetchConfig{})
+	res := p.PrefetchSessions(context.Background())
 
 	if len(res.Ready) != 0 || res.Failed != 0 {
 		t.Errorf("got %+v, want an empty result", res)

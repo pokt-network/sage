@@ -131,7 +131,8 @@ type supplierMetrics interface {
 	RecordResponseSize(serviceID domain.ServiceID, bytes int)
 }
 
-// noopSupplierMetrics is the default, so no call site needs a nil check.
+// noopSupplierMetrics is what supplierMetricsRecorder hands out while no
+// recorder is attached, so no call site needs a nil check.
 type noopSupplierMetrics struct{}
 
 func (noopSupplierMetrics) RecordSupplierBlacklist(domain.ServiceID, string) {}
@@ -142,9 +143,6 @@ func (noopSupplierMetrics) RecordResponseSize(domain.ServiceID, int)         {}
 // SetMetrics attaches a metrics recorder to the protocol. Not safe to call
 // concurrently with relays; call it at wire time.
 func (p *Protocol) SetMetrics(m supplierMetrics) {
-	if m == nil {
-		m = noopSupplierMetrics{}
-	}
 	p.metrics = m
 }
 
