@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -27,12 +26,11 @@ type solanaEndpoint struct {
 // Plugin is the Solana QoS plugin.
 type Plugin struct {
 	qos.SelectionTiers
+	qos.HeightTracking
 
-	logger        *slog.Logger
-	syncAllowance atomic.Uint64
+	logger *slog.Logger
 
-	store     *qos.EndpointStore[solanaEndpoint]
-	consensus *qos.BlockConsensus
+	store *qos.EndpointStore[solanaEndpoint]
 }
 
 // defaultSyncAllowance is the allowance used when the service does not
@@ -70,11 +68,11 @@ func NewPlugin(logger *slog.Logger, syncAllowance uint64) *Plugin {
 		syncAllowance = defaultSyncAllowance
 	}
 	p := &Plugin{
-		logger:    logger,
-		store:     qos.NewEndpointStore[solanaEndpoint](logger),
-		consensus: qos.NewBlockConsensus(logger, syncAllowance),
+		logger: logger,
+		store:  qos.NewEndpointStore[solanaEndpoint](logger),
 	}
-	p.syncAllowance.Store(syncAllowance)
+	p.Consensus = qos.NewBlockConsensus(logger, syncAllowance)
+	p.SetSyncAllowance(syncAllowance)
 	return p
 }
 
@@ -95,13 +93,13 @@ func (p *Plugin) ParseRequest(_ context.Context, _ *http.Request, body []byte, _
 
 // SelectEndpoints filters session endpoints by block height.
 func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.Payload) (domain.EndpointAddrList, error) {
-	perceived := p.consensus.PerceivedBlock()
+	perceived := p.Consensus.PerceivedBlock()
 
-	getHeight := qos.HeightGetter(p.store, func(ep solanaEndpoint) uint64 { return ep.BlockHeight }, p.consensus.Projection())
+	getHeight := qos.HeightGetter(p.store, func(ep solanaEndpoint) uint64 { return ep.BlockHeight }, p.Consensus.Projection())
 
-	blockFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance.Load()))
+	blockFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.SyncAllowance()))
 	// Relaxed tier: twice the allowance.
-	relaxedFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance.Load()*2))
+	relaxedFilter := qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.SyncAllowance()*2))
 
 	result := qos.SelectWithKnownHeights(
 		endpoints,
@@ -123,24 +121,8 @@ func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) 
 	p.store.ObserveHeight(endpoint, func(ep *solanaEndpoint) {
 		ep.BlockHeight = height
 	})
-	p.consensus.AddObservation(endpoint, height)
+	p.Consensus.AddObservation(endpoint, height)
 }
-
-// EndpointHeights reports the latest height each endpoint supplied
-// (qos.EndpointHeightLister).
-func (p *Plugin) EndpointHeights() []qos.EndpointHeight { return p.consensus.EndpointHeights() }
-
-// SetExternalFloor takes a trusted outside height as the floor the perceived
-// head may not fall below (qos.ExternalFloorSetter).
-func (p *Plugin) SetExternalFloor(height uint64) { p.consensus.SetExternalFloor(height) }
-
-// PerceivedBlockHeight returns the current consensus block height.
-func (p *Plugin) PerceivedBlockHeight() uint64 {
-	return p.consensus.PerceivedBlock()
-}
-
-// StartSync is a no-op for Solana; health checks drive updates externally.
-func (p *Plugin) StartSync(_ context.Context) {}
 
 // --- qos.HealthChecker --- //
 
@@ -162,19 +144,6 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 	}
 }
 
-// --- qos.ChainViewer --- //
-
-// ChainView reports what this service currently believes about its chain, for
-// the metrics exporter. Delegates to the consensus that owns the observations.
-func (p *Plugin) ChainView() qos.ChainView { return p.consensus.ChainView() }
-
-// LastHeightObservation reports when any of these endpoints last supplied a
-// block height, so the executor can tell whether its height probe would learn
-// anything the plugin does not already know.
-func (p *Plugin) LastHeightObservation(endpoints domain.EndpointAddrList) (time.Time, bool) {
-	return p.consensus.LastHeightObservation(endpoints)
-}
-
 // --- qos.DataExtractor --- //
 
 // ExtractData parses structured data from a Solana relay response.
@@ -191,7 +160,7 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		return &qos.ExtractedData{}, nil
 	}
 
-	_, err = qos.ValidateBlockHeight(height, p.consensus.PerceivedBlock(), p.syncAllowance.Load())
+	_, err = qos.ValidateBlockHeight(height, p.Consensus.PerceivedBlock(), p.SyncAllowance())
 	if err != nil {
 		return nil, fmt.Errorf("solana: invalid block height from endpoint %s: %w", endpoint, err)
 	}
@@ -214,7 +183,7 @@ func (p *Plugin) IsCoalescable(method string) bool {
 // about the plugin's configuration changes, and the next health-check cycle
 // and the next relays repopulate both from scratch.
 func (p *Plugin) ResetState() {
-	p.consensus.Reset()
+	p.Consensus.Reset()
 	p.store.Clear()
 }
 
@@ -252,18 +221,10 @@ var (
 	_ qos.StateResetter         = (*Plugin)(nil)
 )
 
-// SyncAllowance implements qos.SyncAllowanceTuner.
-func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
-
-// SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
-// qos.sync_allowance, per service, without a restart.
-func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }
-
 // AllStale reports whether every endpoint in eps is known to sit below the
 // relaxed height bound (qos.StaleChecker).
 func (p *Plugin) AllStale(eps domain.EndpointAddrList) bool {
-	getHeight := qos.HeightGetter(p.store, func(ep solanaEndpoint) uint64 { return ep.BlockHeight }, p.consensus.Projection())
-	return qos.AllStale(eps, getHeight, qos.MinAllowedHeight(p.consensus.PerceivedBlock(), p.syncAllowance.Load()*2))
+	return p.AllStaleBy(eps, qos.HeightGetter(p.store, func(ep solanaEndpoint) uint64 { return ep.BlockHeight }, p.Consensus.Projection()))
 }
 
 var _ qos.StaleChecker = (*Plugin)(nil)
@@ -294,7 +255,7 @@ func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) 
 	if head == 0 {
 		return 0, false, false
 	}
-	return p.consensus.AnswerLag(head, at)
+	return p.Consensus.AnswerLag(head, at)
 }
 
 var _ qos.HeadLagReader = (*Plugin)(nil)

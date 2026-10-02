@@ -44,7 +44,7 @@ var query5xxPrefixes = []string{
 // plugin grades it: the supplier refusing (evm.RefusalVerdict).
 func (p *Plugin) RefineVerdict(endpoint domain.EndpointAddr, payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
 	if p.evmHeights() && payload.RPCType() == domain.RPCTypeJSONRPC {
-		refined, ok, skip := evm.RefusalVerdict(payload, result, p.consensus.PerceivedBlock(), p.consensus.BlocksIn)
+		refined, ok, skip := evm.RefusalVerdict(payload, result, p.Consensus.PerceivedBlock(), p.Consensus.BlocksIn)
 		if ok {
 			return refined, true
 		}

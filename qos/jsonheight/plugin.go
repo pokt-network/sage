@@ -29,7 +29,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -75,13 +74,12 @@ type Chain struct {
 // Plugin serves one chain declared by a Chain.
 type Plugin struct {
 	qos.SelectionTiers
+	qos.HeightTracking
 
-	chain         Chain
-	logger        *slog.Logger
-	syncAllowance atomic.Uint64
+	chain  Chain
+	logger *slog.Logger
 
-	store     *qos.EndpointStore[endpointState]
-	consensus *qos.BlockConsensus
+	store *qos.EndpointStore[endpointState]
 
 	// stateCanary gates the canary check; nil means never.
 	stateCanary func() bool
@@ -97,12 +95,12 @@ func NewPlugin(logger *slog.Logger, chain Chain, syncAllowance uint64) *Plugin {
 		logger = slog.Default()
 	}
 	p := &Plugin{
-		chain:     chain,
-		logger:    logger,
-		store:     qos.NewEndpointStore[endpointState](logger),
-		consensus: qos.NewBlockConsensus(logger, syncAllowance),
+		chain:  chain,
+		logger: logger,
+		store:  qos.NewEndpointStore[endpointState](logger),
 	}
-	p.syncAllowance.Store(syncAllowance)
+	p.Consensus = qos.NewBlockConsensus(logger, syncAllowance)
+	p.SetSyncAllowance(syncAllowance)
 	return p
 }
 
@@ -141,14 +139,14 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, _ []domain.P
 	// yields 0 for either, which makes the filter pass everything. That rule
 	// lives there, the EVM plugin relies on it the same way, and a second copy
 	// here would be one to keep in step.
-	perceived := p.consensus.PerceivedBlock()
+	perceived := p.Consensus.PerceivedBlock()
 
-	getHeight := qos.HeightGetter(p.store, func(s endpointState) uint64 { return s.blockHeight }, p.consensus.Projection())
+	getHeight := qos.HeightGetter(p.store, func(s endpointState) uint64 { return s.blockHeight }, p.Consensus.Projection())
 	result := qos.SelectWithKnownHeights(
 		endpoints,
 		getHeight,
-		[]qos.FilterFunc{qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance.Load()))},
-		[]qos.FilterFunc{qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.syncAllowance.Load()*2))},
+		[]qos.FilterFunc{qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.SyncAllowance()))},
+		[]qos.FilterFunc{qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, p.SyncAllowance()*2))},
 		nil,
 		qos.LeastStaleFallback(getHeight, perceived),
 	)
@@ -216,7 +214,7 @@ func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) 
 	if height == 0 {
 		return 0, false, false
 	}
-	return p.consensus.AnswerLag(height, at)
+	return p.Consensus.AnswerLag(height, at)
 }
 
 var _ qos.HeadLagReader = (*Plugin)(nil)
@@ -264,7 +262,7 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		}
 		return &qos.ExtractedData{}, nil
 	}
-	if _, err := qos.ValidateBlockHeight(height, p.consensus.PerceivedBlock(), p.syncAllowance.Load()); err != nil {
+	if _, err := qos.ValidateBlockHeight(height, p.Consensus.PerceivedBlock(), p.SyncAllowance()); err != nil {
 		return nil, fmt.Errorf("%s: invalid block height from endpoint %s: %w", p.chain.Name, endpoint, err)
 	}
 	return &qos.ExtractedData{BlockHeight: &height}, nil
@@ -313,28 +311,7 @@ func (p *Plugin) heightFrom(response []byte) (uint64, error) {
 // UpdateBlockHeight records a height observation and feeds consensus.
 func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) {
 	p.store.ObserveHeight(endpoint, func(s *endpointState) { s.blockHeight = height })
-	p.consensus.AddObservation(endpoint, height)
-}
-
-// SetExternalFloor takes a trusted outside height as the floor the perceived
-// head may not fall below (qos.ExternalFloorSetter).
-func (p *Plugin) SetExternalFloor(height uint64) { p.consensus.SetExternalFloor(height) }
-
-// PerceivedBlockHeight returns the consensus head.
-func (p *Plugin) PerceivedBlockHeight() uint64 { return p.consensus.PerceivedBlock() }
-
-// StartSync is a no-op: health checks and client traffic drive updates.
-func (p *Plugin) StartSync(_ context.Context) {}
-
-// --- qos.ChainViewer / qos.HeightObserver --- //
-
-// ChainView reports what this service believes about its chain.
-func (p *Plugin) ChainView() qos.ChainView { return p.consensus.ChainView() }
-
-// LastHeightObservation reports when any of these endpoints last supplied a
-// height, so the executor can tell whether its probe would learn anything.
-func (p *Plugin) LastHeightObservation(endpoints domain.EndpointAddrList) (time.Time, bool) {
-	return p.consensus.LastHeightObservation(endpoints)
+	p.Consensus.AddObservation(endpoint, height)
 }
 
 // --- qos.StateResetter --- //
@@ -342,7 +319,7 @@ func (p *Plugin) LastHeightObservation(endpoints domain.EndpointAddrList) (time.
 // ResetState discards the consensus and every per-endpoint height, so the
 // admin chain-state route works for these chains as it does for the others.
 func (p *Plugin) ResetState() {
-	p.consensus.Reset()
+	p.Consensus.Reset()
 	p.store.Clear()
 }
 
@@ -367,11 +344,6 @@ func (p *Plugin) NormalizeMethod(payload domain.Payload) string {
 	}
 }
 
-// --- qos.EndpointHeightLister --- //
-
-// EndpointHeights reports the latest height each endpoint supplied.
-func (p *Plugin) EndpointHeights() []qos.EndpointHeight { return p.consensus.EndpointHeights() }
-
 // Compile-time interface assertions.
 var (
 	_ qos.Plugin               = (*Plugin)(nil)
@@ -386,18 +358,10 @@ var (
 	_ qos.ExternalFloorSetter  = (*Plugin)(nil)
 )
 
-// SyncAllowance implements qos.SyncAllowanceTuner.
-func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
-
-// SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
-// qos.sync_allowance, per service, without a restart.
-func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }
-
 // AllStale reports whether every endpoint in eps is known to sit below the
 // relaxed height bound (qos.StaleChecker).
 func (p *Plugin) AllStale(eps domain.EndpointAddrList) bool {
-	getHeight := qos.HeightGetter(p.store, func(ep endpointState) uint64 { return ep.blockHeight }, p.consensus.Projection())
-	return qos.AllStale(eps, getHeight, qos.MinAllowedHeight(p.consensus.PerceivedBlock(), p.syncAllowance.Load()*2))
+	return p.AllStaleBy(eps, qos.HeightGetter(p.store, func(ep endpointState) uint64 { return ep.blockHeight }, p.Consensus.Projection()))
 }
 
 var _ qos.StaleChecker = (*Plugin)(nil)

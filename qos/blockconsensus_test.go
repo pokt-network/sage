@@ -126,27 +126,6 @@ func TestBlockConsensus_ExternalFloor_LowerThanPerceived(t *testing.T) {
 	}
 }
 
-func TestBlockConsensus_SetSyncAllowance(t *testing.T) {
-	bc := NewBlockConsensus(nil, 0) // Very tight: cap = median + 0
-	for _, h := range []uint64{100, 101, 102, 110} {
-		bc.AddObservation(domain.EndpointAddr("ep"), h)
-	}
-	// Sorted: [100,101,102,110], median (index 2) = 102, cap = 102+0 = 102.
-	// Heights <= 102: 100, 101, 102. Perceived = 102.
-	if got := bc.PerceivedBlock(); got != 102 {
-		t.Fatalf("expected 102, got %d", got)
-	}
-
-	// Relax sync allowance.
-	bc.SetSyncAllowance(5) // cap = 101 + 15 = 116. All pass.
-	bc.AddObservation("ep", 103)
-	// After adding 103: heights = [100,101,102,110,103], sorted [100,101,102,103,110]
-	// Median=102, cap=102+15=117. All pass. Max=110.
-	if got := bc.PerceivedBlock(); got != 110 {
-		t.Fatalf("expected 110, got %d", got)
-	}
-}
-
 func TestBlockConsensus_AtomicRead(t *testing.T) {
 	bc := NewBlockConsensus(nil, 5)
 	// PerceivedBlock should be safe to call concurrently.

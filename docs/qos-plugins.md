@@ -57,6 +57,7 @@ why the split exists — respect it.
 |---|---|
 | Per-endpoint state | `qos.EndpointStore[T]` |
 | A chain head from disagreeing endpoints | `qos/blockconsensus.go` |
+| That chain head, a runtime sync allowance, and the extension methods that only read them | embed `qos.HeightTracking` (`qos/heighttracking.go`) |
 | Endpoint filtering helpers | `qos/selector.go` |
 
 These exist because EVM, Cosmos and Solana each had their own copy once.

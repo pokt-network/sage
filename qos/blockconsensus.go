@@ -216,13 +216,6 @@ func (bc *BlockConsensus) Reset() {
 	bc.mu.Unlock()
 }
 
-// SetSyncAllowance updates the sync allowance used for outlier filtering.
-func (bc *BlockConsensus) SetSyncAllowance(allowance uint64) {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-	bc.syncAllowance = allowance
-}
-
 // pruneOlderThan removes observations before cutoff. Must be called with mu held.
 func (bc *BlockConsensus) pruneOlderThan(cutoff time.Time) {
 	n := 0

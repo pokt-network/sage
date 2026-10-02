@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -74,11 +73,10 @@ var coalescableMethods = map[string]bool{
 //   - qos.WebSocketProber
 type Plugin struct {
 	qos.SelectionTiers
+	qos.HeightTracking
 
 	logger          *slog.Logger
 	store           *qos.EndpointStore[evmEndpoint]
-	consensus       *qos.BlockConsensus
-	syncAllowance   atomic.Uint64
 	expectedChainID string
 	stateCanary     func() bool
 	// archival remembers, per host, who served or refused historical state.
@@ -136,12 +134,12 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 	p := &Plugin{
 		logger:          logger,
 		store:           qos.NewEndpointStore[evmEndpoint](logger),
-		consensus:       qos.NewBlockConsensus(logger, cfg.SyncAllowance),
 		expectedChainID: cfg.ExpectedChainID,
 		stateCanary:     cfg.StateCanary,
 		archival:        newArchivalMemory(),
 	}
-	p.syncAllowance.Store(cfg.SyncAllowance)
+	p.Consensus = qos.NewBlockConsensus(logger, cfg.SyncAllowance)
+	p.SetSyncAllowance(cfg.SyncAllowance)
 	return p
 }
 
@@ -163,10 +161,10 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		return nil, nil
 	}
 
-	perceived := p.consensus.PerceivedBlock()
+	perceived := p.Consensus.PerceivedBlock()
 	needsArchival := p.IsArchivalRequest(payloads)
 
-	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, p.consensus.Projection())
+	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, p.Consensus.Projection())
 
 	archivalFilter := func(addr domain.EndpointAddr) error {
 		if !needsArchival {
@@ -192,8 +190,8 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		return nil
 	}
 
-	minHeight := qos.MinAllowedHeight(perceived, p.syncAllowance.Load())
-	relaxedMin := qos.MinAllowedHeight(perceived, p.syncAllowance.Load()*2)
+	minHeight := qos.MinAllowedHeight(perceived, p.SyncAllowance())
+	relaxedMin := qos.MinAllowedHeight(perceived, p.SyncAllowance()*2)
 
 	blockFilter := qos.BlockHeightFilter(getHeight, minHeight)
 	relaxedBlockFilter := qos.BlockHeightFilter(getHeight, relaxedMin)
@@ -226,24 +224,8 @@ func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) 
 	p.store.ObserveHeight(endpoint, func(ep *evmEndpoint) {
 		ep.BlockNumber = height
 	})
-	p.consensus.AddObservation(endpoint, height)
+	p.Consensus.AddObservation(endpoint, height)
 }
-
-// EndpointHeights reports the latest height each endpoint supplied
-// (qos.EndpointHeightLister).
-func (p *Plugin) EndpointHeights() []qos.EndpointHeight { return p.consensus.EndpointHeights() }
-
-// SetExternalFloor takes a trusted outside height as the floor the perceived
-// head may not fall below (qos.ExternalFloorSetter).
-func (p *Plugin) SetExternalFloor(height uint64) { p.consensus.SetExternalFloor(height) }
-
-// PerceivedBlockHeight returns the current consensus block height.
-func (p *Plugin) PerceivedBlockHeight() uint64 {
-	return p.consensus.PerceivedBlock()
-}
-
-// StartSync is a no-op for EVM; block heights are updated via health checks.
-func (p *Plugin) StartSync(ctx context.Context) {}
 
 // --- Archival routing ---
 
@@ -251,7 +233,7 @@ func (p *Plugin) StartSync(ctx context.Context) {}
 func (p *Plugin) IsArchivalRequest(payloads []domain.Payload) bool {
 	for _, payload := range payloads {
 		params := gjson.GetBytes(payload.Bytes(), "params").Raw
-		if isArchivalRequest(payload.Method(), json.RawMessage(params), p.consensus.PerceivedBlock()) {
+		if isArchivalRequest(payload.Method(), json.RawMessage(params), p.Consensus.PerceivedBlock()) {
 			return true
 		}
 	}
@@ -271,7 +253,7 @@ func (p *Plugin) IsArchivalRequest(payloads []domain.Payload) bool {
 // here is isArchivalRequest, which is why that cannot happen.
 func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, request, response []byte) (archival bool, observed bool) {
 	params := gjson.GetBytes(request, "params").Raw
-	if !isArchivalRequest(method, json.RawMessage(params), p.consensus.PerceivedBlock()) {
+	if !isArchivalRequest(method, json.RawMessage(params), p.Consensus.PerceivedBlock()) {
 		return false, false
 	}
 
@@ -324,19 +306,6 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 // backend. A new backend is checked on the first cycle it appears regardless.
 const chainIDCheckInterval = 5 * time.Minute
 
-// --- qos.ChainViewer --- //
-
-// ChainView reports what this service currently believes about its chain, for
-// the metrics exporter. Delegates to the consensus that owns the observations.
-func (p *Plugin) ChainView() qos.ChainView { return p.consensus.ChainView() }
-
-// LastHeightObservation reports when any of these endpoints last supplied a
-// block height, so the executor can tell whether its height probe would learn
-// anything the plugin does not already know.
-func (p *Plugin) LastHeightObservation(endpoints domain.EndpointAddrList) (time.Time, bool) {
-	return p.consensus.LastHeightObservation(endpoints)
-}
-
 // --- qos.DataExtractor ---
 
 // ExtractData parses health check responses for block number and chain ID.
@@ -352,7 +321,7 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		p.store.ObserveHeight(endpoint, func(ep *evmEndpoint) {
 			ep.BlockNumber = height
 		})
-		p.consensus.AddObservation(endpoint, height)
+		p.Consensus.AddObservation(endpoint, height)
 		return &qos.ExtractedData{BlockHeight: &height}, nil
 
 	case "eth_chainId":
@@ -480,23 +449,15 @@ func (p *Plugin) CacheTTL(method string, params []byte, response []byte) time.Du
 // changes, and the next health-check cycle and the next relays repopulate
 // both from scratch.
 func (p *Plugin) ResetState() {
-	p.consensus.Reset()
+	p.Consensus.Reset()
 	p.store.Clear()
 	p.archival.reset()
 }
 
-// SyncAllowance implements qos.SyncAllowanceTuner.
-func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
-
-// SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
-// qos.sync_allowance, per service, without a restart.
-func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }
-
 // AllStale reports whether every endpoint in eps is known to sit below the
 // relaxed height bound (qos.StaleChecker).
 func (p *Plugin) AllStale(eps domain.EndpointAddrList) bool {
-	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, p.consensus.Projection())
-	return qos.AllStale(eps, getHeight, qos.MinAllowedHeight(p.consensus.PerceivedBlock(), p.syncAllowance.Load()*2))
+	return p.AllStaleBy(eps, qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, p.Consensus.Projection()))
 }
 
 var _ qos.StaleChecker = (*Plugin)(nil)
@@ -505,7 +466,7 @@ var _ qos.StaleChecker = (*Plugin)(nil)
 // answer names and measures it against the head expected now
 // (qos.HeadLagReader).
 func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool) {
-	return HeadLag(payload, response, at, p.consensus)
+	return HeadLag(payload, response, at, p.Consensus)
 }
 
 var _ qos.HeadLagReader = (*Plugin)(nil)
@@ -542,7 +503,7 @@ func HeadLag(payload domain.Payload, response []byte, at time.Time, consensus *q
 // block too recent to have been discarded is the supplier refusing
 // (RefusalVerdict).
 func (p *Plugin) RefineVerdict(endpoint domain.EndpointAddr, payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
-	refined, ok, skip := RefusalVerdict(payload, result, p.consensus.PerceivedBlock(), p.consensus.BlocksIn)
+	refined, ok, skip := RefusalVerdict(payload, result, p.Consensus.PerceivedBlock(), p.Consensus.BlocksIn)
 	if skip != "" {
 		p.logger.Debug("prune claim not judged", "endpoint", endpoint, "method", payload.Method(), "skip", skip, "detail", result.Details)
 	}

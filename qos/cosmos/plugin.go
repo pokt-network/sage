@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -54,16 +53,15 @@ type cosmosEndpoint struct {
 //   - qos.WebSocketProber
 type Plugin struct {
 	qos.SelectionTiers
+	qos.HeightTracking
 
 	logger            *slog.Logger
-	syncAllowance     atomic.Uint64
 	supportedRPCTypes []domain.RPCType
 	expectedChainID   string
 	evmHeight         func() bool
 	stateCanary       func() bool
 
-	store     *qos.EndpointStore[cosmosEndpoint]
-	consensus *qos.BlockConsensus
+	store *qos.EndpointStore[cosmosEndpoint]
 	// pruned remembers, per host, the lowest height the node holds; see pruned.go.
 	pruned *prunedMemory
 }
@@ -155,10 +153,10 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		evmHeight:         cfg.EVMHeight,
 		stateCanary:       cfg.StateCanary,
 		store:             qos.NewEndpointStore[cosmosEndpoint](logger),
-		consensus:         qos.NewBlockConsensus(logger, cfg.SyncAllowance),
 		pruned:            newPrunedMemory(),
 	}
-	p.syncAllowance.Store(cfg.SyncAllowance)
+	p.Consensus = qos.NewBlockConsensus(logger, cfg.SyncAllowance)
+	p.SetSyncAllowance(cfg.SyncAllowance)
 	return p
 }
 
@@ -201,7 +199,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		return nil, nil
 	}
 
-	perceived := p.consensus.PerceivedBlock()
+	perceived := p.Consensus.PerceivedBlock()
 
 	// Determine requested RPC type from the first payload (if any).
 	var requestedRPCType domain.RPCType
@@ -210,7 +208,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	}
 
 	// Block height filter factory (parameterised by sync allowance multiplier).
-	getHeight := qos.HeightGetter(p.store, func(ep cosmosEndpoint) uint64 { return ep.BlockHeight }, p.consensus.Projection())
+	getHeight := qos.HeightGetter(p.store, func(ep cosmosEndpoint) uint64 { return ep.BlockHeight }, p.Consensus.Projection())
 
 	makeBlockFilter := func(allowance uint64) qos.FilterFunc {
 		return qos.BlockHeightFilter(getHeight, qos.MinAllowedHeight(perceived, allowance))
@@ -236,8 +234,8 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		}
 	}
 
-	baseFilters := []qos.FilterFunc{makeBlockFilter(p.syncAllowance.Load())}
-	relaxedFilters := []qos.FilterFunc{makeBlockFilter(p.syncAllowance.Load() * 2)}
+	baseFilters := []qos.FilterFunc{makeBlockFilter(p.SyncAllowance())}
+	relaxedFilters := []qos.FilterFunc{makeBlockFilter(p.SyncAllowance() * 2)}
 	nonBlockFilters := []qos.FilterFunc{}
 	if rpcTypeFilter != nil {
 		baseFilters = append(baseFilters, rpcTypeFilter)
@@ -304,20 +302,7 @@ func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) 
 	p.store.ObserveHeight(endpoint, func(ep *cosmosEndpoint) {
 		ep.BlockHeight = height
 	})
-	p.consensus.AddObservation(endpoint, height)
-}
-
-// EndpointHeights reports the latest height each endpoint supplied
-// (qos.EndpointHeightLister).
-func (p *Plugin) EndpointHeights() []qos.EndpointHeight { return p.consensus.EndpointHeights() }
-
-// SetExternalFloor takes a trusted outside height as the floor the perceived
-// head may not fall below (qos.ExternalFloorSetter).
-func (p *Plugin) SetExternalFloor(height uint64) { p.consensus.SetExternalFloor(height) }
-
-// PerceivedBlockHeight returns the current consensus-derived perceived block height.
-func (p *Plugin) PerceivedBlockHeight() uint64 {
-	return p.consensus.PerceivedBlock()
+	p.Consensus.AddObservation(endpoint, height)
 }
 
 // StartSync starts background goroutines for the plugin (stale endpoint sweeping).
@@ -411,7 +396,7 @@ func (p *Plugin) HealthChecks() []qos.HealthCheck {
 // more of first attempts on several Cosmos chains, unmeasured.
 func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool) {
 	if p.evmHeights() && payload.RPCType() == domain.RPCTypeJSONRPC {
-		if lag, stale, ok := evm.HeadLag(payload, response, at, p.consensus); ok {
+		if lag, stale, ok := evm.HeadLag(payload, response, at, p.Consensus); ok {
 			return lag, stale, ok
 		}
 	}
@@ -419,23 +404,10 @@ func (p *Plugin) HeadLag(payload domain.Payload, response []byte, at time.Time) 
 	if !ok {
 		return 0, false, false
 	}
-	return p.consensus.StateLag(ts, at)
+	return p.Consensus.StateLag(ts, at)
 }
 
 var _ qos.HeadLagReader = (*Plugin)(nil)
-
-// --- qos.ChainViewer --- //
-
-// ChainView reports what this service currently believes about its chain, for
-// the metrics exporter. Delegates to the consensus that owns the observations.
-func (p *Plugin) ChainView() qos.ChainView { return p.consensus.ChainView() }
-
-// LastHeightObservation reports when any of these endpoints last supplied a
-// block height, so the executor can tell whether its height probe would learn
-// anything the plugin does not already know.
-func (p *Plugin) LastHeightObservation(endpoints domain.EndpointAddrList) (time.Time, bool) {
-	return p.consensus.LastHeightObservation(endpoints)
-}
 
 // --- qos.DataExtractor --- //
 
@@ -532,17 +504,10 @@ func (p *Plugin) assertChainID(endpoint domain.EndpointAddr, reported string) er
 // and the next health-check cycle and the next relays repopulate both from
 // scratch.
 func (p *Plugin) ResetState() {
-	p.consensus.Reset()
+	p.Consensus.Reset()
 	p.store.Clear()
 	p.pruned.reset()
 }
-
-// SyncAllowance implements qos.SyncAllowanceTuner.
-func (p *Plugin) SyncAllowance() uint64 { return p.syncAllowance.Load() }
-
-// SetSyncAllowance implements qos.SyncAllowanceTuner: the tuning knob
-// qos.sync_allowance, per service, without a restart.
-func (p *Plugin) SetSyncAllowance(blocks uint64) { p.syncAllowance.Store(blocks) }
 
 // evmHeights reports whether this chain's EVM face reports the Cosmos height.
 func (p *Plugin) evmHeights() bool { return p.evmHeight != nil && p.evmHeight() }
@@ -550,8 +515,7 @@ func (p *Plugin) evmHeights() bool { return p.evmHeight != nil && p.evmHeight() 
 // AllStale reports whether every endpoint in eps is known to sit below the
 // relaxed height bound (qos.StaleChecker).
 func (p *Plugin) AllStale(eps domain.EndpointAddrList) bool {
-	getHeight := qos.HeightGetter(p.store, func(ep cosmosEndpoint) uint64 { return ep.BlockHeight }, p.consensus.Projection())
-	return qos.AllStale(eps, getHeight, qos.MinAllowedHeight(p.consensus.PerceivedBlock(), p.syncAllowance.Load()*2))
+	return p.AllStaleBy(eps, qos.HeightGetter(p.store, func(ep cosmosEndpoint) uint64 { return ep.BlockHeight }, p.Consensus.Projection()))
 }
 
 var _ qos.StaleChecker = (*Plugin)(nil)
