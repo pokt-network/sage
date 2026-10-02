@@ -459,7 +459,7 @@ func diffConfig(old, next *config.Config) configDiff {
 
 		case "Concurrency":
 			// Both read by the batch middleware per request.
-			d.applyLeaves("concurrency_config", old.Concurrency, next.Concurrency)
+			d.diffLeavesExcept("concurrency_config", old.Concurrency, next.Concurrency, d.applyDefault)
 
 		case "Router":
 			// The body caps are read per request; the rest configure the
@@ -476,7 +476,7 @@ func diffConfig(old, next *config.Config) configDiff {
 			// auth_token are the listener SAGE is already serving on, while
 			// max_drain is a ceiling read once at wire time. An operator
 			// reading "admin_config" would not know which of them they moved.
-			d.diffLeaves("admin_config", old.Admin, next.Admin)
+			d.diffLeavesExcept("admin_config", old.Admin, next.Admin, d.restart)
 
 		default:
 			if !reflect.DeepEqual(oldValue.Field(i).Interface(), nextValue.Field(i).Interface()) {
@@ -511,7 +511,13 @@ func (d *configDiff) diffGateway(old, next config.GatewayConfig) {
 				d.applyDefault("gateway_config.retry_config")
 			}
 		case "Defaults":
-			d.diffDefaults("gateway_config.defaults", old.Defaults, next.Defaults)
+			// Leaf granularity, because the fields do not share a fate:
+			// retry_config and timeout_config are resolved per request by the
+			// closures, while reputation_config under defaults is read by
+			// nothing — reputation is configured from
+			// gateway_config.reputation_config. Reporting the block as applied
+			// would be a claim about a field nothing reads.
+			d.diffLeavesExcept("gateway_config.defaults", old.Defaults, next.Defaults, d.applyDefault, "Retry", "Timeout")
 		case "Reputation":
 			// Not InitialScore or KeyGranularity: Retune cannot take them (see
 			// reputation.serviceImpl.Retune). Not the three keys nothing reads
@@ -554,7 +560,8 @@ func (d *configDiff) diffUnified(old, next config.UnifiedServicesConfig) {
 
 		switch field.Name {
 		case "Defaults":
-			d.diffDefaults("gateway_config.unified_services.defaults", old.Defaults, next.Defaults)
+			// Same seams as gateway_config.defaults.
+			d.diffLeavesExcept("gateway_config.unified_services.defaults", old.Defaults, next.Defaults, d.applyDefault, "Retry", "Timeout")
 		case "Services":
 			d.diffServices("gateway_config.unified_services.services", old.Services, next.Services)
 		default:
@@ -590,7 +597,12 @@ func (d *configDiff) diffServices(prefix string, old, next []config.ServiceConfi
 			d.restart(prefix)
 			continue
 		}
-		d.diffService(fmt.Sprintf("%s[%s]", prefix, id), before, nextByID[id])
+		// retry_config and timeout_config are resolved per request by the
+		// same closures the gateway defaults feed. Everything else — the QoS
+		// type, the chain-id assertion, the sync allowance, the external
+		// block sources — is compiled into a plugin or a poller at wire time.
+		// ID is the key the two entries were matched on, so it cannot differ.
+		d.diffLeavesExcept(fmt.Sprintf("%s[%s]", prefix, id), before, nextByID[id], d.applyDefault, "Retry", "Timeout")
 	}
 	for id := range oldByID {
 		if _, still := nextByID[id]; !still {
@@ -612,87 +624,12 @@ func servicesByID(services []config.ServiceConfig) map[string]config.ServiceConf
 	return out
 }
 
-// diffService compares one service's settings.
-//
-// retry_config and timeout_config are resolved per request by the same
-// closures the gateway defaults feed, so they land on the defaults seam.
-// Everything else — the QoS type, the chain-id assertion, the sync allowance,
-// the external block sources — is compiled into a plugin or a poller at wire
-// time and needs the process rebuilt.
-func (d *configDiff) diffService(prefix string, old, next config.ServiceConfig) {
-	oldValue := reflect.ValueOf(old)
-	nextValue := reflect.ValueOf(next)
-	typ := oldValue.Type()
-
-	for i := range typ.NumField() {
-		field := typ.Field(i)
-		differs := !reflect.DeepEqual(oldValue.Field(i).Interface(), nextValue.Field(i).Interface())
-
-		switch field.Name {
-		case "ID":
-			// The key the two entries were matched on; it cannot differ.
-		case "Retry", "Timeout":
-			if differs {
-				d.applyDefault(prefix + "." + yamlKey(field))
-			}
-		default:
-			if differs {
-				d.restart(prefix + "." + yamlKey(field))
-			}
-		}
-	}
-}
-
-// diffDefaults walks a ServiceDefaults block.
-//
-// Not compared whole, because its three fields do not share a fate:
-// retry_config and timeout_config are resolved per request by the closures,
-// while reputation_config sitting under defaults is read by nothing at all —
-// reputation is configured from gateway_config.reputation_config. Reporting
-// the block as applied would be a claim about a field nothing reads.
-func (d *configDiff) diffDefaults(prefix string, old, next config.ServiceDefaults) {
-	oldValue := reflect.ValueOf(old)
-	nextValue := reflect.ValueOf(next)
-	typ := oldValue.Type()
-
-	for i := range typ.NumField() {
-		field := typ.Field(i)
-		if reflect.DeepEqual(oldValue.Field(i).Interface(), nextValue.Field(i).Interface()) {
-			continue
-		}
-		switch field.Name {
-		case "Retry", "Timeout":
-			d.applyDefault(prefix + "." + yamlKey(field))
-		default:
-			d.restart(prefix + "." + yamlKey(field))
-		}
-	}
-}
-
-// diffLeaves reports every differing field of a struct that has no seam at
-// all, one key path per field.
-func (d *configDiff) diffLeaves(prefix string, old, next any) {
-	oldValue := reflect.ValueOf(old)
-	nextValue := reflect.ValueOf(next)
-	typ := oldValue.Type()
-
-	for i := range typ.NumField() {
-		if !reflect.DeepEqual(oldValue.Field(i).Interface(), nextValue.Field(i).Interface()) {
-			d.restart(prefix + "." + yamlKey(typ.Field(i)))
-		}
-	}
-}
-
-// applyLeaves records every differing field of a struct read per request from
-// the config snapshot, one key path per field.
-func (d *configDiff) applyLeaves(prefix string, old, next any) {
-	d.diffLeavesExcept(prefix, old, next, d.applyDefault)
-}
-
 // diffLeavesExcept reports the differing fields of a struct one key path per
 // field: the fields named in seamed go to apply, and every other field needs
 // a restart. Listing the seamed fields rather than the restart ones keeps the
-// fail-safe of diffConfig — a field added later lands in needs_restart.
+// fail-safe of diffConfig — a field added later lands in needs_restart. With
+// no seamed fields, every differing field goes to apply (pass d.restart to
+// report them all as needing a restart).
 func (d *configDiff) diffLeavesExcept(prefix string, old, next any, apply func(key string), seamed ...string) {
 	oldValue := reflect.ValueOf(old)
 	nextValue := reflect.ValueOf(next)
