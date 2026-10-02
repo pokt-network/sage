@@ -22,8 +22,8 @@ func TestIsOverServiced(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isOverServiced([]byte(tc.body)); got != tc.want {
-				t.Fatalf("isOverServiced(%q) = %v, want %v", tc.body, got, tc.want)
+			if got := IsOverServiced([]byte(tc.body)); got != tc.want {
+				t.Fatalf("IsOverServiced(%q) = %v, want %v", tc.body, got, tc.want)
 			}
 		})
 	}

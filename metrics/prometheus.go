@@ -62,6 +62,7 @@ type Recorder struct {
 	circuitBreakerOutcome  *prometheus.CounterVec
 	supplierBlacklists     *prometheus.CounterVec
 	relayMinerErrors       *prometheus.CounterVec
+	overServedExclusions   *prometheus.CounterVec
 	oversizedResponses     *prometheus.CounterVec
 	responseBytes          *prometheus.HistogramVec
 	batchPayloads          *prometheus.HistogramVec
@@ -237,6 +238,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Help:      "Total supplier blacklist events from relay response validation, by service and reason.",
 			},
 			[]string{"service_id", "reason"},
+		),
+		overServedExclusions: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "over_served_exclusions_total",
+				Help:      "Suppliers excluded for the rest of a session after refusing a relay for over-servicing (the application's relay allocation for that supplier and session is spent: the poktroll relay miner's relayer_proxy code 7, the HA relay miner's 429 \"session relay limit reached\"), by service. One count per supplier and session. The supplier is not penalized and serves again in the next session; other suppliers behind the same URL keep serving.",
+			},
+			[]string{"service_id"},
 		),
 		relayMinerErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -539,6 +548,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.circuitBreakerOutcome,
 		r.supplierBlacklists,
 		r.relayMinerErrors,
+		r.overServedExclusions,
 		r.oversizedResponses,
 		r.responseBytes,
 		r.batchPayloads,
@@ -836,6 +846,12 @@ func (r *Recorder) RecordCircuitBreakerOutcome(serviceID domain.ServiceID, domai
 // network, so it needs no bounding.
 func (r *Recorder) RecordSupplierBlacklist(serviceID domain.ServiceID, reason string) {
 	r.supplierBlacklists.WithLabelValues(r.services.serviceValue(serviceID), reason).Inc()
+}
+
+// RecordOverServedExclusion counts one supplier excluded for the rest of a
+// session after an over-servicing refusal.
+func (r *Recorder) RecordOverServedExclusion(serviceID domain.ServiceID) {
+	r.overServedExclusions.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // RecordRelayMinerError increments the counter of relay responses that carried

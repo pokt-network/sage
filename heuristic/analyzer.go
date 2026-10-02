@@ -25,7 +25,7 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 	// (HA relay-miner), and a 429 would otherwise be classified as a penalizable
 	// rate limit. The supplier correctly enforced its per-session allocation —
 	// do not penalize or circuit-break it.
-	if isOverServiced(response) {
+	if IsOverServiced(response) {
 		return overServicedResult()
 	}
 

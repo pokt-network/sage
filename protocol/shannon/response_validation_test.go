@@ -22,6 +22,7 @@ type recordingMetrics struct {
 	minerErrs  []string
 	oversized  int
 	sizes      []int
+	overServed int
 }
 
 func (r *recordingMetrics) RecordResponseSize(_ domain.ServiceID, bytes int) {
@@ -53,6 +54,12 @@ func (r *recordingMetrics) RecordRelayMinerError(_ domain.ServiceID, codespace s
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.minerErrs = append(r.minerErrs, codespace)
+}
+
+func (r *recordingMetrics) RecordOverServedExclusion(domain.ServiceID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.overServed++
 }
 
 func (r *recordingMetrics) snapshot() ([]string, []string) {

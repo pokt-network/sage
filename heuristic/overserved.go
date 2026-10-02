@@ -21,9 +21,9 @@ var overServedPatterns = []string{
 	"claimable portion fully consumed",
 }
 
-// isOverServiced reports whether the response body carries an over-servicing
+// IsOverServiced reports whether the response body carries an over-servicing
 // rejection signal. Scans only the first 2KB, consistent with matchIndicator.
-func isOverServiced(body []byte) bool {
+func IsOverServiced(body []byte) bool {
 	if len(body) == 0 {
 		return false
 	}
@@ -49,4 +49,11 @@ func overServicedResult() AnalysisResult {
 		Reason:             "over_serviced",
 		Details:            "supplier rejected: per-session relay allocation consumed (protocol-correct)",
 	}
+}
+
+// MinerOverServiced reports whether a relay miner's own error report
+// (RelayMinerError) is an over-servicing refusal: the poktroll miner's
+// relayer_proxy code 7, or either miner's wording.
+func MinerOverServiced(codespace string, code uint32, message string) bool {
+	return (codespace == "relayer_proxy" && code == 7) || IsOverServiced([]byte(message))
 }

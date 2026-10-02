@@ -117,7 +117,7 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 	if errors.As(err, &upstream) {
 		// An HA relay miner refuses over-servicing with a 429 whose body says
 		// so; read before the status, which alone cannot tell it from busy.
-		if isOverServiced(upstream.Body) {
+		if IsOverServiced(upstream.Body) {
 			return overServicedResult()
 		}
 		switch {
@@ -238,7 +238,7 @@ var minerSessionCodes = map[string]map[uint32]bool{
 // the gateway's choice of session, also scored nothing; anything else is the
 // supplier's layer failing, minor like its 5xx (upstream_5xx).
 func analyzeMinerError(m *domain.MinerError) AnalysisResult {
-	if (m.Codespace == "relayer_proxy" && m.Code == 7) || isOverServiced([]byte(m.Message)) {
+	if MinerOverServiced(m.Codespace, m.Code, m.Message) {
 		return overServicedResult()
 	}
 	if minerSessionCodes[m.Codespace][m.Code] {

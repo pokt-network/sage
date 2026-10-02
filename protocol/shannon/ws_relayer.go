@@ -437,6 +437,12 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	tried := map[domain.EndpointAddr]bool{endpointAddr: true}
 	bridgeOpts = append(bridgeOpts, websockets.WithEndpointLost(func(ctx context.Context, cause error) (*websocket.Conn, websockets.MessageProcessor, [][]byte, error) {
 		lost := *current.Load()
+		// The HA miner closes with 4002 when the supplier's allocation for
+		// the session is spent: it is out for the rest of the session, here
+		// and on HTTP (overServed).
+		if ce := (*websocket.CloseError)(nil); errors.As(cause, &ce) && ce.Code == closeMinerStakeLimit {
+			r.deps.Protocol.markOverServed(serviceID, lost.Supplier(), sessionEnd.Load())
+		}
 		if lossIsSuppliers(cause) {
 			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, lost, domain.RPCTypeWebSocket,
 				reputation.NewSignal(reputation.SignalMajorError, "ws_endpoint_lost:"+cause.Error(), 0))

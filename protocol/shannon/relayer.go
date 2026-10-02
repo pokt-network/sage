@@ -21,6 +21,7 @@ import (
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/drain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/protocol"
 )
 
@@ -53,10 +54,13 @@ type relaySignerIface interface {
 // See apps.go for app management (pickApp, getApp, buildOwnedApps) and transport.go
 // for HTTP transport details.
 type Protocol struct {
-	fullNode    fullNodeIface
-	sessions    *sessionManager
-	signer      relaySignerIface
-	bl          *blacklist
+	fullNode fullNodeIface
+	sessions *sessionManager
+	signer   relaySignerIface
+	bl       *blacklist
+	// overServed excludes a supplier for the rest of a session it refused
+	// for over-servicing (overserved.go).
+	overServed  *overServed
 	gatewayAddr string
 	// ownedApps maps serviceID → list of app addresses for centralized gateway mode.
 	ownedApps map[domain.ServiceID][]string
@@ -145,6 +149,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 		sessions:         sm,
 		signer:           signer,
 		bl:               newBlacklist(),
+		overServed:       newOverServed(),
 		gatewayAddr:      cfg.Gateway.GatewayAddress,
 		ownedApps:        ownedApps,
 		httpClient:       httpClient,
@@ -440,8 +445,12 @@ func (p *Protocol) sendRelay(
 				"endpoint_addr", endpointAddr,
 				"http_status", httpStatus,
 			)
+			body := bytes.Clone(respBz[:min(len(respBz), domain.UpstreamBodyMax)])
+			if heuristic.IsOverServiced(body) {
+				p.markOverServed(serviceID, ep.Supplier(), session.Header.SessionEndBlockHeight)
+			}
 			return nil, domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable",
-				&domain.UpstreamStatusError{Status: httpStatus, Body: bytes.Clone(respBz[:min(len(respBz), domain.UpstreamBodyMax)])}, true)
+				&domain.UpstreamStatusError{Status: httpStatus, Body: body}, true)
 		}
 	}
 
@@ -470,6 +479,9 @@ func (p *Protocol) sendRelay(
 	// and blacklist the supplier for 15 minutes: on mainnet (2026-10-02)
 	// 41,110 times a day, one blacklisting per report.
 	if minerErr := unsignedMinerError(relayResp, err); minerErr != nil {
+		if heuristic.MinerOverServiced(minerErr.Codespace, minerErr.Code, minerErr.Message) {
+			p.markOverServed(serviceID, ep.Supplier(), session.Header.SessionEndBlockHeight)
+		}
 		return nil, domain.NewRelayError(domain.ErrEndpoint, "relay miner refused the relay", minerErr, true)
 	}
 	if err != nil {
@@ -609,13 +621,13 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 	}
 
 	blockedDomains := p.blockedDomains.Load()
-	var blacklisted, blocked, drained, supplierBlocked, policyRejected int
+	var blacklisted, blocked, drained, supplierBlocked, policyRejected, overServedOut int
 	// collect is one pass over the session for lookupType. skipStakers leaves
 	// out the suppliers that staked the requested type, for the fallback pool
 	// built when those are all unusable: their own URL is what endpointURL
 	// would dial, and it is the one that failed.
 	collect := func(lookupType domain.RPCType, skipStakers bool) (result, benched domain.EndpointAddrList) {
-		blacklisted, blocked, drained, supplierBlocked, policyRejected = 0, 0, 0, 0, 0
+		blacklisted, blocked, drained, supplierBlocked, policyRejected, overServedOut = 0, 0, 0, 0, 0, 0
 		result = make(domain.EndpointAddrList, 0, len(endpoints))
 		for addr, ep := range endpoints {
 			url := ""
@@ -651,6 +663,11 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 			}
 			if p.endpointPolicy.rejects(url) {
 				policyRejected++
+				continue
+			}
+			if p.overServed != nil && ep.Session() != nil && ep.Session().Header != nil &&
+				p.overServed.excluded(serviceID, ep.Supplier(), ep.Session().Header.SessionEndBlockHeight) {
+				overServedOut++
 				continue
 			}
 			if p.bl.IsBlacklisted(serviceID, ep.Supplier()) {
@@ -706,6 +723,7 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 			"drained", drained,
 			"blocked_supplier", supplierBlocked,
 			"policy_rejected", policyRejected,
+			"over_served", overServedOut,
 		)
 	}
 
@@ -746,4 +764,15 @@ func (p *Protocol) EndpointURLFor(endpoint domain.EndpointAddr, rpcType domain.R
 		return "", false
 	}
 	return url, true
+}
+
+// markOverServed excludes supplier from serviceID for the rest of the
+// session ending at sessionEnd (overServed) and counts each new exclusion.
+func (p *Protocol) markOverServed(serviceID domain.ServiceID, supplier string, sessionEnd int64) {
+	if p.overServed == nil {
+		return
+	}
+	if p.overServed.mark(serviceID, supplier, sessionEnd) {
+		p.supplierMetricsRecorder().RecordOverServedExclusion(serviceID)
+	}
 }

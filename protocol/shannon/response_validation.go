@@ -127,6 +127,7 @@ func validationErrorKind(err error) domain.ErrorKind {
 type supplierMetrics interface {
 	RecordSupplierBlacklist(serviceID domain.ServiceID, reason string)
 	RecordRelayMinerError(serviceID domain.ServiceID, codespace string)
+	RecordOverServedExclusion(serviceID domain.ServiceID)
 	RecordOversizedResponse(serviceID domain.ServiceID)
 	RecordResponseSize(serviceID domain.ServiceID, bytes int)
 }
@@ -137,6 +138,7 @@ type noopSupplierMetrics struct{}
 
 func (noopSupplierMetrics) RecordSupplierBlacklist(domain.ServiceID, string) {}
 func (noopSupplierMetrics) RecordRelayMinerError(domain.ServiceID, string)   {}
+func (noopSupplierMetrics) RecordOverServedExclusion(domain.ServiceID)       {}
 func (noopSupplierMetrics) RecordOversizedResponse(domain.ServiceID)         {}
 func (noopSupplierMetrics) RecordResponseSize(domain.ServiceID, int)         {}
 
