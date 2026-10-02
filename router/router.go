@@ -756,12 +756,27 @@ func requestShape(ctx *relay.Context) []any {
 		if len(path) > shapePathMax {
 			path = path[:shapePathMax]
 		}
-		attrs = append(attrs, "method", p.Method(), "http_method", p.HTTPMethod(), "path", path, "payload_rpc_type", p.RPCType())
+		attrs = append(attrs, "method", p.Method(), "http_method", p.HTTPMethod(), "path", path, "payload_rpc_type", p.RPCType(), "body_kind", bodyKind(p.Bytes()))
 	}
 	if ctx.HeuristicResult != nil {
 		attrs = append(attrs, "last_verdict", ctx.HeuristicResult.Reason)
 	}
 	return attrs
+}
+
+// bodyKind names a request body's shape without logging it: a JSON array (a
+// batch), an object, nothing, or anything else.
+func bodyKind(body []byte) string {
+	b := bytes.TrimSpace(body)
+	switch {
+	case len(b) == 0:
+		return "empty"
+	case b[0] == '[':
+		return "array"
+	case b[0] == '{':
+		return "object"
+	}
+	return "other"
 }
 
 // shapePathMax bounds the path requestShape logs.

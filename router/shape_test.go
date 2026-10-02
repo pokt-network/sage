@@ -26,3 +26,11 @@ func TestRequestShape(t *testing.T) {
 		t.Error("an empty context still logs its rpc_type fields")
 	}
 }
+
+func TestBodyKind(t *testing.T) {
+	for body, want := range map[string]string{"": "empty", "  ": "empty", ` [{"method":"status"}]`: "array", `{"a":1}`: "object", "x=1": "other"} {
+		if got := bodyKind([]byte(body)); got != want {
+			t.Errorf("bodyKind(%q) = %s, want %s", body, got, want)
+		}
+	}
+}
