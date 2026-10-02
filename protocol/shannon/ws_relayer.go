@@ -118,6 +118,7 @@ type WSMetrics interface {
 	SupplierHeadMismatch(serviceID domain.ServiceID, operator, owner string)
 	Probed(serviceID domain.ServiceID, result string)
 	ShareCap(serviceID domain.ServiceID, outcome string)
+	SessionEndAction(serviceID domain.ServiceID, action string, blocksPast int64)
 }
 
 // WSRelayer is the only public entry point for opening WebSocket bridges in
@@ -509,7 +510,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 
 	// Watch for session expiry in a goroutine; trigger graceful close.
 	safego.Go(logger, "websocket.session.expiry", func() {
-		r.watchSessionExpiry(&sessionEnd, &currentProc, bridge, logger, r.nextSession(serviceID))
+		r.watchSessionExpiry(serviceID, &sessionEnd, &currentProc, bridge, logger, r.nextSession(serviceID))
 	})
 
 	// Drain frame events off the bridge loop until the bridge closes.
@@ -620,6 +621,21 @@ func sessionEndAction(height, end, actedOn, graceEnd int64, canRebind, nextReady
 	}
 }
 
+// sessionEndLabel names a non-wait action for the session-end metric by what
+// forced it. Past grace a rebind is taken whatever the session manager holds,
+// so it is grace_elapsed even when the lookup said ready (a failed lookup
+// reports ready, and that case is the one signing against a retired session).
+func sessionEndLabel(action sessionEndActionKind, nextReady, pastGrace bool) string {
+	switch {
+	case action == sessionClose:
+		return "close"
+	case pastGrace || !nextReady:
+		return "rebind_grace_elapsed"
+	default:
+		return "rebind_next_ready"
+	}
+}
+
 // nextSession reports, for a bridge of serviceID whose session ends at end,
 // whether the session manager already holds a later session, and the last
 // height the ended one is honoured at. Asking also starts the background
@@ -661,6 +677,7 @@ func (r *WSRelayer) nextSession(serviceID domain.ServiceID) func(end int64) (boo
 // The goroutine exits when the bridge closes for any reason, so it cannot
 // outlive its connection.
 func (r *WSRelayer) watchSessionExpiry(
+	serviceID domain.ServiceID,
 	sessionEnd *atomic.Int64,
 	current *atomic.Pointer[wsMessageProcessor],
 	bridge *websockets.Bridge,
@@ -697,6 +714,9 @@ func (r *WSRelayer) watchSessionExpiry(
 			action := sessionEndAction(height, end, actedOn, graceEnd, bridge.CanRebind(), ready)
 			if action == sessionWait {
 				continue
+			}
+			if r.deps.Metrics != nil {
+				r.deps.Metrics.SessionEndAction(serviceID, sessionEndLabel(action, ready, height > graceEnd), height-end)
 			}
 			if action == sessionRebind {
 				actedOn = end

@@ -63,6 +63,7 @@ type Recorder struct {
 	supplierBlacklists     *prometheus.CounterVec
 	relayMinerErrors       *prometheus.CounterVec
 	overServedExclusions   *prometheus.CounterVec
+	sessionFetches         *prometheus.CounterVec
 	oversizedResponses     *prometheus.CounterVec
 	responseBytes          *prometheus.HistogramVec
 	batchPayloads          *prometheus.HistogramVec
@@ -254,6 +255,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Help:      "Total relay responses carrying a RelayMinerError, by service and miner error codespace.",
 			},
 			[]string{"service_id", "codespace"},
+		),
+		sessionFetches: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "session_fetches_total",
+				Help:      "Session fetches from the full node, one per coalesced GetSession, by service, path (background: during the grace period, off the request path; sync: past the grace period, a request waits on it; cold: nothing cached yet) and outcome (ok; error; same_session: the answer ends no later than the session already cached, so the next session is still not held). Steady sync fetches mean the background refresh never landed inside grace; same_session through grace is what keeps WebSocket rebinds waiting until grace has elapsed.",
+			},
+			[]string{"service_id", "path", "outcome"},
 		),
 		autoDrains: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -549,6 +558,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.supplierBlacklists,
 		r.relayMinerErrors,
 		r.overServedExclusions,
+		r.sessionFetches,
 		r.oversizedResponses,
 		r.responseBytes,
 		r.batchPayloads,
@@ -860,6 +870,12 @@ func (r *Recorder) RecordOverServedExclusion(serviceID domain.ServiceID) {
 // codespace is written by that miner, so it is bounded here — see boundedLabel.
 func (r *Recorder) RecordRelayMinerError(serviceID domain.ServiceID, codespace string) {
 	r.relayMinerErrors.WithLabelValues(r.services.serviceValue(serviceID), r.codespaces.value(codespace)).Inc()
+}
+
+// RecordSessionFetch counts one session fetch from the full node. path and
+// outcome come from closed sets in protocol/shannon.
+func (r *Recorder) RecordSessionFetch(serviceID domain.ServiceID, path, outcome string) {
+	r.sessionFetches.WithLabelValues(r.services.serviceValue(serviceID), path, outcome).Inc()
 }
 
 // RecordAutoDrain counts one auto-drain engine decision.

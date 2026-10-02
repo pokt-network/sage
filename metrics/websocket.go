@@ -57,6 +57,8 @@ type WebSocketMetrics struct {
 	headDelay             *prometheus.HistogramVec
 	headMismatch          *prometheus.CounterVec
 	shareCap              *prometheus.CounterVec
+	sessionEndActions     *prometheus.CounterVec
+	sessionEndBlocksPast  *prometheus.HistogramVec
 }
 
 // Caps for the supplier labels. Operators serving WebSocket number in the
@@ -75,7 +77,7 @@ func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
 	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
 		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes,
-		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap)
+		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast)
 	return m
 }
 
@@ -151,6 +153,23 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 				Help:      "WebSocket supplier placements (opens and rebinds) the ws_share_cap flag was asked about, by service and outcome: bound (it kept the connection off a party that would have held more than half the service's frames on this pod), clear (every vouched party was under), or open (it could not bind: fewer than two vouched fresh parties, no traffic yet, or no party under the cap with the connection added). Nothing is counted while the flag is off.",
 			},
 			[]string{"service_id", "outcome"},
+		),
+		sessionEndActions: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_session_end_actions_total",
+				Help:      "What a WebSocket bridge did once its session had ended, by service and action: rebind_next_ready (within grace, the next session was already held; a failed session lookup also reads as held), rebind_grace_elapsed (any rebind taken past the grace period, whether or not the next session was then held: it was taken on whatever the session manager returns), close (the bridge was closed: a rebind already taken for this session end, or no rebind left).",
+			},
+			[]string{"service_id", "action"},
+		),
+		sessionEndBlocksPast: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "websocket_session_end_blocks_past",
+				Help:      "How many blocks past its session's end height a WebSocket bridge acted on it, by service and action (as in sage_websocket_session_end_actions_total). Anything above the grace period is a bridge that signed relays for a session the chain no longer honours.",
+				Buckets:   []float64{0, 1, 2, 3, 5, 10, 11, 15, 20},
+			},
+			[]string{"service_id", "action"},
 		),
 		supplierConnections: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -250,6 +269,15 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 // Rejected counts an upgrade refused before a bridge existed.
 func (m *WebSocketMetrics) Rejected(serviceID domain.ServiceID, reason string) {
 	m.rejected.WithLabelValues(m.services.serviceValue(serviceID), reason).Inc()
+}
+
+// SessionEndAction counts one bridge's action on its ended session and how
+// many blocks past the end it was taken. action is a closed set from
+// protocol/shannon.
+func (m *WebSocketMetrics) SessionEndAction(serviceID domain.ServiceID, action string, blocksPast int64) {
+	sid := m.services.serviceValue(serviceID)
+	m.sessionEndActions.WithLabelValues(sid, action).Inc()
+	m.sessionEndBlocksPast.WithLabelValues(sid, action).Observe(float64(blocksPast))
 }
 
 // ForService returns the per-bridge websockets.Observer for one service.

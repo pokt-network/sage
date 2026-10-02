@@ -91,6 +91,10 @@ type sessionManager struct {
 	// an error, the repeats are debug (with the current message), recovery is
 	// info and clears the mark.
 	failing sync.Map // "serviceID:appAddr" → struct{}
+
+	// metrics holds a sessionMetrics once Protocol.SetSessionMetrics has
+	// run. Atomic because wiring happens after the poller has started.
+	metrics atomic.Value
 }
 
 // newSessionManager creates a session manager for the given services and full node.
@@ -266,6 +270,7 @@ func sessionCacheKey(serviceID, appAddr string) string {
 // end block height.
 func (sm *sessionManager) getSession(ctx context.Context, serviceID string, appAddr string) (*sessiontypes.Session, error) {
 	key := sessionCacheKey(serviceID, appAddr)
+	path := fetchCold
 
 	if cached, ok := sm.sessionCache.Load(key); ok {
 		session := cached.(*sessiontypes.Session)
@@ -298,10 +303,11 @@ func (sm *sessionManager) getSession(ctx context.Context, serviceID string, appA
 				"grace_end_height", graceEnd,
 				"current_height", currentHeight,
 			)
+			path = fetchSync
 		}
 	}
 
-	return sm.refreshSession(ctx, serviceID, appAddr)
+	return sm.refreshSession(ctx, serviceID, appAddr, path)
 }
 
 // scheduleBackgroundRefresh fetches the next session off the request path
@@ -315,7 +321,7 @@ func (sm *sessionManager) scheduleBackgroundRefresh(serviceID, appAddr string) {
 	}
 	safego.Go(sm.logger, "shannon.session.bg_refresh", func() {
 		defer sm.bgRefreshing.Delete(key)
-		if _, err := sm.refreshSession(context.Background(), serviceID, appAddr); err != nil {
+		if _, err := sm.refreshSession(context.Background(), serviceID, appAddr, fetchBackground); err != nil {
 			sm.logger.Debug("session background refresh failed",
 				"service_id", serviceID, "app_addr", appAddr, "error", err)
 		}
@@ -329,8 +335,10 @@ const sessionFetchTimeout = 15 * time.Second
 
 // refreshSession fetches a fresh session from the full node and updates the
 // cache, coalescing concurrent callers for the same (service, app) so the full
-// node sees one GetSession per boundary rather than one per relay.
-func (sm *sessionManager) refreshSession(ctx context.Context, serviceID string, appAddr string) (*sessiontypes.Session, error) {
+// node sees one GetSession per boundary rather than one per relay. path names
+// why it was asked for, for the fetch metric; a coalesced fetch is counted
+// once, under the path of the caller that ran it.
+func (sm *sessionManager) refreshSession(ctx context.Context, serviceID, appAddr, path string) (*sessiontypes.Session, error) {
 	key := sessionCacheKey(serviceID, appAddr)
 	v, err, _ := sm.refreshGroup.Do(key, func() (interface{}, error) {
 		// A relay that reaches its deadline while waiting must not cancel the
@@ -338,7 +346,7 @@ func (sm *sessionManager) refreshSession(ctx context.Context, serviceID string, 
 		// context. The winner populates the cache for everyone.
 		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionFetchTimeout)
 		defer cancel()
-		return sm.doRefreshSession(fetchCtx, serviceID, appAddr)
+		return sm.doRefreshSession(fetchCtx, serviceID, appAddr, path)
 	})
 	if err != nil {
 		return nil, err
@@ -348,10 +356,11 @@ func (sm *sessionManager) refreshSession(ctx context.Context, serviceID string, 
 
 // doRefreshSession is the uncoalesced fetch-and-store, run once per boundary
 // under refreshGroup.
-func (sm *sessionManager) doRefreshSession(ctx context.Context, serviceID string, appAddr string) (*sessiontypes.Session, error) {
+func (sm *sessionManager) doRefreshSession(ctx context.Context, serviceID, appAddr, path string) (*sessiontypes.Session, error) {
 	session, err := sm.fullNode.GetSession(ctx, serviceID, appAddr)
 	key := sessionCacheKey(serviceID, appAddr)
 	if err != nil {
+		sm.recordFetch(serviceID, path, fetchError)
 		if _, seen := sm.failing.LoadOrStore(key, struct{}{}); seen {
 			sm.logger.Debug("getSession: full node returned error (still failing)",
 				"service_id", serviceID, "app_addr", appAddr, "error", err)
@@ -377,7 +386,14 @@ func (sm *sessionManager) doRefreshSession(ctx context.Context, serviceID string
 		"supplier_count", len(session.Suppliers),
 	)
 
-	sm.sessionCache.Store(sessionCacheKey(serviceID, appAddr), session)
+	outcome := fetchOK
+	if prev, ok := sm.sessionCache.Load(key); ok &&
+		session.Header.SessionEndBlockHeight <= prev.(*sessiontypes.Session).Header.SessionEndBlockHeight {
+		outcome = fetchSameSession
+	}
+	sm.recordFetch(serviceID, path, outcome)
+
+	sm.sessionCache.Store(key, session)
 	return session, nil
 }
 

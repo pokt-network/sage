@@ -468,3 +468,76 @@ func TestIsReady_RecordsTheVerdictForTheGauge(t *testing.T) {
 		t.Error("the verdict must flip back when the full node answers again")
 	}
 }
+
+type spySessionMetrics struct {
+	mu      sync.Mutex
+	fetches []string // path|outcome
+}
+
+func (s *spySessionMetrics) RecordSessionFetch(_ domain.ServiceID, path, outcome string) {
+	s.mu.Lock()
+	s.fetches = append(s.fetches, path+"|"+outcome)
+	s.mu.Unlock()
+}
+
+func (s *spySessionMetrics) last() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.fetches) == 0 {
+		return ""
+	}
+	return s.fetches[len(s.fetches)-1]
+}
+
+// Each fetch is counted by why it ran and what it brought back. same_session
+// is the one that matters at a boundary: a background refresh that answers
+// with the session already cached leaves WebSocket bridges waiting out grace.
+func TestGetSession_CountsFetchesByPathAndOutcome(t *testing.T) {
+	session := func(end int64) *sessiontypes.Session {
+		return &sessiontypes.Session{SessionId: fmt.Sprint(end),
+			Header: &sessiontypes.SessionHeader{ServiceId: "eth", SessionEndBlockHeight: end}}
+	}
+	fn := &stubFullNode{session: session(100)}
+	sm := newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+	sm.SetGraceBlocks(10)
+	spy := &spySessionMetrics{}
+	(&Protocol{sessions: sm}).SetSessionMetrics(spy)
+	get := func() { _, _ = sm.getSession(context.Background(), "eth", "pokt1app") }
+
+	sm.latestBlockHeight.Store(95)
+	get()
+	if got := spy.last(); got != "cold|ok" {
+		t.Fatalf("first fetch = %q, want cold|ok", got)
+	}
+
+	// In grace, the full node still answers with the ended session.
+	sm.latestBlockHeight.Store(105)
+	get()
+	deadline := time.Now().Add(2 * time.Second)
+	for spy.last() != "background|same_session" {
+		if time.Now().After(deadline) {
+			t.Fatalf("background fetch = %q, want background|same_session", spy.last())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for { // the refresh marker clears after the record; wait so the next get does not race it
+		if _, busy := sm.bgRefreshing.Load(sessionCacheKey("eth", "pokt1app")); !busy {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	sm.latestBlockHeight.Store(111)
+	fn.session = session(200)
+	get()
+	if got := spy.last(); got != "sync|ok" {
+		t.Fatalf("past grace = %q, want sync|ok", got)
+	}
+
+	sm.latestBlockHeight.Store(211)
+	fn.sessErr = errors.New("full node down")
+	get()
+	if got := spy.last(); got != "sync|error" {
+		t.Fatalf("failed fetch = %q, want sync|error", got)
+	}
+}

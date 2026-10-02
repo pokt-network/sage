@@ -258,7 +258,7 @@ func startExpiryBridges(t *testing.T, r *WSRelayer, endHeight int64, procs *sync
 		end.Store(endHeight)
 		var cur atomic.Pointer[wsMessageProcessor]
 		cur.Store(proc)
-		go r.watchSessionExpiry(&end, &cur, bridge, newTestLogger(), nil)
+		go r.watchSessionExpiry("eth", &end, &cur, bridge, newTestLogger(), nil)
 		<-bridge.Done()
 	}))
 	t.Cleanup(gw.Close)
@@ -512,6 +512,13 @@ type spyWSMetrics struct {
 	shareCaps     []string
 	heads         []string // operator|lag|delayKnown
 	mismatches    []string // operator
+	sessionEnds   []string // action|blocksPast
+}
+
+func (s *spyWSMetrics) SessionEndAction(_ domain.ServiceID, action string, blocksPast int64) {
+	s.mu.Lock()
+	s.sessionEnds = append(s.sessionEnds, fmt.Sprintf("%s|%d", action, blocksPast))
+	s.mu.Unlock()
 }
 
 func (s *spyWSMetrics) SupplierHead(_ domain.ServiceID, operator, _ string, lag uint64, _ time.Duration, delayKnown bool) {
@@ -754,5 +761,76 @@ func TestLossIsSuppliers(t *testing.T) {
 		if got := lossIsSuppliers(tc.cause); got != tc.want {
 			t.Errorf("%v: %v, want %v", tc.cause, got, tc.want)
 		}
+	}
+}
+
+// The session-end metric tells a rebind onto a session the manager already
+// holds from one taken because grace ran out without it, and says how many
+// blocks past the end each was taken: the second kind, past grace, is a bridge
+// signing against a session the chain no longer honours.
+func TestWatchSessionExpiry_CountsSessionEndActions(t *testing.T) {
+	failRebind := websockets.WithEndpointLost(func(context.Context, error) (*websocket.Conn, websockets.MessageProcessor, [][]byte, error) {
+		return nil, nil, nil, errors.New("no supplier")
+	})
+	for _, tc := range []struct {
+		name   string
+		height int64
+		opts   []websockets.BridgeOption
+		next   func(int64) (bool, int64)
+		want   string
+	}{
+		{"next session held", 101, []websockets.BridgeOption{failRebind},
+			func(end int64) (bool, int64) { return true, end + 10 }, "rebind_next_ready|1"},
+		{"grace elapsed without it", 111, []websockets.BridgeOption{failRebind},
+			func(end int64) (bool, int64) { return false, end + 10 }, "rebind_grace_elapsed|11"},
+		{"past grace, lookup reported ready", 111, []websockets.BridgeOption{failRebind},
+			func(end int64) (bool, int64) { return true, end + 10 }, "rebind_grace_elapsed|11"},
+		{"no rebind possible", 100, nil, nil, "close|0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spy := &spyWSMetrics{}
+			r := NewWSRelayer(WSRelayerDeps{
+				Protocol: &Protocol{}, Reputation: &spyRepSvc{}, Observe: newDisabledQueue(),
+				Flags: featureflag.NewMemoryStore(nil), Logger: newTestLogger(), Metrics: spy,
+			})
+			height := tc.height
+			r.chainHeight = func() int64 { return height }
+			r.expiryCheck = 10 * time.Millisecond
+
+			supplier := newEchoSupplier(t)
+			supplierURL := "ws" + strings.TrimPrefix(supplier.URL, "http")
+			watched := make(chan struct{})
+			gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				defer close(watched)
+				proc := &wsMessageProcessor{}
+				proc.sessionActive.Store(true)
+				bridge, err := websockets.StartBridge(req.Context(), newTestLogger(), req, w, supplierURL, http.Header{}, proc, tc.opts...)
+				if err != nil {
+					return
+				}
+				var end atomic.Int64
+				end.Store(100)
+				var cur atomic.Pointer[wsMessageProcessor]
+				cur.Store(proc)
+				r.watchSessionExpiry("eth", &end, &cur, bridge, newTestLogger(), tc.next)
+			}))
+			defer gw.Close()
+
+			c, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(gw.URL, "http"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			select {
+			case <-watched:
+			case <-time.After(3 * time.Second):
+				t.Fatal("watcher never acted on the ended session")
+			}
+			spy.mu.Lock()
+			defer spy.mu.Unlock()
+			if len(spy.sessionEnds) != 1 || spy.sessionEnds[0] != tc.want {
+				t.Fatalf("session end actions = %v, want [%s]", spy.sessionEnds, tc.want)
+			}
+		})
 	}
 }

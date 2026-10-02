@@ -598,9 +598,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 
 	// Supplier blacklists and relay miner errors are recorded by the protocol
 	// itself: both are decided inside response validation, below the middleware
-	// chain that carries the recorder.
+	// chain that carries the recorder. Session fetches likewise happen in the
+	// session manager, which no relay context reaches.
 	if app.Protocol != nil {
 		app.Protocol.SetMetrics(recorder)
+		app.Protocol.SetSessionMetrics(recorder)
 	}
 
 	// The reputation pool-collapse guard serves a below-threshold endpoint when
