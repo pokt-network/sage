@@ -369,6 +369,7 @@ equivalent.
 | `enabled` | boolean | Turns the feed on. Off by default: trusting another instance's verdicts is a decision, not a default. |
 | `db` | integer | The Redis logical database the other instance publishes in (its redis_config.db), on this instance's redis_config server. It must differ from this instance's own db: reading its own stream as a peer would make the leader skip its own probes, so a block naming its own db is turned off with a startup warning rather than refused. |
 | `max_age` | duration | How long one of the other's results stands in for this instance's own check. Zero means the check's own interval, which is the age at which this instance would have probed anyway. |
+| `parties` | boolean | Also borrows the other instance's priced parties (its stale-share and trust penalties) as a floor: each party is charged the harsher of this instance's own penalty and the other's, on the other's clocks, and only where this instance's own stale_share and trust_penalty flags price it. For an instance with too little traffic to gather that evidence itself. Read on every reputation refresh. |
 
 #### `gateway_config.active_health_checks.local[]`
 

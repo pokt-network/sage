@@ -167,7 +167,9 @@ type serviceImpl struct {
 	// trustGate turns on the trust penalty per service; refusals counts each
 	// (service, party)'s refused_recent verdicts (trust.go).
 	trustGate atomic.Pointer[func(domain.ServiceID) bool]
-	refusals  *opTracker
+	// peerParties reads a peer instance's priced parties (peerparties.go).
+	peerParties atomic.Pointer[func(context.Context) (PartyPenalties, error)]
+	refusals    *opTracker
 	// ops is the per-operator evidence the chronic term actually reads: an
 	// identity that does not rotate with the session draw (operator.go,
 	// opstats.go). Persisted through Storage.
@@ -543,17 +545,24 @@ func (s *serviceImpl) refreshBaselines() {
 		prev = old.stale
 	}
 	v.stale = partyStale(s.heads.snapshot(now), gateOf(&s.staleGate), prev, now)
+	var prevTrust []PartyTrust
+	if old := s.chronic.Load(); old != nil {
+		prevTrust = old.trust
+	}
+	v.trust = partyTrust(v.stale, s.refusals.snapshot(now), prevTrust, now, gateOf(&s.staleGate))
+	if peer := s.readPeerParties(); len(peer.Stale)+len(peer.Trust) > 0 {
+		served := map[domain.ServiceID]bool{}
+		for _, ks := range keys {
+			served[ks.id.svc] = true
+		}
+		v.stale, v.trust = mergePeerParties(v.stale, v.trust, peer, func(svc domain.ServiceID) bool { return served[svc] }, gateOf(&s.staleGate), now)
+	}
 	v.stalePen = map[opID]float64{}
 	for _, p := range v.stale {
 		if p.Penalty < 0 {
 			v.stalePen[opID{svc: p.ServiceID, op: p.Party}] = p.Penalty
 		}
 	}
-	var prevTrust []PartyTrust
-	if old := s.chronic.Load(); old != nil {
-		prevTrust = old.trust
-	}
-	v.trust = partyTrust(v.stale, s.refusals.snapshot(now), prevTrust, now, gateOf(&s.staleGate))
 	v.trustPen = map[string]float64{}
 	for _, t := range v.trust {
 		if t.Penalty < 0 {

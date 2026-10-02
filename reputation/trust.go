@@ -57,7 +57,12 @@ type PartyTrust struct {
 	Penalty         float64
 	// until is when the penalty lapses without fresh evidence.
 	until time.Time
+	// peer marks a penalty borrowed from a peer instance (peerparties.go).
+	peer bool
 }
+
+// Peer reports whether the penalty is a peer instance's, borrowed as a floor.
+func (t PartyTrust) Peer() bool { return t.peer }
 
 // SetTrustPenalty turns on charging the trust penalty, per service, behind
 // gate. The evidence is computed either way. Call at wire time.

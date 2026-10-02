@@ -507,6 +507,14 @@ Two more corrections followed the same day, both from mainnet sei:
   they gather evidence. The holds that already exist bound what is adopted;
   the pod's own evidence takes over as it arrives.
 
+  An instance with too little traffic to gather that evidence at all can
+  borrow another's (`active_health_checks.peer_probe_stream.parties`): every
+  refresh reads the peer's stored parties and charges each the harsher of its
+  own penalty and the peer's, on the peer's clocks, only for services it
+  serves and only where its own flags price them. A borrowed stale-share
+  penalty is never trust evidence here. The penalty gauges carry
+  `source="peer"` for what is borrowed.
+
   Both party penalties now reach a key with no state yet. A party's hosts
   rotate in fresh every session and each used to start at the initial score,
   uncharged, until its first signal.

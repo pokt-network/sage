@@ -458,14 +458,14 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// The timeline is bounded by design; this is the gauge that proves it.
 	prometheus.MustRegister(metrics.NewTimelineKeysGauge(timeline.Len))
 	prometheus.MustRegister(metrics.NewOperatorStatsGauge(repSvc.OperatorStatsLen))
-	prometheus.MustRegister(metrics.NewTrustCollector(func(yield func(party string, staleServices, refusalServices int, penalty float64)) {
+	prometheus.MustRegister(metrics.NewTrustCollector(func(yield func(party string, staleServices, refusalServices int, penalty float64, peer bool)) {
 		for _, t := range repSvc.PartyTrusts() {
-			yield(t.Party, t.StaleServices, t.RefusalServices, t.Penalty)
+			yield(t.Party, t.StaleServices, t.RefusalServices, t.Penalty, t.Peer())
 		}
 	}))
-	prometheus.MustRegister(metrics.NewStaleShareCollector(func(yield func(domain.ServiceID, string, float64, float64)) {
+	prometheus.MustRegister(metrics.NewStaleShareCollector(func(yield func(domain.ServiceID, string, float64, float64, bool)) {
 		for _, p := range repSvc.PartyStaleShares() {
-			yield(p.ServiceID, p.Party, p.Share, p.Penalty)
+			yield(p.ServiceID, p.Party, p.Share, p.Penalty, p.Peer())
 		}
 	}))
 	// What each service's current session holds, per operator: the
@@ -653,6 +653,19 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	repSvc.SetTrustPenalty(func(serviceID domain.ServiceID) bool {
 		return flags.IsEnabled(context.Background(), featureflag.FlagTrustPenalty, serviceID)
 	})
+
+	// A peer instance's priced parties, as a floor under this one's
+	// (reputation/peerparties.go). Read under the peer's default key name, as
+	// its probe stream and drains are.
+	if peer := cfg.Gateway.HealthChecks.PeerProbeStream; peer.Enabled && peer.Parties && redisClient != nil {
+		peerRep, err := reputation.NewRedisStorage(peerRedisClient(cfg, peer.DB), config.DefaultRedisKeyPrefix+"reputation:")
+		if err != nil {
+			return nil, fmt.Errorf("peer parties: %w", err)
+		}
+		repSvc.SetPeerParties(peerRep.GetPartyPenalties)
+		app.StartupNotes = append(app.StartupNotes, fmt.Sprintf(
+			"reputation: borrowing the priced parties of the peer instance in Redis db %d as a floor (peer_probe_stream.parties)", peer.DB))
+	}
 
 	// When a drain ends, its endpoints restart at the bottom of probation
 	// rather than on the score the drain froze (reputation.RebaseAfterDrain).

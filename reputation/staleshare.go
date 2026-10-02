@@ -83,7 +83,12 @@ type PartyStale struct {
 	pricedAt time.Time
 	// held marks a penalty carried past thin evidence, not measured now.
 	held bool
+	// peer marks a penalty borrowed from a peer instance (peerparties.go).
+	peer bool
 }
+
+// Peer reports whether the penalty is a peer instance's, borrowed as a floor.
+func (p PartyStale) Peer() bool { return p.peer }
 
 // PartyStaleShares reports every measured party, for the metrics collector.
 func (s *serviceImpl) PartyStaleShares() []PartyStale {

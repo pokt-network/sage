@@ -925,6 +925,13 @@ type PeerProbeStreamConfig struct {
 	// instance's own check. Zero means the check's own interval, which is the
 	// age at which this instance would have probed anyway.
 	MaxAge time.Duration `yaml:"max_age"`
+	// Parties also borrows the other instance's priced parties (its
+	// stale-share and trust penalties) as a floor: each party is charged the
+	// harsher of this instance's own penalty and the other's, on the other's
+	// clocks, and only where this instance's own stale_share and
+	// trust_penalty flags price it. For an instance with too little traffic
+	// to gather that evidence itself. Read on every reputation refresh.
+	Parties bool `yaml:"parties"`
 }
 
 // ServiceHealthChecks is the set of configured checks for one service.

@@ -9,9 +9,9 @@ import (
 )
 
 func TestStaleShareCollectorReportsEachParty(t *testing.T) {
-	c := NewStaleShareCollector(func(yield func(domain.ServiceID, string, float64, float64)) {
-		yield("tron", "owner-a", 0.78, -40)
-		yield("tron", "op.example", 0.01, 0)
+	c := NewStaleShareCollector(func(yield func(domain.ServiceID, string, float64, float64, bool)) {
+		yield("tron", "owner-a", 0.78, -40, true)
+		yield("tron", "op.example", 0.01, 0, false)
 	})
 	ch := make(chan prometheus.Metric, 8)
 	c.Collect(ch)

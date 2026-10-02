@@ -335,7 +335,7 @@ func NewHydratedGauges(keys, services, skipped int) []prometheus.Collector {
 // them (reputation.PartyStale). Derived at scrape time, so a party that has
 // faded out of the evidence stops being reported.
 type StaleShareCollector struct {
-	each      func(yield func(serviceID domain.ServiceID, party string, share, penalty float64))
+	each      func(yield func(serviceID domain.ServiceID, party string, share, penalty float64, peer bool))
 	parties   *labelPolicy
 	shareDesc *prometheus.Desc
 	penDesc   *prometheus.Desc
@@ -343,7 +343,7 @@ type StaleShareCollector struct {
 
 // NewStaleShareCollector returns a collector over each, which calls yield once
 // per measured party.
-func NewStaleShareCollector(each func(yield func(serviceID domain.ServiceID, party string, share, penalty float64))) *StaleShareCollector {
+func NewStaleShareCollector(each func(yield func(serviceID domain.ServiceID, party string, share, penalty float64, peer bool))) *StaleShareCollector {
 	return &StaleShareCollector{
 		each:    each,
 		parties: cappedLabel(maxOperatorLabels),
@@ -354,8 +354,8 @@ func NewStaleShareCollector(each func(yield func(serviceID domain.ServiceID, par
 		),
 		penDesc: prometheus.NewDesc(
 			"sage_party_stale_penalty",
-			"Points the stale_share flag takes off every reputation key of a party: 0 while its stale share is within 15 points of the service's cleanest party, then linear to -40 at 45 points. 0 where the flag is off or the service has one measured party.",
-			[]string{"service_id", "party"}, nil,
+			"Points the stale_share flag takes off every reputation key of a party: 0 while its stale share is within 15 points of the service's cleanest party, then linear to -40 at 45 points. 0 where the flag is off or the service has one measured party. source is local, or peer where the penalty is a peer instance's borrowed as a floor (active_health_checks.peer_probe_stream.parties).",
+			[]string{"service_id", "party", "source"}, nil,
 		),
 	}
 }
@@ -368,20 +368,20 @@ func (c *StaleShareCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 func (c *StaleShareCollector) Collect(ch chan<- prometheus.Metric) {
-	c.each(func(serviceID domain.ServiceID, party string, share, penalty float64) {
+	c.each(func(serviceID domain.ServiceID, party string, share, penalty float64, peer bool) {
 		sid, p := sanitizeLabel(string(serviceID)), c.parties.value(party)
 		if p == otherLabel {
 			return // two parties past the cap would collide on one series
 		}
 		ch <- prometheus.MustNewConstMetric(c.shareDesc, prometheus.GaugeValue, share, sid, p)
-		ch <- prometheus.MustNewConstMetric(c.penDesc, prometheus.GaugeValue, penalty, sid, p)
+		ch <- prometheus.MustNewConstMetric(c.penDesc, prometheus.GaugeValue, penalty, sid, p, penaltySource(peer))
 	})
 }
 
 // TrustCollector exposes each party's trust evidence and the trust penalty in
 // force (reputation.PartyTrust), as the last refresh left them.
 type TrustCollector struct {
-	each     func(yield func(party string, staleServices, refusalServices int, penalty float64))
+	each     func(yield func(party string, staleServices, refusalServices int, penalty float64, peer bool))
 	parties  *labelPolicy
 	evidence *prometheus.Desc
 	penalty  *prometheus.Desc
@@ -389,7 +389,7 @@ type TrustCollector struct {
 
 // NewTrustCollector returns a collector over each, which calls yield once per
 // party with evidence or a penalty.
-func NewTrustCollector(each func(yield func(party string, staleServices, refusalServices int, penalty float64))) *TrustCollector {
+func NewTrustCollector(each func(yield func(party string, staleServices, refusalServices int, penalty float64, peer bool))) *TrustCollector {
 	return &TrustCollector{
 		each:    each,
 		parties: cappedLabel(maxOperatorLabels),
@@ -400,8 +400,8 @@ func NewTrustCollector(each func(yield func(party string, staleServices, refusal
 		),
 		penalty: prometheus.NewDesc(
 			"sage_party_trust_penalty",
-			"The trust penalty in force for a party: -30 from when its evidence crossed either bar until 24 hours after it last did, else 0. Charged on services with trust_penalty on, as the larger of it and the party's stale-share penalty.",
-			[]string{"party"}, nil,
+			"The trust penalty in force for a party: -30 from when its evidence crossed either bar until 24 hours after it last did, else 0. Charged on services with trust_penalty on, as the larger of it and the party's stale-share penalty. source is local, or peer where the penalty is a peer instance's borrowed as a floor (active_health_checks.peer_probe_stream.parties).",
+			[]string{"party", "source"}, nil,
 		),
 	}
 }
@@ -414,13 +414,21 @@ func (c *TrustCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 func (c *TrustCollector) Collect(ch chan<- prometheus.Metric) {
-	c.each(func(party string, staleServices, refusalServices int, penalty float64) {
+	c.each(func(party string, staleServices, refusalServices int, penalty float64, peer bool) {
 		p := c.parties.value(party)
 		if p == otherLabel {
 			return // two parties past the cap would collide on one series
 		}
 		ch <- prometheus.MustNewConstMetric(c.evidence, prometheus.GaugeValue, float64(staleServices), p, "stale")
 		ch <- prometheus.MustNewConstMetric(c.evidence, prometheus.GaugeValue, float64(refusalServices), p, "refusal")
-		ch <- prometheus.MustNewConstMetric(c.penalty, prometheus.GaugeValue, penalty, p)
+		ch <- prometheus.MustNewConstMetric(c.penalty, prometheus.GaugeValue, penalty, p, penaltySource(peer))
 	})
+}
+
+// penaltySource is the source label of a party penalty.
+func penaltySource(peer bool) string {
+	if peer {
+		return "peer"
+	}
+	return "local"
 }

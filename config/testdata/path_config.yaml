@@ -161,6 +161,7 @@ gateway_config:
       enabled: false
       db: 7
       max_age: 150s
+      parties: true
     local:
       - service_id: eth
         check_interval: 30s
