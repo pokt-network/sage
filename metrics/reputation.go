@@ -51,7 +51,7 @@ const maxScoreSeriesPerService = 500
 // is no single endpoint to attribute the score to — see reputation/key.go.
 //
 // A Collector rather than a gauge the reputation service pushes to, for the
-// same reason as BreakerCollector but a sharper one. A pushed GaugeVec keyed on
+// same reason as NewBreakerCollector but a sharper one. A pushed GaugeVec keyed on
 // an endpoint identity never evicts: the client library holds every child it
 // has ever seen for the process's lifetime, and a supplier address that stopped
 // existing three sessions ago keeps costing heap and scrape bytes until the pod

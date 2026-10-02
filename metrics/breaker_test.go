@@ -18,9 +18,11 @@ type stubLister struct {
 	calls  int
 }
 
-func (s *stubLister) BrokenDomains(serviceID string) []string {
+func (s *stubLister) rows(serviceID string, yield func(...string)) {
 	s.calls++
-	return s.broken[serviceID]
+	for _, d := range s.broken[serviceID] {
+		yield(d)
+	}
 }
 
 func scrape(t *testing.T, c prometheus.Collector) string {
@@ -38,7 +40,7 @@ func TestBreakerCollector_ReportsBrokenDomains(t *testing.T) {
 		"eth":  {"bad.example.com"},
 		"poly": {"broken1.example.com", "broken2.example.com"},
 	}}
-	c := NewBreakerCollector(lister, []domain.ServiceID{"eth", "poly"})
+	c := NewBreakerCollector([]domain.ServiceID{"eth", "poly"}, lister.rows)
 
 	body := scrape(t, c)
 	for _, want := range []string{
@@ -57,7 +59,7 @@ func TestBreakerCollector_ReportsBrokenDomains(t *testing.T) {
 // broken right now, instead of by every domain ever broken.
 func TestBreakerCollector_HealthyDomainsAreAbsent(t *testing.T) {
 	lister := &stubLister{broken: map[string][]string{}}
-	c := NewBreakerCollector(lister, []domain.ServiceID{"eth", "poly"})
+	c := NewBreakerCollector([]domain.ServiceID{"eth", "poly"}, lister.rows)
 
 	if body := scrape(t, c); strings.Contains(body, "sage_circuit_breaker_state{") {
 		t.Errorf("a healthy gateway must report no series; got:\n%s", body)
@@ -68,7 +70,7 @@ func TestBreakerCollector_HealthyDomainsAreAbsent(t *testing.T) {
 // expire lazily, so a pushed gauge would stay at 1 until the domain next broke.
 func TestBreakerCollector_ReadsAtScrapeTime(t *testing.T) {
 	lister := &stubLister{broken: map[string][]string{"eth": {"bad.example.com"}}}
-	c := NewBreakerCollector(lister, []domain.ServiceID{"eth"})
+	c := NewBreakerCollector([]domain.ServiceID{"eth"}, lister.rows)
 
 	if body := scrape(t, c); !strings.Contains(body, "bad.example.com") {
 		t.Fatal("expected the broken domain on the first scrape")
@@ -85,7 +87,7 @@ func TestBreakerCollector_ReadsAtScrapeTime(t *testing.T) {
 }
 
 func TestBreakerCollector_NilListerIsSafe(t *testing.T) {
-	c := NewBreakerCollector(nil, []domain.ServiceID{"eth"})
+	c := NewBreakerCollector([]domain.ServiceID{"eth"}, nil)
 	if body := scrape(t, c); strings.Contains(body, "sage_circuit_breaker_state{") {
 		t.Error("a nil lister must report nothing rather than panic")
 	}

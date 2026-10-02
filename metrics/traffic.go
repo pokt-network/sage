@@ -23,7 +23,7 @@ type TrafficSummaryLister interface {
 // filling — a window in progress understates diversity for any client who
 // hasn't sent every fingerprint yet, so reporting it would make a healthy
 // service look more cache-friendly than it is until the window happens to
-// close. Derived at scrape time, like BreakerCollector: a service with no
+// close. Derived at scrape time, like NewBreakerCollector: a service with no
 // completed window is absent from both series, not zero.
 type TrafficCollector struct {
 	lister   TrafficSummaryLister

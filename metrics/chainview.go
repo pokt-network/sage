@@ -36,7 +36,7 @@ type ChainViewSource interface {
 // invisible in every other series. Spread is the second: it is how far apart
 // the pool is, which is what the height filters act on.
 //
-// A Collector rather than pushed gauges, matching BreakerCollector: the values
+// A Collector rather than pushed gauges, matching NewBreakerCollector: the values
 // are derived at scrape time from state that ages on its own, so they cannot
 // go stale, cost nothing on the relay path, and a service that stops reporting
 // stops being exported rather than freezing at its last value.

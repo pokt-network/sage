@@ -129,40 +129,10 @@ type App struct {
 	overrideRaw string
 }
 
-// methodBlockLister adapts methodblock.Store to metrics.MethodBlockLister so
-// metrics does not import methodblock (nor the reverse).
-type methodBlockLister struct{ store *methodblock.Store }
-
-// ActiveMethodBlocks reports the live method blocks for a service, translated
-// into the metrics package's own type.
-func (l methodBlockLister) ActiveMethodBlocks(serviceID string) []metrics.MethodBlock {
-	active := l.store.Active(serviceID)
-	out := make([]metrics.MethodBlock, len(active))
-	for i, b := range active {
-		out[i] = metrics.MethodBlock{Host: b.Host, Method: b.Method}
-	}
-	return out
-}
-
 // blocklistPollInterval is how often each replica re-reads the admin-set
 // domain bans from Redis. Same order as the drain refresh: a ban set on one
 // replica is in force everywhere within it.
 const blocklistPollInterval = 5 * time.Second
-
-// drainLister adapts drain.Store to metrics.DrainLister so metrics does not
-// import drain (nor the reverse).
-type drainLister struct{ store drain.Store }
-
-// ActiveDrains reports the live operator drains for a service, translated
-// into the metrics package's own type.
-func (l drainLister) ActiveDrains(serviceID string) []metrics.DrainEntry {
-	active := l.store.Active(context.Background(), domain.ServiceID(serviceID))
-	out := make([]metrics.DrainEntry, len(active))
-	for i, e := range active {
-		out[i] = metrics.DrainEntry{Domain: e.Operator, RPCType: string(e.RPCType)}
-	}
-	return out
-}
 
 // trafficSummaryLister adapts traffic.Sampler to metrics.TrafficSummaryLister
 // so metrics does not import traffic (nor the reverse).
@@ -474,8 +444,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 
 	// Circuit-breaker state is derived at scrape time rather than pushed: breaks
 	// expire lazily, so there is no event a gauge could hang off. See
-	// metrics.BreakerCollector.
-	prometheus.MustRegister(metrics.NewBreakerCollector(cb, serviceIDsFrom(cfg)))
+	// metrics.PresenceCollector.
+	prometheus.MustRegister(metrics.NewBreakerCollector(serviceIDsFrom(cfg), func(serviceID string, yield func(...string)) {
+		for _, d := range cb.BrokenDomains(serviceID) {
+			yield(d)
+		}
+	}))
 
 	// Reputation scores are likewise derived at scrape time rather than pushed.
 	// A pushed gauge keyed on an endpoint identity never evicts, so every
@@ -514,7 +488,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	)
 	blocks.StartSweep(ctx)
 	app.MethodBlocks = blocks
-	prometheus.MustRegister(metrics.NewMethodBlockCollector(methodBlockLister{blocks}, serviceIDsFrom(cfg)))
+	prometheus.MustRegister(metrics.NewMethodBlockCollector(serviceIDsFrom(cfg), func(serviceID string, yield func(...string)) {
+		for _, b := range blocks.Active(serviceID) {
+			yield(b.Host, b.Method)
+		}
+	}))
 
 	// 6c. Request-shape sampler: per-service traffic diversity, sampled and
 	// windowed — see package traffic. Local memory only, like method blocks.
@@ -550,7 +528,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			drainStore = drain.NewMemoryStore()
 		}
 		app.Protocol.SetDrains(drainStore)
-		prometheus.MustRegister(metrics.NewDrainCollector(drainLister{drainStore}, serviceIDsFrom(cfg)))
+		prometheus.MustRegister(metrics.NewDrainCollector(serviceIDsFrom(cfg), func(serviceID string, yield func(...string)) {
+			for _, e := range drainStore.Active(context.Background(), domain.ServiceID(serviceID)) {
+				yield(e.Operator, string(e.RPCType))
+			}
+		}))
 	}
 
 	// A recovered panic is contained, not harmless — surface it as a metric so
