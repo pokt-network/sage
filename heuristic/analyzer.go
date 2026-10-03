@@ -44,6 +44,18 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 		return analyzeGRPC(response)
 	}
 
+	// A REST route defines its own body. An empty one (a HEAD, a health route
+	// that answers 200 with nothing, as the beacon API's does by spec) and a
+	// text or bare-scalar one are answers, not a broken host. Graded by the
+	// JSON-RPC rules below they were an empty_response (critical, breaker
+	// vote) or a plain_text_response (major), retried on every supplier and
+	// charged to each. An HTML page is still checked: that is a proxy's error
+	// page, and a plugin that serves HTML by design says so through
+	// qos.VerdictRefiner.
+	if rpcType == domain.RPCTypeREST && (IsEmpty(response) || IsPlainText(response)) {
+		return successResult()
+	}
+
 	// Tier 1: Structural checks.
 	if result, done := analyzeTier1(response, httpStatusCode); done {
 		return result
