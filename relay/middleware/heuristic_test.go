@@ -414,6 +414,44 @@ func TestHeuristic_PluginRefinesAnUpstream5xxError(t *testing.T) {
 	}
 }
 
+// The HA relay miner hands the node's 5xx on as its own HTTP status, with the
+// node's body. Refined to the chain's answer, that body is what the client
+// gets, with its status, not a gateway 500 in its place. A body the miner
+// cut short, or one that is not JSON, is not the node's answer: the error
+// stands, final.
+func TestHeuristic_RefinedUpstream5xxDeliversTheNodesBody(t *testing.T) {
+	node := []byte(`{"code":2,"message":"Error parsing into type cw3_fixed_multisig::msg::QueryMsg: unknown variant ` + "`bogus`" + `: query wasm contract failed","details":[]}`)
+	flags := newMockFlags(map[string]bool{"heuristic": true})
+	for _, tc := range []struct {
+		name    string
+		body    []byte
+		deliver bool
+	}{
+		{"node's JSON answer", node, true},
+		{"cut at the miner's limit", append([]byte(`{"x":"`), make([]byte, domain.UpstreamBodyMax)...), false},
+		{"miner's own page", []byte("<html>500</html>"), false},
+	} {
+		ctx, reg := smartQueryCtx(t)
+		body := tc.body
+		inner := relay.HandlerFunc(func(_ *relay.Context) error {
+			return domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable", &domain.UpstreamStatusError{Status: 500, Body: body}, true)
+		})
+		err := middleware.Heuristic(flags, reg, middleware.HeuristicOptions{})(inner).HandleRelay(ctx)
+		if tc.deliver {
+			if err != nil || ctx.Response == nil || string(ctx.Response.Body) != string(node) || ctx.Response.HTTPStatusCode != 500 {
+				t.Fatalf("%s: err %v, response %+v; want the node's body with its 500", tc.name, err, ctx.Response)
+			}
+			if ctx.HeuristicResult == nil || ctx.HeuristicResult.Reason != "query_5xx" {
+				t.Fatalf("%s: verdict %+v", tc.name, ctx.HeuristicResult)
+			}
+			continue
+		}
+		if err == nil || domain.IsRetryable(err) || ctx.Response != nil {
+			t.Fatalf("%s: err %v, response %+v; want a final error and no response", tc.name, err, ctx.Response)
+		}
+	}
+}
+
 // The retry verdict is an error only to make Retry go again; whoever is left
 // holding it with a response in hand must be able to tell it from a failure
 // that has nothing to deliver.

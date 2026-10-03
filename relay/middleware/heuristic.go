@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
@@ -40,8 +42,18 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 				// The plugin may know the route better than the analyzer
 				// (qos.VerdictRefiner): a verdict refined to "deliver" must
 				// also stop Retry, which keys on the error's own flag.
-				if refineVerdict(registry, ctx, &result) && !result.ShouldRetry && domain.IsRetryable(err) {
-					if re, ok := err.(*domain.RelayError); ok {
+				if refineVerdict(registry, ctx, &result) && !result.ShouldRetry {
+					// The HA relay miner hands a node's 5xx on as its own HTTP
+					// status: the answer arrives as an error carrying the
+					// node's body. Refined to the chain's answer, it is that
+					// body the client gets; it used to be a gateway 500,
+					// "relay send failed", in its place (a cosmwasm smart
+					// query the contract rejects, mainnet osmosis 2026-10-03).
+					if resp, ok := upstreamAnswer(err); ok {
+						ctx.Response, ctx.HeuristicResult, ctx.Err = resp, &result, nil
+						return nil
+					}
+					if re, ok := err.(*domain.RelayError); ok && domain.IsRetryable(err) {
 						err = domain.NewRelayError(re.Kind, re.Message, re.Cause, false)
 						ctx.Err = err
 					}
@@ -166,6 +178,18 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 			return nil
 		})
 	}
+}
+
+// upstreamAnswer is the node's answer a relay miner's HTTP status carried
+// (domain.UpstreamStatusError), as a response: only a body the miner did not
+// cut short (under domain.UpstreamBodyMax) and that is JSON, since a cut one
+// is not the answer and anything else is the miner's own page.
+func upstreamAnswer(err error) (*domain.Response, bool) {
+	var up *domain.UpstreamStatusError
+	if !errors.As(err, &up) || len(up.Body) == 0 || len(up.Body) >= domain.UpstreamBodyMax || !json.Valid(up.Body) {
+		return nil, false
+	}
+	return &domain.Response{Body: up.Body, HTTPStatusCode: up.Status}, true
 }
 
 // HeuristicOptions tunes the Heuristic middleware. Every field has a working
