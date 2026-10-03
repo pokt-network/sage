@@ -217,11 +217,18 @@ func (r *WSRelayer) probeEndpoint(ctx context.Context, t wsProbeTarget) {
 	if r.deps.Metrics != nil {
 		r.deps.Metrics.Probed(t.serviceID, result)
 	}
-	if result == wsProbeUnresolved || result == wsProbeRefused {
+	if result == wsProbeUnresolved {
 		return
 	}
 	failed := result != wsProbeOK && result != wsProbeOtherDialect
 	r.probeBackoff.record(string(t.serviceID)+"|"+t.url, failed, time.Now())
+	// A refusal is backed off like a failure (a URL refusing every probe was
+	// re-probed every minute, two paid relays each, and held probe slots that
+	// keys able to recover needed) but not scored: it is the protocol, not
+	// the supplier.
+	if result == wsProbeRefused {
+		return
+	}
 	sig := reputation.NewSignal(reputation.SignalSuccess, "ws_probe_"+result, 0)
 	if failed {
 		sig = reputation.NewSignal(reputation.SignalMajorError, "ws_probe_"+result, 0)

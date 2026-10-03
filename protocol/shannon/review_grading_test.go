@@ -41,15 +41,15 @@ func newRefusingSupplier(t *testing.T, code int, text string) *httptest.Server {
 
 // A refused probe returns before both probeBackoff.record and RecordSignal
 // (ws_probe.go probeEndpoint). A demoted key whose miner refuses every probe
-// (4001 from a miner that does not hold the supplier's key, a session the
-// miner never accepts) is therefore probed at every cycle, every minute,
+// (an allocation spent, 4002, or a session the miner never accepts) is
+// therefore probed at every cycle, every minute,
 // forever: each probe is two paid relays, the cost wsProbeMaxBackoff exists
 // to cap. Targets sort lowest score first and are capped at
 // wsProbeMaxPerCycle, so 32 such keys, which never move, take every slot and
 // starve the probes of keys that could recover.
 func TestReview_RefusedProbeIsNeverBackedOff(t *testing.T) {
 	enabled := map[string]bool{featureflag.FlagWebsocketRelays: true, featureflag.FlagWebsocketProbes: true}
-	supplier := newRefusingSupplier(t, heuristic.CloseMinerValidationFailed, "relay validation failed")
+	supplier := newRefusingSupplier(t, heuristic.CloseMinerStakeLimit, "stake limit exceeded")
 	r, rep, m := probeFixture(t, wsURL(supplier), 40, `{"jsonrpc":"2.0","id":1,"result":"0x10"}`, enabled)
 
 	for i := 0; i < 3; i++ {
