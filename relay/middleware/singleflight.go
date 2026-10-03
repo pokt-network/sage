@@ -122,10 +122,14 @@ type flight struct {
 }
 
 // coalescingKey builds a stable string key for singleflight deduplication:
-// "<serviceID>:<method>:" + raw sha256 of the payload. The key is only a map
-// key inside singleflight (never displayed), so hex encoding would just
-// double its size and add an allocation per coalescable request.
+// the raw sha256 of the service and the payload's request identity
+// (writeRequestKey), the same identity the response cache keys on. The key
+// is only a map key inside singleflight (never displayed), so hex encoding
+// would just double its size.
 func coalescingKey(serviceID domain.ServiceID, p domain.Payload) string {
-	sum := sha256.Sum256(p.Bytes())
-	return string(serviceID) + ":" + p.Method() + ":" + string(sum[:])
+	h := sha256.New()
+	_, _ = h.Write([]byte(serviceID))
+	writeRequestKey(h, p)
+	var sum [sha256.Size]byte
+	return string(h.Sum(sum[:0]))
 }

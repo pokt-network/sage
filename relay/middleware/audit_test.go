@@ -85,7 +85,6 @@ func TestAudit_CacheStoresNullResult(t *testing.T) {
 // different questions. They must not share a cache entry nor a coalesced
 // relay.
 func TestAudit_CacheAndCoalescingKeysIgnoreRoute(t *testing.T) {
-	t.Skip("unfixed: audit 2026-10-03 finding #5; delete this line with the fix")
 	const body = `{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["0xabc"]}`
 	plugin := tron.NewPlugin(nil, tron.Config{})
 	parse := func(path string, rt domain.RPCType) domain.Payload {

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"crypto/sha256"
+	"hash"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
@@ -77,17 +78,31 @@ func Cache(flags featureflag.FlagStore, cache *responsecache.Cache, rec CacheRec
 	}
 }
 
-// cacheKey builds a deterministic string key for the response cache:
-// sha256(serviceID + method_0 + bytes_0 + ...) as raw bytes. The key is only
-// ever a map key (never displayed), so hex encoding would just double its
-// size and add an allocation per request.
+// cacheKey builds a deterministic string key for the response cache: the
+// raw sha256 of the service and every payload's request identity
+// (writeRequestKey). The key is only ever a map key (never displayed), so hex
+// encoding would just double its size and add an allocation per request.
 func cacheKey(serviceID domain.ServiceID, payloads []domain.Payload) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(serviceID))
 	for _, p := range payloads {
-		_, _ = h.Write([]byte(p.Method()))
-		_, _ = h.Write(p.Bytes())
+		writeRequestKey(h, p)
 	}
 	var sum [sha256.Size]byte
 	return string(h.Sum(sum[:0]))
+}
+
+// writeRequestKey writes what makes two payloads the same request: their
+// bytes and the route they are sent on. Identical bytes are not an identical
+// request on another RPC type, path or verb: a REST route and the JSON-RPC
+// root answer different questions, and keyed on method and bytes alone a
+// client could put one route's answer in front of every client of the other
+// for as long as the entry lived. Each field ends in a NUL so no two splits
+// of the same characters collide.
+func writeRequestKey(h hash.Hash, p domain.Payload) {
+	for _, field := range []string{string(p.RPCType()), p.HTTPMethod(), p.Path(), p.Method()} {
+		_, _ = h.Write([]byte(field))
+		_, _ = h.Write([]byte{0})
+	}
+	_, _ = h.Write(p.Bytes())
 }
