@@ -150,6 +150,13 @@ const ReasonSuccess = "success"
 // method is known to be a real one (see relay/middleware.Heuristic).
 const ReasonMethodNotFound = "method_not_found"
 
+// ReasonConnectTimeout is the Reason for a dial our own deadline ended before
+// the host accepted (heuristic.AnalyzeTransportError). With its full budget
+// it is a host that cannot take a connection, graded like any connect
+// failure; with a fraction of it, it measures the time other attempts spent,
+// and the relay middleware takes the penalty and the breaker vote off.
+const ReasonConnectTimeout = "transport_connect_timeout"
+
 // IsSuccess reports whether the verdict is the analyzer passing the response.
 //
 // It exists because a caller cannot key on attribution alone to tell an

@@ -64,6 +64,14 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 	}
 
 	if isConnectFailure(err) {
+		// A dial our deadline ended is graded like any connect failure here,
+		// but under its own reason: whether it measures the host depends on
+		// how much of its budget the attempt had, which only the caller knows
+		// (relay/middleware gradeTimeoutBudget).
+		reason := "transport_connect_failed"
+		if isTimeout(err) || errors.Is(requestCtxErr, context.DeadlineExceeded) {
+			reason = ReasonConnectTimeout
+		}
 		return AnalysisResult{
 			ShouldRetry:        true,
 			ShouldCircuitBreak: true,
@@ -71,7 +79,7 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 			PenaltySeverity:    SeverityCritical,
 			Attribution:        AttrSupplier,
 			Confidence:         0.90,
-			Reason:             "transport_connect_failed",
+			Reason:             reason,
 			Details:            "could not connect to endpoint: " + err.Error(),
 		}
 	}

@@ -242,14 +242,19 @@ const shortBudgetShare = 2
 // same service for PATH; a manual reset put them at 99 for good. Still
 // retried, not scored and not method-blocked. A host that is truly dead is
 // still demoted by its health checks, which always run with the full budget.
+//
+// A dial the deadline ended (heuristic.ReasonConnectTimeout) is the same case
+// one step earlier, and it carried more: critical and a breaker vote, so one
+// late retry with 50ms left could take a working host out of the pool.
 func gradeTimeoutBudget(r *heuristic.AnalysisResult, have, owed time.Duration) {
-	if r.Reason != "transport_timeout" || owed <= 0 {
+	if (r.Reason != "transport_timeout" && r.Reason != heuristic.ReasonConnectTimeout) || owed <= 0 {
 		return
 	}
 	r.Details += fmt.Sprintf(" (budget %s of %s)", have.Round(time.Millisecond), owed)
 	if have < owed/shortBudgetShare {
 		r.Reason = "short_budget_timeout"
 		r.ShouldPenalize = false
+		r.ShouldCircuitBreak = false
 		r.PenaltySeverity = ""
 		r.MethodBlocking = false
 	}

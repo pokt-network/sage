@@ -212,12 +212,19 @@ func TestAnalyzeTransportError_OtherStaysMinorUnknown(t *testing.T) {
 
 // A domain.ConnectError carries the fact the error shape cannot: the host was
 // never reached. It must grade as a dead host whatever it wraps — here the
-// exact http timeout a SYN-dropping host produces under Client.Timeout.
+// exact http timeout a SYN-dropping host produces under Client.Timeout. The
+// deadline gets its own reason so the relay middleware can tell a host that
+// had its full budget from a late retry that did not.
 func TestAnalyzeTransportError_ConnectErrorIsDeadHost(t *testing.T) {
 	inner := &url.Error{Op: "Post", URL: "http://10.255.255.1:1", Err: context.DeadlineExceeded}
 	r := AnalyzeTransportError(relayerWrap(&domain.ConnectError{Cause: inner}), nil)
-	if r.Reason != "transport_connect_failed" || !r.ShouldCircuitBreak || r.MethodBlocking {
+	if r.Reason != ReasonConnectTimeout || !r.ShouldCircuitBreak || r.PenaltySeverity != SeverityCritical || r.MethodBlocking {
 		t.Fatalf("connect error graded as %+v", r)
+	}
+
+	refused := &url.Error{Op: "Post", URL: "http://10.255.255.1:1", Err: errors.New("connection refused")}
+	if r := AnalyzeTransportError(relayerWrap(&domain.ConnectError{Cause: refused}), nil); r.Reason != "transport_connect_failed" {
+		t.Fatalf("refused dial graded as %+v", r)
 	}
 }
 

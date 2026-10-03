@@ -60,7 +60,8 @@ func TestSendHTTP_TransportErrorShapesClassify(t *testing.T) {
 	})
 
 	t.Run("dial that never completes is a connect failure", func(t *testing.T) {
-		// A host that drops SYNs. net/http runs the dial under the request
+		// A host that drops SYNs, graded as a connect failure under the
+		// reason that lets the relay middleware weigh the budget it had. net/http runs the dial under the request
 		// context, so when Client.Timeout fires the error is a url.Error
 		// around an http timeout — no net.OpError{Op: "dial"} anywhere in
 		// the chain, the same shape as a host that accepted and went quiet.
@@ -80,7 +81,7 @@ func TestSendHTTP_TransportErrorShapesClassify(t *testing.T) {
 		if err == nil {
 			t.Fatal("want an error when the dial never completes")
 		}
-		assertReason(t, err, nil, "transport_connect_failed")
+		assertReason(t, err, nil, heuristic.ReasonConnectTimeout)
 	})
 
 	t.Run("context cancelled mid-flight is a client hang-up", func(t *testing.T) {
