@@ -181,6 +181,9 @@ type SubscriptionRegistry struct {
 	toClient map[string]string
 	replay   map[string]string
 	replays  int
+	// orphaned holds the ids a new supplier gave replays acked after the
+	// client had unsubscribed: live on the supplier, wanted by nobody.
+	orphaned map[string]struct{}
 
 	// Notification grading. recent is keyed by the client-facing id; closed
 	// holds endpoint ids unsubscribed recently; seed hashes frames.
@@ -328,6 +331,7 @@ func NewSubscriptionRegistry(classifier SubscriptionClassifier) *SubscriptionReg
 		active:     make(map[string]Subscription),
 		toClient:   make(map[string]string),
 		replay:     make(map[string]string),
+		orphaned:   make(map[string]struct{}),
 		recent:     make(map[string]*dupRing),
 		closed:     make(map[string]struct{}),
 		seed:       maphash.MakeSeed(),
@@ -367,6 +371,13 @@ func (r *SubscriptionRegistry) translateClientFrame(data []byte) []byte {
 	case SubscriptionSubscribe:
 		if info.RequestID == "" {
 			return data // A request with no id can never be matched to its answer.
+		}
+		if _, replay := r.replay[info.RequestID]; replay {
+			// A rebind's replay reaches the new supplier through the client
+			// path, and its ack is consumed by the replay table: parked in
+			// pending too, it was never removed, one leak per subscription
+			// per rebind until the cap switched tracking off.
+			return data
 		}
 		if r.npending >= maxTrackedSubscriptions {
 			r.dropped++
@@ -486,6 +497,9 @@ func (r *SubscriptionRegistry) translateEndpointFrame(data []byte) (out []byte, 
 			r.touch(sub.ID)
 			return data, true, r.grade(sub.ID, data)
 		}
+		if _, orphan := r.orphaned[info.SubscriptionID]; orphan {
+			return nil, false, note // A replay the client unsubscribed from mid-flight.
+		}
 		if _, late := r.closed[info.SubscriptionID]; late || r.dropped > 0 {
 			return data, true, note // In flight past an unsubscribe, or past the cap: not judged.
 		}
@@ -532,7 +546,20 @@ func (r *SubscriptionRegistry) markClosed(endpointID string) {
 func (r *SubscriptionRegistry) completeReplay(clientID string, info EndpointFrameInfo) {
 	sub, ok := r.active[clientID]
 	if !ok {
-		return // Unsubscribed while the replay was in flight.
+		// Unsubscribed while the replay was in flight: the unsubscribe went
+		// out under the old supplier's id, which the new one never had, so
+		// the subscription it just opened is live and nobody's. Its
+		// notifications are dropped rather than handed to a client that
+		// asked for them to stop.
+		// ponytail: the supplier keeps sending until the connection ends;
+		// unsubscribe it upstream if orphans turn out to be common.
+		if !info.IsError && info.SubscriptionID != "" {
+			if len(r.orphaned) >= maxClosedIDs {
+				clear(r.orphaned)
+			}
+			r.orphaned[info.SubscriptionID] = struct{}{}
+		}
+		return
 	}
 	if info.IsError || info.SubscriptionID == "" {
 		r.forget(sub) // The new supplier refused it; the client will find out when data stops.
@@ -585,6 +612,13 @@ func (r *SubscriptionRegistry) ReplayFrames() [][]byte {
 		raw := fmt.Sprintf(`"sage-replay-%d"`, r.replays)
 		r.replay[raw] = clientID
 		out = append(out, spliceSpan(sub.Request, span, raw))
+		// The stall clock restarts with the replay: until the new
+		// supplier's ack lands, Heartbeat still read the old supplier's
+		// silence, already past the timeout, and the next check called the
+		// new one stalled before it could answer.
+		if sub.Periodic {
+			r.lastPeriodic = time.Now()
+		}
 	}
 	return out
 }

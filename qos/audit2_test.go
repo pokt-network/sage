@@ -14,7 +14,6 @@ import (
 // pending entry is never removed. Every rebind leaks one per subscription, and
 // at the cap new subscribes go untracked and unsolicited grading switches off.
 func TestAudit2_ReplayThroughClientPathLeavesNoPending(t *testing.T) {
-	t.Skip("unfixed: audit 2026-10-03 finding #16; delete this line with the fix")
 	r := NewSubscriptionRegistry(spanClassifier{})
 	establish(t, r, "1", "old")
 	frames := r.ReplayFrames()
@@ -40,7 +39,6 @@ func TestAudit2_ReplayThroughClientPathLeavesNoPending(t *testing.T) {
 // returns, leaving a live subscription on the new supplier nobody tracks. Its
 // notifications reach a client that asked for them to stop.
 func TestAudit2_UnsubscribeDuringReplayDoesNotOrphan(t *testing.T) {
-	t.Skip("unfixed: audit 2026-10-03 finding #16; delete this line with the fix")
 	r := NewSubscriptionRegistry(spanClassifier{})
 	establish(t, r, "1", "old")
 	frames := r.ReplayFrames()
