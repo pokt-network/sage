@@ -2,6 +2,7 @@ package shannon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -91,6 +92,10 @@ type sessionManager struct {
 	// hangs relays to the relay timeout. With it, one GetSession per
 	// (service, app) runs and its result is shared with everyone waiting.
 	refreshGroup singleflight.Group
+	// wsAsked is, per (service, app), the height at which a WebSocket dial
+	// last asked the full node for the next session inside grace
+	// (currentSession): one ask per block, not one per dial.
+	wsAsked sync.Map // "serviceID:appAddr" → int64
 
 	// failing marks each (serviceID, appAddr) whose last session fetch failed,
 	// so a failure is reported once rather than every cycle. A service with no
@@ -323,38 +328,91 @@ func (sm *sessionManager) getSession(ctx context.Context, serviceID string, appA
 	return sm.refreshSession(ctx, serviceID, appAddr, path)
 }
 
+// wsSessionWait bounds how long a WebSocket dial inside grace waits for the
+// next session before signing the ended one. The fetch goes on without it
+// and lands in the cache for the next dial.
+const wsSessionWait = 200 * time.Millisecond
+
 // currentSession is getSession for a WebSocket dial: past the cached
-// session's end it fetches the next session synchronously instead of serving
-// the ended one through grace.
+// session's end it asks the full node for the next session instead of
+// serving the ended one through grace.
 //
 // HTTP keeps the grace window because both relay miners accept an ended
 // session's relays through it. A WebSocket is different on the poktroll
 // relay miner: it binds a new connection to the session at its own current
 // height and closes the connection on the first frame signed for any other,
-// with a reason too long for a close frame, so the gateway sees 1006 and
+// with a reason too long for a close frame, so the gateway saw 1006 and
 // charged the supplier. For about ten seconds after every session end, until
 // the background refresh landed, every dial, rebind and probe signed the
 // ended session. The HA relay miner honours either session through grace,
 // so the current one is right for both.
 //
-// A full node that has not seen the next session yet answers with the ended
-// one, and a fetch that fails leaves the ended one in hand: either way it is
-// still returned, the best the gateway can sign, and the HA miner honours it
-// through grace. Failing the dial instead would turn every full-node blip at
-// a boundary into a refused WebSocket.
+// Inside grace the ended session is still signable, so the ask is bounded:
+// once per block height per (service, app), waited on for wsSessionWait at
+// most, and the ended session is signed when it does not answer in time,
+// fails, or answers with the same session (a full node that has not seen the
+// next one). A rebind runs under the bridge's endpoint lock, and an unbounded
+// wait on a hung full node froze the live connection with it. Past grace
+// there is nothing else to sign: one fetch, and its error. The caller's
+// context ends the wait either way; the shared fetch runs on.
 func (sm *sessionManager) currentSession(ctx context.Context, serviceID, appAddr string) (*sessiontypes.Session, error) {
-	if cached, ok := sm.sessionCache.Load(sessionCacheKey(serviceID, appAddr)); ok {
-		ended := cached.(*sessiontypes.Session)
-		if sm.latestBlockHeight.Load() > ended.Header.SessionEndBlockHeight {
-			if next, err := sm.refreshSession(ctx, serviceID, appAddr, fetchWebSocket); err == nil {
-				return next, nil
-			}
-			if sm.latestBlockHeight.Load() <= ended.Header.SessionEndBlockHeight+sm.graceBlocks.Load() {
-				return ended, nil
-			}
-		}
+	key := sessionCacheKey(serviceID, appAddr)
+	cached, ok := sm.sessionCache.Load(key)
+	height := sm.latestBlockHeight.Load()
+	if !ok || height <= cached.(*sessiontypes.Session).Header.SessionEndBlockHeight {
+		return sm.getSession(ctx, serviceID, appAddr)
 	}
-	return sm.getSession(ctx, serviceID, appAddr)
+	ended := cached.(*sessiontypes.Session)
+	if height > ended.Header.SessionEndBlockHeight+sm.graceBlocks.Load() {
+		return sm.awaitSession(ctx, serviceID, appAddr, 0)
+	}
+	if asked, _ := sm.wsAsked.Swap(key, height); asked == height {
+		return ended, nil
+	}
+	if next, err := sm.awaitSession(ctx, serviceID, appAddr, wsSessionWait); err == nil {
+		return next, nil
+	}
+	return ended, nil
+}
+
+// errSessionWait is awaitSession giving up on a fetch still in flight.
+var errSessionWait = errors.New("session fetch still in flight")
+
+// awaitSession joins (or starts) the coalesced fetch of the next session for
+// a WebSocket dial and waits for it, at most bound when bound is non-zero,
+// and no longer than ctx. The fetch itself is detached and completes for
+// everyone else whatever this caller does.
+func (sm *sessionManager) awaitSession(ctx context.Context, serviceID, appAddr string, bound time.Duration) (*sessiontypes.Session, error) {
+	ch := sm.refreshGroup.DoChan(sessionCacheKey(serviceID, appAddr), func() (any, error) {
+		var session *sessiontypes.Session
+		// DoChan re-panics a panic where no one can recover it; this keeps
+		// it an error, delivered to every waiter.
+		err := safego.Call(sm.logger, "shannon.session.ws_fetch", func() error {
+			fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionFetchTimeout)
+			defer cancel()
+			var err error
+			session, err = sm.doRefreshSession(fetchCtx, serviceID, appAddr, fetchWebSocket)
+			return err
+		})
+		return session, err
+	})
+	var timeout <-chan time.Time
+	if bound > 0 {
+		timer := time.NewTimer(bound)
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.(*sessiontypes.Session), nil
+	case <-timeout:
+		return nil, errSessionWait
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // scheduleBackgroundRefresh fetches the next session off the request path
