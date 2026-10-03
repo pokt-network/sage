@@ -549,7 +549,10 @@ func lossIsSuppliers(cause error) bool {
 	if v, ok := heuristic.MinerRefusal(cause); ok {
 		return v.ShouldPenalize
 	}
-	return true
+	// Any other frame that failed processing (a response that failed
+	// verification) was graded when it arrived (handleEndpointFrame); the
+	// loss it causes is the same fault, not a second one.
+	return !errors.Is(cause, websockets.ErrBridgeMessageProcessing)
 }
 
 // stalled reports whether a connection's periodic feed has gone silent for

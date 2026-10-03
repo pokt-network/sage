@@ -757,6 +757,11 @@ func TestLossIsSuppliers(t *testing.T) {
 		{fmt.Errorf("%w: read from endpoint: %w", websockets.ErrBridgeConnectionFailed, &websocket.CloseError{Code: 4002, Text: "stake limit exceeded"}), false},
 		{fmt.Errorf("%w: read from endpoint: %w", websockets.ErrBridgeConnectionFailed, &websocket.CloseError{Code: 4000, Text: "session expired"}), false},
 		{fmt.Errorf("%w: read from endpoint: %w", websockets.ErrBridgeConnectionFailed, &websocket.CloseError{Code: 1011, Text: "internal"}), true},
+		// A frame that failed verification was graded when it arrived.
+		{fmt.Errorf("%w: %w", websockets.ErrBridgeMessageProcessing, errors.New("signature verification failed")), false},
+		// A miner's refusal frame was not, and the table decides.
+		{fmt.Errorf("%w: %w", websockets.ErrBridgeMessageProcessing, &domain.MinerError{Codespace: "relayer_proxy", Code: 9, Message: "supplier(s) not reachable"}), true},
+		{fmt.Errorf("%w: %w", websockets.ErrBridgeMessageProcessing, &domain.MinerError{Codespace: "relayer_proxy", Code: 7, Message: "offchain rate limit hit by relayer proxy"}), false},
 	} {
 		if got := lossIsSuppliers(tc.cause); got != tc.want {
 			t.Errorf("%v: %v, want %v", tc.cause, got, tc.want)

@@ -347,3 +347,62 @@ func TestBridge_RebindLimitCountsRecentLossesOnly(t *testing.T) {
 	b.losses = []time.Time{now, now, now}
 	require.False(t, b.CanRebind(), "three losses inside the window spend it")
 }
+
+// TestBridge_EndpointProcessingErrorRebinds: a frame from the endpoint that
+// fails processing (a relay miner's refusal, a response that fails
+// verification) is that endpoint failing, and with a rebind handler it is
+// met like any other endpoint loss: the client stays connected and the next
+// supplier answers. It used to close the client with 1011.
+func TestBridge_EndpointProcessingErrorRebinds(t *testing.T) {
+	first, _ := newRecordingEchoServer(t)
+	defer first.Close()
+	second, _ := newRecordingEchoServer(t)
+	defer second.Close()
+
+	var causes []error
+	var mu sync.Mutex
+	handler := func(_ context.Context, cause error) (*websocket.Conn, MessageProcessor, [][]byte, error) {
+		mu.Lock()
+		causes = append(causes, cause)
+		mu.Unlock()
+		conn, err := ConnectEndpoint(newTestLogger(), wsURL(second), nil)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return conn, &prefixProcessor{endpointPrefix: "2:"}, nil, nil
+	}
+	bridges := make(chan *Bridge, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := StartBridge(context.Background(), newTestLogger(), r, w,
+			wsURL(first), nil, &failEndpointProcessor{}, WithEndpointLost(handler))
+		if err != nil {
+			return
+		}
+		bridges <- b
+		<-b.Done()
+	}))
+	defer srv.Close()
+
+	client := dialTestServer(t, srv)
+	defer client.Close()
+	b := <-bridges
+
+	// The first endpoint's echo fails processing: a rebind, not a close.
+	require.NoError(t, client.WriteMessage(websocket.TextMessage, []byte("one")))
+	require.Eventually(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(causes) == 1 },
+		3*time.Second, 10*time.Millisecond, "no rebind after the endpoint's frame failed processing")
+	mu.Lock()
+	require.ErrorIs(t, causes[0], ErrBridgeMessageProcessing)
+	mu.Unlock()
+
+	require.NoError(t, client.WriteMessage(websocket.TextMessage, []byte("two")))
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, got, err := client.ReadMessage()
+	require.NoError(t, err, "client must not see a close across the rebind")
+	require.Equal(t, "2:two", string(got))
+	select {
+	case <-b.Done():
+		t.Fatal("bridge must stay up after a successful rebind")
+	default:
+	}
+}

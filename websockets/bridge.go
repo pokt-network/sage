@@ -386,8 +386,14 @@ func (b *Bridge) route(msg message) {
 		}
 		processed, err := b.processor.ProcessEndpointMessage(msg.data)
 		if err != nil {
-			b.logger.Error("websocket: endpoint message processing failed", "err", err)
-			b.shutdown(fmt.Errorf("%w: %w", ErrBridgeMessageProcessing, err))
+			// The endpoint failing — a relay miner's refusal, an answer that
+			// failed verification — is an endpoint loss like a dropped socket:
+			// a rebind where a handler is installed, so the client is not
+			// closed with 1011 for its supplier's fault. Off the run loop,
+			// as a read loop would call it: a rebind dials.
+			b.logger.Warn("websocket: endpoint message processing failed", "err", err)
+			cause := fmt.Errorf("%w: %w", ErrBridgeMessageProcessing, err)
+			safego.Go(b.logger, "websocket.endpoint_gone", func() { b.endpointGone(msg.conn, cause) })
 			return
 		}
 		if processed == nil {
