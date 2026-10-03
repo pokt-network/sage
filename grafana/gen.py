@@ -1,6 +1,7 @@
 """Generate the SAGE dashboards (Grafana JSON) from one source.
 
     python3 grafana/gen.py public > grafana/sage-quality-public.json
+    python3 grafana/gen.py public path-quality-dashboard-public-pinned > grafana/sage-quality-public-path.json
     python3 grafana/gen.py public pqdppf2 > grafana/sage-quality-public-pqdppf2.json
     python3 grafana/gen.py operator > grafana/sage-operator.json
 
@@ -21,9 +22,10 @@ RI = "$__rate_interval"
 PUBLIC = sys.argv[1:2] == ["public"]
 if sys.argv[1:2] not in (["public"], ["operator"]) or len(sys.argv) > 3 or (len(sys.argv) == 3 and not PUBLIC):
     sys.exit("usage: gen.py public [uid] | gen.py operator")
-# The public dashboard replaced two PATH public dashboards, each kept at its
-# own uid so its URLs and share link keep working; the uid picks which.
-PUBLIC_UID = sys.argv[2] if len(sys.argv) == 3 else "path-quality-dashboard-public-pinned"
+# The public dashboard lives at its own uid and also replaced two PATH public
+# dashboards, each kept at its own uid so its URLs and share link keep
+# working; the uid picks which.
+PUBLIC_UID = sys.argv[2] if len(sys.argv) == 3 else "sage-quality-public"
 
 panels = []
 _id = [0]
