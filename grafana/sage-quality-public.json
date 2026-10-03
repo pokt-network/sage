@@ -246,10 +246,84 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "First client attempts whose outcome the heuristic did not blame on the supplier: a good answer, or a chain or client error the supplier answered honestly (block not found, execution reverted). First attempts only: retries arrive after another host failed, with less time left.",
+      "type": "stat",
+      "title": "Relay Success %",
+      "id": 6,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "green",
+                "value": 95
+              }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(1 - sum(rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / sum(rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval]))) * 100",
+          "refId": "A",
+          "range": true,
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "description": "Median upstream attempt latency, client traffic. Client-facing latency is in the Latency row.",
       "type": "stat",
       "title": "Relay Latency P50",
-      "id": 7,
+      "id": 8,
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -321,7 +395,7 @@
       "description": "Share of client requests SAGE answered with a 5xx: what clients actually saw, after retries and hedges.",
       "type": "stat",
       "title": "Client 5xx %",
-      "id": 8,
+      "id": 9,
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -394,7 +468,7 @@
       "description": "Client requests by the status SAGE answered, last 24h.",
       "type": "stat",
       "title": "Requests in 24H",
-      "id": 9,
+      "id": 10,
       "gridPos": {
         "h": 4,
         "w": 12,
@@ -459,7 +533,7 @@
       "description": "Client requests by status over the dashboard time range.",
       "type": "stat",
       "title": "Requests in range",
-      "id": 10,
+      "id": 11,
       "gridPos": {
         "h": 4,
         "w": 12,
@@ -524,7 +598,7 @@
       "description": "Upstream client relay attempts by the HTTP status the relay miner returned, last 24h.",
       "type": "stat",
       "title": "Relays in 24H",
-      "id": 11,
+      "id": 12,
       "gridPos": {
         "h": 4,
         "w": 12,
@@ -589,7 +663,7 @@
       "description": "Upstream client relay attempts by status over the dashboard time range.",
       "type": "stat",
       "title": "Relays in range",
-      "id": 12,
+      "id": 13,
       "gridPos": {
         "h": 4,
         "w": 12,
@@ -647,86 +721,12 @@
       ]
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "First client attempts whose outcome the heuristic did not blame on the supplier: a good answer, or a chain or client error the supplier answered honestly (block not found, execution reverted). First attempts only: retries arrive after another host failed, with less time left.",
-      "type": "stat",
-      "title": "Relay Success %",
-      "id": 13,
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 0,
-        "y": 16
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": 0
-              },
-              {
-                "color": "yellow",
-                "value": 80
-              },
-              {
-                "color": "green",
-                "value": 95
-              }
-            ]
-          },
-          "unit": "percent",
-          "min": 0,
-          "max": 100
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "(1 - sum(rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / sum(rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval]))) * 100",
-          "refId": "A",
-          "range": true,
-          "legendFormat": "__auto"
-        }
-      ]
-    },
-    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 16
       },
       "id": 19,
       "panels": [],
@@ -746,7 +746,7 @@
         "h": 18,
         "w": 24,
         "x": 0,
-        "y": 21
+        "y": 17
       },
       "fieldConfig": {
         "defaults": {
@@ -889,7 +889,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 110
+                "value": 147
               }
             ]
           },
@@ -929,7 +929,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 90
+                "value": 94
               }
             ]
           },
@@ -969,7 +969,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 90
+                "value": 94
               }
             ]
           },
@@ -1009,7 +1009,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 90
+                "value": 94
               }
             ]
           },
@@ -1029,7 +1029,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 100
+                "value": 114
               }
             ]
           },
@@ -1041,7 +1041,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 150
+                "value": 145
               }
             ]
           },
@@ -1053,7 +1053,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 100
+                "value": 84
               }
             ]
           },
@@ -1230,7 +1230,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 39
+        "y": 35
       },
       "fieldConfig": {
         "defaults": {
@@ -1305,7 +1305,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 140
+                "value": 164
               }
             ]
           },
@@ -1612,7 +1612,7 @@
         "h": 12,
         "w": 10,
         "x": 0,
-        "y": 51
+        "y": 47
       },
       "fieldConfig": {
         "defaults": {
@@ -1773,7 +1773,7 @@
         "h": 12,
         "w": 14,
         "x": 10,
-        "y": 51
+        "y": 47
       },
       "fieldConfig": {
         "defaults": {
@@ -1948,7 +1948,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 71
+        "y": 67
       },
       "id": 26,
       "panels": [],
@@ -1968,7 +1968,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 72
+        "y": 68
       },
       "fieldConfig": {
         "defaults": {
@@ -2048,7 +2048,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 72
+        "y": 68
       },
       "fieldConfig": {
         "defaults": {
@@ -2128,7 +2128,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 88
+        "y": 84
       },
       "fieldConfig": {
         "defaults": {
@@ -2186,7 +2186,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 88
+        "y": 84
       },
       "fieldConfig": {
         "defaults": {
@@ -2244,7 +2244,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 88
+        "y": 84
       },
       "fieldConfig": {
         "defaults": {
@@ -2295,7 +2295,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 96
+        "y": 92
       },
       "id": 33,
       "panels": [],
@@ -2315,7 +2315,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 97
+        "y": 93
       },
       "fieldConfig": {
         "defaults": {
@@ -2426,7 +2426,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 105
+        "y": 101
       },
       "fieldConfig": {
         "defaults": {
@@ -2499,7 +2499,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 138
+        "y": 134
       },
       "id": 45,
       "panels": [],
@@ -2519,7 +2519,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 139
+        "y": 135
       },
       "fieldConfig": {
         "defaults": {
@@ -2634,7 +2634,19 @@
               },
               {
                 "id": "custom.width",
-                "value": 110
+                "value": 343
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Service"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 557
               }
             ]
           }
@@ -2750,7 +2762,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 147
+        "y": 143
       },
       "id": 47,
       "panels": [],
@@ -2770,7 +2782,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 148
+        "y": 144
       },
       "fieldConfig": {
         "defaults": {
@@ -2848,7 +2860,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 148
+        "y": 144
       },
       "fieldConfig": {
         "defaults": {
@@ -2926,7 +2938,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 148
+        "y": 144
       },
       "fieldConfig": {
         "defaults": {
@@ -3004,7 +3016,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 156
+        "y": 152
       },
       "fieldConfig": {
         "defaults": {
@@ -3104,7 +3116,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 156
+        "y": 152
       },
       "fieldConfig": {
         "defaults": {
@@ -3182,7 +3194,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 164
+        "y": 160
       },
       "fieldConfig": {
         "defaults": {
@@ -3269,7 +3281,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 150
+                "value": 176
               }
             ]
           },
@@ -3293,7 +3305,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 160
+                "value": 116
               }
             ]
           },
@@ -3344,7 +3356,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 150
+                "value": 118
               }
             ]
           },
@@ -3364,7 +3376,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 150
+                "value": 160
               }
             ]
           },
@@ -3415,7 +3427,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 120
+                "value": 125
               }
             ]
           },
@@ -3435,7 +3447,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 120
+                "value": 109
               }
             ]
           },
@@ -3621,7 +3633,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 174
+        "y": 170
       },
       "fieldConfig": {
         "defaults": {

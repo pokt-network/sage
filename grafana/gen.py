@@ -199,6 +199,15 @@ panels.append({
 })
 y[0] = 3
 
+def relay_success(x):
+    stat("Relay Success %",
+         f'(1 - sum(rate({OF[:-1]}, {FAULT}}}[{RI}])) / sum(rate({OF}[{RI}]))) * 100',
+         x, 4, unit="percent", mn=0, mx=100, steps=PCT_GOOD,
+         desc="First client attempts whose outcome the heuristic did not blame on the supplier: a good answer, or a "
+              "chain or client error the supplier answered honestly (block not found, execution reverted). First "
+              "attempts only: retries arrive after another host failed, with less time left.")
+
+
 row("Overview")
 stat("Incoming RPS", f'sum(rate(sage_client_requests_total{{{S}}}[{RI}]))', 0, 4, unit="reqps",
      desc="Client requests to SAGE: one per request, whatever retries, hedges or batch items it fanned out into.")
@@ -207,6 +216,8 @@ stat("Outgoing Relays/s", f'sum(rate(sage_relay_total{{{S}, request_type="client
      desc="Upstream relay attempts for client traffic: every retry, hedge arm and batch item counts. Probes excluded.")
 stat("Active WebSockets", f'sum(sage_websocket_connections{{{S}}})', 8, 4, steps=((0, "purple"),),
      desc="Live WebSocket bridges: a client connection plus its supplier connection.")
+if PUBLIC:
+    relay_success(12)
 ops[0] = True
 stat("Probe Success %",
      f'sum(rate(sage_relay_total{{{S}, request_type="probe", status=~"2.."}}[{RI}])) / '
@@ -235,12 +246,8 @@ stat("Relays in range", f'sum by (status) (increase(sage_relay_total{{{S}, reque
      graph="none", decimals=0, legend="{{status}}", color="palette-classic-by-name",
      desc="Upstream client relay attempts by status over the dashboard time range.")
 y[0] += 4
-stat("Relay Success %",
-     f'(1 - sum(rate({OF[:-1]}, {FAULT}}}[{RI}])) / sum(rate({OF}[{RI}]))) * 100',
-     0, 4, unit="percent", mn=0, mx=100, steps=PCT_GOOD,
-     desc="First client attempts whose outcome the heuristic did not blame on the supplier: a good answer, or a "
-          "chain or client error the supplier answered honestly (block not found, execution reverted). First attempts "
-          "only: retries arrive after another host failed, with less time left.")
+if not PUBLIC:
+    relay_success(0)
 ops[0] = True
 stat("Hedge Fire Rate %",
      f'sum(rate(sage_hedge_total{{{S}, result=~"primary_won|hedge_won|both_failed"}}[{RI}])) / '
@@ -273,7 +280,8 @@ stat("Recovered Panics (1h)", f'sum(increase(sage_recovered_panics_total{{{S}}}[
      steps=((0, "green"), (1, "red")),
      desc="Panics contained by the gateway. Non-zero means a bug was caught, not that nothing happened.")
 ops[0] = False
-y[0] += 4
+if not PUBLIC:
+    y[0] += 4
 
 # ---------------------------------------------------------------------------
 row("Supplier Quality (Operator / Service / RPC type) — client traffic")
@@ -327,17 +335,17 @@ table(
     overrides=[
         col("Success %", unit="percent", mn=0, mx=100, novalue="—", steps=PCT_GOOD, cell=GAUGE, width=120),
         col("RPS", unit="reqps", novalue="0", width=90),
-        col("Supplier err/s", unit="reqps", novalue="0", steps=((0, "green"), (0.5, "yellow"), (5, "red")), cell=BG, width=110),
-        col("P50 (ms)", unit="ms", novalue="—", steps=((0, "green"), (500, "yellow"), (1000, "red")), width=90),
-        col("P95 (ms)", unit="ms", novalue="—", steps=((0, "green"), (1000, "yellow"), (3000, "red")), width=90),
-        col("P99 (ms)", unit="ms", novalue="—", steps=((0, "green"), (2000, "yellow"), (5000, "red")), width=90),
-        col("Session eps", decimals=0, novalue="—", width=100),
+        col("Supplier err/s", unit="reqps", novalue="0", steps=((0, "green"), (0.5, "yellow"), (5, "red")), cell=BG, width=147),
+        col("P50 (ms)", unit="ms", novalue="—", steps=((0, "green"), (500, "yellow"), (1000, "red")), width=94),
+        col("P95 (ms)", unit="ms", novalue="—", steps=((0, "green"), (1000, "yellow"), (3000, "red")), width=94),
+        col("P99 (ms)", unit="ms", novalue="—", steps=((0, "green"), (2000, "yellow"), (5000, "red")), width=94),
+        col("Session eps", decimals=0, novalue="—", width=114),
         col("Eps < 80", decimals=0, novalue="0", steps=((0, "green"), (1, "yellow"), (10, "red")), cell=BG, width=90),
         col("URLs (1h)", decimals=0, novalue="—", width=90),
         col("Mean Score", mn=0, mx=100, decimals=1, novalue="—", steps=((0, "red"), (50, "yellow"), (80, "green")),
             cell={"mode": "lcd", "type": "gauge", "valueDisplayMode": "color"}, width=120),
         col("Drained", novalue="—", steps=((0, "green"), (1, "red")), cell=BG, width=80),
-        col("Operator", width=150), col("Service", width=100), col("RPC Type", width=100),
+        col("Operator", width=145), col("Service", width=84), col("RPC Type", width=100),
     ],
 )
 y[0] += 18
@@ -362,7 +370,7 @@ table(
          "(invalid params, execution reverted) — never penalised. Only supplier and unknown count as fault.",
     overrides=[
         col("Supplier fault %", unit="percent", mn=0, mx=100, novalue="—",
-            steps=((0, "green"), (5, "yellow"), (20, "red")), cell={"mode": "gradient", "type": "gauge"}, width=140),
+            steps=((0, "green"), (5, "yellow"), (20, "red")), cell={"mode": "gradient", "type": "gauge"}, width=164),
         col("supplier /s", unit="reqps", novalue="0", steps=((0, "green"), (1, "yellow"), (5, "red")), cell=BG, width=110),
         col("unknown /s", unit="reqps", novalue="0", steps=((0, "green"), (0.1, "yellow"), (1, "red")), cell=BG, width=110),
         col("chain /s", unit="reqps", novalue="0", width=100),
@@ -534,7 +542,8 @@ table(
         col("5xx %", unit="percent", mn=0, mx=100, novalue="0", steps=((0, "green"), (1, "yellow"), (5, "red")),
             cell={"mode": "gradient", "type": "gauge"}, width=160),
         col("5xx /s", unit="reqps", novalue="0", width=100),
-        col("Requests /s", unit="reqps", novalue="0", width=110),
+        col("Requests /s", unit="reqps", novalue="0", width=343),
+        col("Service", width=557),
     ],
     extra_tx=[{"id": "filterByValue", "options": {"filters": [{"config": {"id": "greater", "options": {"value": 0}},
                                                                "fieldName": "5xx /s"}], "match": "any",
@@ -623,16 +632,16 @@ table(
          "in the last hour, and whether it is drained.",
     overrides=[
         col("WS conns", decimals=0, novalue="0", steps=((0, "green"), (10, "blue")), cell=BG, width=100),
-        col("Frames/s to client", unit="short", decimals=1, novalue="0", width=150),
-        col("Frames/s to supplier", unit="short", decimals=2, novalue="0", width=160),
+        col("Frames/s to client", unit="short", decimals=1, novalue="0", width=176),
+        col("Frames/s to supplier", unit="short", decimals=2, novalue="0", width=116),
         col("Dup+unsolicited %", unit="percent", decimals=2, novalue="—",
-            steps=((0, "green"), (1, "yellow"), (5, "red")), cell=BG, width=150),
-        col("Median tenure (1h)", unit="s", novalue="—", width=150),
+            steps=((0, "green"), (1, "yellow"), (5, "red")), cell=BG, width=118),
+        col("Median tenure (1h)", unit="s", novalue="—", width=160),
         col("Frames /conn", unit="short", decimals=1, novalue="0", steps=((0, "green"), (50, "yellow"), (200, "red")),
-            cell=BG, width=120),
+            cell=BG, width=125),
         col("WS Mean Score", mn=0, mx=100, decimals=1, novalue="—", steps=((0, "red"), (50, "yellow"), (80, "green")),
             cell={"mode": "lcd", "type": "gauge", "valueDisplayMode": "color"}, width=130),
-        col("WS session eps", decimals=0, novalue="—", width=120),
+        col("WS session eps", decimals=0, novalue="—", width=109),
         col("WS eps < 80", decimals=0, novalue="0", steps=((0, "green"), (1, "yellow"), (10, "red")), cell=BG, width=100),
         col("WS URLs (1h)", decimals=0, novalue="—", width=100),
         col("Drained", novalue="—", steps=((0, "green"), (1, "red")), cell=BG, width=80),
