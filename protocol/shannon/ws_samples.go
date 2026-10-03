@@ -2,6 +2,7 @@ package shannon
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,6 +92,11 @@ func (s *wsNotificationSamples) observe(serviceID domain.ServiceID, operator, ow
 	if hash == "" {
 		return
 	}
+	// The hash is a substring of gjson's copy of the whole result (a block
+	// header, a log, a pending transaction): kept as is, each sample pinned
+	// that copy. On mainnet (2026-10-03) the full table held ~85MB of them,
+	// the largest live allocation on a pod, growing as the rings filled.
+	hash = strings.Clone(hash)
 	sample := WSNotificationSample{
 		ServiceID: k.service, Operator: operator, Owner: owner, Topic: topic,
 		Kind: kind, Hash: hash, At: time.Now().UTC(),

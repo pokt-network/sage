@@ -2,6 +2,8 @@ package shannon
 
 import (
 	"fmt"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -57,5 +59,27 @@ func TestNotificationSamples_KeyTableIsBounded(t *testing.T) {
 	late := fmt.Sprintf("op%d.example", wsSampleMaxKeys+9)
 	if s.rings[wsSampleKey{"eth", late, "", "logs"}] == nil {
 		t.Fatal("a key seen after the table filled must be sampled")
+	}
+}
+
+// A sample keeps its hash, not the result it was read from: a 100KB header
+// per sample must not stay live behind a 66-byte hash.
+func TestWSNotificationSamples_KeepOnlyTheHash(t *testing.T) {
+	big := strings.Repeat("a", 100_000)
+	s := newWSNotificationSamples()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for i := range 200 {
+		payload := []byte(fmt.Sprintf(`{"params":{"result":{"parentHash":"0x1","hash":"0x%064x","logsBloom":"%s"}}}`, i, big))
+		s.observe("eth", fmt.Sprintf("op%d.example", i), "", "newHeads", payload) // a new key: its first frame is sampled
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	if got := len(s.snapshot("")); got != 200 {
+		t.Fatalf("%d samples, want 200", got)
+	}
+	if grew := int64(after.HeapInuse) - int64(before.HeapInuse); grew > 5<<20 {
+		t.Fatalf("heap grew %d bytes for 200 hashes: the samples pin their payload copies", grew)
 	}
 }
