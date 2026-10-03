@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,7 +46,11 @@ var _ StreamRedisClient = (*redis.Client)(nil)
 type RedisProbeStream struct {
 	// stream names the Redis Stream results go to. Empty means
 	// s.streamOr(), the literal every release before the prefix used.
-	stream     string
+	stream string
+	// resume is the id of the last entry Run applied, where the next Run
+	// picks up. Run is never called concurrently (the feed restarts it in
+	// one loop), so it needs no lock.
+	resume     string
 	client     StreamRedisClient
 	instanceID string
 	// replay is how far back a fresh reader looks before blocking on new
@@ -96,20 +101,28 @@ func (s *RedisProbeStream) Publish(ctx context.Context, r ProbeResult) error {
 // it probed. Malformed entries are skipped, never fatal — one bad entry must
 // not cost the stream.
 func (s *RedisProbeStream) Run(ctx context.Context, apply func(ProbeResult)) error {
+	// Replay: everything from the window start to now, or, on a restart,
+	// everything after the last entry applied. The feed restarts Run after
+	// any read error, and a full replay each time applied every result in
+	// the window once per restart: a flapping connection multiplied every
+	// signal in it.
 	lastID := s.replayID()
-	// Replay: everything from the window start to now.
+	if s.resume != "" {
+		lastID = "(" + s.resume
+	}
 	msgs, err := s.client.XRange(ctx, s.streamOr(), lastID, "+").Result()
 	if err != nil {
 		return fmt.Errorf("probe stream replay: %w", err)
 	}
 	for _, m := range msgs {
 		s.applyMessage(m, apply)
-		lastID = m.ID
+		lastID, s.resume = m.ID, m.ID
 	}
 	if len(msgs) == 0 {
-		// Nothing in the window: start from now, not from the window start,
-		// or the same empty range is read again on the first XREAD.
-		lastID = "$"
+		// Nothing new: read on from the last entry applied, or from now,
+		// not from the window start, or the same empty range is read again
+		// on the first XREAD.
+		lastID = cmp.Or(s.resume, "$")
 	}
 
 	for ctx.Err() == nil {
@@ -130,7 +143,7 @@ func (s *RedisProbeStream) Run(ctx context.Context, apply func(ProbeResult)) err
 		for _, st := range streams {
 			for _, m := range st.Messages {
 				s.applyMessage(m, apply)
-				lastID = m.ID
+				lastID, s.resume = m.ID, m.ID
 			}
 		}
 	}

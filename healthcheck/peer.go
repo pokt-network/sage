@@ -32,12 +32,13 @@ func (e *Executor) SetPeerSource(s ProbeSource, maxAge func(domain.ServiceID) ti
 	e.peerSeen = make(map[probeKey]time.Time)
 }
 
-// backendKey names the backend an endpoint belongs to, exactly as
-// groupByBackend keys its groups, so a peer's result and this instance's
-// schedule agree on what "the same check" is.
-func (e *Executor) backendKey(ep domain.EndpointAddr) string {
+// backendKey names the backend a check of rpcType reaches through ep,
+// exactly as groupByBackend keys its groups (the URL that check dials), so a
+// peer's result and this instance's schedule agree on what "the same check"
+// is.
+func (e *Executor) backendKey(ep domain.EndpointAddr, rpcType domain.RPCType) string {
 	if e.dedupByBackendURL.Load() {
-		if url, err := ep.URL(); err == nil && url != "" {
+		if url, err := e.dialedURL(ep, rpcType); err == nil && url != "" {
 			return url
 		}
 	}
@@ -55,11 +56,25 @@ func (e *Executor) backendKey(ep domain.EndpointAddr) string {
 // strength of the result would leave those registrations height-less and
 // filtered out of selection. So the result is re-pointed at this instance's
 // registrations with the same backend URL. A backend this instance does not
-// reach is not its business; a transport failure on a registration it does
-// not hold may be the other session's problem rather than the backend's, so
-// neither is applied, and neither counts as covered.
+// reach is not its business, and none of these is applied or counts as
+// covered:
+//
+//   - a transport failure, on any registration: it is the other instance's
+//     path to the backend failing (its session, its signer, its network),
+//     which says nothing this instance's own probe would not. It used to be
+//     applied on a registration both held, scoring a supplier for a failure
+//     this instance never saw.
+//
+// A result older than the peer max age (zero: the service's probe interval)
+// still records coverage, which coveredByPeer judges against the max age of
+// the moment, but is not applied: it describes the backend as it was, and a
+// replica booting onto an hour of stream scored suppliers, and set heights,
+// on hour-old evidence.
 func (e *Executor) applyPeerResult(ctx context.Context, r ProbeResult) {
 	if _, ok := e.sessions.ConfiguredServices()[r.ServiceID]; !ok {
+		return
+	}
+	if r.TransportError != "" {
 		return
 	}
 	rpcType := r.RPCType
@@ -70,30 +85,28 @@ func (e *Executor) applyPeerResult(ctx context.Context, r ProbeResult) {
 	if err != nil {
 		return
 	}
-	key := e.backendKey(r.Endpoint)
+	key := e.backendKey(r.Endpoint, rpcType)
 	var local domain.EndpointAddrList
 	for _, ep := range eps {
-		if e.backendKey(ep) == key {
+		if e.backendKey(ep, rpcType) == key {
 			local = append(local, ep)
 		}
 	}
 	if len(local) == 0 {
 		return
 	}
-	held := slices.Contains(local, r.Endpoint)
-	if r.TransportError != "" && !held {
-		return
-	}
-	if !held {
+	if !slices.Contains(local, r.Endpoint) {
 		r.Endpoint = local[0]
 	}
 	r.Siblings = local
 	r.Source = ResultSourcePeer
-	e.applyResult(ctx, r)
 
 	at := r.ProbedAt
 	if at.IsZero() {
 		at = e.now()
+	}
+	if e.now().Sub(at) <= e.peerAgeLimit(r.ServiceID) {
+		e.applyResult(ctx, r)
 	}
 	pk := probeKey{service: r.ServiceID, backend: key, check: r.Check}
 	e.peerMu.Lock()
@@ -101,6 +114,17 @@ func (e *Executor) applyPeerResult(ctx context.Context, r ProbeResult) {
 		e.peerSeen[pk] = at
 	}
 	e.peerMu.Unlock()
+}
+
+// peerAgeLimit is how old a peer's result may be and still be applied: the
+// peer max age, or the service's probe interval when that is unset.
+func (e *Executor) peerAgeLimit(serviceID domain.ServiceID) time.Duration {
+	if e.peerMaxAge != nil {
+		if d := e.peerMaxAge(serviceID); d > 0 {
+			return d
+		}
+	}
+	return e.serviceInterval(serviceID, e.configured.Load())
 }
 
 // coveredByPeer reports whether the other instance ran this check against

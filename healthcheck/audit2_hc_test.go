@@ -46,7 +46,6 @@ func TestAudit2_StaleSessionProbeRecordsNoSignal(t *testing.T) {
 // the backend. Applied to a registration this instance also holds, it scores
 // a supplier for a failure this instance never saw.
 func TestAudit2_PeerTransportFailureNotAppliedOnHeld(t *testing.T) {
-	t.Skip("unfixed: audit 2026-10-03 finding #18; delete this line with the fix")
 	exec, _, rep := peerExecutor(t)
 	r := peerResult(localA, time.Now())
 	r.StatusCode, r.Body = 0, nil
@@ -68,7 +67,6 @@ func TestAudit2_PeerTransportFailureNotAppliedOnHeld(t *testing.T) {
 // backend as it was, and a booting replica replaying the stream would score
 // suppliers on hour-old evidence.
 func TestAudit2_PeerResultOlderThanMaxAgeNotApplied(t *testing.T) {
-	t.Skip("unfixed: audit 2026-10-03 finding #18; delete this line with the fix")
 	exec, _, rep := peerExecutor(t)
 	exec.SetPeerSource(idleSource{}, func(domain.ServiceID) time.Duration { return time.Minute })
 	exec.applyPeerResult(context.Background(), peerResult(peerOnNode1, time.Now().Add(-time.Hour)))
@@ -158,7 +156,6 @@ func splitStreamID(id string) (ms, seq uint64) {
 // whole window from scratch, so one probe result is applied once per restart:
 // a flapping Redis connection multiplies every signal in the window.
 func TestAudit2_StreamRestartDoesNotReapplyWindow(t *testing.T) {
-	t.Skip("unfixed: audit 2026-10-03 finding #18; delete this line with the fix")
 	raw, _ := json.Marshal(streamEntry{Producer: "leader-1", Result: ProbeResult{ServiceID: "eth", Check: "block_number"}})
 	f := &audit2Stream{
 		entries:   []redis.XMessage{{ID: fmt.Sprintf("%d-0", time.Now().UnixMilli()), Values: map[string]any{probeStreamField: string(raw)}}},
