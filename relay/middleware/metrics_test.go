@@ -36,6 +36,8 @@ type fakeVerdict struct {
 	attribution string
 }
 
+func (r *fakeRecorder) RecordUnclassified(domain.ServiceID, string, string) {}
+
 func (r *fakeRecorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCType, reason, attribution string) {
 	r.verdicts = append(r.verdicts, fakeVerdict{serviceID, rpcType, reason, attribution})
 }
@@ -228,6 +230,8 @@ func (r *operatorRecorder) RecordRelay(serviceID domain.ServiceID, endpoint doma
 	defer r.mu.Unlock()
 	r.fakeRecorder.RecordRelay(serviceID, endpoint, statusCode, latency, err)
 }
+
+func (r *operatorRecorder) RecordUnclassified(domain.ServiceID, string, string) {}
 
 func (r *operatorRecorder) RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCType, reason, attribution string) {
 	r.mu.Lock()

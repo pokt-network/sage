@@ -863,3 +863,15 @@ func TestRecordOperatorFailure_CutsReason(t *testing.T) {
 		t.Fatalf("%d series, want both failures under one ws_endpoint_lost reason", n)
 	}
 }
+
+// One wording is one label value whatever numbers and addresses it carries.
+func TestUnclassifiedMessage(t *testing.T) {
+	a := unclassifiedMessage("server error (code -32000): account 0xabc12 has 15 tokens")
+	b := unclassifiedMessage("server error (code -32001): account 0xFFFF has 7 tokens")
+	if a != b || a != "server error (code #): account 0x# has # tokens" {
+		t.Fatalf("got %q and %q, want one masked wording", a, b)
+	}
+	if long := unclassifiedMessage(strings.Repeat("x", 200)); len(long) != 60 {
+		t.Fatalf("len %d, want 60", len(long))
+	}
+}

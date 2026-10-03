@@ -4,6 +4,7 @@ package metrics
 
 import (
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -84,6 +85,7 @@ type Recorder struct {
 	methodBlockEvents      *prometheus.CounterVec
 	reputationAttempts     *prometheus.CounterVec
 	operatorFailures       *prometheus.CounterVec
+	unclassified           *prometheus.CounterVec
 	heuristicVerdicts      *prometheus.CounterVec
 	operatorAttempts       *prometheus.CounterVec
 	operatorMethodAttempts *prometheus.CounterVec
@@ -102,6 +104,8 @@ type Recorder struct {
 	codespaces *labelPolicy
 	// failureReasons bounds sage_operator_failures_total's reason label.
 	failureReasons *labelPolicy
+	// unclassifiedMessages bounds sage_unclassified_errors_total's message.
+	unclassifiedMessages *labelPolicy
 
 	// operators bounds the operator label: a registrable domain taken from
 	// staked URLs, a set other people choose.
@@ -397,9 +401,10 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			Name:      "batch_response_bytes_in_flight",
 			Help:      "Sub-relay answer bytes finished and not yet written to the client, across every service. A streamed batch releases each answer as it is written, so one batch holds at most (concurrency_config.max_batch_concurrency + max_batch_window) answers here. A batch whose writer cannot stream (none in production) keeps every answer until it merges, and that merged copy is not counted.",
 		}),
-		codespaces:     cappedLabel(maxCodespaceLabels),
-		failureReasons: cappedLabel(maxFailureReasonLabels),
-		operators:      cappedLabel(maxOperatorLabels),
+		codespaces:           cappedLabel(maxCodespaceLabels),
+		failureReasons:       cappedLabel(maxFailureReasonLabels),
+		unclassifiedMessages: cappedLabel(maxFailureReasonLabels),
+		operators:            cappedLabel(maxOperatorLabels),
 		// Per operator, the registrable domain, never per host: an operator
 		// is a handful of values per service and stays put, where hosts
 		// rotate with every session and are the series growth the
@@ -448,6 +453,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		// No key label: reputation keys are backend URLs, which is the
 		// unbounded dimension. rpc_type and signal are closed sets and probe
 		// is a boolean, so the series count per service is fixed.
+		unclassified: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "unclassified_errors_total",
+				Help:      "Answers whose JSON-RPC error the heuristic could not place (server_error: a -32000..-32099 wording that is neither a known chain answer, a client error nor a supplier failure; unknown_error_code: a code outside the spec), by service, reason and message: the error text with numbers and hex values masked, cut at 60 bytes. These are retried and not scored, so each wording here is either a chain or client answer retried for nothing, or a supplier failure scored as nothing: the list to catalogue in heuristic/protocol.go. Messages past the first 64 collapse to __other__.",
+			},
+			[]string{"service_id", "reason", "message"},
+		),
 		operatorFailures: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -591,6 +604,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.methodBlockEvents,
 		r.reputationAttempts,
 		r.operatorFailures,
+		r.unclassified,
 		r.heuristicVerdicts,
 		r.operatorAttempts,
 		r.operatorMethodAttempts,
@@ -987,6 +1001,32 @@ func (r *Recorder) initHealthCheckSkipped(knownServices []domain.ServiceID) {
 func (r *Recorder) RecordMethodBlockEvent(serviceID domain.ServiceID, method, event string) {
 	r.methodBlockEvents.WithLabelValues(r.services.serviceValue(serviceID), method, event).Inc()
 }
+
+// RecordUnclassified counts one answer whose error the heuristic could not
+// place, by its masked message (unclassifiedMessage).
+func (r *Recorder) RecordUnclassified(serviceID domain.ServiceID, reason, detail string) {
+	r.unclassified.WithLabelValues(r.services.serviceValue(serviceID), reason,
+		r.unclassifiedMessages.value(unclassifiedMessage(detail))).Inc()
+}
+
+// unclassifiedMessage is detail with its "(code N): " lead kept, hex values
+// and numbers masked so one wording is one label, cut at 60 bytes.
+func unclassifiedMessage(detail string) string {
+	detail = maskedValue.ReplaceAllStringFunc(detail, func(v string) string {
+		if strings.HasPrefix(v, "0x") {
+			return "0x#"
+		}
+		return "#"
+	})
+	if len(detail) > 60 {
+		detail = detail[:60]
+	}
+	return detail
+}
+
+// maskedValue is a hex value or a number, matched in one pass so a hex
+// value's leading 0 is not read as a number.
+var maskedValue = regexp.MustCompile(`0x[0-9a-fA-F]+|-?[0-9]+`)
 
 // RecordOperatorFailure counts one failure reputation recorded against an
 // operator. reason is cut at its first ':' (a WebSocket reason carries the

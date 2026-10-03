@@ -23,6 +23,10 @@ type MetricsRecorder interface {
 	// Called once per attempt that produced a verdict, so a retried request
 	// records one verdict per attempt.
 	RecordVerdict(serviceID domain.ServiceID, rpcType domain.RPCType, reason, attribution string)
+	// RecordUnclassified records the detail of a verdict the heuristic could
+	// not place (server_error, unknown_error_code): the wordings left to
+	// catalogue.
+	RecordUnclassified(serviceID domain.ServiceID, reason, detail string)
 	// RecordOperatorAttempt counts one attempt per operator: who served it,
 	// whose fault the outcome was, and how long it took. kind is the
 	// attempt's relay.AttemptKind label (first, retry, hedge, probation);
@@ -97,6 +101,9 @@ func Metrics(recorder MetricsRecorder) relay.Middleware {
 			// otherwise invisible.
 			if v := ctx.HeuristicResult; v != nil {
 				recorder.RecordVerdict(ctx.ServiceID, ctx.RPCType, v.Reason, verdictAttribution(v))
+				if v.Reason == "server_error" || v.Reason == "unknown_error_code" {
+					recorder.RecordUnclassified(ctx.ServiceID, v.Reason, v.Details)
+				}
 			}
 			if ctx.Endpoint != "" {
 				kind := ctx.AttemptKind
