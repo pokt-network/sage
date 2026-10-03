@@ -15,6 +15,7 @@ import (
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/reputation"
@@ -99,6 +100,7 @@ const (
 	wsProbeNoAnswer      = "no_answer"      // connected, but no valid answer in time
 	wsProbeInvalid       = "invalid"        // the answer failed relay validation
 	wsProbeErrorResponse = "error_response" // a valid relay whose payload is a JSON-RPC error or no result
+	wsProbeRefused       = "refused"        // the miner refused as protocol says it should (heuristic.MinerRefusal): not graded
 )
 
 // jsonRPCMethodNotFound is the JSON-RPC 2.0 "method not found" error code.
@@ -215,7 +217,7 @@ func (r *WSRelayer) probeEndpoint(ctx context.Context, t wsProbeTarget) {
 	if r.deps.Metrics != nil {
 		r.deps.Metrics.Probed(t.serviceID, result)
 	}
-	if result == wsProbeUnresolved {
+	if result == wsProbeUnresolved || result == wsProbeRefused {
 		return
 	}
 	failed := result != wsProbeOK && result != wsProbeOtherDialect
@@ -288,11 +290,11 @@ func (r *WSRelayer) runProbe(ctx context.Context, t wsProbeTarget) string {
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
-			return wsProbeNoAnswer
+			return probeFailure(err, wsProbeNoAnswer)
 		}
 		payload, err := proc.ProcessEndpointMessage(data)
 		if err != nil {
-			return wsProbeInvalid
+			return probeFailure(err, wsProbeInvalid)
 		}
 		if qos.JSONRPCRequestID(payload) != "1" {
 			continue
@@ -315,4 +317,15 @@ func (r *WSRelayer) runProbe(ctx context.Context, t wsProbeTarget) string {
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "probe done"), time.Now().Add(time.Second))
 		return wsProbeOK
 	}
+}
+
+// probeFailure is failed, unless err is a relay miner's refusal the HTTP path
+// scores as nothing (an allocation spent, a session it no longer serves, a
+// request it refuses): then the probe is refused and records no signal. A
+// probe charged a major error for the miner doing what the protocol says.
+func probeFailure(err error, failed string) string {
+	if v, ok := heuristic.MinerRefusal(err); ok && !v.ShouldPenalize {
+		return wsProbeRefused
+	}
+	return failed
 }

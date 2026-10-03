@@ -438,10 +438,10 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	tried := map[domain.EndpointAddr]bool{endpointAddr: true}
 	bridgeOpts = append(bridgeOpts, websockets.WithEndpointLost(func(ctx context.Context, cause error) (*websocket.Conn, websockets.MessageProcessor, [][]byte, error) {
 		lost := *current.Load()
-		// The HA miner closes with 4002 when the supplier's allocation for
-		// the session is spent: it is out for the rest of the session, here
-		// and on HTTP (overServed).
-		if ce := (*websocket.CloseError)(nil); errors.As(cause, &ce) && ce.Code == closeMinerStakeLimit {
+		// A miner closing because the supplier's allocation for the session
+		// is spent (the HA miner's 4002, the poktroll miner's wording): it is
+		// out for the rest of the session, here and on HTTP (overServed).
+		if v, ok := heuristic.MinerRefusal(cause); ok && v.Reason == heuristic.ReasonOverServiced {
 			r.deps.Protocol.markOverServed(serviceID, lost.Supplier(), sessionEnd.Load())
 		}
 		if lossIsSuppliers(cause) {
@@ -539,23 +539,18 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 // (mainnet 2026-09-29: WebSocket keys scored no lower than JSON-RPC ones), so
 // it showed as noise in the signal rather than as a floor.
 //
-// Nor is an HA relay miner closing with its own protocol codes: 4000 (the
-// session it was serving has expired) and 4002 (the application's stake
-// allocation for this supplier and session is spent: over-servicing, which
-// the HTTP path already scores as nothing).
+// Nor is a relay miner's own refusal that the HTTP path scores as nothing:
+// a session it no longer serves, or an allocation that is spent
+// (heuristic.MinerRefusal, the table every path reads).
 func lossIsSuppliers(cause error) bool {
 	if errors.Is(cause, websockets.ErrBridgeSessionExpired) || errors.Is(cause, websockets.ErrBridgeReplaceRequested) {
 		return false
 	}
-	var ce *websocket.CloseError
-	return !errors.As(cause, &ce) || (ce.Code != closeMinerSessionExpired && ce.Code != closeMinerStakeLimit)
+	if v, ok := heuristic.MinerRefusal(cause); ok {
+		return v.ShouldPenalize
+	}
+	return true
 }
-
-// The HA relay miner's application close codes (lossIsSuppliers).
-const (
-	closeMinerSessionExpired = 4000
-	closeMinerStakeLimit     = 4002
-)
 
 // stalled reports whether a connection's periodic feed has gone silent for
 // longer than timeout. A connection with no periodic subscription is never

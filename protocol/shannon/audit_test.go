@@ -15,6 +15,7 @@ import (
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/reputation"
 )
 
@@ -36,7 +37,7 @@ func newStakeLimitSupplier(t *testing.T) *httptest.Server {
 			return
 		}
 		_ = conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(closeMinerStakeLimit, "stake limit reached"), time.Now().Add(time.Second))
+			websocket.FormatCloseMessage(heuristic.CloseMinerStakeLimit, "stake limit reached"), time.Now().Add(time.Second))
 	}))
 	t.Cleanup(srv.Close)
 	return srv

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/pokt-network/sage/domain"
 )
 
@@ -26,11 +28,14 @@ import (
 //     failed with one. Nobody is waiting for the answer, so nobody is at
 //     fault. No retry, no penalty, and Observe records no signal for
 //     AttrClient with an error.
+//   - stale session: the endpoint left the session at a rollover
+//     (domain.ErrEndpointsStale). Retried, scored nothing.
 //   - connect-level: the dial itself failed (refused, DNS, TLS handshake).
 //     The host is not serving anything: critical, ShouldCircuitBreak.
 //   - timeout after connect: the host accepted the connection and did not
 //     answer in time. The one failure that says "cannot do THIS": major,
 //     retry elsewhere, MethodBlocking.
+//   - a relay miner's own refusal: graded by MinerRefusal.
 //   - other: session fetch, signing, relay-miner validation, unknown. Today's
 //     grading — minor, AttrUnknown, retryable per the error itself.
 func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
@@ -60,6 +65,20 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 			Confidence:  0.95,
 			Reason:      "client_cancelled",
 			Details:     "the relay was cancelled before the endpoint answered",
+		}
+	}
+
+	// The endpoint left the session at a rollover between selection and
+	// send: the gateway's view was stale and nothing reached the supplier.
+	// The relay path already kept it out of the score; a health probe graded
+	// it here, through the catch-all below, as a minor failure.
+	if errors.Is(err, domain.ErrEndpointsStale) {
+		return AnalysisResult{
+			ShouldRetry: true,
+			Attribution: AttrUnknown,
+			Confidence:  0.95,
+			Reason:      "endpoint_left_session",
+			Details:     err.Error(),
 		}
 	}
 
@@ -116,18 +135,12 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 		}
 	}
 
-	var miner *domain.MinerError
-	if errors.As(err, &miner) {
-		return analyzeMinerError(miner)
+	if verdict, ok := MinerRefusal(err); ok {
+		return verdict
 	}
 
 	var upstream *domain.UpstreamStatusError
 	if errors.As(err, &upstream) {
-		// An HA relay miner refuses over-servicing with a 429 whose body says
-		// so; read before the status, which alone cannot tell it from busy.
-		if IsOverServiced(upstream.Body) {
-			return overServicedResult()
-		}
 		switch {
 		case upstream.Status == 413:
 			return AnalysisResult{
@@ -230,6 +243,51 @@ func isTimeout(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded)
 }
 
+// MinerRefusal grades a relay miner's own refusal wherever err carries one,
+// and reports whether it did. It is the one table every path reads: the HTTP
+// relay (through AnalyzeTransportError), a WebSocket bridge's endpoint loss
+// and a WebSocket probe. When each kept its own, they disagreed: the HTTP
+// path scored over-servicing as nothing while a probe charged the same
+// refusal as a major error.
+//
+// A refusal arrives in one of three shapes:
+//
+//   - domain.MinerError: the miner's unsigned RelayMinerError, on HTTP or in
+//     a WebSocket frame. Graded by codespace and code (analyzeMinerError).
+//   - domain.UpstreamStatusError whose body is the over-servicing wording:
+//     the HA miner's 429. Any other status is not a refusal here; the caller
+//     grades the status.
+//   - *websocket.CloseError: the HA miner closes with 4000 when the session
+//     it served has ended and 4002 when the application's allocation for
+//     this supplier and session is spent; the poktroll miner closes normally
+//     with the over-servicing wording as the reason.
+func MinerRefusal(err error) (AnalysisResult, bool) {
+	var miner *domain.MinerError
+	if errors.As(err, &miner) {
+		return analyzeMinerError(miner), true
+	}
+	var upstream *domain.UpstreamStatusError
+	if errors.As(err, &upstream) && IsOverServiced(upstream.Body) {
+		return overServicedResult(), true
+	}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		switch {
+		case closeErr.Code == CloseMinerStakeLimit || IsOverServiced([]byte(closeErr.Text)):
+			return overServicedResult(), true
+		case closeErr.Code == CloseMinerSessionExpired:
+			return minerSessionRejected(closeErr.Error()), true
+		}
+	}
+	return AnalysisResult{}, false
+}
+
+// The HA relay miner's WebSocket close codes (MinerRefusal).
+const (
+	CloseMinerSessionExpired = 4000
+	CloseMinerStakeLimit     = 4002
+)
+
 // Relay miner error reports (domain.MinerError) that are about the session
 // the gateway signed for rather than about the supplier: poktroll's
 // relayer_proxy "invalid session" (1) and "unknown session" (6), and the
@@ -240,21 +298,49 @@ var minerSessionCodes = map[string]map[uint32]bool{
 	"relay_authenticator": {1: true, 2: true},
 }
 
+// Relay miner error reports that refuse the request itself, which every
+// supplier behind the same miner would refuse alike: relayer_proxy "max body
+// size exceeded" (11), "response limit exceed" (12), "request limit exceed"
+// (13) and "failed to unmarshal relay request" (14), and the relay
+// authenticator's "invalid relay request" (4). Retried, since another
+// supplier's miner may allow more, and scored nothing, like SAGE's own
+// response ceiling (response_too_large).
+var minerRequestCodes = map[string]map[uint32]bool{
+	"relayer_proxy":       {11: true, 12: true, 13: true, 14: true},
+	"relay_authenticator": {4: true},
+}
+
+// minerSessionRejected is the verdict for a miner refusing the session the
+// gateway signed for: retried on another supplier, scored nothing.
+func minerSessionRejected(details string) AnalysisResult {
+	return AnalysisResult{
+		ShouldRetry: true,
+		Attribution: AttrUnknown,
+		Confidence:  0.90,
+		Reason:      "miner_session_rejected",
+		Details:     details,
+	}
+}
+
 // analyzeMinerError grades a relay miner's own unsigned refusal. Every one is
 // retried elsewhere. Over-servicing (relayer_proxy 7, or its wording) is
 // protocol-correct and scored nothing; a session the miner will not serve is
-// the gateway's choice of session, also scored nothing; anything else is the
-// supplier's layer failing, minor like its 5xx (upstream_5xx).
+// the gateway's choice of session, and a request it refuses is the request,
+// both also scored nothing; anything else is the supplier's layer failing,
+// minor like its 5xx (upstream_5xx).
 func analyzeMinerError(m *domain.MinerError) AnalysisResult {
 	if MinerOverServiced(m.Codespace, m.Code, m.Message) {
 		return overServicedResult()
 	}
 	if minerSessionCodes[m.Codespace][m.Code] {
+		return minerSessionRejected(m.Error())
+	}
+	if minerRequestCodes[m.Codespace][m.Code] {
 		return AnalysisResult{
 			ShouldRetry: true,
 			Attribution: AttrUnknown,
 			Confidence:  0.90,
-			Reason:      "miner_session_rejected",
+			Reason:      "miner_request_refused",
 			Details:     m.Error(),
 		}
 	}

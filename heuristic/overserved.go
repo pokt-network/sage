@@ -34,6 +34,10 @@ func IsOverServiced(body []byte) bool {
 	return slices.ContainsFunc(overServedPatterns, func(p string) bool { return containsFold(searchArea, p) })
 }
 
+// ReasonOverServiced is the Reason for a protocol-correct over-servicing
+// refusal (overServicedResult).
+const ReasonOverServiced = "over_serviced"
+
 // overServicedResult is the analysis outcome for a protocol-correct
 // over-servicing rejection: retry on a different supplier (the per-session
 // allocation is per (supplier, session), so another supplier may still serve),
@@ -46,7 +50,7 @@ func overServicedResult() AnalysisResult {
 		ShouldPenalize:     false,
 		Attribution:        AttrClient, // not a supplier fault — expected protocol behavior, no action against the supplier
 		Confidence:         0.95,
-		Reason:             "over_serviced",
+		Reason:             ReasonOverServiced,
 		Details:            "supplier rejected: per-session relay allocation consumed (protocol-correct)",
 	}
 }
