@@ -44,18 +44,6 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 		return analyzeGRPC(response)
 	}
 
-	// A REST route defines its own body. An empty one (a HEAD, a health route
-	// that answers 200 with nothing, as the beacon API's does by spec) and a
-	// text or bare-scalar one are answers, not a broken host. Graded by the
-	// JSON-RPC rules below they were an empty_response (critical, breaker
-	// vote) or a plain_text_response (major), retried on every supplier and
-	// charged to each. An HTML page is still checked: that is a proxy's error
-	// page, and a plugin that serves HTML by design says so through
-	// qos.VerdictRefiner.
-	if rpcType == domain.RPCTypeREST && (IsEmpty(response) || IsPlainText(response)) {
-		return successResult()
-	}
-
 	// Tier 1: Structural checks.
 	if result, done := analyzeTier1(response, httpStatusCode); done {
 		return result
@@ -75,15 +63,21 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 	return successResult()
 }
 
-// StrictRESTBody is the verdict the structural rules give an empty or
-// plain-text REST answer, which Analyze passes: the grading before
-// 2026-10-03, for featureflag.FlagRESTBodiesAsAnswers turned off. ok is false
-// for any other body.
-func StrictRESTBody(body []byte, httpStatusCode int) (AnalysisResult, bool) {
-	if !IsEmpty(body) && !IsPlainText(body) {
+// RESTBodyAnswer reports whether a REST answer the structural rules grade
+// down (an empty or plain-text body) is the answer the route gives, and
+// returns the verdict passing it: a 2xx, empty or text. A HEAD, a health route
+// that answers 200 with nothing (the beacon API's, by spec), a text or
+// bare-scalar body. Only behind featureflag.FlagRESTBodiesAsAnswers, off by
+// default: nothing but the relay verdict catches a REST face answering 200
+// with nothing to every route (the TRON REST face has no probe, and a
+// passthrough service none unless configured), so passing such answers is a
+// per-service choice. Never a redirect: the relay miner does not follow one,
+// and an empty 301 is a stake behind a load balancer, not an answer.
+func RESTBodyAnswer(body []byte, httpStatusCode int) (AnalysisResult, bool) {
+	if httpStatusCode < 200 || httpStatusCode >= 300 || (!IsEmpty(body) && !IsPlainText(body)) {
 		return AnalysisResult{}, false
 	}
-	return analyzeTier1(body, httpStatusCode)
+	return successResult(), true
 }
 
 // analyzeTier0 checks HTTP status codes.

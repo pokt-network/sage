@@ -263,7 +263,7 @@ likely a chain-wide slowdown than every operator down at once.
 | trust_penalty | off | A party caught faking on several services (stale share over the floor on 8 stale_share services, or refused_recent on 2) loses 30 points on every key, every RPC type and WebSocket, for 24h after the evidence; the larger of it and the stale-share penalty, never both |
 | websocket_probes | on | Once a minute, WebSocket endpoints of a service below full reputation get one signed probe, so a demoted WebSocket key has a way back |
 | penalize_408 | on | A supplier's HTTP 408 costs it a major error |
-| rest_bodies_as_answers | on | An empty or plain-text 2xx REST answer passes as the answer; off, it is graded empty_response (critical, breaker vote) or plain_text_response (major) as before 2026-10-03 |
+| rest_bodies_as_answers | off | An empty or plain-text 2xx REST answer passes as the answer instead of empty_response (critical, breaker vote) or plain_text_response (major); for services whose routes answer that way by design |
 | relative_chronic | on | The chronic penalty is measured from the pool's best failure rate, not from zero |
 | operator_chronic | off | Every key is charged its operator's failure rate from per-operator counters that outlive the session draw; WebSocket keeps the per-key rate |
 | auto_drain | off | The auto-drain engine may set drains (docs/auto-drain.md) |

@@ -33,21 +33,29 @@ func TestAudit_MinerRefusalsChargeTheSupplier(t *testing.T) {
 }
 
 // A REST 2xx with an empty or plain-text body can be the correct answer
-// (Beacon GET /eth/v1/node/health is 200 with no body by spec). It must not
-// be a supplier failure, let alone a breaker vote.
+// (Beacon GET /eth/v1/node/health is 200 with no body by spec). Where a
+// service turns rest_bodies_as_answers on, RESTBodyAnswer passes it, never a
+// redirect. Off (the default) the structural rules still grade it, because
+// on most REST faces nothing else would catch a backend answering 200 with
+// nothing to every route.
 func TestAudit_RESTEmptyOrPlainTextIsSupplierFailure(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		body []byte
+		name   string
+		body   []byte
+		status int
+		pass   bool
 	}{
-		{"nil body", nil},
-		{"empty body", []byte{}},
-		{"plain text OK", []byte("OK")},
+		{"nil body, 200", nil, 200, true},
+		{"empty body, 204", []byte{}, 204, true},
+		{"plain text OK, 200", []byte("OK"), 200, true},
+		{"empty 301 redirect", nil, 301, false},
+		{"JSON is not this rule's", []byte(`{"a":1}`), 200, false},
 	} {
-		r := Analyze(tc.body, 200, domain.RPCTypeREST)
-		if r.ShouldPenalize || r.ShouldCircuitBreak || r.Attribution == AttrSupplier {
-			t.Errorf("%s, 200, rest: %s penalize=%v severity=%s breaker=%v attribution=%s; want no supplier failure",
-				tc.name, r.Reason, r.ShouldPenalize, r.PenaltySeverity, r.ShouldCircuitBreak, r.Attribution)
+		if _, ok := RESTBodyAnswer(tc.body, tc.status); ok != tc.pass {
+			t.Errorf("%s: RESTBodyAnswer ok=%v, want %v", tc.name, ok, tc.pass)
 		}
+	}
+	if r := Analyze(nil, 200, domain.RPCTypeREST); r.Reason != "empty_response" {
+		t.Errorf("default grading of an empty REST 200: %s, want empty_response", r.Reason)
 	}
 }

@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/qos/cosmos"
-	"github.com/pokt-network/sage/qos/tron"
 	"github.com/pokt-network/sage/reputation"
 )
 
@@ -60,9 +60,6 @@ func TestReview_CosmosRESTProbePassesABodyThatAnswersNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, body := range []string{"OK", "\n"} {
-		if v := heuristic.Analyze([]byte(body), 200, domain.RPCTypeREST); !v.IsSuccess() {
-			t.Fatalf("precondition: the relay verdict passes %q, got %q", body, v.Reason)
-		}
 		rep := &stubRepService{}
 		exe := newTestExecutor(&stubRelayer{}, &stubEndpointProvider{},
 			&stubSessionManager{services: map[domain.ServiceID]struct{}{"osmosis": {}}}, reg, rep)
@@ -82,24 +79,17 @@ func TestReview_CosmosRESTProbePassesABodyThatAnswersNothing(t *testing.T) {
 }
 
 // TRON's REST face (/wallet/*, 28% of TRON traffic per the plugin's own doc)
-// is a separate reputation key (per RPC type) and, often, a separate backend
-// port behind the miner. Its plugin's probes are EVM's JSON-RPC checks only,
-// so client traffic is the only thing that grades the REST key. With an
-// empty 200 now a success on REST, a TRON REST face answering 200 with
-// nothing to every call has nothing that can catch it.
+// is a separate reputation key and has no probe of its own: the plugin's
+// checks are EVM's JSON-RPC ones. Client traffic is the only thing that
+// grades it, so the relay verdict must, by default, grade a REST face
+// answering 200 with nothing as the failure it is
+// (featureflag.FlagRESTBodiesAsAnswers off).
 func TestReview_TronRESTFaceHasNoGraderForAnEmptyAnswer(t *testing.T) {
-	if v := heuristic.Analyze(nil, 200, domain.RPCTypeREST); !v.IsSuccess() {
-		t.Fatalf("precondition: the relay verdict passes an empty REST 200, got %q", v.Reason)
+	if featureflag.DefaultFlags[featureflag.FlagRESTBodiesAsAnswers] {
+		t.Fatal("rest_bodies_as_answers is on by default: a TRON REST face answering 200 with nothing is graded by nothing")
 	}
-	var restChecks []string
-	for _, c := range tron.NewPlugin(nil, tron.Config{}).HealthChecks() {
-		if c.Payload.RPCType() == domain.RPCTypeREST {
-			restChecks = append(restChecks, c.Name)
-		}
-	}
-	if len(restChecks) == 0 {
-		t.Fatal("TRON declares no REST health check and an empty REST 200 is graded success: " +
-			"a TRON REST face answering 200 with nothing is never graded down")
+	if v := heuristic.Analyze(nil, 200, domain.RPCTypeREST); v.IsSuccess() || !v.ShouldPenalize {
+		t.Fatalf("an empty REST 200 graded %q penalize=%v by default; want a scored failure", v.Reason, v.ShouldPenalize)
 	}
 }
 

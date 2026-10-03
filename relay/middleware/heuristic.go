@@ -83,14 +83,15 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 				)
 			}
 
-			// rest_bodies_as_answers is the live undo for passing an empty or
-			// plain-text REST answer: off, it is graded by the structural
-			// rules as before. Ahead of the plugin's refinement, which may
-			// pass a body of its own on top.
-			if ctx.RPCType == domain.RPCTypeREST && result.IsSuccess() &&
-				flags != nil && !flags.IsEnabled(ctx.Ctx, featureflag.FlagRESTBodiesAsAnswers, ctx.ServiceID) {
-				if strict, ok := heuristic.StrictRESTBody(ctx.Response.Body, ctx.Response.HTTPStatusCode); ok {
-					result = strict
+			// rest_bodies_as_answers, per service: an empty or plain-text 2xx
+			// REST answer passes as the route's answer instead of the
+			// structural rules' empty_response or plain_text_response
+			// (heuristic.RESTBodyAnswer). Ahead of the plugin's refinement,
+			// which may pass a body of its own on top.
+			if ctx.RPCType == domain.RPCTypeREST && !result.IsSuccess() &&
+				flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagRESTBodiesAsAnswers, ctx.ServiceID) {
+				if pass, ok := heuristic.RESTBodyAnswer(ctx.Response.Body, ctx.Response.HTTPStatusCode); ok {
+					result = pass
 				}
 			}
 

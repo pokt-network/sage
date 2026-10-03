@@ -418,6 +418,13 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 	if len(response) == 0 {
 		return nil, fmt.Errorf("cosmos: empty response from %s", endpoint)
 	}
+	// Every Cosmos face answers JSON (CometBFT, the REST gateway, the EVM
+	// face). A body that is not, a lone "OK" or newline from a default
+	// backend behind a misrouted vhost, answers nothing: passed, it scored a
+	// REST face's probe a success for answering no question.
+	if !gjson.ValidBytes(response) {
+		return nil, fmt.Errorf("cosmos: response from %s is not JSON", endpoint)
+	}
 
 	// An EVM face's eth_blockNumber answer, on a chain where that number is
 	// the Cosmos height (featureflag.FlagCosmosEVMHeight).

@@ -89,12 +89,12 @@ const (
 	FlagPenalize408 = "penalize_408"
 	// FlagRESTBodiesAsAnswers passes an empty or plain-text 2xx REST answer
 	// as the answer it is: a HEAD, a health route that answers 200 with
-	// nothing, a text or bare-scalar body. On by default since 2026-10-03.
-	// Off restores the structural grading it replaced, under which an empty
-	// body was a critical failure with a breaker vote and plain text a major
-	// one, charged to every supplier that gave it. This is its live undo,
-	// globally or per service, for the day a broken REST proxy answering
-	// 200-empty reads as healthy.
+	// nothing, a text or bare-scalar body. Off, the structural rules grade
+	// it: an empty body is a critical failure with a breaker vote, plain
+	// text a major one, charged to every supplier that gave it. Off by
+	// default (2026-10-03): on most REST faces nothing but this verdict
+	// would catch a backend answering 200 with nothing to every route, so a
+	// service turns it on when its routes answer that way by design.
 	FlagRESTBodiesAsAnswers = "rest_bodies_as_answers"
 	// FlagCircuitBreakUpstream lets a supplier's relay-miner timeout (HTTP
 	// 408) or 5xx count toward the circuit breaker's failure-rate gate, so a
@@ -269,7 +269,7 @@ var DefaultFlags = map[string]bool{
 	FlagAutoDrain:              false,
 	FlagAutoDrainShadow:        true,
 	FlagPenalize408:            true,
-	FlagRESTBodiesAsAnswers:    true,
+	FlagRESTBodiesAsAnswers:    false,
 	FlagCircuitBreakUpstream:   false,
 	FlagMethodBlock408:         false,
 	FlagMethodBlockRefusal:     false,
