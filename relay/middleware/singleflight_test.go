@@ -270,3 +270,51 @@ func TestSingleflight_FlagDisabled_PassThrough(t *testing.T) {
 type countingSingleflightRecorder struct{ n atomic.Int32 }
 
 func (r *countingSingleflightRecorder) RecordSingleflightCoalesced(domain.ServiceID) { r.n.Add(1) }
+
+// When the leader's client leaves, its followers run again under a new
+// leader: one more relay, not one per follower.
+func TestSingleflight_FollowersOfAGoneLeaderCoalesceAgain(t *testing.T) {
+	payload := domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready, proceed := make(chan struct{}), make(chan struct{})
+	var calls, reruns atomic.Int32
+	h := Singleflight(&staticFlags{enabled: true}, nil)(relay.HandlerFunc(func(ctx *relay.Context) error {
+		if calls.Add(1) == 1 {
+			close(ready)
+			<-proceed
+			cancel()
+			return context.Canceled
+		}
+		reruns.Add(1)
+		time.Sleep(50 * time.Millisecond) // long enough for the other follower to join
+		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"0x10"}`), HTTPStatusCode: 200}
+		return nil
+	}))
+
+	leader := newRelayContext("eth", &coalescablePlugin{}, payload)
+	leader.Ctx = leaderCtx
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { defer wg.Done(); _ = h.HandleRelay(leader) }()
+	<-ready
+	errs := make([]error, 2)
+	for i := range errs {
+		go func() {
+			defer wg.Done()
+			errs[i] = h.HandleRelay(newRelayContext("eth", &coalescablePlugin{}, payload))
+		}()
+	}
+	time.Sleep(20 * time.Millisecond) // let both followers join the flight
+	close(proceed)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("follower %d: %v", i, err)
+		}
+	}
+	if got := reruns.Load(); got != 1 {
+		t.Fatalf("followers of a gone leader sent %d relays, want 1", got)
+	}
+}

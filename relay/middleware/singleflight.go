@@ -43,7 +43,8 @@ func Singleflight(flags featureflag.FlagStore, rec SingleflightRecorder) relay.M
 	}
 
 	return func(next relay.Handler) relay.Handler {
-		return relay.HandlerFunc(func(ctx *relay.Context) error {
+		var coalesce relay.HandlerFunc
+		coalesce = func(ctx *relay.Context) error {
 			if ctx.QuorumArm || !flags.IsEnabled(ctx.Ctx, featureflag.FlagSingleflight, ctx.ServiceID) {
 				return next.HandleRelay(ctx)
 			}
@@ -92,9 +93,11 @@ func Singleflight(flags featureflag.FlagStore, rec SingleflightRecorder) relay.M
 			// The leader's client hung up or ran out of time: that ended the
 			// leader's relay, not this one. Sharing the outcome handed a
 			// follower whose client was still waiting context.Canceled. It
-			// runs its own relay instead.
+			// runs again through this middleware, so the followers left
+			// behind coalesce under a new leader rather than each sending
+			// its own relay.
 			if f.leaderGone && ctx.Ctx.Err() == nil {
-				return next.HandleRelay(ctx)
+				return coalesce(ctx)
 			}
 
 			// A follower gets everything the leader's client got: the
@@ -108,7 +111,8 @@ func Singleflight(flags featureflag.FlagStore, rec SingleflightRecorder) relay.M
 				rec.RecordSingleflightCoalesced(ctx.ServiceID)
 			}
 			return f.err
-		})
+		}
+		return coalesce
 	}
 }
 
