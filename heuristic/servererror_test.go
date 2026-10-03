@@ -22,6 +22,14 @@ func TestClassifyServerError_ClientLagAndChainWordings(t *testing.T) {
 		{"Transaction simulation failed: Blockhash not found", "client_error", false},
 		{"Node is behind by 120 slots", "node_behind", true},
 		{"Slot 123 was skipped, or missing due to ledger jump to recent snapshot", "blockchain_error", true},
+		{"EVM error: InvalidFEOpcode", "client_error", false},
+		{"filter not found", "client_error", false},
+		{"Transaction version (0) is not supported by the requesting client", "client_error", false},
+		{"all suitable upstream RPC backends unavailable", "node_behind", true},
+		{"Transaction history is not available from this node", "blockchain_error", true},
+		{"state 0xabc is not available", "blockchain_error", true},
+		{"eth_getLogs block range exceeds server limit", "blockchain_error", true},
+		{"height 30000000 must be less than or equal to the current blockchain height 29999990", "blockchain_error", true},
 		{"something nobody catalogued", "server_error", true},
 	} {
 		body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"` + tc.msg + `"}}`)

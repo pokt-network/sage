@@ -276,6 +276,16 @@ var blockchainErrorPatterns = append([]string{
 	// keeps no long-term storage for is its retention, not a fault.
 	"was skipped",
 	"block not available for slot",
+	// Retention and limits one node has and another may not: retried,
+	// nobody scored. Solana "transaction history is not available from this
+	// node" and "block N cleaned up, does not exist on node"; polygon
+	// "state 0x… is not available"; a node's own eth_getLogs range cap;
+	// a Cosmos node behind the height asked for.
+	"transaction history is not available",
+	"cleaned up, does not exist",
+	"state 0x",
+	"block range exceeds",
+	"must be less than or equal to",
 }, capabilityLimitationPatterns...)
 
 // supplierInfraPatterns are the wordings of a supplier's own infrastructure
@@ -306,6 +316,8 @@ var clientErrorPatterns = []string{
 	"invalid jump destination",
 	"stack underflow",
 	"stack limit reached",
+	"evm error: invalid", // reth/erigon: invalidfeopcode, invalidjump, …
+	"execution unsuccessful",
 	// transaction validity (geth core and txpool)
 	"insufficient funds",
 	"insufficient balance",
@@ -326,20 +338,28 @@ var clientErrorPatterns = []string{
 	"exceeds the configured cap",
 	"only replay-protected",
 	"rlp:",
+	// request state the client holds or asked for wrongly
+	"filter not found",
+	"invalid block range params",
 	// Solana
 	"transaction simulation failed",
 	"signature verification failure",
 	"blockhash not found",
+	"transaction version",
 }
 
 // supplierLagPatterns are a node saying it is behind or unwell: the supplier's
 // state, retried elsewhere and scored minor, like its rate limit. Solana's
 // -32005 "node is behind" / "node is unhealthy" and -32016 "minimum context
 // slot has not been reached".
+// A proxy in front of the supplier's nodes saying it has none to send to
+// ("all suitable upstream rpc backends unavailable") is the same: the
+// supplier's own capacity, not the request.
 var supplierLagPatterns = []string{
 	"node is behind",
 	"node is unhealthy",
 	"minimum context slot has not been reached",
+	"upstream rpc backends",
 }
 
 // classifyServerError handles -32000 range errors which are commonly blockchain-specific.
