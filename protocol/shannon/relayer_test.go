@@ -74,32 +74,7 @@ func (ms *mockSigner) signRelayRequest(_ context.Context, req *servicetypes.Rela
 
 // buildRelayTestSession builds a session with a supplier endpoint at the given URL.
 func buildRelayTestSession(supplierAddr, url string) *sessiontypes.Session {
-	return &sessiontypes.Session{
-		SessionId: "test-session-1",
-		Header: &sessiontypes.SessionHeader{
-			SessionId:               "test-session-1",
-			ServiceId:               "eth",
-			SessionStartBlockHeight: 100,
-			SessionEndBlockHeight:   110,
-		},
-		Application: &apptypes.Application{Address: "pokt1app"},
-		Suppliers: []*sharedtypes.Supplier{
-			{
-				OperatorAddress: supplierAddr,
-				Services: []*sharedtypes.SupplierServiceConfig{
-					{
-						ServiceId: "eth",
-						Endpoints: []*sharedtypes.SupplierEndpoint{
-							{
-								Url:     url,
-								RpcType: sharedtypes.RPCType_JSON_RPC,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
+	return buildTestSession("test-session-1", supplierAddr, url)
 }
 
 // buildSerializedRelayResponse creates a properly serialized relay response payload

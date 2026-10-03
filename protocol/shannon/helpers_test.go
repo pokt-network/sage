@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 
 	apptypes "github.com/pokt-network/poktroll/x/application/types"
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
@@ -45,5 +46,17 @@ func buildMultiServiceSession(service, supplier string, endpoints map[sharedtype
 			OwnerAddress:    supplier + "-owner",
 			Services:        []*sharedtypes.SupplierServiceConfig{{ServiceId: service, Endpoints: eps}},
 		}},
+	}
+}
+
+// splitHostFaces is the default fixture's stake: JSON-RPC at url, REST on
+// another host, the shape of an operator that stakes one host per RPC type.
+// Every session a test builds through buildTestSession has it, so code that
+// takes the address's URL for the URL a face dials fails in any test, not only
+// in one written for it.
+func splitHostFaces(url string) map[sharedtypes.RPCType]string {
+	return map[sharedtypes.RPCType]string{
+		sharedtypes.RPCType_JSON_RPC: url,
+		sharedtypes.RPCType_REST:     strings.Replace(url, "://", "://rest-", 1),
 	}
 }

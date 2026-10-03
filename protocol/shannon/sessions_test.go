@@ -57,32 +57,9 @@ func (m *stubFullNode) AccountClient() *sdk.AccountClient {
 
 // buildTestSession creates a minimal session with one supplier endpoint.
 func buildTestSession(sessionID string, supplierAddr string, url string) *sessiontypes.Session {
-	return &sessiontypes.Session{
-		SessionId: sessionID,
-		Header: &sessiontypes.SessionHeader{
-			SessionId:               sessionID,
-			ServiceId:               "eth",
-			SessionStartBlockHeight: 100,
-			SessionEndBlockHeight:   110,
-		},
-		Application: &apptypes.Application{Address: "pokt1app"},
-		Suppliers: []*sharedtypes.Supplier{
-			{
-				OperatorAddress: supplierAddr,
-				Services: []*sharedtypes.SupplierServiceConfig{
-					{
-						ServiceId: "eth",
-						Endpoints: []*sharedtypes.SupplierEndpoint{
-							{
-								Url:     url,
-								RpcType: sharedtypes.RPCType_JSON_RPC,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
+	session := buildMultiServiceSession("eth", supplierAddr, splitHostFaces(url))
+	session.SessionId, session.Header.SessionId = sessionID, sessionID
+	return session
 }
 
 func TestSessionManager_GetEndpoints(t *testing.T) {
@@ -162,9 +139,13 @@ func TestSessionEndpoints_RPCTypeSupport(t *testing.T) {
 		if _, err := ep.GetURL(domain.RPCTypeJSONRPC); err != nil {
 			t.Errorf("expected JSON-RPC support, got error: %v", err)
 		}
-		// REST should not be supported.
-		if _, err := ep.GetURL(domain.RPCTypeREST); err == nil {
-			t.Error("expected REST to be unsupported")
+		// REST is staked on its own host (splitHostFaces), and dialed there.
+		if u, err := ep.GetURL(domain.RPCTypeREST); err != nil || u != "https://rest-example.com" {
+			t.Errorf("REST URL = %q, %v; want the REST host", u, err)
+		}
+		// A type the supplier did not stake is not supported.
+		if _, err := ep.GetURL(domain.RPCTypeCometBFT); err == nil {
+			t.Error("expected CometBFT to be unsupported")
 		}
 	}
 }
