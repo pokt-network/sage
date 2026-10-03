@@ -23,6 +23,13 @@ type recordingMetrics struct {
 	oversized  int
 	sizes      []int
 	overServed int
+	mismatches []domain.ServiceID
+}
+
+func (r *recordingMetrics) RecordKeyMismatch(serviceID domain.ServiceID, _ domain.RPCType) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mismatches = append(r.mismatches, serviceID)
 }
 
 func (r *recordingMetrics) RecordResponseSize(_ domain.ServiceID, bytes int) {

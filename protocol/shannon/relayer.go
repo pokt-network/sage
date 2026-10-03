@@ -305,6 +305,8 @@ func (p *Protocol) sendRelay(
 		return nil, domain.NewRelayError(domain.ErrCapability, "endpoint does not support requested RPC type", err, false)
 	}
 
+	p.checkKeyURL(serviceID, endpointAddr, payload.RPCType(), url)
+
 	// A banned domain is refused here as well as at selection. Selection is
 	// where the ban does its work; this is the guarantee — anything holding an
 	// endpoint address from before the ban, or reaching SendRelay by a path
@@ -764,6 +766,18 @@ func (p *Protocol) EndpointURLFor(endpoint domain.EndpointAddr, rpcType domain.R
 		return "", false
 	}
 	return url, true
+}
+
+// checkKeyURL counts a relay whose reputation key names a URL other than the
+// one it dials (sage_reputation_key_mismatch_total). Reputation keys a face
+// by EndpointURLFor, which finds the address in any service's session; the
+// relay dials the URL in this service's. Where the two differ, a failure here
+// moves the score of a host that never received the relay. Expected never to
+// count: a count is a bug in endpoint identity.
+func (p *Protocol) checkKeyURL(serviceID domain.ServiceID, endpointAddr domain.EndpointAddr, rpcType domain.RPCType, dialed string) {
+	if keyURL, ok := p.EndpointURLFor(endpointAddr, rpcType); ok && keyURL != dialed {
+		p.supplierMetricsRecorder().RecordKeyMismatch(serviceID, rpcType)
+	}
 }
 
 // markOverServed excludes supplier from serviceID for the rest of the

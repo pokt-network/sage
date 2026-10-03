@@ -65,6 +65,7 @@ type Recorder struct {
 	supplierBlacklists     *prometheus.CounterVec
 	relayMinerErrors       *prometheus.CounterVec
 	overServedExclusions   *prometheus.CounterVec
+	keyMismatches          *prometheus.CounterVec
 	sessionFetches         *prometheus.CounterVec
 	oversizedResponses     *prometheus.CounterVec
 	responseBytes          *prometheus.HistogramVec
@@ -255,6 +256,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Help:      "Suppliers excluded for the rest of a session after refusing a relay for over-servicing (the application's relay allocation for that supplier and session is spent: the poktroll relay miner's relayer_proxy code 7, the HA relay miner's 429 \"session relay limit reached\"), by service. One count per supplier and session. The supplier is not penalized and serves again in the next session; other suppliers behind the same URL keep serving.",
 			},
 			[]string{"service_id"},
+		),
+		keyMismatches: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "reputation_key_mismatch_total",
+				Help:      "Relays whose reputation key names a URL other than the one the relay dialed, by service and RPC type. A failure is scored against the key, so each count is a host's score moved by a relay it never received. Expected to stay at zero: a count is a bug in endpoint identity, the class of the cross-service endpoint lookup fixed in 5fd0d96.",
+			},
+			[]string{"service_id", "rpc_type"},
 		),
 		relayMinerErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -584,6 +593,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.supplierBlacklists,
 		r.relayMinerErrors,
 		r.overServedExclusions,
+		r.keyMismatches,
 		r.sessionFetches,
 		r.oversizedResponses,
 		r.responseBytes,
@@ -890,6 +900,12 @@ func (r *Recorder) RecordSupplierBlacklist(serviceID domain.ServiceID, reason st
 // session after an over-servicing refusal.
 func (r *Recorder) RecordOverServedExclusion(serviceID domain.ServiceID) {
 	r.overServedExclusions.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
+}
+
+// RecordKeyMismatch counts one relay whose reputation key names a URL other
+// than the one it dialed.
+func (r *Recorder) RecordKeyMismatch(serviceID domain.ServiceID, rpcType domain.RPCType) {
+	r.keyMismatches.WithLabelValues(r.services.serviceValue(serviceID), string(rpcType)).Inc()
 }
 
 // RecordRelayMinerError increments the counter of relay responses that carried
