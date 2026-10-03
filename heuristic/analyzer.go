@@ -101,6 +101,7 @@ func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (Anal
 			Confidence:      0.85,
 			Reason:          "http_5xx",
 			Details:         fmt.Sprintf("HTTP %d server error", statusCode),
+			HTTPStatus:      statusCode,
 		}, true
 
 	case statusCode == 429:

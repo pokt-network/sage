@@ -16,8 +16,8 @@ func TestRefineVerdict_Query5xx(t *testing.T) {
 	rest := func(path string) domain.Payload {
 		return domain.NewPayload(nil, domain.RPCTypeREST, "").WithHTTP(path, "GET")
 	}
-	node5xx := heuristic.AnalysisResult{ShouldRetry: true, ShouldPenalize: true, PenaltySeverity: heuristic.SeverityMajor, Attribution: heuristic.AttrSupplier, Reason: "http_5xx"}
-	miner5xx := heuristic.AnalysisResult{ShouldRetry: true, ShouldPenalize: true, PenaltySeverity: heuristic.SeverityMinor, Attribution: heuristic.AttrSupplier, Reason: "upstream_5xx"}
+	node5xx := heuristic.AnalysisResult{ShouldRetry: true, ShouldPenalize: true, PenaltySeverity: heuristic.SeverityMajor, Attribution: heuristic.AttrSupplier, Reason: "http_5xx", HTTPStatus: 500}
+	miner5xx := heuristic.AnalysisResult{ShouldRetry: true, ShouldPenalize: true, PenaltySeverity: heuristic.SeverityMinor, Attribution: heuristic.AttrSupplier, Reason: "upstream_5xx", HTTPStatus: 500}
 
 	for _, tc := range []struct {
 		name string
@@ -26,7 +26,11 @@ func TestRefineVerdict_Query5xx(t *testing.T) {
 		want bool
 	}{
 		{"smart query, node 500", rest("/cosmwasm/wasm/v1/contract/osmo1abc/smart/eyJ0b2tlbl9pbmZvIjp7fX0="), node5xx, true},
-		{"smart query with query string, miner 502", rest("/cosmwasm/wasm/v1/contract/osmo1abc/smart/eyJ9?x=1"), miner5xx, true},
+		{"smart query with query string, miner 500", rest("/cosmwasm/wasm/v1/contract/osmo1abc/smart/eyJ9?x=1"), miner5xx, true},
+		// A 503 is someone unavailable, not the chain's answer: retried.
+		{"tx event search, miner 503", rest("/cosmos/tx/v1beta1/txs?events=tx.height%3D1"), unavailable(miner5xx, 503), false},
+		{"smart query, node 503", rest("/cosmwasm/wasm/v1/contract/osmo1abc/smart/eyJ9"), unavailable(node5xx, 503), false},
+		{"txs by block, node 502", rest("/cosmos/tx/v1beta1/txs/block/1"), unavailable(node5xx, 502), false},
 		{"txs by block", rest("/cosmos/tx/v1beta1/txs/block/99999999"), node5xx, true},
 		{"contract state is not a client query", rest("/cosmwasm/wasm/v1/contract/osmo1abc/state"), node5xx, false},
 		{"txs by hash", rest("/cosmos/tx/v1beta1/txs/ABCDEF0123456789"), node5xx, false},
@@ -67,4 +71,10 @@ func TestRefineVerdict_RootIndexHTMLIsAnAnswer(t *testing.T) {
 	if _, ok := p.RefineVerdict("", status, html); ok {
 		t.Fatal("HTML on /status refined, want the html_response verdict kept")
 	}
+}
+
+// unavailable is v with another 5xx status.
+func unavailable(v heuristic.AnalysisResult, status int) heuristic.AnalysisResult {
+	v.HTTPStatus = status
+	return v
 }

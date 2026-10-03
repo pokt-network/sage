@@ -78,6 +78,11 @@ type AnalysisResult struct {
 	// answer named; zero on every other verdict. Retry reads it to keep the
 	// fresher of two stale answers.
 	HeadLag uint64
+	// HTTPStatus is the status a 5xx verdict was read from: the node's
+	// (http_5xx) or the relay miner's own (upstream_5xx); zero on every other
+	// verdict. A plugin refining a 5xx reads it: a 500 can be the chain's
+	// answer to a query, a 503 is someone unavailable.
+	HTTPStatus int
 }
 
 // ReasonRefusedRecent is the verdict on an answer claiming the state or

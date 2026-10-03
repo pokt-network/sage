@@ -41,9 +41,14 @@ var query5xxPrefixes = []string{
 	"/cosmos/tx/v1beta1/txs?",
 }
 
-// RefineVerdict implements qos.VerdictRefiner: a 5xx verdict (the node's
+// RefineVerdict implements qos.VerdictRefiner: a 500 verdict (the node's
 // http_5xx, or the miner's upstream_5xx relaying it) on one of the routes
-// above becomes the chain's answer to the client's query.
+// above becomes the chain's answer to the client's query. Only a 500: that
+// is what the gateway makes of a query that failed (gRPC Unknown or
+// Internal). A 502, 503 or 504 is someone unavailable, the node (gRPC
+// Unavailable) or the miner (not admitting relays), and another supplier may
+// serve the same query; taken as the answer, every tx event search a busy
+// supplier refused reached the client as a 503 (mainnet pocket, 2026-10-03).
 //
 // On a chain whose EVM face reports the Cosmos height (evmHeights), a
 // json_rpc missing-state answer about a recent block is graded as the EVM
@@ -68,7 +73,7 @@ func (p *Plugin) RefineVerdict(endpoint domain.EndpointAddr, payload domain.Payl
 			Details:     "the node's HTML route index, the answer to GET /",
 		}, true
 	}
-	if result.Reason != "http_5xx" && result.Reason != "upstream_5xx" {
+	if (result.Reason != "http_5xx" && result.Reason != "upstream_5xx") || result.HTTPStatus != http.StatusInternalServerError {
 		return result, false
 	}
 	if payload.RPCType() != domain.RPCTypeREST || !isQuery5xxPath(payload.Path()) {

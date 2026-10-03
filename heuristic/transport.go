@@ -168,6 +168,7 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 				Confidence:      0.85,
 				Reason:          "upstream_5xx",
 				Details:         err.Error(),
+				HTTPStatus:      upstream.Status,
 			}
 		default:
 			return AnalysisResult{
