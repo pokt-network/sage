@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Supplier quality view for SAGE, externally shareable: outcomes only. Scoped to environment=mainnet-sage and client traffic. No template variables: Grafana public dashboards do not support them.",
+  "description": "Supplier quality view for the gateway, externally shareable: outcomes only. Scoped to mainnet and client traffic. No template variables: Grafana public dashboards do not support them.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -33,7 +33,7 @@
       "title": "",
       "options": {
         "mode": "markdown",
-        "content": "# SAGE \u2014 public pinned view\n**Scope:** `environment=mainnet-sage`, client traffic (`request_type=client`) unless a panel says otherwise. Operators are registrable domains. No filters: public dashboards do not support variables."
+        "content": "# Gateway \u2014 public pinned view\n**Scope:** mainnet, client traffic (`request_type=client`) unless a panel says otherwise. Operators are registrable domains. No filters: public dashboards do not support variables."
       }
     },
     {
@@ -54,7 +54,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Client requests to SAGE: one per request, whatever retries, hedges or batch items it fanned out into.",
+      "description": "Client requests to the gateway: one per request, whatever retries, hedges or batch items it fanned out into.",
       "type": "stat",
       "title": "Incoming RPS",
       "id": 3,
@@ -392,7 +392,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Share of client requests SAGE answered with a 5xx: what clients actually saw, after retries and hedges.",
+      "description": "Share of client requests the gateway answered with a 5xx: what clients actually saw, after retries and hedges.",
       "type": "stat",
       "title": "Client 5xx %",
       "id": 9,
@@ -465,7 +465,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Client requests by the status SAGE answered, last 24h.",
+      "description": "Client requests by the status the gateway answered, last 24h.",
       "type": "stat",
       "title": "Requests in 24H",
       "id": 10,
@@ -2040,7 +2040,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "By the RPC type SAGE settled on for the request (header or detection).",
+      "description": "By the RPC type the gateway settled on for the request (header or detection).",
       "type": "timeseries",
       "title": "Client Requests by RPC Type",
       "id": 28,
@@ -2307,7 +2307,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "What the client waited, retries and hedges included: from the request reaching SAGE to the response written.",
+      "description": "What the client waited, retries and hedges included: from the request reaching the gateway to the response written.",
       "type": "timeseries",
       "title": "Client-Facing Latency Percentiles",
       "id": 35,
@@ -2852,7 +2852,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Bridges ended, by who ended them. gateway closes are SAGE's own decision (a deadline, a rebind that found nowhere to go); client and endpoint closes are the peers'.",
+      "description": "Bridges ended, by who ended them. gateway closes are the gateway's own decision (a deadline, a rebind that found nowhere to go); client and endpoint closes are the peers'.",
       "type": "timeseries",
       "title": "WebSocket Closes by Initiator",
       "id": 49,
@@ -3858,7 +3858,6 @@
   "tags": [
     "gateway",
     "metrics",
-    "sage",
     "pinned",
     "quality"
   ],
@@ -3880,7 +3879,7 @@
     ]
   },
   "timezone": "browser",
-  "title": "SAGE Quality Dashboard (Public \u2014 Pinned)",
+  "title": "Gateway Quality Dashboard (Public \u2014 Pinned)",
   "uid": "sage-quality-public",
   "version": 1
 }

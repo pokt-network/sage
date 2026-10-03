@@ -710,4 +710,29 @@ dash = {
     "uid": "sage-quality-public" if PUBLIC else "sage-operator",
     "version": 1,
 }
+
+
+def generic(o):
+    """The public dashboard names no product: whoever reads it is looking at
+    "the gateway". Text only: titles, descriptions and the header; metric
+    names and selectors inside queries are left alone."""
+    if isinstance(o, dict):
+        return {k: (generic_text(v) if k in ("title", "description", "content") and isinstance(v, str) else generic(v))
+                for k, v in o.items()}
+    if isinstance(o, list):
+        return [generic(v) for v in o]
+    return o
+
+
+def generic_text(t):
+    for a, b in (("SAGE Quality Dashboard", "Gateway Quality Dashboard"), ("# SAGE —", "# Gateway —"),
+                 ("`environment=mainnet-sage`", "mainnet"), ("environment=mainnet-sage", "mainnet"),
+                 ("SAGE's", "the gateway's"), ("SAGE", "the gateway")):
+        t = t.replace(a, b)
+    return t
+
+
+if PUBLIC:
+    dash = generic(dash)
+    dash["tags"] = [t for t in dash["tags"] if t != "sage"]
 json.dump(dash, sys.stdout, indent=2)
