@@ -21,6 +21,7 @@ func TestMinerRefusal_WebSocketPathsAgree(t *testing.T) {
 		&domain.MinerError{Codespace: "relayer_proxy", Code: 12, Message: "response limit exceed"},
 		&domain.MinerError{Codespace: "relayer_proxy", Code: 9, Message: "supplier(s) not reachable"},
 		&websocket.CloseError{Code: heuristic.CloseMinerSessionExpired},
+		&websocket.CloseError{Code: heuristic.CloseMinerValidationFailed, Text: "relay validation failed"},
 		&websocket.CloseError{Code: heuristic.CloseMinerStakeLimit},
 		&websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "offchain rate limit hit by relayer proxy"},
 	} {

@@ -262,12 +262,19 @@ func (r *WSRelayer) dialSigned(ctx context.Context, serviceID domain.ServiceID, 
 
 // runProbe performs one probe and returns its result.
 func (r *WSRelayer) runProbe(ctx context.Context, t wsProbeTarget) string {
-	ep, ok := r.deps.Protocol.sessions.lookupEndpoint(t.serviceID, t.addr)
-	if !ok {
+	// Signed for the session at the chain's current height, as a bridge is
+	// (currentSession): one signed for the session just ended is refused by
+	// the poktroll relay miner, and the refusal was graded the supplier's.
+	appAddr, err := r.deps.Protocol.pickApp(t.serviceID)
+	if err != nil {
 		return wsProbeUnresolved
 	}
-	session := ep.Session()
-	if session == nil || session.Header == nil {
+	session, err := r.deps.Protocol.sessions.currentSession(ctx, string(t.serviceID), appAddr)
+	if err != nil || session.Header == nil {
+		return wsProbeUnresolved
+	}
+	ep, ok := r.deps.Protocol.sessions.getOrCreateEndpoints(session)[t.addr]
+	if !ok {
 		return wsProbeUnresolved
 	}
 	proc, wire, conn, err := r.dialSigned(ctx, t.serviceID, session.Header, ep, t.addr, t.url, t.frame)

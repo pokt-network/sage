@@ -277,7 +277,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "session_fetches_total",
-				Help:      "Session fetches from the full node, one per coalesced GetSession, by service, path (background: during the grace period, off the request path; sync: past the grace period, a request waits on it; cold: nothing cached yet) and outcome (ok; error; same_session: the answer ends no later than the session already cached, so the next session is still not held). Steady sync fetches mean the background refresh never landed inside grace; same_session through grace is what keeps WebSocket rebinds waiting until grace has elapsed.",
+				Help:      "Session fetches from the full node, one per coalesced GetSession, by service, path (background: during the grace period, off the request path; sync: past the grace period, a request waits on it; websocket: past the session's end, a WebSocket dial, rebind or probe waits on it, since a WebSocket is signed for the session at the current height; cold: nothing cached yet) and outcome (ok; error; same_session: the answer ends no later than the session already cached, so the next session is still not held). Steady sync fetches mean the background refresh never landed inside grace; same_session through grace is what keeps WebSocket rebinds waiting until grace has elapsed.",
 			},
 			[]string{"service_id", "path", "outcome"},
 		),

@@ -258,9 +258,12 @@ func isTimeout(err error) bool {
 //     the HA miner's 429. Any other status is not a refusal here; the caller
 //     grades the status.
 //   - *websocket.CloseError: the HA miner closes with 4000 when the session
-//     it served has ended and 4002 when the application's allocation for
-//     this supplier and session is spent; the poktroll miner closes normally
-//     with the over-servicing wording as the reason.
+//     it served has ended, 4001 when it rejected the gateway's frame
+//     (signature, session, identity: its own source calls it the client's
+//     fault) and 4002 when the application's allocation for this supplier
+//     and session is spent; the poktroll miner closes normally with the
+//     over-servicing wording as the reason. 4003, its backend unreachable,
+//     is the supplier's and left to the caller.
 func MinerRefusal(err error) (AnalysisResult, bool) {
 	var miner *domain.MinerError
 	if errors.As(err, &miner) {
@@ -277,6 +280,8 @@ func MinerRefusal(err error) (AnalysisResult, bool) {
 			return overServicedResult(), true
 		case closeErr.Code == CloseMinerSessionExpired:
 			return minerSessionRejected(closeErr.Error()), true
+		case closeErr.Code == CloseMinerValidationFailed:
+			return minerRequestRefused(closeErr.Error()), true
 		}
 	}
 	return AnalysisResult{}, false
@@ -284,8 +289,9 @@ func MinerRefusal(err error) (AnalysisResult, bool) {
 
 // The HA relay miner's WebSocket close codes (MinerRefusal).
 const (
-	CloseMinerSessionExpired = 4000
-	CloseMinerStakeLimit     = 4002
+	CloseMinerSessionExpired   = 4000
+	CloseMinerValidationFailed = 4001
+	CloseMinerStakeLimit       = 4002
 )
 
 // Relay miner error reports (domain.MinerError) that are about the session
@@ -322,6 +328,18 @@ func minerSessionRejected(details string) AnalysisResult {
 	}
 }
 
+// minerRequestRefused is the verdict for a miner refusing the gateway's
+// request itself: retried on another supplier, scored nothing.
+func minerRequestRefused(details string) AnalysisResult {
+	return AnalysisResult{
+		ShouldRetry: true,
+		Attribution: AttrUnknown,
+		Confidence:  0.90,
+		Reason:      "miner_request_refused",
+		Details:     details,
+	}
+}
+
 // analyzeMinerError grades a relay miner's own unsigned refusal. Every one is
 // retried elsewhere. Over-servicing (relayer_proxy 7, or its wording) is
 // protocol-correct and scored nothing; a session the miner will not serve is
@@ -336,13 +354,7 @@ func analyzeMinerError(m *domain.MinerError) AnalysisResult {
 		return minerSessionRejected(m.Error())
 	}
 	if minerRequestCodes[m.Codespace][m.Code] {
-		return AnalysisResult{
-			ShouldRetry: true,
-			Attribution: AttrUnknown,
-			Confidence:  0.90,
-			Reason:      "miner_request_refused",
-			Details:     m.Error(),
-		}
+		return minerRequestRefused(m.Error())
 	}
 	return AnalysisResult{
 		ShouldRetry:     true,

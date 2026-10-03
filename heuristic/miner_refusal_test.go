@@ -44,6 +44,7 @@ var minerRefusalTable = []struct {
 	// The HA miner's 429 and close codes, the poktroll miner's close reason.
 	{"HA 429 over-servicing body", &domain.UpstreamStatusError{Status: 429, Body: []byte("session relay limit reached: claimable portion fully consumed")}, false},
 	{"close 4000 session expired", &websocket.CloseError{Code: CloseMinerSessionExpired}, false},
+	{"close 4001 frame rejected", &websocket.CloseError{Code: CloseMinerValidationFailed, Text: "relay validation failed"}, false},
 	{"close 4002 stake limit", &websocket.CloseError{Code: CloseMinerStakeLimit}, false},
 	{"close 1000 over-servicing reason", &websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "offchain rate limit hit by relayer proxy"}, false},
 }
@@ -75,6 +76,7 @@ func TestMinerRefusal_NotARefusal(t *testing.T) {
 	for _, err := range []error{
 		&websocket.CloseError{Code: websocket.CloseNormalClosure, Text: "bye"},
 		&websocket.CloseError{Code: websocket.CloseAbnormalClosure},
+		&websocket.CloseError{Code: 4003, Text: "connection failed"},
 		&domain.UpstreamStatusError{Status: 429, Body: []byte("too many requests")},
 		&domain.UpstreamStatusError{Status: 502},
 		fmt.Errorf("dial failed"),

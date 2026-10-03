@@ -967,6 +967,17 @@ type wsTarget struct {
 //
 // self is the connection being placed (nil when opening), for the share cap.
 func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.ServiceID, tried map[domain.EndpointAddr]bool, self *wsLive) (*wsTarget, string, error) {
+	appAddr, err := r.deps.Protocol.pickApp(serviceID)
+	if err != nil {
+		return nil, "no app configured", fmt.Errorf("pick app: %w", err)
+	}
+	// The session a WebSocket is signed for is the one at the chain's
+	// current height (currentSession). Fetched first, so the candidates
+	// below come from it too.
+	session, err := r.deps.Protocol.sessions.currentSession(ctx, string(serviceID), appAddr)
+	if err != nil {
+		return nil, "session unavailable", fmt.Errorf("session: %w", err)
+	}
 	endpoints, err := r.deps.Protocol.AvailableEndpoints(ctx, serviceID, domain.RPCTypeWebSocket)
 	if err != nil {
 		return nil, "no websocket endpoints available", fmt.Errorf("available endpoints: %w", err)
@@ -983,14 +994,6 @@ func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.Servic
 		return nil, "no viable websocket endpoint", errors.New("empty selection")
 	}
 
-	appAddr, err := r.deps.Protocol.pickApp(serviceID)
-	if err != nil {
-		return nil, "no app configured", fmt.Errorf("pick app: %w", err)
-	}
-	session, err := r.deps.Protocol.sessions.getSession(ctx, string(serviceID), appAddr)
-	if err != nil {
-		return nil, "session unavailable", fmt.Errorf("session: %w", err)
-	}
 	ep, ok := r.deps.Protocol.sessions.getOrCreateEndpoints(session)[addr]
 	if !ok {
 		return nil, "endpoint resolution failed", fmt.Errorf("endpoint %q missing from session %s", addr, session.SessionId)

@@ -323,6 +323,31 @@ func (sm *sessionManager) getSession(ctx context.Context, serviceID string, appA
 	return sm.refreshSession(ctx, serviceID, appAddr, path)
 }
 
+// currentSession is getSession for a WebSocket dial: past the cached
+// session's end it fetches the next session synchronously instead of serving
+// the ended one through grace.
+//
+// HTTP keeps the grace window because both relay miners accept an ended
+// session's relays through it. A WebSocket is different on the poktroll
+// relay miner: it binds a new connection to the session at its own current
+// height and closes the connection on the first frame signed for any other,
+// with a reason too long for a close frame, so the gateway sees 1006 and
+// charged the supplier. For about ten seconds after every session end, until
+// the background refresh landed, every dial, rebind and probe signed the
+// ended session. The HA relay miner honours either session through grace,
+// so the current one is right for both.
+//
+// A full node that has not seen the next session yet answers with the ended
+// one, which is still returned: the best the gateway can sign.
+func (sm *sessionManager) currentSession(ctx context.Context, serviceID, appAddr string) (*sessiontypes.Session, error) {
+	if cached, ok := sm.sessionCache.Load(sessionCacheKey(serviceID, appAddr)); ok {
+		if sm.latestBlockHeight.Load() > cached.(*sessiontypes.Session).Header.SessionEndBlockHeight {
+			return sm.refreshSession(ctx, serviceID, appAddr, fetchWebSocket)
+		}
+	}
+	return sm.getSession(ctx, serviceID, appAddr)
+}
+
 // scheduleBackgroundRefresh fetches the next session off the request path
 // during the grace period. One goroutine per (service, app) per boundary: the
 // bgRefreshing marker drops requests that arrive while a refresh is already in

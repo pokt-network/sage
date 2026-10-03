@@ -8,6 +8,7 @@ const (
 	fetchBackground = "background" // during grace, off the request path
 	fetchSync       = "sync"       // past grace, a request waits on it
 	fetchCold       = "cold"       // nothing cached for (service, app)
+	fetchWebSocket  = "websocket"  // past the end, a WebSocket dial waits on it
 
 	fetchOK          = "ok"
 	fetchError       = "error"
