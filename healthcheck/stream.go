@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -106,8 +107,14 @@ func (s *RedisProbeStream) Run(ctx context.Context, apply func(ProbeResult)) err
 	// any read error, and a full replay each time applied every result in
 	// the window once per restart: a flapping connection multiplied every
 	// signal in it.
+	//
+	// The resume never reaches back past the window: after an outage longer
+	// than it, everything since the last entry applied is older than any
+	// result worth applying. And it moves before an entry is applied, so an
+	// entry whose apply panics is not the first one read again on every
+	// restart, stalling the feed for good.
 	lastID := s.replayID()
-	if s.resume != "" {
+	if s.resume != "" && !streamIDBefore(s.resume, lastID) {
 		lastID = "(" + s.resume
 	}
 	msgs, err := s.client.XRange(ctx, s.streamOr(), lastID, "+").Result()
@@ -115,8 +122,8 @@ func (s *RedisProbeStream) Run(ctx context.Context, apply func(ProbeResult)) err
 		return fmt.Errorf("probe stream replay: %w", err)
 	}
 	for _, m := range msgs {
-		s.applyMessage(m, apply)
 		lastID, s.resume = m.ID, m.ID
+		s.applyMessage(m, apply)
 	}
 	if len(msgs) == 0 {
 		// Nothing new: read on from the last entry applied, or from now,
@@ -142,8 +149,8 @@ func (s *RedisProbeStream) Run(ctx context.Context, apply func(ProbeResult)) err
 		}
 		for _, st := range streams {
 			for _, m := range st.Messages {
-				s.applyMessage(m, apply)
 				lastID, s.resume = m.ID, m.ID
+				s.applyMessage(m, apply)
 			}
 		}
 	}
@@ -157,6 +164,25 @@ func (s *RedisProbeStream) replayID() string {
 		return "$"
 	}
 	return strconv.FormatInt(time.Now().Add(-s.replay).UnixMilli(), 10) + "-0"
+}
+
+// streamIDBefore reports whether stream id a ("<ms>-<seq>") sorts before b.
+// An id that does not parse (b is "$" when there is no window) is never
+// before anything.
+func streamIDBefore(a, b string) bool {
+	am, as, okA := parseStreamID(a)
+	bm, bs, okB := parseStreamID(b)
+	return okA && okB && (am < bm || (am == bm && as < bs))
+}
+
+func parseStreamID(id string) (ms, seq uint64, ok bool) {
+	m, sq, found := strings.Cut(id, "-")
+	if !found {
+		return 0, 0, false
+	}
+	ms, err1 := strconv.ParseUint(m, 10, 64)
+	seq, err2 := strconv.ParseUint(sq, 10, 64)
+	return ms, seq, err1 == nil && err2 == nil
 }
 
 func (s *RedisProbeStream) applyMessage(m redis.XMessage, apply func(ProbeResult)) {
