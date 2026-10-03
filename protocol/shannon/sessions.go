@@ -338,11 +338,20 @@ func (sm *sessionManager) getSession(ctx context.Context, serviceID string, appA
 // so the current one is right for both.
 //
 // A full node that has not seen the next session yet answers with the ended
-// one, which is still returned: the best the gateway can sign.
+// one, and a fetch that fails leaves the ended one in hand: either way it is
+// still returned, the best the gateway can sign, and the HA miner honours it
+// through grace. Failing the dial instead would turn every full-node blip at
+// a boundary into a refused WebSocket.
 func (sm *sessionManager) currentSession(ctx context.Context, serviceID, appAddr string) (*sessiontypes.Session, error) {
 	if cached, ok := sm.sessionCache.Load(sessionCacheKey(serviceID, appAddr)); ok {
-		if sm.latestBlockHeight.Load() > cached.(*sessiontypes.Session).Header.SessionEndBlockHeight {
-			return sm.refreshSession(ctx, serviceID, appAddr, fetchWebSocket)
+		ended := cached.(*sessiontypes.Session)
+		if sm.latestBlockHeight.Load() > ended.Header.SessionEndBlockHeight {
+			if next, err := sm.refreshSession(ctx, serviceID, appAddr, fetchWebSocket); err == nil {
+				return next, nil
+			}
+			if sm.latestBlockHeight.Load() <= ended.Header.SessionEndBlockHeight+sm.graceBlocks.Load() {
+				return ended, nil
+			}
 		}
 	}
 	return sm.getSession(ctx, serviceID, appAddr)

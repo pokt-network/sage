@@ -2,6 +2,7 @@ package shannon
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -102,5 +103,25 @@ func TestWSResolveEndpoint_UsesTheSessionAtTheCurrentHeight(t *testing.T) {
 	}
 	if target.session.SessionId != "probe-session-2" {
 		t.Fatalf("dial signs session %s; want the session at the current height, probe-session-2", target.session.SessionId)
+	}
+}
+
+// A failed fetch past the end leaves the ended session in hand, and within
+// grace it is still what a WebSocket signs: the HA miner honours it, and
+// refusing the dial would turn a full-node blip into a refused connection.
+func TestCurrentSession_FetchErrorKeepsTheEndedSessionThroughGrace(t *testing.T) {
+	fn := &stubFullNode{session: buildTestSession("s1", "pokt1supplier", "https://relay.example.com"), height: 105}
+	sm := newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+	sm.graceBlocks.Store(10)
+	sm.latestBlockHeight.Store(105)
+	if _, err := sm.getSession(context.Background(), "eth", "pokt1app"); err != nil {
+		t.Fatal(err)
+	}
+	fn.sessErr = errors.New("full node unavailable")
+	sm.latestBlockHeight.Store(111)
+
+	s, err := sm.currentSession(context.Background(), "eth", "pokt1app")
+	if err != nil || s.SessionId != "s1" {
+		t.Fatalf("currentSession = %v, %v; want the ended session within grace", s, err)
 	}
 }
