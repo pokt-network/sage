@@ -1,8 +1,13 @@
-"""Generate the SAGE public quality dashboard (Grafana JSON).
+"""Generate the SAGE dashboards (Grafana JSON) from one source.
 
-    python3 grafana/gen.py > grafana/sage-quality-public.json
+    python3 grafana/gen.py public > grafana/sage-quality-public.json
+    python3 grafana/gen.py operator > grafana/sage-operator.json
 
-Mirrors the PATH public pinned dashboard, mapped onto sage_* metrics.
+operator is everything, for whoever runs the gateway: reputation internals,
+breaker and drain state, retries, hedges, probes. public is its subset for
+users and suppliers: outcomes (success, latency, errors, concentration),
+never mechanics, which would teach a supplier how to game the scoring.
+Panels and table columns marked ops-only are left out of public.
 No template variables: Grafana public dashboards do not support them.
 """
 import json
@@ -12,9 +17,21 @@ S = 'job="sage", environment="mainnet-sage"'
 DS = {"type": "prometheus", "uid": "prometheus"}
 RI = "$__rate_interval"
 
+PUBLIC = sys.argv[1:] == ["public"]
+if sys.argv[1:] not in (["public"], ["operator"]):
+    sys.exit("usage: gen.py public|operator")
+
 panels = []
 _id = [0]
+# ops is set around operator-only panels: a panel added while it is true is
+# left out of the public dashboard.
+ops = [False]
 y = [0]
+
+
+def add(panel):
+    if not (PUBLIC and ops[0]):
+        panels.append(panel)
 
 
 def nid():
@@ -23,7 +40,7 @@ def nid():
 
 
 def row(title):
-    panels.append({"collapsed": False, "gridPos": {"h": 1, "w": 24, "x": 0, "y": y[0]},
+    add({"collapsed": False, "gridPos": {"h": 1, "w": 24, "x": 0, "y": y[0]},
                    "id": nid(), "panels": [], "title": title, "type": "row"})
     y[0] += 1
 
@@ -52,7 +69,7 @@ def stat(title, expr, x, w, h=4, unit="short", desc="", steps=((0, "green"),), m
         d["max"] = mx
     if decimals is not None:
         d["decimals"] = decimals
-    panels.append({
+    add({
         "datasource": DS, "description": desc, "type": "stat", "title": title, "id": nid(),
         "gridPos": {"h": h, "w": w, "x": x, "y": y[0]},
         "fieldConfig": {"defaults": d, "overrides": []},
@@ -80,7 +97,7 @@ def ts(title, targets, x, w, h=8, unit="short", desc="", stack=True, fill=30, mn
     legend = {"calcs": ["mean", "max"], "displayMode": "table", "placement": placement, "showLegend": True}
     if sort_mean:
         legend.update({"sortBy": "Mean", "sortDesc": True})
-    panels.append({
+    add({
         "datasource": DS, "description": desc, "type": "timeseries", "title": title, "id": nid(),
         "gridPos": {"h": h, "w": w, "x": x, "y": y[0]},
         "fieldConfig": {"defaults": d, "overrides": []},
@@ -90,7 +107,7 @@ def ts(title, targets, x, w, h=8, unit="short", desc="", stack=True, fill=30, mn
 
 
 def pie(title, expr, legend, x, w, h=8, desc=""):
-    panels.append({
+    add({
         "datasource": DS, "description": desc, "type": "piechart", "title": title, "id": nid(),
         "gridPos": {"h": h, "w": w, "x": x, "y": y[0]},
         "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "mappings": []}, "overrides": []},
@@ -127,7 +144,15 @@ HIDE = {k: True for k in ["Time", "__name__", "container", "endpoint", "environm
 
 
 def table(title, targets, order, rename, x, w, h, desc="", overrides=(), sort=None, extra_tx=(), page=False,
-          hide=()):
+          hide=(), ops_refs=(), desc_public=""):
+    # ops_refs are the targets (and their columns) only the operator view shows.
+    if PUBLIC:
+        cut = {rename.get("Value #" + r, r) for r in ops_refs}
+        targets = [t for t in targets if t[0] not in ops_refs]
+        overrides = [o for o in overrides if o["matcher"]["options"] not in cut]
+        order = {k: v for k, v in order.items() if k.removeprefix("Value #") not in ops_refs}
+        rename = {k: v for k, v in rename.items() if k.removeprefix("Value #") not in ops_refs}
+        desc = desc_public or desc
     ex = dict(HIDE)
     ex.update({k: True for k in hide})
     tx = [{"id": "merge", "options": {}},
@@ -136,7 +161,7 @@ def table(title, targets, order, rename, x, w, h, desc="", overrides=(), sort=No
     opts = {"cellHeight": "sm", "enablePagination": page, "showHeader": True}
     if sort:
         opts["sortBy"] = [{"desc": True, "displayName": sort}]
-    panels.append({
+    add({
         "datasource": DS, "description": desc, "type": "table", "title": title, "id": nid(),
         "gridPos": {"h": h, "w": w, "x": x, "y": y[0]},
         "fieldConfig": {"defaults": {"custom": {"align": "auto", "cellOptions": {"type": "auto"},
@@ -167,7 +192,8 @@ FAULT = 'attribution=~"supplier|unknown"'
 panels.append({
     "gridPos": {"h": 3, "w": 24, "x": 0, "y": 0}, "id": nid(), "type": "text", "title": "",
     "options": {"mode": "markdown", "content":
-                "# SAGE — public pinned view\n**Scope:** `environment=mainnet-sage`, client traffic "
+                ("# SAGE — public pinned view" if PUBLIC else "# SAGE — gateway operator view") +
+                "\n**Scope:** `environment=mainnet-sage`, client traffic "
                 "(`request_type=client`) unless a panel says otherwise. Operators are registrable domains. "
                 "No filters: public dashboards do not support variables."},
 })
@@ -181,11 +207,13 @@ stat("Outgoing Relays/s", f'sum(rate(sage_relay_total{{{S}, request_type="client
      desc="Upstream relay attempts for client traffic: every retry, hedge arm and batch item counts. Probes excluded.")
 stat("Active WebSockets", f'sum(sage_websocket_connections{{{S}}})', 8, 4, steps=((0, "purple"),),
      desc="Live WebSocket bridges: a client connection plus its supplier connection.")
+ops[0] = True
 stat("Probe Success %",
      f'sum(rate(sage_relay_total{{{S}, request_type="probe", status=~"2.."}}[{RI}])) / '
      f'sum(rate(sage_relay_total{{{S}, request_type="probe"}}[{RI}])) * 100',
      12, 4, unit="percent", mn=0, mx=100, steps=((0, "red"), (90, "yellow"), (95, "green")),
      desc="Health-check relays answered 2xx. Independent of client traffic; only the probe leader sends them.")
+ops[0] = False
 stat("Relay Latency P50",
      f'histogram_quantile(0.50, sum by (le) (rate(sage_relay_latency_seconds_bucket{{{S}, request_type="client"}}[{RI}]))) * 1000',
      16, 4, unit="ms", steps=((0, "green"), (500, "yellow"), (1000, "red")),
@@ -213,6 +241,7 @@ stat("Relay Success %",
      desc="First client attempts whose outcome the heuristic did not blame on the supplier: a good answer, or a "
           "chain or client error the supplier answered honestly (block not found, execution reverted). First attempts "
           "only: retries arrive after another host failed, with less time left.")
+ops[0] = True
 stat("Hedge Fire Rate %",
      f'sum(rate(sage_hedge_total{{{S}, result=~"primary_won|hedge_won|both_failed"}}[{RI}])) / '
      f'sum(rate(sage_hedge_total{{{S}, result=~"primary_before_delay|primary_won|hedge_won|both_failed"}}[{RI}])) * 100',
@@ -220,21 +249,30 @@ stat("Hedge Fire Rate %",
      desc="Share of hedged relays where the primary had not answered by the hedge delay, so a hedge was sent. "
           "High means primaries are often slower than the delay. Reads 100% on images older than 2433a89, "
           "which had no primary_before_delay outcome.")
+ops[0] = False
+ops[0] = True
 stat("Broken Domains",
      f'count(max by (service_id, domain) (sage_circuit_breaker_state{{{S}}}) == 1) or vector(0)', 8, 4,
      steps=((0, "green"), (1, "yellow"), (5, "red")),
      desc="Hosts currently circuit-broken for some service. 0 is healthy.")
+ops[0] = False
+ops[0] = True
 stat("Drained Operators", f'count(max by (service_id, domain, rpc_type) (sage_drained_operators{{{S}}})) or vector(0)',
      12, 4, steps=((0, "green"), (1, "yellow")),
      desc="Operators an operator (or the auto-drain engine) has removed from a service's pool right now.")
+ops[0] = False
+ops[0] = True
 stat("Retry Recovery %",
      f'sum(rate(sage_retry_resolution_total{{{S}, outcome="recovered"}}[{RI}])) / '
      f'sum(rate(sage_retry_resolution_total{{{S}}}[{RI}])) * 100',
      16, 4, unit="percent", mn=0, mx=100, steps=((0, "red"), (50, "yellow"), (80, "green")),
      desc="Retries a later attempt rescued. The rest were exhausted: the client got the last answer or an error.")
+ops[0] = False
+ops[0] = True
 stat("Recovered Panics (1h)", f'sum(increase(sage_recovered_panics_total{{{S}}}[1h])) or vector(0)', 20, 4,
      steps=((0, "green"), (1, "red")),
      desc="Panics contained by the gateway. Non-zero means a bug was caught, not that nothing happened.")
+ops[0] = False
 y[0] += 4
 
 # ---------------------------------------------------------------------------
@@ -267,7 +305,12 @@ table(
      "Value #P95": "P95 (ms)", "Value #P99": "P99 (ms)", "Value #Eps": "Session eps",
      "Value #MeanScore": "Mean Score", "Value #Low": "Eps < 80", "Value #Drained": "Drained",
      "Value #URLs": "URLs (1h)"},
-    0, 24, 18, sort="RPS",
+    0, 24, 18, sort="RPS", ops_refs=("MeanScore", "Low", "URLs", "Drained"),
+    desc_public="Per operator (registrable domain), service and RPC type, client attempts only. RPS and latency count "
+                "every attempt; Success % and Supplier err/s count first attempts only (the fair sample: retries arrive "
+                "with less time left after another host failed). Success % counts a good answer and a chain or client "
+                "error the supplier answered honestly; only supplier and unknown attributions count against it. "
+                "Latency is per attempt. Session eps is the operator's registrations in the current session.",
     desc="Per operator (registrable domain), service and RPC type, client attempts only. RPS and latency count every "
          "attempt; Success % and Supplier err/s count first attempts only (the fair sample: an operator reputation "
          "has demoted gets mostly retries, which arrive with less time left, and would read worse than it is). An "
@@ -328,6 +371,7 @@ table(
     ],
 )
 y[0] += 12
+ops[0] = True
 table(
     "Currently Broken Hosts (Circuit Breaker)",
     [("Broken", f'max by (service_id, domain) (sage_circuit_breaker_state{{{S}}}) == 1')],
@@ -345,6 +389,7 @@ table(
     desc="Hosts broken most often in the last hour. One that keeps coming back between recoveries is flapping.",
     overrides=[col("Breaks (1h)", decimals=0, novalue="0", steps=((0, "yellow"), (10, "red")), cell=BG)],
 )
+ops[0] = False
 y[0] += 8
 
 # ---------------------------------------------------------------------------
@@ -354,12 +399,14 @@ ts("Client Requests by Service", [(f'sum by (service_id) (rate(sage_client_reque
 ts("Client Requests by RPC Type", [(f'sum by (rpc_type) (rate(sage_rpc_type_total{{{S}}}[{RI}]))', "{{rpc_type}}")],
    12, 12, unit="reqps", desc="By the RPC type SAGE settled on for the request (header or detection).")
 y[0] += 8
+ops[0] = True
 ts("Hedge Fire Rate by Service",
    [(f'sum by (service_id) (rate(sage_hedge_total{{{S}, result=~"primary_won|hedge_won|both_failed"}}[{RI}])) / '
      f'sum by (service_id) (rate(sage_hedge_total{{{S}, result=~"primary_before_delay|primary_won|hedge_won|both_failed"}}[{RI}])) * 100', "{{service_id}}")],
    0, 24, unit="percent", stack=False, fill=10, mn=0, steps=((0, "green"), (15, "yellow"), (30, "red")),
    desc="Share of hedged relays where a hedge was sent, by service. One service climbing while the others stay flat points "
         "at that service's suppliers, not the gateway.")
+ops[0] = False
 y[0] += 8
 pie("Relays by Type (client vs probe)", f'sum by (request_type) (rate(sage_relay_total{{{S}}}[{RI}]))',
     "{{request_type}}", 0, 8)
@@ -375,8 +422,10 @@ lat = []
 for q in ("0.50", "0.90", "0.95", "0.99"):
     lat.append((f'histogram_quantile({q}, sum by (le) (rate(sage_relay_latency_seconds_bucket{{{S}, request_type="client"}}[{RI}]))) * 1000',
                 f'P{int(float(q) * 100)}'))
+ops[0] = True
 ts("Relay Attempt Latency Percentiles", lat, 0, 12, unit="ms", stack=False, fill=0, sort_mean=False,
    desc="Per upstream attempt. A retried or hedged request is several attempts, none of them its total.")
+ops[0] = False
 clat = []
 for q in ("0.50", "0.90", "0.95", "0.99"):
     clat.append((f'histogram_quantile({q}, sum by (le) (rate(sage_client_latency_seconds_bucket{{{S}}}[{RI}]))) * 1000',
@@ -384,6 +433,7 @@ for q in ("0.50", "0.90", "0.95", "0.99"):
 ts("Client-Facing Latency Percentiles", clat, 12, 12, unit="ms", stack=False, fill=0, sort_mean=False,
    desc="What the client waited, retries and hedges included: from the request reaching SAGE to the response written.")
 y[0] += 8
+ops[0] = True
 ts("Slow Attempts by Operator (> 2.5s)",
    [(f'topk(10, sum by (service_id, operator) (rate(sage_operator_attempt_seconds_count{{{S}}}[{RI}])) - '
      f'sum by (service_id, operator) (rate(sage_operator_attempt_seconds_bucket{{{S}, le="2.5"}}[{RI}])))',
@@ -391,6 +441,7 @@ ts("Slow Attempts by Operator (> 2.5s)",
    0, 12, unit="reqps", stack=False, fill=10,
    desc="Attempts that took longer than 2.5s, by service and operator, top 10. A slow tail is what runs a request out "
         "of its deadline (a client 504) even when the median is fast: read it beside the 504 panel.")
+ops[0] = False
 ts("Client 504s by Service",
    [(f'topk(10, sum by (service_id) (rate(sage_client_requests_total{{{S}, status="504"}}[{RI}])))', "{{service_id}}")],
    12, 12, unit="reqps", stack=False, fill=10,
@@ -399,6 +450,7 @@ ts("Client 504s by Service",
 y[0] += 8
 
 # ---------------------------------------------------------------------------
+ops[0] = True
 row("Health Checks, Selection & Retries")
 ts("Probe Results by Status", [(f'sum by (status) (rate(sage_relay_total{{{S}, request_type="probe"}}[{RI}]))', "{{status}}")],
    0, 12, unit="reqps", desc="Health-check relays by the status the relay miner returned. Only the probe leader sends.")
@@ -420,6 +472,7 @@ ts("Degraded Responses", [(f'sum by (tier) (rate(sage_degraded_total{{{S}}}[{RI}
    desc="Requests served in degraded mode: pool collapse (every endpoint below the floor) or an answer sent with X-Degraded.")
 y[0] += 8
 
+ops[0] = False
 # ---------------------------------------------------------------------------
 row("Client-Facing Errors by Service")
 table(
@@ -459,6 +512,7 @@ ts("WebSocket Closes by Initiator",
 ts("WebSocket Frame Rate", [(f'sum by (direction) (rate(sage_websocket_frames_total{{{S}}}[{RI}]))', "{{direction}}")],
    16, 8, unit="reqps", placement="bottom", sort_mean=False)
 y[0] += 8
+ops[0] = True
 ts("Rebinds, Stalls & Unresponsive Peers",
    [(f'sum by (result) (rate(sage_websocket_rebinds_total{{{S}}}[{RI}]))', "rebind:{{result}}"),
     (f'sum(rate(sage_websocket_stalls_total{{{S}}}[{RI}]))', "stall"),
@@ -466,6 +520,7 @@ ts("Rebinds, Stalls & Unresponsive Peers",
    0, 8, unit="cps", stack=False, placement="bottom", sort_mean=False,
    desc="rebind:ok is healthy: a supplier was replaced under a live client (session rollover, loss, stall) and "
         "subscriptions replayed. rebind:failed means the client was told to reconnect.")
+ops[0] = False
 tenure = []
 for q in ("0.50", "0.90", "0.99"):
     tenure.append((f'histogram_quantile({q}, sum by (le) (rate(sage_websocket_supplier_tenure_seconds_bucket{{{S}}}[{RI}])))',
@@ -507,7 +562,12 @@ table(
      "Value #Down": "Frames/s to client", "Value #Up": "Frames/s to supplier", "Value #Bad": "Dup+unsolicited %",
      "Value #Tenure": "Median tenure (1h)", "Value #MeanScore": "WS Mean Score", "Value #Eps": "WS session eps",
      "Value #Low": "WS eps < 80", "Value #URLs": "WS URLs (1h)", "Value #Drained": "Drained"},
-    0, 24, 10, sort="Frames/s to client",
+    0, 24, 10, sort="Frames/s to client", ops_refs=("MeanScore", "Low", "URLs", "Drained"),
+    desc_public="Per operator and service. Every frame in either direction is a relay the supplier can claim, and "
+                "the push rate on a subscription is chosen by the supplier being paid, so Frames /conn is worth "
+                "comparing across operators on the same service. Dup+unsolicited % is notifications nobody asked for. "
+                "Frame columns show only while the operator holds a live connection. WS session eps is the operator's "
+                "registrations in the session.",
     extra_tx=[{"id": "calculateField", "options": {"alias": "Frames /conn", "mode": "binary", "replaceFields": False,
                                                    "binary": {"left": "Frames/s to client", "operator": "/",
                                                               "right": "WS conns"}}}],
@@ -563,6 +623,7 @@ table(
 y[0] += 8
 
 # ---------------------------------------------------------------------------
+ops[0] = True
 row("Gateway Internals — probes, auto-drain, health")
 ts("WebSocket Recovery Probes", [(f'sum by (result) (rate(sage_websocket_probes_total{{{S}}}[{RI}]))', "{{result}}")],
    0, 8, unit="reqps", placement="bottom", sort_mean=False,
@@ -579,19 +640,23 @@ ts("Probe Leader & Session Layer",
         "cannot read sessions from the full node.")
 y[0] += 8
 
+ops[0] = False
 dash = {
     "annotations": {"list": [{"builtIn": 1, "datasource": {"type": "grafana", "uid": "-- Grafana --"}, "enable": True,
                               "hide": True, "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts",
                               "type": "dashboard"}]},
-    "description": "Operator-facing supplier quality view for SAGE, externally shareable. Scoped to "
-                   "environment=mainnet-sage and client traffic. No template variables: Grafana public dashboards "
-                   "do not support them.",
+    "description": ("Supplier quality view for SAGE, externally shareable: outcomes only. "
+                    if PUBLIC else "Everything the gateway operator watches: reputation, breaker, drains, retries, "
+                    "hedges, probes. ") + "Scoped to environment=mainnet-sage and client traffic. No template "
+                   "variables: Grafana public dashboards do not support them.",
     "editable": True, "fiscalYearStartMonth": 0, "graphTooltip": 1, "links": [], "panels": panels,
     "preload": False, "refresh": "5m", "schemaVersion": 42,
-    "tags": ["gateway", "metrics", "sage", "pinned", "quality"],
+    "tags": ["gateway", "metrics", "sage", "pinned", "quality"] if PUBLIC else ["gateway", "metrics", "sage", "operator"],
     "templating": {"list": []}, "time": {"from": "now-1h", "to": "now"},
     "timepicker": {"refresh_intervals": ["30s", "1m", "5m", "15m", "30m", "1h"]},
-    "timezone": "browser", "title": "SAGE Quality Dashboard (Public — Pinned)", "uid": "sage-quality-public",
+    "timezone": "browser",
+    "title": "SAGE Quality Dashboard (Public — Pinned)" if PUBLIC else "SAGE Gateway Operator",
+    "uid": "sage-quality-public" if PUBLIC else "sage-operator",
     "version": 1,
 }
 json.dump(dash, sys.stdout, indent=2)
