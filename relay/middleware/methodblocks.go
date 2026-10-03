@@ -96,7 +96,7 @@ func MethodBlocks(
 			}
 
 			open := func(ep domain.EndpointAddr) bool {
-				return !store.Blocked(serviceID, blockHost(endpointProvider, ep, ctx.RPCType), method)
+				return !store.Blocked(serviceID, dialedHost(endpointProvider, ep, ctx.RPCType), method)
 			}
 			pool := ctx.Endpoints
 			if len(ctx.Endpoints) > 0 {
@@ -128,7 +128,7 @@ func MethodBlocks(
 				escalates := ctx.HeuristicResult.Attribution == heuristic.AttrSupplier &&
 					ctx.HeuristicResult.Reason != "http_408"
 				event := MethodBlockEventMark
-				host := blockHost(endpointProvider, ctx.Endpoint, ctx.RPCType)
+				host := dialedHost(endpointProvider, ctx.Endpoint, ctx.RPCType)
 				if store.Mark(serviceID, host, method, escalates) {
 					event = MethodBlockEventEscalate
 				}
@@ -240,11 +240,12 @@ func methodFamily(registry *qos.Registry, ctx *relay.Context, method string) []s
 	return lister.MethodFamily(method)
 }
 
-// blockHost is the host a mark is kept against: the host the face is
-// actually dialed from when the provider can say (protocol.URLResolver), else
-// the address's own. An operator staking one host per type would otherwise
-// have a REST refusal marked against its JSON-RPC host.
-func blockHost(provider protocol.EndpointProvider, ep domain.EndpointAddr, rpcType domain.RPCType) string {
+// dialedHost is the host a relay of rpcType to ep actually dials, which is
+// what a method block and a circuit break are kept against: the face's own
+// host when the provider can say (protocol.URLResolver), else the address's.
+// An operator staking one host per type would otherwise have a REST failure
+// held against its JSON-RPC host.
+func dialedHost(provider protocol.EndpointProvider, ep domain.EndpointAddr, rpcType domain.RPCType) string {
 	if r, ok := provider.(protocol.URLResolver); ok {
 		if rawURL, ok := r.EndpointURLFor(ep, rpcType); ok {
 			if u, err := url.Parse(rawURL); err == nil && u.Hostname() != "" {
