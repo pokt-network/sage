@@ -217,7 +217,7 @@ func TestReviewLoad_EndpointURLForAnswersAnotherServicesFace(t *testing.T) {
 	sm.getOrCreateEndpoints(stake("bsc", "pokt1one", "https://rm1.example.com", "https://rest-shared.example.com", "bsc-1", 110))
 	sm.getOrCreateEndpoints(stake("bsc", "pokt1two", "https://rm2.example.com", "https://rest-shared.example.com", "bsc-2", 110))
 
-	host := func(ep domain.EndpointAddr) string { return dialedHostVia(p, ep, domain.RPCTypeREST) }
+	host := func(ep domain.EndpointAddr) string { return dialedHostVia(p, "eth", ep, domain.RPCTypeREST) }
 	beforeOne, beforeTwo := host(one), host(two)
 
 	// eth dials rest-a and rest-b: they are two backends to eth.
@@ -235,8 +235,8 @@ func TestReviewLoad_EndpointURLForAnswersAnotherServicesFace(t *testing.T) {
 }
 
 // dialedHostVia is relay/middleware's dialedHost over this protocol.
-func dialedHostVia(p *Protocol, ep domain.EndpointAddr, rpcType domain.RPCType) string {
-	if raw, ok := p.EndpointURLFor(ep, rpcType); ok {
+func dialedHostVia(p *Protocol, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) string {
+	if raw, ok := p.EndpointURLFor(serviceID, ep, rpcType); ok {
 		if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
 			return u.Hostname()
 		}
@@ -259,10 +259,10 @@ func TestReviewLoad_JSONRPCKeyUnchanged(t *testing.T) {
 	}))
 	addr := domain.EndpointAddr("pokt1one-https://rpc.example.com")
 	addrURL, _ := addr.URL()
-	if got, ok := p.EndpointURLFor(addr, domain.RPCTypeJSONRPC); !ok || got != addrURL {
+	if got, ok := p.EndpointURLFor("cosmos", addr, domain.RPCTypeJSONRPC); !ok || got != addrURL {
 		t.Fatalf("EndpointURLFor(json_rpc) = %q, %v; want the address's own %q", got, ok, addrURL)
 	}
-	if got := dialedHostVia(p, addr, domain.RPCTypeJSONRPC); got != addr.Domain() {
+	if got := dialedHostVia(p, "cosmos", addr, domain.RPCTypeJSONRPC); got != addr.Domain() {
 		t.Fatalf("breaker host for json_rpc = %q; want the address host %q", got, addr.Domain())
 	}
 }
@@ -313,7 +313,7 @@ func BenchmarkReviewLoad_BreakerPrefilterDialedHost(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		for _, ep := range addrs {
-			_ = dialedHostVia(p, ep, domain.RPCTypeJSONRPC)
+			_ = dialedHostVia(p, "eth", ep, domain.RPCTypeJSONRPC)
 		}
 	}
 }
@@ -322,7 +322,7 @@ func BenchmarkReviewLoad_BreakerPrefilterDialedHost(b *testing.B) {
 func BenchmarkReviewLoad_CheckKeyURL(b *testing.B) {
 	p, addrs := benchProtocol(50)
 	ep := addrs[0]
-	dialed, _ := p.EndpointURLFor(ep, domain.RPCTypeREST)
+	dialed, _ := p.EndpointURLFor("eth", ep, domain.RPCTypeREST)
 	b.ReportAllocs()
 	for b.Loop() {
 		p.checkKeyURL("eth", ep, domain.RPCTypeREST, dialed)

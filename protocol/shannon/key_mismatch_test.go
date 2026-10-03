@@ -28,7 +28,7 @@ func TestCheckKeyURL_CountsAKeyNamingAnotherHost(t *testing.T) {
 	m := &recordingMetrics{}
 	p := &Protocol{sessions: sm, metrics: m}
 	addr := domain.EndpointAddr("pokt1shared-https://rm.example.com")
-	keyURL, ok := p.EndpointURLFor(addr, domain.RPCTypeREST)
+	keyURL, ok := p.ReputationURLFor(addr, domain.RPCTypeREST)
 	if !ok {
 		t.Fatal("precondition: the address resolves a REST URL")
 	}

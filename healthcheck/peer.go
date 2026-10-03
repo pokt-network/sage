@@ -36,9 +36,9 @@ func (e *Executor) SetPeerSource(s ProbeSource, maxAge func(domain.ServiceID) ti
 // exactly as groupByBackend keys its groups (the URL that check dials), so a
 // peer's result and this instance's schedule agree on what "the same check"
 // is.
-func (e *Executor) backendKey(ep domain.EndpointAddr, rpcType domain.RPCType) string {
+func (e *Executor) backendKey(serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) string {
 	if e.dedupByBackendURL.Load() {
-		if url, err := e.dialedURL(ep, rpcType); err == nil && url != "" {
+		if url, err := e.dialedURL(serviceID, ep, rpcType); err == nil && url != "" {
 			return url
 		}
 	}
@@ -85,10 +85,10 @@ func (e *Executor) applyPeerResult(ctx context.Context, r ProbeResult) {
 	if err != nil {
 		return
 	}
-	key := e.backendKey(r.Endpoint, rpcType)
+	key := e.backendKey(r.ServiceID, r.Endpoint, rpcType)
 	var local domain.EndpointAddrList
 	for _, ep := range eps {
-		if e.backendKey(ep, rpcType) == key {
+		if e.backendKey(r.ServiceID, ep, rpcType) == key {
 			local = append(local, ep)
 		}
 	}

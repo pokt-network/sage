@@ -81,7 +81,7 @@ func (urlProvider) AvailableEndpoints(context.Context, domain.ServiceID, domain.
 	return nil, nil
 }
 
-func (r urlProvider) EndpointURLFor(_ domain.EndpointAddr, rpcType domain.RPCType) (string, bool) {
+func (r urlProvider) EndpointURLFor(_ domain.ServiceID, _ domain.EndpointAddr, rpcType domain.RPCType) (string, bool) {
 	u, ok := r.urls[rpcType]
 	return u, ok
 }

@@ -50,7 +50,7 @@ const (
 type KeyFn func(domain.EndpointAddr, domain.RPCType) string
 
 // URLResolverFn answers the URL a relay of rpcType to an endpoint dials;
-// protocol.URLResolver's method fits. Nil means the address's own URL.
+// the protocol's ReputationURLFor fits. Nil means the address's own URL.
 type URLResolverFn func(domain.EndpointAddr, domain.RPCType) (string, bool)
 
 // keyFnFor returns the KeyFn for a granularity name. An empty or unrecognized

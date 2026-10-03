@@ -36,11 +36,13 @@ type sessionManager struct {
 	// See evictStaleEndpointsOnRollover.
 	endpointCache sync.Map // sessionID (string) → cachedEndpoints
 	// byAddr indexes every cached endpoint by address, whatever its service,
-	// for URLResolver lookups: written when a session's endpoints are
-	// extracted, cleared with them on rollover. An address is supplier plus
-	// public URL, so two services share one when the supplier stakes one URL
-	// for both, and the last write wins: harmless for a URL, whose host is
-	// the same either way.
+	// for ReputationURLFor, whose key function carries no service: written
+	// when a session's endpoints are extracted, cleared with them on
+	// rollover. An address is supplier plus public URL, so two services
+	// share one when the supplier stakes one URL for both, and the last write
+	// wins: the address's own URL is the same either way, but another face's
+	// may not be (sage_reputation_key_mismatch_total). Anything that must
+	// name the host a service dials uses byServiceAddr.
 	byAddr sync.Map // domain.EndpointAddr → *endpoint
 	// byServiceAddr indexes the same endpoints by service and address, for
 	// whatever acts on the endpoint's session: an endpoint carries the session

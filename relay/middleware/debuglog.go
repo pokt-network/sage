@@ -55,7 +55,7 @@ func DebugLog(flags featureflag.FlagStore, registry *qos.Registry, provider prot
 			}
 			dialed := ""
 			if resolver != nil && ctx.Endpoint != "" {
-				if u, ok := resolver.EndpointURLFor(ctx.Endpoint, ctx.RPCType); ok {
+				if u, ok := resolver.EndpointURLFor(ctx.ServiceID, ctx.Endpoint, ctx.RPCType); ok {
 					dialed = u
 				}
 			}

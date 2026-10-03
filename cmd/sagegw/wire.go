@@ -354,7 +354,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		// Per-URL reputation keys name the host a face is dialed from, so
 		// an operator staking one host per type is scored per face (see
 		// protocol.URLResolver). Installed before the server listens.
-		repSvc.SetURLResolver(shannonProto.EndpointURLFor)
+		repSvc.SetURLResolver(shannonProto.ReputationURLFor)
 		// rpc_type_fallbacks also covers stakes reputation has ranked out.
 		shannonProto.SetRuledOut(repSvc.RuledOut)
 

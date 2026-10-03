@@ -752,12 +752,26 @@ func (p *Protocol) SessionLayerReady() bool {
 	return p.sessions.SessionLayerReady()
 }
 
-// EndpointURLFor implements protocol.URLResolver: the URL a relay of rpcType
-// to endpoint dials, from the supplier's stake in a current session. No
-// fallback: an endpoint that does not stake the type answers false, and the
-// caller falls back to the address's own host.
-func (p *Protocol) EndpointURLFor(endpoint domain.EndpointAddr, rpcType domain.RPCType) (string, bool) {
+// EndpointURLFor implements protocol.URLResolver: the URL a relay of
+// serviceID and rpcType to endpoint dials, from the supplier's stake in that
+// service's current session. No fallback: an endpoint that does not stake
+// the type answers false, and the caller falls back to the address's own
+// host.
+func (p *Protocol) EndpointURLFor(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) (string, bool) {
+	ep, ok := p.sessions.lookupEndpoint(serviceID, endpoint)
+	return faceURL(ep, ok, rpcType)
+}
+
+// ReputationURLFor is the URL reputation keys a face by. Its key function
+// carries no service, so it finds the address in any service's session; where
+// that names another service's host, sage_reputation_key_mismatch_total
+// counts it (checkKeyURL).
+func (p *Protocol) ReputationURLFor(endpoint domain.EndpointAddr, rpcType domain.RPCType) (string, bool) {
 	ep, ok := p.sessions.lookupAnyEndpoint(endpoint)
+	return faceURL(ep, ok, rpcType)
+}
+
+func faceURL(ep *endpoint, ok bool, rpcType domain.RPCType) (string, bool) {
 	if !ok {
 		return "", false
 	}
@@ -770,12 +784,12 @@ func (p *Protocol) EndpointURLFor(endpoint domain.EndpointAddr, rpcType domain.R
 
 // checkKeyURL counts a relay whose reputation key names a URL other than the
 // one it dials (sage_reputation_key_mismatch_total). Reputation keys a face
-// by EndpointURLFor, which finds the address in any service's session; the
+// by ReputationURLFor, which finds the address in any service's session; the
 // relay dials the URL in this service's. Where the two differ, a failure here
 // moves the score of a host that never received the relay. Expected never to
 // count: a count is a bug in endpoint identity.
 func (p *Protocol) checkKeyURL(serviceID domain.ServiceID, endpointAddr domain.EndpointAddr, rpcType domain.RPCType, dialed string) {
-	if keyURL, ok := p.EndpointURLFor(endpointAddr, rpcType); ok && keyURL != dialed {
+	if keyURL, ok := p.ReputationURLFor(endpointAddr, rpcType); ok && keyURL != dialed {
 		p.supplierMetricsRecorder().RecordKeyMismatch(serviceID, rpcType)
 	}
 }

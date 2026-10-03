@@ -65,7 +65,7 @@ func CircuitBreak(
 			// shows the pool while it lasts.
 			if len(ctx.Endpoints) > 0 {
 				healthy := filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool {
-					return !breaker.IsBroken(serviceID, dialedHost(endpointProvider, ep, ctx.RPCType))
+					return !breaker.IsBroken(serviceID, dialedHost(endpointProvider, ctx.ServiceID, ep, ctx.RPCType))
 				})
 				if len(healthy) > 0 {
 					ctx.Endpoints = healthy
@@ -94,7 +94,7 @@ func CircuitBreak(
 			// operator staking one host per type had its JSON-RPC host taken
 			// out of the pool for a failure on its REST host.
 			if ctx.Endpoint != "" {
-				brokenDomain := dialedHost(endpointProvider, ctx.Endpoint, ctx.RPCType)
+				brokenDomain := dialedHost(endpointProvider, ctx.ServiceID, ctx.Endpoint, ctx.RPCType)
 				switch {
 				case ctx.HeuristicResult != nil && ctx.HeuristicResult.ShouldCircuitBreak:
 					reason := ctx.HeuristicResult.Reason

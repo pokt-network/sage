@@ -96,7 +96,7 @@ func MethodBlocks(
 			}
 
 			open := func(ep domain.EndpointAddr) bool {
-				return !store.Blocked(serviceID, dialedHost(endpointProvider, ep, ctx.RPCType), method)
+				return !store.Blocked(serviceID, dialedHost(endpointProvider, ctx.ServiceID, ep, ctx.RPCType), method)
 			}
 			pool := ctx.Endpoints
 			if len(ctx.Endpoints) > 0 {
@@ -128,7 +128,7 @@ func MethodBlocks(
 				escalates := ctx.HeuristicResult.Attribution == heuristic.AttrSupplier &&
 					ctx.HeuristicResult.Reason != "http_408"
 				event := MethodBlockEventMark
-				host := dialedHost(endpointProvider, ctx.Endpoint, ctx.RPCType)
+				host := dialedHost(endpointProvider, ctx.ServiceID, ctx.Endpoint, ctx.RPCType)
 				if store.Mark(serviceID, host, method, escalates) {
 					event = MethodBlockEventEscalate
 				}
@@ -245,9 +245,9 @@ func methodFamily(registry *qos.Registry, ctx *relay.Context, method string) []s
 // host when the provider can say (protocol.URLResolver), else the address's.
 // An operator staking one host per type would otherwise have a REST failure
 // held against its JSON-RPC host.
-func dialedHost(provider protocol.EndpointProvider, ep domain.EndpointAddr, rpcType domain.RPCType) string {
+func dialedHost(provider protocol.EndpointProvider, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) string {
 	if r, ok := provider.(protocol.URLResolver); ok {
-		if rawURL, ok := r.EndpointURLFor(ep, rpcType); ok {
+		if rawURL, ok := r.EndpointURLFor(serviceID, ep, rpcType); ok {
 			if u, err := url.Parse(rawURL); err == nil && u.Hostname() != "" {
 				return u.Hostname()
 			}

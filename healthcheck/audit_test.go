@@ -19,7 +19,7 @@ type resolvingEndpoints struct {
 	rest map[domain.EndpointAddr]string
 }
 
-func (r resolvingEndpoints) EndpointURLFor(ep domain.EndpointAddr, rt domain.RPCType) (string, bool) {
+func (r resolvingEndpoints) EndpointURLFor(_ domain.ServiceID, ep domain.EndpointAddr, rt domain.RPCType) (string, bool) {
 	u, ok := r.rest[ep]
 	return u, ok && rt == domain.RPCTypeREST
 }

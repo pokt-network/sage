@@ -573,7 +573,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 				continue
 			}
 
-			for _, group := range e.groupByBackend(eps, rpcType) {
+			for _, group := range e.groupByBackend(serviceID, eps, rpcType) {
 				group := group // capture for goroutine
 				probe := group.probe(e.cycle)
 
@@ -783,7 +783,7 @@ func (g backendGroup) probe(cycle uint64) domain.EndpointAddr {
 // address's: the group's result is recorded against every member, so two
 // suppliers sharing a JSON-RPC host but staking REST on different hosts
 // grouped for a REST check had one probe charge a host it never dialed.
-func (e *Executor) groupByBackend(eps domain.EndpointAddrList, rpcType domain.RPCType) []backendGroup {
+func (e *Executor) groupByBackend(serviceID domain.ServiceID, eps domain.EndpointAddrList, rpcType domain.RPCType) []backendGroup {
 	if !e.dedupByBackendURL.Load() {
 		groups := make([]backendGroup, 0, len(eps))
 		for _, ep := range eps {
@@ -795,7 +795,7 @@ func (e *Executor) groupByBackend(eps domain.EndpointAddrList, rpcType domain.RP
 	byURL := make(map[string]int, len(eps))
 	groups := make([]backendGroup, 0, len(eps))
 	for _, ep := range eps {
-		url, err := e.dialedURL(ep, rpcType)
+		url, err := e.dialedURL(serviceID, ep, rpcType)
 		if err != nil || url == "" {
 			// An address we cannot parse gets its own group rather than being
 			// lumped in with every other unparseable one.
@@ -812,11 +812,12 @@ func (e *Executor) groupByBackend(eps domain.EndpointAddrList, rpcType domain.RP
 	return groups
 }
 
-// dialedURL is the URL a check of rpcType dials for ep: the face's own when
-// the endpoint provider can say (protocol.URLResolver), else the address's.
-func (e *Executor) dialedURL(ep domain.EndpointAddr, rpcType domain.RPCType) (string, error) {
+// dialedURL is the URL a check of serviceID and rpcType dials for ep: the
+// face's own in that service's session when the endpoint provider can say
+// (protocol.URLResolver), else the address's.
+func (e *Executor) dialedURL(serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (string, error) {
 	if r, ok := e.endpoints.(protocol.URLResolver); ok {
-		if url, ok := r.EndpointURLFor(ep, rpcType); ok && url != "" {
+		if url, ok := r.EndpointURLFor(serviceID, ep, rpcType); ok && url != "" {
 			return url, nil
 		}
 	}

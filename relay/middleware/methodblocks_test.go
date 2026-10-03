@@ -701,7 +701,7 @@ func (r resolvingProvider) AvailableEndpoints(context.Context, domain.ServiceID,
 	return r.eps, nil
 }
 
-func (r resolvingProvider) EndpointURLFor(ep domain.EndpointAddr, rt domain.RPCType) (string, bool) {
+func (r resolvingProvider) EndpointURLFor(_ domain.ServiceID, ep domain.EndpointAddr, rt domain.RPCType) (string, bool) {
 	if ep == r.eps[0] && rt == domain.RPCTypeREST {
 		return "https://rest.other.example:8443/v1", true
 	}

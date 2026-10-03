@@ -26,16 +26,20 @@ type ProbeEndpointProvider interface {
 	ProbeEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error)
 }
 
-// URLResolver answers which URL a relay to an endpoint actually dials for an
-// RPC type. An endpoint address carries the supplier's public URL, one per
-// supplier whatever the type; an operator that stakes one host per type
-// (e.g. eu-s-01-osmosis-json and eu-s-01-osmosis-rest) dials a
-// different host for its REST face than the address names. Reputation keys
-// and method-block hosts ask here so a face is scored under the host that
-// served it. ok is false when the endpoint is not in any current session or
-// does not stake the type.
+// URLResolver answers which URL a relay of a service to an endpoint actually
+// dials for an RPC type. An endpoint address carries the supplier's public
+// URL, one per supplier whatever the type; an operator that stakes one host
+// per type (e.g. eu-s-01-osmosis-json and eu-s-01-osmosis-rest) dials a
+// different host for its REST face than the address names. Health-check
+// groups, method-block and circuit-breaker hosts ask here so a face is held
+// to the host that served it. The service is part of the question: one
+// supplier address staked for several services may name a different REST
+// host in each, and an answer from another service's session put one
+// service's probe and breaker mark on a host it never dialed. ok is false
+// when the endpoint is not in the service's current session or does not
+// stake the type.
 type URLResolver interface {
-	EndpointURLFor(endpoint domain.EndpointAddr, rpcType domain.RPCType) (string, bool)
+	EndpointURLFor(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) (string, bool)
 }
 
 // SessionManager manages session lifecycle.
