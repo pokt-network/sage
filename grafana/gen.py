@@ -707,7 +707,9 @@ dash = {
     "timepicker": {"refresh_intervals": ["30s", "1m", "5m", "15m", "30m", "1h"]},
     "timezone": "browser",
     "title": "SAGE Quality Dashboard (Public — Pinned)" if PUBLIC else "SAGE Gateway Operator",
-    "uid": "sage-quality-public" if PUBLIC else "sage-operator",
+    # The public dashboard took over the old PATH one at its uid, so its URLs
+    # and its public share link keep working.
+    "uid": "path-quality-dashboard-public-pinned" if PUBLIC else "sage-operator",
     "version": 1,
 }
 
