@@ -338,34 +338,41 @@ func TestIsCoalescable_Mutations(t *testing.T) {
 
 func TestCacheTTL(t *testing.T) {
 	p := newTestPlugin(5)
+	found := []byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"0x1"}}`)
 
 	// eth_blockNumber: no cache.
-	if ttl := p.CacheTTL("eth_blockNumber", nil, nil); ttl != 0 {
+	if ttl := p.CacheTTL("eth_blockNumber", nil, found); ttl != 0 {
 		t.Errorf("eth_blockNumber: expected 0, got %v", ttl)
 	}
 
 	// eth_getTransactionReceipt: 5 min.
-	if ttl := p.CacheTTL("eth_getTransactionReceipt", nil, nil); ttl != 5*time.Minute {
+	if ttl := p.CacheTTL("eth_getTransactionReceipt", nil, found); ttl != 5*time.Minute {
 		t.Errorf("eth_getTransactionReceipt: expected 5m, got %v", ttl)
 	}
 
 	// eth_getBlockByNumber with specific block: 10 min.
 	params := json.RawMessage(`["0x1194af2",true]`)
-	if ttl := p.CacheTTL("eth_getBlockByNumber", params, nil); ttl != 10*time.Minute {
+	if ttl := p.CacheTTL("eth_getBlockByNumber", params, found); ttl != 10*time.Minute {
 		t.Errorf("eth_getBlockByNumber(hex block): expected 10m, got %v", ttl)
 	}
 
 	// eth_getBlockByNumber with "latest": no cache.
 	latestParams := json.RawMessage(`["latest",true]`)
-	if ttl := p.CacheTTL("eth_getBlockByNumber", latestParams, nil); ttl != 0 {
+	if ttl := p.CacheTTL("eth_getBlockByNumber", latestParams, found); ttl != 0 {
 		t.Errorf("eth_getBlockByNumber(latest): expected 0, got %v", ttl)
 	}
 
 	// Mutations: no cache.
 	for _, m := range []string{"eth_sendRawTransaction", "eth_sendTransaction"} {
-		if ttl := p.CacheTTL(m, nil, nil); ttl != 0 {
+		if ttl := p.CacheTTL(m, nil, found); ttl != 0 {
 			t.Errorf("%s: expected 0, got %v", m, ttl)
 		}
+	}
+
+	// An error answer is one node's word, not the chain's: no cache.
+	errAns := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"header not found"}}`)
+	if ttl := p.CacheTTL("eth_getTransactionReceipt", nil, errAns); ttl != 0 {
+		t.Errorf("eth_getTransactionReceipt error answer: expected 0, got %v", ttl)
 	}
 }
 

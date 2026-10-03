@@ -402,11 +402,17 @@ func (p *Plugin) IsCoalescable(method string) bool {
 // CacheTTL returns how long a response for the given method may be cached.
 //
 // Rules:
+//   - a response without a non-null result: 0. Null is "not yet" (a pending
+//     transaction's receipt, a block a lagging node has not seen), and an
+//     error is one node's answer; cached, either outlives the truth.
 //   - eth_getTransactionReceipt: 5 min (confirmed transaction, immutable)
 //   - eth_getBlockByNumber with a hex block param: 10 min (historical block, immutable)
 //   - eth_blockNumber: 0 (always fresh)
 //   - state-mutating or unknown methods: 0
 func (p *Plugin) CacheTTL(method string, params []byte, response []byte) time.Duration {
+	if r := gjson.GetBytes(response, "result"); !r.Exists() || r.Type == gjson.Null {
+		return 0
+	}
 	switch method {
 	case "eth_getTransactionReceipt":
 		return 5 * time.Minute
