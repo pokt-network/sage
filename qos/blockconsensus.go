@@ -349,8 +349,9 @@ func (bc *BlockConsensus) applyExternalFloor(perceived uint64, now time.Time) ui
 // entries are never removed individually.
 const maxRateSamples = 16
 
-// RateSampleGap is the least time between two rate samples. A move within it
-// of the last sample updates that sample's height rather than adding one.
+// RateSampleGap is the least time between the starts of two rate samples. A
+// move within it of the last sample's start updates that sample, its height
+// and the time of the move, rather than adding one.
 //
 // A booting replica replays minutes of probe results in milliseconds, and
 // every observation is stamped when it arrives: twenty eth blocks, four
@@ -366,10 +367,18 @@ const maxRateSamples = 16
 // the probe through ExtractData.
 const RateSampleGap = 2 * time.Second
 
-// rateSample is a perceived height and when it was published.
+// rateSample is a perceived height and when it was published. opened is
+// when the sample was started: moves within RateSampleGap of it update this
+// sample (height and at) instead of adding one, so the rate and the head's
+// time (Projection) still read the last move's, and only the bucketing
+// reads opened. Keeping at at the bucket's start instead read the head up to
+// 2s early on a chain moving faster than that: a low first rate after every
+// boot (0.5 blocks/s on a 2.5 blocks/s chain), and every honest answer read
+// blocks behind.
 type rateSample struct {
 	height uint64
 	at     time.Time
+	opened time.Time
 }
 
 // recordRateSampleLocked appends a sample when the perceived height moves.
@@ -388,15 +397,15 @@ func (bc *BlockConsensus) recordRateSampleLocked(perceived uint64, now time.Time
 		if last.height == perceived {
 			return
 		}
-		if now.Sub(last.at) < RateSampleGap {
-			last.height = perceived
+		if now.Sub(last.opened) < RateSampleGap {
+			last.height, last.at = perceived, now
 			return
 		}
 	}
 	if len(bc.rateSamples) >= maxRateSamples {
 		bc.rateSamples = append(bc.rateSamples[:0], bc.rateSamples[1:]...)
 	}
-	bc.rateSamples = append(bc.rateSamples, rateSample{height: perceived, at: now})
+	bc.rateSamples = append(bc.rateSamples, rateSample{height: perceived, at: now, opened: now})
 }
 
 // BlockRate reports how many blocks this chain produces per second, derived
