@@ -258,12 +258,13 @@ func isTimeout(err error) bool {
 //     the HA miner's 429. Any other status is not a refusal here; the caller
 //     grades the status.
 //   - *websocket.CloseError: the HA miner closes with 4000 when the session
-//     it served has ended, 4001 when it rejected the gateway's frame
-//     (signature, session, identity: its own source calls it the client's
-//     fault) and 4002 when the application's allocation for this supplier
-//     and session is spent; the poktroll miner closes normally with the
-//     over-servicing wording as the reason. 4003, its backend unreachable,
-//     is the supplier's and left to the caller.
+//     it served has ended, 4001 when it could not validate the gateway's
+//     frame and 4002 when the application's allocation for this supplier and
+//     session is spent; the poktroll miner closes normally with the
+//     over-servicing wording as the reason. 4001 is the supplier's, graded
+//     as its HTTP twin (a 403) is: what fails there is the miner's own
+//     validation, a supplier key it does not hold, its ring or session
+//     lookup. 4003, its backend unreachable, is left to the caller.
 func MinerRefusal(err error) (AnalysisResult, bool) {
 	var miner *domain.MinerError
 	if errors.As(err, &miner) {
@@ -281,7 +282,7 @@ func MinerRefusal(err error) (AnalysisResult, bool) {
 		case closeErr.Code == CloseMinerSessionExpired:
 			return minerSessionRejected(closeErr.Error()), true
 		case closeErr.Code == CloseMinerValidationFailed:
-			return minerRequestRefused(closeErr.Error()), true
+			return minerFault(closeErr.Error()), true
 		}
 	}
 	return AnalysisResult{}, false
@@ -304,16 +305,14 @@ var minerSessionCodes = map[string]map[uint32]bool{
 	"relay_authenticator": {1: true, 2: true},
 }
 
-// Relay miner error reports that refuse the request itself, which every
-// supplier behind the same miner would refuse alike: relayer_proxy "max body
-// size exceeded" (11), "response limit exceed" (12), "request limit exceed"
-// (13) and "failed to unmarshal relay request" (14), and the relay
-// authenticator's "invalid relay request" (4). Retried, since another
-// supplier's miner may allow more, and scored nothing, like SAGE's own
-// response ceiling (response_too_large).
-var minerRequestCodes = map[string]map[uint32]bool{
-	"relayer_proxy":       {11: true, 12: true, 13: true, 14: true},
-	"relay_authenticator": {4: true},
+// Relay miner error reports that are one supplier's body limit (poktroll
+// relayer_proxy 12 "response limit exceed" and 13 "request limit exceed",
+// both the miner's own max_body_size). Another supplier's miner may allow
+// more, so the request is retried; the supplier is scored minor and the
+// method kept away from its host, or a supplier with a low limit took the
+// first attempt of every large request forever.
+var minerBodyLimitCodes = map[string]map[uint32]bool{
+	"relayer_proxy": {12: true, 13: true},
 }
 
 // minerSessionRejected is the verdict for a miner refusing the session the
@@ -328,34 +327,9 @@ func minerSessionRejected(details string) AnalysisResult {
 	}
 }
 
-// minerRequestRefused is the verdict for a miner refusing the gateway's
-// request itself: retried on another supplier, scored nothing.
-func minerRequestRefused(details string) AnalysisResult {
-	return AnalysisResult{
-		ShouldRetry: true,
-		Attribution: AttrUnknown,
-		Confidence:  0.90,
-		Reason:      "miner_request_refused",
-		Details:     details,
-	}
-}
-
-// analyzeMinerError grades a relay miner's own unsigned refusal. Every one is
-// retried elsewhere. Over-servicing (relayer_proxy 7, or its wording) is
-// protocol-correct and scored nothing; a session the miner will not serve is
-// the gateway's choice of session, and a request it refuses is the request,
-// both also scored nothing; anything else is the supplier's layer failing,
-// minor like its 5xx (upstream_5xx).
-func analyzeMinerError(m *domain.MinerError) AnalysisResult {
-	if MinerOverServiced(m.Codespace, m.Code, m.Message) {
-		return overServicedResult()
-	}
-	if minerSessionCodes[m.Codespace][m.Code] {
-		return minerSessionRejected(m.Error())
-	}
-	if minerRequestCodes[m.Codespace][m.Code] {
-		return minerRequestRefused(m.Error())
-	}
+// minerFault is the verdict for a miner failing in its own layer: retried
+// elsewhere and scored minor, like its 5xx (upstream_5xx).
+func minerFault(details string) AnalysisResult {
 	return AnalysisResult{
 		ShouldRetry:     true,
 		ShouldPenalize:  true,
@@ -363,6 +337,30 @@ func analyzeMinerError(m *domain.MinerError) AnalysisResult {
 		Attribution:     AttrSupplier,
 		Confidence:      0.85,
 		Reason:          "upstream_miner_error",
-		Details:         m.Error(),
+		Details:         details,
 	}
+}
+
+// analyzeMinerError grades a relay miner's own unsigned refusal. Every one is
+// retried elsewhere. Over-servicing (relayer_proxy 7, or its wording) is
+// protocol-correct and scored nothing; a session the miner will not serve is
+// the gateway's choice of session, also scored nothing; a body limit is
+// scored minor and blocks the method on the host; anything else is the
+// supplier's layer failing, minor like its 5xx (upstream_5xx). That includes
+// relayer_proxy 14: SAGE sends every supplier the same bytes, so one that
+// cannot unmarshal them has a path that mangles the body, and the HA miner's
+// report of the same failure (a 400) is scored too.
+func analyzeMinerError(m *domain.MinerError) AnalysisResult {
+	if MinerOverServiced(m.Codespace, m.Code, m.Message) {
+		return overServicedResult()
+	}
+	if minerSessionCodes[m.Codespace][m.Code] {
+		return minerSessionRejected(m.Error())
+	}
+	if minerBodyLimitCodes[m.Codespace][m.Code] {
+		v := minerFault(m.Error())
+		v.Reason, v.MethodBlocking = "miner_body_limit", true
+		return v
+	}
+	return minerFault(m.Error())
 }
