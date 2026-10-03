@@ -8,6 +8,7 @@ import (
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
 )
@@ -71,34 +72,53 @@ func Singleflight(flags featureflag.FlagStore, rec SingleflightRecorder) relay.M
 			// cannot rely on the shared flag alone to detect followers.
 			ranRelay := false
 
-			v, err, _ := group.Do(key, func() (any, error) {
+			v, _, _ := group.Do(key, func() (any, error) {
 				ranRelay = true
-				if err := next.HandleRelay(ctx); err != nil {
-					return nil, err
-				}
-				return ctx.Response, nil
+				err := next.HandleRelay(ctx)
+				return flight{
+					response:   ctx.Response,
+					verdict:    ctx.HeuristicResult,
+					err:        err,
+					leaderGone: ctx.Ctx.Err() != nil,
+				}, nil
 			})
+			f := v.(flight)
 
-			if err != nil {
-				return err
+			// When ranRelay==true, next.HandleRelay already populated ctx.
+			if ranRelay {
+				return f.err
 			}
 
-			if !ranRelay {
-				// This goroutine was a follower: copy the shared response and mark
-				// the context as coalesced.
-				if resp, ok := v.(*domain.Response); ok {
-					ctx.Response = resp
-				}
-				ctx.Coalesced = true
-				if rec != nil {
-					rec.RecordSingleflightCoalesced(ctx.ServiceID)
-				}
+			// The leader's client hung up or ran out of time: that ended the
+			// leader's relay, not this one. Sharing the outcome handed a
+			// follower whose client was still waiting context.Canceled. It
+			// runs its own relay instead.
+			if f.leaderGone && ctx.Ctx.Err() == nil {
+				return next.HandleRelay(ctx)
 			}
-			// When ranRelay==true, next.HandleRelay already populated ctx.Response.
 
-			return nil
+			// A follower gets everything the leader's client got: the
+			// response, the verdict that says whose it is and the error. A
+			// retry verdict with the node's answer in hand is delivered as
+			// that answer (router.go); a follower handed the error alone got
+			// a gateway -32603 instead.
+			ctx.Response, ctx.HeuristicResult = f.response, f.verdict
+			ctx.Coalesced = true
+			if rec != nil {
+				rec.RecordSingleflightCoalesced(ctx.ServiceID)
+			}
+			return f.err
 		})
 	}
+}
+
+// flight is what a coalesced relay hands its followers: all of the leader's
+// outcome, and whether it ended because the leader's own client left.
+type flight struct {
+	response   *domain.Response
+	verdict    *heuristic.AnalysisResult
+	err        error
+	leaderGone bool
 }
 
 // coalescingKey builds a stable string key for singleflight deduplication:

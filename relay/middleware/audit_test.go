@@ -170,7 +170,6 @@ func coalesce(t *testing.T, leaderCtx context.Context, leader, rest relay.Handle
 // client is still connected must get an answer, not context.Canceled (a
 // 499 with a -32603 body).
 func TestAudit_SingleflightFollowerInheritsLeaderCancel(t *testing.T) {
-	t.Skip("unfixed: audit 2026-10-03 finding #2; delete this line with the fix")
 	leaderCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ok := []byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x10"}}`)
@@ -192,7 +191,6 @@ func TestAudit_SingleflightFollowerInheritsLeaderCancel(t *testing.T) {
 // that answer to its own client (router.go). A follower must get the same
 // answer, not a bare error the router turns into a gateway 500.
 func TestAudit_SingleflightFollowerLosesNodeAnswer(t *testing.T) {
-	t.Skip("unfixed: audit 2026-10-03 finding #3; delete this line with the fix")
 	answer := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"block not found"}}`)
 	verdict := func(ctx *relay.Context) error {
 		ctx.Response = &domain.Response{Body: answer, HTTPStatusCode: 200}
