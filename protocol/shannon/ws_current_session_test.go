@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 	"testing"
 
 	apptypes "github.com/pokt-network/poktroll/x/application/types"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/reputation"
 )
 
 // sessionRecordingSigner records the session every request it signs names.
@@ -123,5 +125,48 @@ func TestCurrentSession_FetchErrorKeepsTheEndedSessionThroughGrace(t *testing.T)
 	s, err := sm.currentSession(context.Background(), "eth", "pokt1app")
 	if err != nil || s.SessionId != "s1" {
 		t.Fatalf("currentSession = %v, %v; want the ended session within grace", s, err)
+	}
+}
+
+// signalChanRep forwards every recorded signal to a channel, for a signal
+// recorded off the calling goroutine.
+type signalChanRep struct {
+	*spyRepSvc
+	ch chan reputation.Signal
+}
+
+func (s signalChanRep) RecordSignal(_ context.Context, _ domain.ServiceID, _ domain.EndpointAddr, _ domain.RPCType, sig reputation.Signal) error {
+	s.ch <- sig
+	return nil
+}
+
+// A frame that failed verification is graded even when the bridge's analysis
+// queue is full: the loss it causes is not charged again (lossIsSuppliers),
+// so a drop graded it nowhere. A control frame and a data frame still go to
+// the queue, dropped when it is full.
+func TestFrameSink_VerificationFailureIsGradedWhenTheQueueIsFull(t *testing.T) {
+	enabled := map[string]bool{featureflag.FlagWebsocketRelays: true}
+	r, _, _ := probeFixture(t, "ws://unused.example.com", 40, `{}`, enabled)
+	rep := signalChanRep{spyRepSvc: &spyRepSvc{}, ch: make(chan reputation.Signal, 4)}
+	r.deps.Reputation = rep
+	full := make(chan wsFrameEvent) // nobody reads it: always full
+
+	sink := r.frameSink("eth", "pokt1supplier-https://rm.example.com", full)
+	sink(nil, errors.New("signature verification failed"), time.Millisecond)
+	select {
+	case sig := <-rep.ch:
+		if sig.Type != reputation.SignalMajorError {
+			t.Fatalf("verification failure graded %s, want a major error", sig.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a verification failure dropped with the queue full was graded nowhere")
+	}
+
+	sink([]byte(`{"error":"session expired"}`), ErrEndpointControlFrame, time.Millisecond)
+	sink([]byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`), nil, time.Millisecond)
+	select {
+	case sig := <-rep.ch:
+		t.Fatalf("a control or data frame was graded off the queue: %s %q", sig.Type, sig.Reason)
+	case <-time.After(50 * time.Millisecond):
 	}
 }

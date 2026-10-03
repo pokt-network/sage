@@ -402,12 +402,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 			t.ep.Supplier(),
 			t.ep.Addr(),
 			t.app,
-			func(payload []byte, frameErr error, latency time.Duration) {
-				select {
-				case frameCh <- wsFrameEvent{endpoint: addr, payload: payload, err: frameErr, latency: latency}:
-				default:
-				}
-			},
+			r.frameSink(serviceID, addr, frameCh),
 		)
 		p.subs, p.samples = subs, r.samples
 		p.heads, p.consensusHead = r.heads, consensusHead
@@ -813,6 +808,27 @@ func (g *wsSuccessGate) admit(endpoint domain.EndpointAddr, now time.Time) bool 
 	}
 	g.endpoint, g.last = endpoint, now
 	return true
+}
+
+// frameSink is the processor's per-frame callback for a bridge: frames go
+// to the bridge's analysis queue, dropped when it is full (analysis is
+// advisory). A frame that failed verification is not: it is graded on its
+// own, because the loss it causes is not charged again (lossIsSuppliers), so
+// dropped from a full queue it was graded nowhere. Such frames are rare, and
+// a rebind follows each.
+func (r *WSRelayer) frameSink(serviceID domain.ServiceID, addr domain.EndpointAddr, frameCh chan<- wsFrameEvent) func([]byte, error, time.Duration) {
+	return func(payload []byte, frameErr error, latency time.Duration) {
+		if frameErr != nil && !errors.Is(frameErr, ErrEndpointControlFrame) {
+			safego.Go(r.deps.Logger, "shannon.ws.frame_error", func() {
+				r.handleEndpointFrame(serviceID, addr, payload, frameErr, latency, nil)
+			})
+			return
+		}
+		select {
+		case frameCh <- wsFrameEvent{endpoint: addr, payload: payload, err: frameErr, latency: latency}:
+		default:
+		}
+	}
 }
 
 // handleEndpointFrame runs per-frame heuristic, records a reputation signal,
