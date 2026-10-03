@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
@@ -55,6 +56,38 @@ func TestHeuristic_Penalize408FlagIsTheUndo(t *testing.T) {
 		_ = mw(relay.Noop).HandleRelay(ctx)
 		if r := ctx.HeuristicResult; r == nil || r.Reason != "http_408" || !r.ShouldRetry || r.ShouldPenalize != on {
 			t.Fatalf("penalize_408=%v: result %+v", on, r)
+		}
+	}
+}
+
+// An empty or plain-text REST answer passes while rest_bodies_as_answers is
+// on; off, the structural grading it replaced is back: the flag is the live
+// undo.
+func TestHeuristic_RESTBodiesAsAnswersFlagIsTheUndo(t *testing.T) {
+	for _, tc := range []struct {
+		body   string
+		reason string
+	}{
+		{"", "empty_response"},
+		{"OK", "plain_text_response"},
+	} {
+		for _, on := range []bool{true, false} {
+			flags := newMockFlags(map[string]bool{"heuristic": true, featureflag.FlagRESTBodiesAsAnswers: on})
+			ctx := newCtx(newPOSTRequest("/v1/health", ""))
+			ctx.ServiceID = "osmosis"
+			ctx.RPCType = domain.RPCTypeREST
+			ctx.Response = &domain.Response{Body: []byte(tc.body), HTTPStatusCode: 200}
+
+			_ = middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})(relay.Noop).HandleRelay(ctx)
+			r := ctx.HeuristicResult
+			switch {
+			case r == nil:
+				t.Fatalf("%q, flag %v: no verdict", tc.body, on)
+			case on && !r.IsSuccess():
+				t.Errorf("%q, flag on: %s, want the answer passed", tc.body, r.Reason)
+			case !on && (r.Reason != tc.reason || !r.ShouldPenalize):
+				t.Errorf("%q, flag off: %s penalize=%v, want %s scored", tc.body, r.Reason, r.ShouldPenalize, tc.reason)
+			}
 		}
 	}
 }

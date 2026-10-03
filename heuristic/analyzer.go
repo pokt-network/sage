@@ -75,6 +75,17 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 	return successResult()
 }
 
+// StrictRESTBody is the verdict the structural rules give an empty or
+// plain-text REST answer, which Analyze passes: the grading before
+// 2026-10-03, for featureflag.FlagRESTBodiesAsAnswers turned off. ok is false
+// for any other body.
+func StrictRESTBody(body []byte, httpStatusCode int) (AnalysisResult, bool) {
+	if !IsEmpty(body) && !IsPlainText(body) {
+		return AnalysisResult{}, false
+	}
+	return analyzeTier1(body, httpStatusCode)
+}
+
 // analyzeTier0 checks HTTP status codes.
 func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (AnalysisResult, bool) {
 	switch {

@@ -83,6 +83,17 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 				)
 			}
 
+			// rest_bodies_as_answers is the live undo for passing an empty or
+			// plain-text REST answer: off, it is graded by the structural
+			// rules as before. Ahead of the plugin's refinement, which may
+			// pass a body of its own on top.
+			if ctx.RPCType == domain.RPCTypeREST && result.IsSuccess() &&
+				flags != nil && !flags.IsEnabled(ctx.Ctx, featureflag.FlagRESTBodiesAsAnswers, ctx.ServiceID) {
+				if strict, ok := heuristic.StrictRESTBody(ctx.Response.Body, ctx.Response.HTTPStatusCode); ok {
+					result = strict
+				}
+			}
+
 			// A -32601 on a method the plugin catalogues is retried on another
 			// operator. The analyzer leaves it unretried because it cannot tell
 			// a real method from a bogus name, and a bogus name must not bounce

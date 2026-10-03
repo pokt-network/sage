@@ -87,6 +87,15 @@ const (
 	// for concentrating traffic, so this is its live undo, globally or per
 	// service. Off, a 408 is still retried, just not scored.
 	FlagPenalize408 = "penalize_408"
+	// FlagRESTBodiesAsAnswers passes an empty or plain-text 2xx REST answer
+	// as the answer it is: a HEAD, a health route that answers 200 with
+	// nothing, a text or bare-scalar body. On by default since 2026-10-03.
+	// Off restores the structural grading it replaced, under which an empty
+	// body was a critical failure with a breaker vote and plain text a major
+	// one, charged to every supplier that gave it. This is its live undo,
+	// globally or per service, for the day a broken REST proxy answering
+	// 200-empty reads as healthy.
+	FlagRESTBodiesAsAnswers = "rest_bodies_as_answers"
 	// FlagCircuitBreakUpstream lets a supplier's relay-miner timeout (HTTP
 	// 408) or 5xx count toward the circuit breaker's failure-rate gate, so a
 	// host failing a fifth of its relays within 30s is taken out of selection
@@ -260,6 +269,7 @@ var DefaultFlags = map[string]bool{
 	FlagAutoDrain:              false,
 	FlagAutoDrainShadow:        true,
 	FlagPenalize408:            true,
+	FlagRESTBodiesAsAnswers:    true,
 	FlagCircuitBreakUpstream:   false,
 	FlagMethodBlock408:         false,
 	FlagMethodBlockRefusal:     false,
