@@ -16,11 +16,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/heuristic"
+	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/relay"
 )
@@ -85,6 +87,18 @@ type Router struct {
 	// and method. Nil serves none. Set via SetStaticRoutes at wire time.
 	staticRoute func(serviceID domain.ServiceID, path, method string) (config.StaticRoute, bool)
 	logger      *slog.Logger
+
+	// wsCtx is cancelled when Shutdown has closed the listeners, which ends
+	// every bridge with 1012. http.Server.Shutdown neither tracks a hijacked
+	// connection nor cancels its request context, so without it a live
+	// bridge outlived Shutdown and the client saw 1006 when the process
+	// exited. wsOpen counts the bridges Shutdown waits for; wsClosed, under
+	// wsMu, keeps an upgrade from joining the count once Shutdown waits on it.
+	wsCtx    context.Context
+	wsCancel context.CancelFunc
+	wsMu     sync.Mutex
+	wsClosed bool
+	wsOpen   sync.WaitGroup
 }
 
 // SetStaticRoutes installs the static_routes lookup. Wire time only; nil
@@ -172,6 +186,8 @@ func New(
 		IdleTimeout:    cmp.Or(cfg.IdleTimeout, 180*time.Second),
 		MaxHeaderBytes: cmp.Or(cfg.MaxRequestHeaderBytes, defaultMaxHeaderBytes),
 	}
+	r.wsCtx, r.wsCancel = context.WithCancel(context.Background())
+	r.server.RegisterOnShutdown(r.wsCancel)
 
 	return r
 }
@@ -255,9 +271,25 @@ func (r *Router) Start() error {
 	return r.server.ListenAndServe()
 }
 
-// Shutdown performs a graceful shutdown, waiting for in-flight requests.
+// Shutdown performs a graceful shutdown: it closes the listeners, closes
+// every WebSocket with 1012 so its client reconnects to another pod, and
+// waits, up to ctx, for in-flight requests and for the close frames to go out.
 func (r *Router) Shutdown(ctx context.Context) error {
-	return r.server.Shutdown(ctx)
+	r.wsMu.Lock()
+	r.wsClosed = true
+	r.wsMu.Unlock()
+	err := r.server.Shutdown(ctx) // cancels wsCtx once the listeners are closed
+
+	bridgesDone := make(chan struct{})
+	safego.Go(r.logger, "router.ws_shutdown", func() {
+		r.wsOpen.Wait()
+		close(bridgesDone)
+	})
+	select {
+	case <-bridgesDone:
+	case <-ctx.Done():
+	}
+	return err
 }
 
 // handleWebSocket hands an upgrade request to the WebSocket relayer once the
@@ -287,7 +319,20 @@ func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
-	if err := r.wsRelayer.Open(req.Context(), serviceID, req, w); err != nil {
+	r.wsMu.Lock()
+	if r.wsClosed {
+		r.wsMu.Unlock()
+		writeJSONError(w, http.StatusServiceUnavailable, "shutting down")
+		return
+	}
+	r.wsOpen.Add(1)
+	r.wsMu.Unlock()
+	defer r.wsOpen.Done()
+	ctx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+	defer context.AfterFunc(r.wsCtx, cancel)()
+
+	if err := r.wsRelayer.Open(ctx, serviceID, req, w); err != nil {
 		// Post-upgrade errors are surfaced via WS close codes by the bridge;
 		// pre-upgrade errors (e.g. flag off, no endpoints) have already
 		// written an HTTP response via wsRelayer.Open.
