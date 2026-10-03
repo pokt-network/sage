@@ -253,7 +253,13 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 						// domain.ClientMessage, not err.Error(): the cause chain
 						// names the operator's own infrastructure, exactly as on
 						// the single-request path in router.writeRelayError.
-						if err != nil {
+						// A retry verdict holding the node's own answer (block not
+						// found, execution reverted) is delivered as that answer,
+						// as the router does for a single request; the item used
+						// to become a gateway -32603 in its place.
+						nodeAnswer := errors.Is(err, domain.ErrRetryVerdict) && sub.Response != nil &&
+							len(sub.Response.Body) > 0 && !sub.SupplierPage()
+						if err != nil && !nodeAnswer {
 							results[i] = jsonRPCErrorItem(payload.JSONRPCID(), domain.ClientMessage(err))
 							return
 						}

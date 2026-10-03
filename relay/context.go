@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -187,4 +188,21 @@ func NewContext(ctx context.Context, req *http.Request, logger *slog.Logger, wri
 func (c *Context) Clone() *Context {
 	cp := *c
 	return &cp
+}
+
+// SupplierPage reports whether the response in hand came with a
+// supplier-attributed verdict: the supplier's HTTP layer speaking, not the
+// node answering the request. A retry verdict holding any other response is
+// the node's own answer, and the router and the batch deliver it as such.
+//
+// Only a 408 or a body that is not JSON counts. A supplier-attributed verdict
+// with a JSON-RPC envelope — a node saying "rate limit exceeded" — is still
+// an answer a client can parse, and was delivered before 2026-09-15; turning
+// it into a 500 only moved it from 200 to 5xx in every dashboard (mainnet sei:
+// ~80 per 10 minutes the evening this shipped).
+func (c *Context) SupplierPage() bool {
+	if c.HeuristicResult == nil || c.HeuristicResult.Attribution != heuristic.AttrSupplier || c.Response == nil {
+		return false
+	}
+	return c.Response.HTTPStatusCode == http.StatusRequestTimeout || !json.Valid(c.Response.Body)
 }

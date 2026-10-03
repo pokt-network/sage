@@ -266,7 +266,6 @@ func TestAudit_CircuitBreakerIgnoresDialedHost(t *testing.T) {
 // A batch item that ends on a retry verdict holding the node's answer gets
 // that answer, as a single request does (router.go), not a gateway -32603.
 func TestAudit_BatchReplacesNodeAnswerWithGatewayError(t *testing.T) {
-	t.Skip("unfixed: audit 2026-10-03 finding #4; delete this line with the fix")
 	answer := `{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"block not found"}}`
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
 		id := string(ctx.Payloads[0].JSONRPCID())

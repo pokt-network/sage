@@ -21,7 +21,6 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
-	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/relay"
@@ -424,7 +423,7 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 		// 2026-09-15: ~2,400 client 408s in 10 minutes, poly and base most).
 		// It becomes the gateway's own error: 504 for a 408, a timeout, and
 		// the usual 500 for the rest.
-		if ctx.Response != nil && errors.Is(err, domain.ErrRetryVerdict) && supplierPage(ctx) {
+		if ctx.Response != nil && errors.Is(err, domain.ErrRetryVerdict) && ctx.SupplierPage() {
 			if ctx.HeuristicResult.Reason == "http_408" {
 				err = domain.NewRelayError(domain.ErrTransport, "upstream timed out", context.DeadlineExceeded, true)
 			}
@@ -631,22 +630,6 @@ const rpcTypeNone domain.RPCType = "none"
 // before the gateway answered. Not in net/http; used only so the metric and
 // the access log can tell a client leaving from the gateway failing.
 const statusClientClosedRequest = 499
-
-// supplierPage reports whether the response in hand came with a
-// supplier-attributed verdict: the supplier's HTTP layer speaking, not the
-// node answering the request.
-//
-// Only a 408 or a body that is not JSON counts. A supplier-attributed verdict
-// with a JSON-RPC envelope — a node saying "rate limit exceeded" — is still
-// an answer a client can parse, and was delivered before 2026-09-15; turning
-// it into a 500 only moved it from 200 to 5xx in every dashboard (mainnet sei:
-// ~80 per 10 minutes the evening this shipped).
-func supplierPage(ctx *relay.Context) bool {
-	if ctx.HeuristicResult == nil || ctx.HeuristicResult.Attribution != heuristic.AttrSupplier || ctx.Response == nil {
-		return false
-	}
-	return ctx.Response.HTTPStatusCode == http.StatusRequestTimeout || !json.Valid(ctx.Response.Body)
-}
 
 // statusForError maps a gateway-made failure to the HTTP status a client
 // sees. The body carries the JSON-RPC code either way; the status is what a
