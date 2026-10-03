@@ -79,3 +79,19 @@ func TestReview_UnmarshalRefusalGradedAlikeOnBothMiners(t *testing.T) {
 			ha.Reason, ha.ShouldPenalize, poktroll.Reason, poktroll.ShouldPenalize)
 	}
 }
+
+// The REST pass (analyzer.go: empty or plain-text REST body is success) sits
+// after Tier 0, which claims 4xx and 5xx but leaves 1xx and 3xx to the body
+// tiers. The HA relay miner does not follow a backend's redirect, it passes
+// it through (pocket-relay-miner relayer/proxy.go:571-574, ErrUseLastResponse),
+// so a REST backend URL that redirects every request (an http:// stake behind
+// a load balancer that redirects to https://, with no body) answers every
+// query with an empty 301. Before 9ab69fa that was empty_response (critical,
+// breaker vote); now it is success.
+func TestReview_EmptyRESTRedirectIsNotAnAnswer(t *testing.T) {
+	for _, status := range []int{301, 302, 307, 308} {
+		if v := Analyze(nil, status, domain.RPCTypeREST); v.IsSuccess() {
+			t.Errorf("REST %d with an empty body graded %q: a redirect the gateway will not follow is not the answer to the client's query", status, v.Reason)
+		}
+	}
+}
