@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -237,6 +238,19 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	// Not returned as an error: the bridge treats a returned error as
 	// terminal, and this body is exactly what the client should see.
 	if status < 200 || status >= 300 {
+		// A 410 is the miner saying the session ended. The bridge rebinds
+		// onto the next session when the miner's close follows (and closes
+		// with 1012 if it cannot), so the client's connection survives and
+		// the body is noise to it: a JSON error with no id in the middle of
+		// its subscription stream. PATH swallows it too. Any other status may
+		// be the answer to a request the client is waiting on, and is
+		// forwarded.
+		if status == http.StatusGone {
+			if p.onEndpointFrame != nil {
+				p.onEndpointFrame(payload, ErrEndpointControlFrame, latency)
+			}
+			return nil, nil
+		}
 		p.protocol.logger.Warn("ws: endpoint returned a non-2xx response, forwarding the decoded body without grading it",
 			"service_id", serviceID,
 			"endpoint_addr", p.endpointAddr,

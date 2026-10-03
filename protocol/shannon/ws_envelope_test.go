@@ -109,10 +109,13 @@ func TestExtractEndpointFrameBody_JSONWins(t *testing.T) {
 
 // End to end through the processor: the client gets readable JSON, and the
 // callback is told this frame is not the supplier's doing.
+//
+// A 410 (session expired) is the exception, swallowed while the bridge
+// rebinds: TestAudit2_SessionExpiredControlFrameNotForwarded.
 func TestWSProcessor_ControlFrameForwardsDecodedBodyUngraded(t *testing.T) {
-	const body = `{"error":"session expired"}`
+	const body = `{"error":"backend unavailable"}`
 	fn := &mockRelayFullNode{
-		validateResponse: &servicetypes.RelayResponse{Payload: envelopeBytes(t, 410, body)},
+		validateResponse: &servicetypes.RelayResponse{Payload: envelopeBytes(t, 502, body)},
 	}
 	p := &Protocol{
 		fullNode: fn, signer: &countingSigner{}, bl: newBlacklist(),
