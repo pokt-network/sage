@@ -105,7 +105,7 @@ func (e *Executor) applyPeerResult(ctx context.Context, r ProbeResult) {
 	if at.IsZero() {
 		at = e.now()
 	}
-	if e.now().Sub(at) <= e.peerAgeLimit(r.ServiceID) {
+	if e.now().Sub(at) <= e.peerAgeLimit(r.ServiceID, r.Check) {
 		e.applyResult(ctx, r)
 	}
 	pk := probeKey{service: r.ServiceID, backend: key, check: r.Check}
@@ -116,15 +116,25 @@ func (e *Executor) applyPeerResult(ctx context.Context, r ProbeResult) {
 	e.peerMu.Unlock()
 }
 
-// peerAgeLimit is how old a peer's result may be and still be applied: the
-// peer max age, or the service's probe interval when that is unset.
-func (e *Executor) peerAgeLimit(serviceID domain.ServiceID) time.Duration {
+// peerAgeLimit is how old a peer's result for check may be and still be
+// applied: the same window coveredByPeer lets it stand in for this
+// instance's own probe, so a result too old to apply never suppresses the
+// probe either. The peer max age, else the longer of the check's own
+// interval and the service's probe interval.
+func (e *Executor) peerAgeLimit(serviceID domain.ServiceID, check string) time.Duration {
 	if e.peerMaxAge != nil {
 		if d := e.peerMaxAge(serviceID); d > 0 {
 			return d
 		}
 	}
-	return e.serviceInterval(serviceID, e.configured.Load())
+	configured := e.configured.Load()
+	interval := e.serviceInterval(serviceID, configured)
+	for _, c := range slices.Concat(pluginChecks(e.qosRegistry.Get(serviceID)), configured.For(serviceID)) {
+		if c.Name == check {
+			return max(c.Interval, interval)
+		}
+	}
+	return interval
 }
 
 // coveredByPeer reports whether the other instance ran this check against
