@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/qos"
 )
 
 // aggregate3Result encodes an aggregate3 answer: one (success, returnData)
@@ -79,6 +80,7 @@ func TestCanaryTimestamp(t *testing.T) {
 func TestCanaryHeadLag(t *testing.T) {
 	p := newTestPlugin(5)
 	p.UpdateBlockHeight("a1-https://x.a.net", 1000)
+	time.Sleep(qos.RateSampleGap) // two moves under the gap are one sample, and no rate
 	p.UpdateBlockHeight("a1-https://x.a.net", 1010)
 	canary := domain.NewPayload(canaryBodies[3], domain.RPCTypeJSONRPC, "eth_call")
 	now := time.Now()

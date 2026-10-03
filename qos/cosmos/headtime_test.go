@@ -9,6 +9,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/qos"
 )
 
 func TestHeadTime(t *testing.T) {
@@ -53,6 +54,7 @@ func TestCosmosHeadLagAndRESTCanary(t *testing.T) {
 	on := true
 	p := NewPlugin(nil, Config{SyncAllowance: 10, StateCanary: func() bool { return on }})
 	p.UpdateBlockHeight("a1-https://x.a.net", 1000)
+	time.Sleep(qos.RateSampleGap) // two moves under the gap are one sample, and no rate
 	p.UpdateBlockHeight("a1-https://x.a.net", 1010)
 	now := time.Now()
 	answer := func(age time.Duration) []byte {

@@ -903,6 +903,7 @@ func TestEVMFace_HeadLagAndCanary(t *testing.T) {
 		StateCanary: func() bool { return canaryOn },
 	})
 	p.UpdateBlockHeight("a1-https://x.a.net", 1000)
+	time.Sleep(qos.RateSampleGap) // two moves under the gap are one sample, and no rate
 	p.UpdateBlockHeight("a1-https://x.a.net", 1010)
 	num := domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
 	if lag, _, ok := p.HeadLag(num, []byte(`{"result":"0x3e8"}`), time.Now()); !ok || lag < 10 {

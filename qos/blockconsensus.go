@@ -349,6 +349,23 @@ func (bc *BlockConsensus) applyExternalFloor(perceived uint64, now time.Time) ui
 // entries are never removed individually.
 const maxRateSamples = 16
 
+// RateSampleGap is the least time between two rate samples. A move within it
+// of the last sample updates that sample's height rather than adding one.
+//
+// A booting replica replays minutes of probe results in milliseconds, and
+// every observation is stamped when it arrives: twenty eth blocks, four
+// minutes of chain time, read as twenty blocks in a millisecond. A rate four
+// orders of magnitude high projected the expected head away from every honest
+// answer, and stale_response graded them all stale after each roll. Merged,
+// the burst is one sample at the height it ends on, and the rate comes from
+// live movement after it.
+//
+// ponytail: a burst spread wider than the gap (a long replay, a cold start
+// converging over several seconds) still inflates the rate until the history
+// rolls past it; the upgrade is carrying each observation's own time from
+// the probe through ExtractData.
+const RateSampleGap = 2 * time.Second
+
 // rateSample is a perceived height and when it was published.
 type rateSample struct {
 	height uint64
@@ -366,8 +383,15 @@ func (bc *BlockConsensus) recordRateSampleLocked(perceived uint64, now time.Time
 	if perceived == 0 {
 		return
 	}
-	if n := len(bc.rateSamples); n > 0 && bc.rateSamples[n-1].height == perceived {
-		return
+	if n := len(bc.rateSamples); n > 0 {
+		last := &bc.rateSamples[n-1]
+		if last.height == perceived {
+			return
+		}
+		if now.Sub(last.at) < RateSampleGap {
+			last.height = perceived
+			return
+		}
 	}
 	if len(bc.rateSamples) >= maxRateSamples {
 		bc.rateSamples = append(bc.rateSamples[:0], bc.rateSamples[1:]...)
@@ -484,8 +508,15 @@ func (bc *BlockConsensus) AnswerLag(height uint64, now time.Time) (lag uint64, s
 	}
 	head := p.perceived
 	age := now.Sub(p.headAt)
-	if p.rate > 0 && age > 0 {
+	switch {
+	case p.rate > 0 && age > 0:
 		head += uint64(p.rate * min(age, p.window).Seconds())
+	case p.rate > 0 && age < 0:
+		// An answer given before the head was last read (a probe result
+		// graded late, a replayed one) is measured against the head as it
+		// was then: compared with today's, an answer four minutes old was
+		// four minutes of blocks behind.
+		head -= min(uint64(p.rate*(-age).Seconds()), head)
 	}
 	if height < head {
 		lag = head - height
@@ -493,8 +524,10 @@ func (bc *BlockConsensus) AnswerLag(height uint64, now time.Time) (lag uint64, s
 	// No verdict without a rate, or once the head has not moved for a
 	// window: a halted chain, or readings that stopped coming, look the same
 	// from here, and projecting on would call every party's honest answer
-	// stale at once — a major penalty and a retry for all of them.
-	if p.rate <= 0 || age > p.window {
+	// stale at once — a major penalty and a retry for all of them. Nor for
+	// an answer more than a window older than the head: projected that far
+	// back, the rate says too little.
+	if p.rate <= 0 || age > p.window || -age > p.window {
 		return lag, false, true
 	}
 	tolerance := max(uint64(staleAnswerMinBlocks), uint64(p.rate*staleAnswerSeconds))
