@@ -135,6 +135,11 @@ func TestFrameSeverityToSignal(t *testing.T) {
 			reputation.SignalMajorError,
 		},
 		{
+			"quota exceeded stays major",
+			heuristic.AnalysisResult{ShouldPenalize: true, PenaltySeverity: heuristic.SeverityMajor, Reason: heuristic.ReasonQuotaExceeded},
+			reputation.SignalMajorError,
+		},
+		{
 			"fatal→critical (never fatal from one frame)",
 			heuristic.AnalysisResult{ShouldPenalize: true, PenaltySeverity: heuristic.SeverityFatal, Reason: "x"},
 			reputation.SignalCriticalError,

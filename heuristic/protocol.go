@@ -362,6 +362,31 @@ var supplierLagPatterns = []string{
 	"upstream rpc backends",
 }
 
+// ReasonQuotaExceeded is the verdict on a rate limit that is a metered
+// upstream plan's quota: the supplier is reselling a third-party provider's
+// tier and has run through it.
+const ReasonQuotaExceeded = "quota_exceeded"
+
+// quotaPatterns are what set a quota apart from a busy node's rate limit: a
+// metered unit, or the counters a metered provider's limiter reports. Matched
+// against the message and the error's data together (errorText), which is
+// where those counters are: mainnet robinhood, 2026-10-03, -32029 "rate limit
+// exceeded" with data {"limit":60,"remaining":0,"unit":"cu_per_minute",
+// "retry_after_ms":43000}. A busy node clears in a moment and stays minor; a
+// spent quota answers the same way for the rest of its window, so it is
+// graded major and feeds the failure rate.
+var quotaPatterns = []string{
+	"cu_per_",
+	"compute units",
+	"retry_after_ms",
+	`"remaining":`,
+}
+
+// quotaLimitPatterns are the limit wordings a quota comes with. Without one,
+// a quota marker alone is not a refusal ("too busy" is a queue, never a
+// quota).
+var quotaLimitPatterns = []string{"rate limit", "too many requests", "exceeded", "quota"}
+
 // classifyServerError handles -32000 range errors which are commonly blockchain-specific.
 func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 	if ContainsAnyOf(lowerMsg, clientErrorPatterns) {
@@ -408,6 +433,20 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 			Confidence:         0.85,
 			Reason:             "supplier_server_error",
 			Details:            "supplier server error (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
+		}
+	}
+
+	// A metered plan's quota, relayed: see quotaPatterns. Checked before the
+	// plain rate limit, whose wording it shares.
+	if ContainsAnyOf(lowerMsg, quotaLimitPatterns) && ContainsAnyOf(lowerMsg, quotaPatterns) {
+		return AnalysisResult{
+			ShouldRetry:     true,
+			ShouldPenalize:  true,
+			PenaltySeverity: SeverityMajor,
+			Attribution:     AttrSupplier,
+			Confidence:      0.9,
+			Reason:          ReasonQuotaExceeded,
+			Details:         "supplier quota exceeded (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
 		}
 	}
 

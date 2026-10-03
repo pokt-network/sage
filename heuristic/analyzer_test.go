@@ -285,6 +285,20 @@ func TestAnalyze_Tier2_ErrorCodeClassification(t *testing.T) {
 			wantReason:      "rate_limited",
 		},
 		{
+			name:            "a metered plan's quota at -32029 — supplier, graded apart from a busy node",
+			errorJSON:       `{"code":-32029,"message":"rate limit exceeded","data":{"limit":60,"remaining":0,"unit":"cu_per_minute","retry_after_ms":43000}}`,
+			wantRetry:       true,
+			wantAttribution: AttrSupplier,
+			wantReason:      ReasonQuotaExceeded,
+		},
+		{
+			name:            "a plain rate limit at -32005 — supplier capacity, not a quota",
+			errorJSON:       `{"code":-32005,"message":"rate limit exceeded"}`,
+			wantRetry:       true,
+			wantAttribution: AttrSupplier,
+			wantReason:      "rate_limited",
+		},
+		{
 			name:            "service unavailable at -32000 — supplier fault",
 			errorJSON:       `{"code":-32000,"message":"service unavailable"}`,
 			wantRetry:       true,
@@ -684,5 +698,25 @@ func TestAnalyze_Tier2_InternalError_PrunedHeightPassesThroughWithoutPenalty(t *
 	}
 	if result.Reason != "height_not_available" {
 		t.Errorf("Reason = %q, want height_not_available", result.Reason)
+	}
+}
+
+// A metered plan's spent quota answers the same way until its window resets,
+// so it is graded major; a busy node clears in a moment and stays minor. The
+// same body graded on HTTP and as a WebSocket frame.
+func TestAnalyze_QuotaIsMajorABusyLimitMinor(t *testing.T) {
+	quota := []byte(`{"jsonrpc":"2.0","id":3,"error":{"code":-32029,"message":"rate limit exceeded","data":{"limit":60,"remaining":0,"unit":"cu_per_minute","retry_after_ms":43000}}}`)
+	busy := []byte(`{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"server too busy, rejecting new request (pending: 803, threshold: 800)"}}`)
+
+	for name, r := range map[string]AnalysisResult{
+		"http":  Analyze(quota, 200, domain.RPCTypeJSONRPC),
+		"frame": AnalyzeFrame(quota, domain.RPCTypeWebSocket),
+	} {
+		if r.Reason != ReasonQuotaExceeded || r.PenaltySeverity != SeverityMajor || !r.ShouldRetry {
+			t.Errorf("%s quota: reason %q severity %v retry %v, want %s, major, retried", name, r.Reason, r.PenaltySeverity, r.ShouldRetry, ReasonQuotaExceeded)
+		}
+	}
+	if r := Analyze(busy, 200, domain.RPCTypeJSONRPC); r.Reason != "rate_limited" || r.PenaltySeverity != SeverityMinor {
+		t.Errorf("busy: reason %q severity %v, want rate_limited, minor", r.Reason, r.PenaltySeverity)
 	}
 }

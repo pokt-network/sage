@@ -920,6 +920,11 @@ func frameSeverityToSignal(res heuristic.AnalysisResult, latency time.Duration) 
 		return reputation.NewSignal(reputation.SignalSuccess, "ws_frame_ok", latency)
 	}
 	reason := "ws_" + res.Reason
+	if res.Reason == heuristic.ReasonQuotaExceeded {
+		// Not downgraded: a spent quota is not one bad frame in a healthy
+		// subscription, it is every answer until the window resets.
+		return reputation.NewSignal(reputation.SignalMajorError, reason, latency)
+	}
 	switch res.PenaltySeverity {
 	case heuristic.SeverityFatal:
 		return reputation.NewSignal(reputation.SignalCriticalError, reason, latency)

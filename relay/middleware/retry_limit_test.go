@@ -74,3 +74,11 @@ func TestRetry_RateLimitRetriesOnlyOnAnotherOperator(t *testing.T) {
 		}
 	}
 }
+
+// A spent quota is the operator's limiter too: its retry leaves the operator
+// the same way a rate limit's does.
+func TestRetry_QuotaIsALimiterVerdict(t *testing.T) {
+	if !limiterVerdict(heuristic.ReasonQuotaExceeded) {
+		t.Fatalf("%s is not a limiter verdict; its retry could land on a sibling behind the same quota", heuristic.ReasonQuotaExceeded)
+	}
+}

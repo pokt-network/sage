@@ -444,7 +444,7 @@ func attemptNote(ctx *relay.Context, err error, probation reputation.ProbationCh
 // to the operator rather than to the one host that answered it.
 func limiterVerdict(reason string) bool {
 	switch reason {
-	case "rate_limited", "http_429", "upstream_429":
+	case "rate_limited", heuristic.ReasonQuotaExceeded, "http_429", "upstream_429":
 		return true
 	}
 	return false
