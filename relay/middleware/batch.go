@@ -13,6 +13,7 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/internal/safego"
+	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/reputation"
 )
@@ -256,9 +257,13 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 						// A retry verdict holding the node's own answer (block not
 						// found, execution reverted) is delivered as that answer,
 						// as the router does for a single request; the item used
-						// to become a gateway -32603 in its place.
+						// to become a gateway -32603 in its place. Only a JSON-RPC
+						// response with an id is a node's answer here: a single
+						// request carries the status beside a load balancer's
+						// JSON page, a batch item has nothing but its id to be
+						// matched by.
 						nodeAnswer := errors.Is(err, domain.ErrRetryVerdict) && sub.Response != nil &&
-							len(sub.Response.Body) > 0 && !sub.SupplierPage()
+							!sub.SupplierPage() && qos.JSONRPCRequestID(sub.Response.Body) != ""
 						if err != nil && !nodeAnswer {
 							results[i] = jsonRPCErrorItem(payload.JSONRPCID(), domain.ClientMessage(err))
 							return
