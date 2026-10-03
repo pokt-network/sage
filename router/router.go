@@ -775,7 +775,8 @@ func isJSONRPCRequest(ctx *relay.Context) bool {
 // the last attempt's verdict. Without it a service's 5xx could not be traced
 // to the requests behind it (mainnet chihuahua, 2026-10-02: 11% 5xx, every
 // guess at the request type wrong). The path is cut at its query and at
-// shapePathMax bytes; a body is never logged.
+// shapePathMax bytes, which keeps a cosmwasm contract address whole so the
+// request can be replayed; a body is never logged.
 func requestShape(ctx *relay.Context) []any {
 	attrs := []any{"rpc_type", ctx.RPCType, "rpc_type_source", ctx.RPCTypeSource, "rpc_type_detected", ctx.RPCTypeDetected, "payloads", len(ctx.Payloads)}
 	if len(ctx.Payloads) > 0 {
@@ -808,4 +809,4 @@ func bodyKind(body []byte) string {
 }
 
 // shapePathMax bounds the path requestShape logs.
-const shapePathMax = 80
+const shapePathMax = 256
