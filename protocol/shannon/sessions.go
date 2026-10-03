@@ -34,13 +34,22 @@ type sessionManager struct {
 	// rollover — so unlike sessionCache it accumulates, and must be evicted.
 	// See evictStaleEndpointsOnRollover.
 	endpointCache sync.Map // sessionID (string) → cachedEndpoints
-	// byAddr indexes every cached endpoint by address for URLResolver
-	// lookups; written when a session's endpoints are extracted, cleared
-	// with them on rollover. An address is supplier plus public URL, so two
-	// services can share one only when the supplier stakes one URL for both,
-	// in which case the per-type URLs are the same host and the last write
-	// wins harmlessly.
-	byAddr             sync.Map // domain.EndpointAddr → *endpoint
+	// byAddr indexes every cached endpoint by address, whatever its service,
+	// for URLResolver lookups: written when a session's endpoints are
+	// extracted, cleared with them on rollover. An address is supplier plus
+	// public URL, so two services share one when the supplier stakes one URL
+	// for both, and the last write wins: harmless for a URL, whose host is
+	// the same either way.
+	byAddr sync.Map // domain.EndpointAddr → *endpoint
+	// byServiceAddr indexes the same endpoints by service and address, for
+	// whatever acts on the endpoint's session: an endpoint carries the session
+	// it came from, and one service's session signs nothing for another. On
+	// mainnet (2026-10-03) one operator staked a single WebSocket URL for 51
+	// services; through byAddr the recovery probe for bsc picked up an
+	// endpoint from another service's session, signed for an application not
+	// staked for bsc, and the relay miner refused every upgrade, so the
+	// operator's WebSocket keys never recovered.
+	byServiceAddr      sync.Map // serviceAddr → *endpoint
 	configuredServices map[domain.ServiceID]struct{}
 	logger             *slog.Logger
 
@@ -241,10 +250,14 @@ func (sm *sessionManager) evictStaleEndpointsOnRollover(sessionEnd uint64) {
 		if entry.sessionEnd < prevHighest {
 			sm.endpointCache.Delete(k)
 			for addr, ep := range entry.endpoints {
-				// Only drop the index entry this session wrote; a newer
+				// Only drop the index entries this session wrote; a newer
 				// session may have re-indexed the same address.
 				if cur, ok := sm.byAddr.Load(addr); ok && cur == ep {
 					sm.byAddr.Delete(addr)
+				}
+				k := serviceAddr{ep.serviceID(), addr}
+				if cur, ok := sm.byServiceAddr.Load(k); ok && cur == ep {
+					sm.byServiceAddr.Delete(k)
 				}
 			}
 			dropped++
@@ -437,6 +450,7 @@ func (sm *sessionManager) getOrCreateEndpoints(session *sessiontypes.Session) ma
 	if !loaded {
 		for addr, ep := range endpoints {
 			sm.byAddr.Store(addr, ep)
+			sm.byServiceAddr.Store(serviceAddr{ep.serviceID(), addr}, ep)
 			domain.RecordOwner(ep.supplierAddr, ep.ownerAddr, addr.Operator())
 		}
 		sm.logger.Debug("endpoints extracted from session",
@@ -515,12 +529,29 @@ func (sm *sessionManager) recordReadiness(ready bool, err error) {
 	}
 }
 
-// lookupEndpoint returns the cached endpoint for an address from any current
-// session; see byAddr.
-func (sm *sessionManager) lookupEndpoint(addr domain.EndpointAddr) (*endpoint, bool) {
+// lookupEndpoint returns the cached endpoint for an address in a current
+// session of serviceID; see byServiceAddr.
+func (sm *sessionManager) lookupEndpoint(serviceID domain.ServiceID, addr domain.EndpointAddr) (*endpoint, bool) {
+	v, ok := sm.byServiceAddr.Load(serviceAddr{serviceID, addr})
+	if !ok {
+		return nil, false
+	}
+	return v.(*endpoint), true
+}
+
+// lookupAnyEndpoint returns the cached endpoint for an address from a current
+// session of any service, for what does not depend on the session: the URL
+// it stakes; see byAddr.
+func (sm *sessionManager) lookupAnyEndpoint(addr domain.EndpointAddr) (*endpoint, bool) {
 	v, ok := sm.byAddr.Load(addr)
 	if !ok {
 		return nil, false
 	}
 	return v.(*endpoint), true
+}
+
+// serviceAddr keys byServiceAddr.
+type serviceAddr struct {
+	service domain.ServiceID
+	addr    domain.EndpointAddr
 }

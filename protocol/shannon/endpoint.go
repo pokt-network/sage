@@ -80,6 +80,15 @@ func (e *endpoint) PublicURL() string {
 	return lowest
 }
 
+// serviceID is the service of the session the endpoint came from, "" when
+// it carries none.
+func (e *endpoint) serviceID() domain.ServiceID {
+	if e.session == nil || e.session.Header == nil {
+		return ""
+	}
+	return domain.ServiceID(e.session.Header.ServiceId)
+}
+
 // Session returns the session this endpoint belongs to.
 func (e *endpoint) Session() *sessiontypes.Session {
 	return e.session

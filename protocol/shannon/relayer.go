@@ -755,7 +755,7 @@ func (p *Protocol) SessionLayerReady() bool {
 // fallback: an endpoint that does not stake the type answers false, and the
 // caller falls back to the address's own host.
 func (p *Protocol) EndpointURLFor(endpoint domain.EndpointAddr, rpcType domain.RPCType) (string, bool) {
-	ep, ok := p.sessions.lookupEndpoint(endpoint)
+	ep, ok := p.sessions.lookupAnyEndpoint(endpoint)
 	if !ok {
 		return "", false
 	}

@@ -142,7 +142,7 @@ func (p *Protocol) resolveDebugTarget(ctx context.Context, serviceID domain.Serv
 	var matches domain.EndpointAddrList
 	var matchEps []*endpoint
 	for _, addr := range eps {
-		ep, ok := p.sessions.lookupEndpoint(addr)
+		ep, ok := p.sessions.lookupEndpoint(serviceID, addr)
 		if !ok {
 			continue
 		}

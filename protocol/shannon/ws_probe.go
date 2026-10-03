@@ -182,7 +182,7 @@ func (r *WSRelayer) probeTargets(ctx context.Context, serviceID domain.ServiceID
 	seen := make(map[string]bool, len(endpoints))
 	var out []wsProbeTarget
 	for _, addr := range endpoints {
-		ep, ok := r.deps.Protocol.sessions.lookupEndpoint(addr)
+		ep, ok := r.deps.Protocol.sessions.lookupEndpoint(serviceID, addr)
 		if !ok {
 			continue
 		}
@@ -260,7 +260,7 @@ func (r *WSRelayer) dialSigned(ctx context.Context, serviceID domain.ServiceID, 
 
 // runProbe performs one probe and returns its result.
 func (r *WSRelayer) runProbe(ctx context.Context, t wsProbeTarget) string {
-	ep, ok := r.deps.Protocol.sessions.lookupEndpoint(t.addr)
+	ep, ok := r.deps.Protocol.sessions.lookupEndpoint(t.serviceID, t.addr)
 	if !ok {
 		return wsProbeUnresolved
 	}
