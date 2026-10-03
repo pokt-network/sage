@@ -573,7 +573,7 @@ func (e *Executor) runOnce(ctx context.Context) {
 				continue
 			}
 
-			for _, group := range e.groupByBackend(eps) {
+			for _, group := range e.groupByBackend(eps, rpcType) {
 				group := group // capture for goroutine
 				probe := group.probe(e.cycle)
 
@@ -778,7 +778,12 @@ func (g backendGroup) probe(cycle uint64) domain.EndpointAddr {
 // groupByBackend collapses endpoints sharing a backend URL into one group.
 // With deduplication off, every endpoint becomes its own group and the caller's
 // behavior is unchanged.
-func (e *Executor) groupByBackend(eps domain.EndpointAddrList) []backendGroup {
+//
+// The backend is the URL a check of rpcType dials (dialedURL), not the
+// address's: the group's result is recorded against every member, so two
+// suppliers sharing a JSON-RPC host but staking REST on different hosts
+// grouped for a REST check had one probe charge a host it never dialed.
+func (e *Executor) groupByBackend(eps domain.EndpointAddrList, rpcType domain.RPCType) []backendGroup {
 	if !e.dedupByBackendURL.Load() {
 		groups := make([]backendGroup, 0, len(eps))
 		for _, ep := range eps {
@@ -790,7 +795,7 @@ func (e *Executor) groupByBackend(eps domain.EndpointAddrList) []backendGroup {
 	byURL := make(map[string]int, len(eps))
 	groups := make([]backendGroup, 0, len(eps))
 	for _, ep := range eps {
-		url, err := ep.URL()
+		url, err := e.dialedURL(ep, rpcType)
 		if err != nil || url == "" {
 			// An address we cannot parse gets its own group rather than being
 			// lumped in with every other unparseable one.
@@ -805,6 +810,17 @@ func (e *Executor) groupByBackend(eps domain.EndpointAddrList) []backendGroup {
 		groups = append(groups, backendGroup{key: url, endpoints: domain.EndpointAddrList{ep}})
 	}
 	return groups
+}
+
+// dialedURL is the URL a check of rpcType dials for ep: the face's own when
+// the endpoint provider can say (protocol.URLResolver), else the address's.
+func (e *Executor) dialedURL(ep domain.EndpointAddr, rpcType domain.RPCType) (string, error) {
+	if r, ok := e.endpoints.(protocol.URLResolver); ok {
+		if url, ok := r.EndpointURLFor(ep, rpcType); ok && url != "" {
+			return url, nil
+		}
+	}
+	return ep.URL()
 }
 
 // checkEndpoint runs all health checks against probe and applies the results to
