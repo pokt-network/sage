@@ -1,6 +1,7 @@
 package shannon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/websockets"
 )
@@ -23,6 +25,11 @@ import (
 // SessionEndBlockHeight. The bridge treats this as a terminal error and
 // shuts down with CloseServiceRestart so the client reconnects.
 var ErrSessionExpired = errors.New("shannon ws: session expired")
+
+// errSupplierLimited ends a supplier's tenure on a bridge when it refused a
+// client request for its rate limit or quota: the bridge rebinds, and the
+// request goes again to the next supplier (wsMessageProcessor.reissue).
+var errSupplierLimited = errors.New("supplier refused a request for its rate limit or quota")
 
 // frameCallback is invoked after each endpoint-originated frame is validated
 // and unwrapped. Keeps the processor decoupled from reputation/observation/
@@ -67,6 +74,11 @@ type wsMessageProcessor struct {
 	// subs tracks the connection's subscriptions from the frames that cross
 	// it. Nil-safe; shared by every processor of one bridge.
 	subs *qos.SubscriptionRegistry
+
+	// canRebind reports whether the bridge would meet an endpoint loss with
+	// a rebind. Nil (a probe, or before the bridge is up) means no, and a
+	// rate limit then reaches the client; see reissue.
+	canRebind func() bool
 
 	// metrics, owner and operator attribute every frame to the supplier
 	// that signed it; endpointFrames counts this supplier's frames to the
@@ -266,6 +278,9 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	if p.onEndpointFrame != nil {
 		p.onEndpointFrame(payload, nil, latency)
 	}
+	if p.reissue(payload) {
+		return nil, fmt.Errorf("ws ProcessEndpointMessage: %w", errSupplierLimited)
+	}
 	// After validation, before the client: a replay ack is consumed here
 	// (nil, nil — the bridge forwards nothing), a notification may be
 	// rewritten to the subscription id the client holds.
@@ -286,4 +301,33 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 		return nil, nil
 	}
 	return out, nil
+}
+
+// reissue reports whether payload is a rate limit or a spent quota answering
+// a client request still in flight, now queued to go again to the next
+// supplier after a rebind (qos.SubscriptionRegistry.Reissue). The caller
+// drops the frame and returns errSupplierLimited, which the bridge meets with
+// that rebind. The client is waiting on an answer, and this supplier will not
+// give one until its window resets; on mainnet robinhood (2026-10-03) a
+// metered plan's -32029 went to the client as the answer.
+//
+// Graded already, by onEndpointFrame. Not when the bridge has no rebind left:
+// then it would close, and the refusal is a better answer than a closed
+// connection.
+func (p *wsMessageProcessor) reissue(payload []byte) bool {
+	if p.canRebind == nil || !bytes.Contains(payload, []byte(`"error"`)) {
+		return false
+	}
+	switch heuristic.AnalyzeFrame(payload, domain.RPCTypeWebSocket).Reason {
+	case heuristic.ReasonRateLimited, heuristic.ReasonQuotaExceeded:
+	default:
+		return false
+	}
+	if !p.canRebind() || !p.subs.Reissue(payload) {
+		return false
+	}
+	if p.metrics != nil {
+		p.metrics.SupplierReissued(domain.ServiceID(p.sessionHeader.ServiceId), p.operator, p.owner)
+	}
+	return true
 }

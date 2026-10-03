@@ -59,6 +59,7 @@ type WebSocketMetrics struct {
 	shareCap              *prometheus.CounterVec
 	sessionEndActions     *prometheus.CounterVec
 	sessionEndBlocksPast  *prometheus.HistogramVec
+	reissued              *prometheus.CounterVec
 }
 
 // Caps for the supplier labels. Operators serving WebSocket number in the
@@ -77,7 +78,7 @@ func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
 	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
 		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes,
-		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast)
+		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast, m.reissued)
 	return m
 }
 
@@ -153,6 +154,14 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 				Help:      "WebSocket supplier placements (opens and rebinds) the ws_share_cap flag was asked about, by service and outcome: bound (it kept the connection off a party that would have held more than half the service's frames on this pod), clear (every vouched party was under), or open (it could not bind: fewer than two vouched fresh parties, no traffic yet, or no party under the cap with the connection added). Nothing is counted while the flag is off.",
 			},
 			[]string{"service_id", "outcome"},
+		),
+		reissued: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_reissued_total",
+				Help:      "Client requests over WebSocket that a supplier answered with a rate limit or a spent quota and that were sent again to the next supplier after a rebind, the refusal never reaching the client, by service and the supplier that refused (operator, owner). A refusal on a bridge with no rebind left goes to the client and is not counted here; the refusals themselves are in sage_operator_failures_total as ws_rate_limited and ws_quota_exceeded.",
+			},
+			supplierLabels,
 		),
 		sessionEndActions: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -278,6 +287,13 @@ func (m *WebSocketMetrics) SessionEndAction(serviceID domain.ServiceID, action s
 	sid := m.services.serviceValue(serviceID)
 	m.sessionEndActions.WithLabelValues(sid, action).Inc()
 	m.sessionEndBlocksPast.WithLabelValues(sid, action).Observe(float64(blocksPast))
+}
+
+// SupplierReissued counts one client request reissued after the supplier
+// refused it for its rate limit or quota.
+func (m *WebSocketMetrics) SupplierReissued(serviceID domain.ServiceID, operator, owner string) {
+	sid, op, own := m.supplierValues(serviceID, operator, owner)
+	m.reissued.WithLabelValues(sid, op, own).Inc()
 }
 
 // ForService returns the per-bridge websockets.Observer for one service.

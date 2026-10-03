@@ -96,9 +96,12 @@ type Bridge struct {
 
 	// endpointLost, when set, is asked for a replacement when the endpoint
 	// side is lost; losses holds when each replacement for a loss succeeded,
-	// and the ones inside rebindWindow count against rebindLimit.
+	// and the ones inside rebindWindow count against rebindLimit. lossMu
+	// guards losses alone, so CanRebind can be asked from inside route,
+	// which holds endpointMu for reading.
 	endpointLost EndpointLostHandler
 	rebindLimit  int
+	lossMu       sync.Mutex
 	losses       []time.Time
 
 	// stalled, when set, is polled every stallPeriod; true means the
@@ -122,8 +125,10 @@ const defaultRebindLimit = 3
 const rebindWindow = 10 * time.Minute
 
 // recentLosses is how many loss rebinds fall inside rebindWindow, dropping
-// the older ones. Caller holds endpointMu.
+// the older ones.
 func (b *Bridge) recentLosses(now time.Time) int {
+	b.lossMu.Lock()
+	defer b.lossMu.Unlock()
 	keep := b.losses[:0]
 	for _, t := range b.losses {
 		if now.Sub(t) < rebindWindow {
@@ -493,12 +498,12 @@ func (b *Bridge) ReplaceEndpoint(cause error) {
 
 // CanRebind reports whether an endpoint loss would be met with a rebind
 // rather than a close: a handler is installed and the limit is not spent.
+// Safe from inside a MessageProcessor: it does not take endpointMu, which
+// route holds while the processor runs.
 func (b *Bridge) CanRebind() bool {
 	if b.endpointLost == nil {
 		return false
 	}
-	b.endpointMu.Lock()
-	defer b.endpointMu.Unlock()
 	return b.recentLosses(time.Now()) < b.rebindLimit
 }
 
@@ -578,14 +583,15 @@ func (b *Bridge) rebind(lost *Connection, cause error) {
 		b.endpointMu.Unlock()
 		return // A loop on an endpoint that was already replaced.
 	}
-	if n := b.recentLosses(time.Now()); n >= b.rebindLimit {
+	n := b.recentLosses(time.Now())
+	if n >= b.rebindLimit {
 		b.endpointMu.Unlock()
 		b.logger.Warn("websocket: rebind limit reached, closing", "rebinds", n, "window", rebindWindow, "cause", cause)
 		b.observe(func(o Observer) { o.Rebound(RebindExhausted) })
 		b.Shutdown(fmt.Errorf("%w: rebind limit %d reached: %w", ErrBridgeEndpointUnavailable, b.rebindLimit, cause))
 		return
 	}
-	b.logger.Warn("websocket: endpoint lost, rebinding", "rebind", len(b.losses)+1, "cause", cause)
+	b.logger.Warn("websocket: endpoint lost, rebinding", "rebind", n+1, "cause", cause)
 
 	raw, processor, replay, err := b.endpointLost(b.ctx, cause)
 	if err != nil {
@@ -614,7 +620,9 @@ func (b *Bridge) rebind(lost *Connection, cause error) {
 		// evidence of a dying pool; only losses count toward the limit. Three
 		// admin rebinds used to spend the budget, and the next real loss or
 		// session end closed every bridge on the service.
+		b.lossMu.Lock()
 		b.losses = append(b.losses, time.Now())
+		b.lossMu.Unlock()
 	}
 	b.endpointMu.Unlock()
 

@@ -362,6 +362,10 @@ var supplierLagPatterns = []string{
 	"upstream rpc backends",
 }
 
+// ReasonRateLimited is the verdict on a node's own rate limiter or admission
+// limit answering instead of the node.
+const ReasonRateLimited = "rate_limited"
+
 // ReasonQuotaExceeded is the verdict on a rate limit that is a metered
 // upstream plan's quota: the supplier is reselling a third-party provider's
 // tier and has run through it.
@@ -463,7 +467,7 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 			PenaltySeverity: SeverityMinor,
 			Attribution:     AttrSupplier,
 			Confidence:      0.85,
-			Reason:          "rate_limited",
+			Reason:          ReasonRateLimited,
 			Details:         "supplier rate limit (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
 		}
 	}

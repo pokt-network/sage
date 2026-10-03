@@ -139,6 +139,14 @@ type Subscription struct {
 // cap new ones are still forwarded, just not remembered.
 const maxTrackedSubscriptions = 1024
 
+// maxInflightRequests and maxInflightBytes bound the requests in flight a
+// connection remembers for Reissue. Past either, a request is still
+// forwarded, just not remembered: a refusal of it reaches the client.
+const (
+	maxInflightRequests = 256
+	maxInflightBytes    = 256 << 10
+)
+
 // SubscriptionRegistry tracks the subscriptions on one WebSocket connection
 // from the frames that cross it, and translates those frames across a
 // rebind. Pass every client frame through TranslateClientFrame and every
@@ -190,6 +198,13 @@ type SubscriptionRegistry struct {
 	recent map[string]*dupRing
 	closed map[string]struct{}
 	seed   maphash.Seed
+
+	// Requests in flight, for Reissue: inflight is raw request id → the
+	// client's frame, inflightBytes their total size; reissue holds the
+	// frames Reissue took, for the next ReplayFrames.
+	inflight      map[string][]byte
+	inflightBytes int
+	reissue       [][]byte
 }
 
 type pendingSubscription struct {
@@ -335,6 +350,7 @@ func NewSubscriptionRegistry(classifier SubscriptionClassifier) *SubscriptionReg
 		recent:     make(map[string]*dupRing),
 		closed:     make(map[string]struct{}),
 		seed:       maphash.MakeSeed(),
+		inflight:   make(map[string][]byte),
 	}
 }
 
@@ -363,6 +379,7 @@ func (r *SubscriptionRegistry) TranslateClientFrame(data []byte) []byte {
 func (r *SubscriptionRegistry) translateClientFrame(data []byte) []byte {
 	info := r.classifier.ClassifyClientFrame(data)
 	if info.Action == SubscriptionNone {
+		r.track(data)
 		return data
 	}
 	r.mu.Lock()
@@ -447,6 +464,7 @@ func (r *SubscriptionRegistry) translateEndpointFrame(data []byte) (out []byte, 
 	defer r.mu.Unlock()
 	switch info.Kind {
 	case EndpointFrameResponse:
+		r.answered(info.RequestID)
 		if clientID, replayed := r.replay[info.RequestID]; replayed {
 			delete(r.replay, info.RequestID)
 			note.Topic = r.active[clientID].Topic
@@ -591,9 +609,10 @@ func (r *SubscriptionRegistry) forget(sub Subscription) {
 	}
 }
 
-// ReplayFrames returns the subscribe frames to send to a new supplier — one
-// per live subscription, the client's original request with a fresh
-// gateway-owned request id — and arms the registry to consume their acks.
+// ReplayFrames returns the frames to send to a new supplier: a subscribe per
+// live subscription, the client's original request with a fresh
+// gateway-owned request id, then the requests Reissue took, as the client
+// sent them. It arms the registry to consume the subscribes' acks.
 // Frames the registry cannot re-id (no request-id span) are skipped: replaying
 // them would produce an ack the client would see twice.
 func (r *SubscriptionRegistry) ReplayFrames() [][]byte {
@@ -620,7 +639,66 @@ func (r *SubscriptionRegistry) ReplayFrames() [][]byte {
 			r.lastPeriodic = time.Now()
 		}
 	}
+	// After the subscriptions, the requests Reissue took. Whatever else was
+	// in flight went to the supplier being replaced and will not be
+	// answered; the reissued frames are tracked again as they go out.
+	out = append(out, r.reissue...)
+	r.reissue = nil
+	clear(r.inflight)
+	r.inflightBytes = 0
 	return out
+}
+
+// Reissue takes the client request an endpoint frame answers out of flight
+// and queues it for the next ReplayFrames, after the subscriptions, and
+// reports whether there was one. The caller then drops the frame and has the
+// bridge rebind, so the client gets the next supplier's answer in its place.
+// For a refusal the next supplier will not repeat: a rate limit, a spent
+// quota. A request not in flight (untracked past the caps, sent in a batch,
+// or answered already) is not queued, and the frame goes to the client.
+func (r *SubscriptionRegistry) Reissue(data []byte) bool {
+	if r == nil || r.classifier == nil {
+		return false
+	}
+	id := JSONRPCRequestID(data)
+	if id == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	req, ok := r.inflight[id]
+	if !ok {
+		return false
+	}
+	r.answered(id)
+	r.reissue = append(r.reissue, req)
+	return true
+}
+
+// track remembers a client request in flight, by its id, for Reissue. A
+// reused id replaces the request before it: the answer will be read as the
+// newer one's. Caller does not hold mu.
+func (r *SubscriptionRegistry) track(data []byte) {
+	id := JSONRPCRequestID(data)
+	if id == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.answered(id)
+	if len(r.inflight) >= maxInflightRequests || r.inflightBytes+len(data) > maxInflightBytes {
+		return
+	}
+	r.inflight[id] = append([]byte(nil), data...)
+	r.inflightBytes += len(data)
+}
+
+// answered forgets the request in flight under id, if any. Caller holds mu.
+func (r *SubscriptionRegistry) answered(id string) {
+	if req, ok := r.inflight[id]; ok {
+		r.inflightBytes -= len(req)
+		delete(r.inflight, id)
+	}
 }
 
 // spliceSpan returns a copy of data with span replaced by raw. An unknown

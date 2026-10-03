@@ -518,6 +518,13 @@ type spyWSMetrics struct {
 	heads         []string // operator|lag|delayKnown
 	mismatches    []string // operator
 	sessionEnds   []string // action|blocksPast
+	reissued      []string // operator
+}
+
+func (s *spyWSMetrics) SupplierReissued(_ domain.ServiceID, operator, _ string) {
+	s.mu.Lock()
+	s.reissued = append(s.reissued, operator)
+	s.mu.Unlock()
 }
 
 func (s *spyWSMetrics) SessionEndAction(_ domain.ServiceID, action string, blocksPast int64) {

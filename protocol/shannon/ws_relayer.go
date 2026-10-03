@@ -119,6 +119,7 @@ type WSMetrics interface {
 	Probed(serviceID domain.ServiceID, result string)
 	ShareCap(serviceID domain.ServiceID, outcome string)
 	SessionEndAction(serviceID domain.ServiceID, action string, blocksPast int64)
+	SupplierReissued(serviceID domain.ServiceID, operator, owner string)
 }
 
 // WSRelayer is the only public entry point for opening WebSocket bridges in
@@ -393,6 +394,9 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 
 	subs := r.subscriptionRegistry(serviceID)
 	consensusHead := r.consensusHead(serviceID)
+	// The bridge, once up: a processor asks it whether a rate-limited
+	// request can be reissued after a rebind.
+	var bridgeRef atomic.Pointer[websockets.Bridge]
 	newProcessor := func(t *wsTarget) *wsMessageProcessor {
 		addr := t.addr
 		p := newWSMessageProcessor(
@@ -405,6 +409,10 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 			r.frameSink(serviceID, addr, frameCh),
 		)
 		p.subs, p.samples = subs, r.samples
+		p.canRebind = func() bool {
+			b := bridgeRef.Load()
+			return b != nil && b.CanRebind()
+		}
 		p.heads, p.consensusHead = r.heads, consensusHead
 		p.metrics, p.owner, p.operator, p.boundAt = r.deps.Metrics, t.ep.Owner(), p.endpointAddr.Operator(), time.Now()
 		return p
@@ -486,6 +494,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	swapMu.Lock()
 	bridge, err := websockets.StartBridge(ctx, logger, req, w, url, supplierHeaders, processor, bridgeOpts...)
 	if err == nil {
+		bridgeRef.Store(bridge)
 		r.clients.opened(clientIP)
 		r.bindSupplier(serviceID, processor)
 	}
