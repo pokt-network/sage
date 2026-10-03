@@ -272,6 +272,10 @@ var blockchainErrorPatterns = append([]string{
 	// it lives here rather than in capabilityLimitationPatterns, which the EVM
 	// archival demotion path also reads.
 	"excluded from account secondary indexes",
+	// Solana: a skipped slot has no block on any node, and a slot an RPC node
+	// keeps no long-term storage for is its retention, not a fault.
+	"was skipped",
+	"block not available for slot",
 }, capabilityLimitationPatterns...)
 
 // supplierInfraPatterns are the wordings of a supplier's own infrastructure
@@ -284,8 +288,81 @@ var supplierInfraPatterns = []string{
 	"internal server error",
 }
 
+// clientErrorPatterns are -32000-range wordings about the request itself: a
+// call that reverts, a transaction the chain would refuse. Every node answers
+// them alike, so they are the client's answer: delivered, not retried, nobody
+// scored. Many nodes give a revert code 3 (handled above); geth without
+// revert data, and the Opera/Sonic clients always, say -32000 "execution
+// reverted". On mainnet (2026-10-03) these fell to the unscored server_error
+// default, which retries: on fantom 63 attempts a second went to other
+// operators for an answer they all give, and every one read as a supplier
+// fault on the dashboards.
+var clientErrorPatterns = []string{
+	// EVM execution
+	"execution reverted",
+	"out of gas",
+	"gas required exceeds",
+	"invalid opcode",
+	"invalid jump destination",
+	"stack underflow",
+	"stack limit reached",
+	// transaction validity (geth core and txpool)
+	"insufficient funds",
+	"insufficient balance",
+	"nonce too low",
+	"nonce too high",
+	"already known",
+	"known transaction",
+	"underpriced",
+	"intrinsic gas too low",
+	"exceeds block gas limit",
+	"max fee per gas less than block base fee",
+	"max priority fee per gas higher than max fee per gas",
+	"tip higher than fee cap",
+	"fee cap less than block base fee",
+	"invalid sender",
+	"transaction type not supported",
+	"oversized data",
+	"exceeds the configured cap",
+	"only replay-protected",
+	"rlp:",
+	// Solana
+	"transaction simulation failed",
+	"signature verification failure",
+	"blockhash not found",
+}
+
+// supplierLagPatterns are a node saying it is behind or unwell: the supplier's
+// state, retried elsewhere and scored minor, like its rate limit. Solana's
+// -32005 "node is behind" / "node is unhealthy" and -32016 "minimum context
+// slot has not been reached".
+var supplierLagPatterns = []string{
+	"node is behind",
+	"node is unhealthy",
+	"minimum context slot has not been reached",
+}
+
 // classifyServerError handles -32000 range errors which are commonly blockchain-specific.
 func classifyServerError(code int64, lowerMsg string) AnalysisResult {
+	if ContainsAnyOf(lowerMsg, clientErrorPatterns) {
+		return AnalysisResult{
+			Attribution: AttrClient,
+			Confidence:  0.90,
+			Reason:      "client_error",
+			Details:     "client error (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
+		}
+	}
+	if ContainsAnyOf(lowerMsg, supplierLagPatterns) {
+		return AnalysisResult{
+			ShouldRetry:     true,
+			ShouldPenalize:  true,
+			PenaltySeverity: SeverityMinor,
+			Attribution:     AttrSupplier,
+			Confidence:      0.85,
+			Reason:          "node_behind",
+			Details:         "node behind or unhealthy (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
+		}
+	}
 	if ContainsAnyOf(lowerMsg, blockchainErrorPatterns) {
 		result := AnalysisResult{
 			ShouldRetry:        true,
