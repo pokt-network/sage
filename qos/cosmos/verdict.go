@@ -28,12 +28,17 @@ const ReasonQuery5xx = "query_5xx"
 //     for both gateways, and SAGE scored every one against the host.
 //   - /cosmos/tx/v1beta1/txs/block/{height}: a height the node does not
 //     hold, or one past the head, is a 500 rather than a 404.
+//   - /cosmos/tx/v1beta1/txs?{query}: an event search the node's indexer
+//     cannot serve (too broad, or past what it indexes) is a 500 "internal
+//     error" from every operator alike (mainnet fetch, 2026-10-03). The
+//     route with a query only: a transaction by hash is another route.
 //
 // Every Cosmos chain runs the same gateway, so these are routes, not
 // chains; a chain module route that behaves the same way belongs here too.
 var query5xxPrefixes = []string{
 	"/cosmwasm/wasm/v1/contract/",
 	"/cosmos/tx/v1beta1/txs/block/",
+	"/cosmos/tx/v1beta1/txs?",
 }
 
 // RefineVerdict implements qos.VerdictRefiner: a 5xx verdict (the node's

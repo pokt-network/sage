@@ -30,6 +30,8 @@ func TestRefineVerdict_Query5xx(t *testing.T) {
 		{"txs by block", rest("/cosmos/tx/v1beta1/txs/block/99999999"), node5xx, true},
 		{"contract state is not a client query", rest("/cosmwasm/wasm/v1/contract/osmo1abc/state"), node5xx, false},
 		{"txs by hash", rest("/cosmos/tx/v1beta1/txs/ABCDEF0123456789"), node5xx, false},
+		{"tx event search the indexer cannot serve", rest("/cosmos/tx/v1beta1/txs?events=message.action%3D%27%2Fcosmos.bank.v1beta1.MsgSend%27&pagination.limit=1"), miner5xx, true},
+		{"txs route without a query", rest("/cosmos/tx/v1beta1/txs"), node5xx, false},
 		{"another route", rest("/cosmos/bank/v1beta1/balances/osmo1abc"), node5xx, false},
 		{"not a 5xx", rest("/cosmwasm/wasm/v1/contract/osmo1abc/smart/eyJ9"), heuristic.AnalysisResult{Reason: "internal_error"}, false},
 		{"comet_bft, same path shape", domain.NewPayload(nil, domain.RPCTypeCometBFT, "").WithHTTP("/cosmos/tx/v1beta1/txs/block/1", "GET"), node5xx, false},
