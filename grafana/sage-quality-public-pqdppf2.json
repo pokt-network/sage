@@ -1025,7 +1025,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 84
+                "value": 110
               }
             ]
           },
@@ -1558,7 +1558,7 @@
       },
       "description": "Where each operator's registrations in the current session stand with the gateway: in rotation (all selectable at full weight), partly demoted (some of them sent less traffic after failures), demoted (all of them), drained (removed from the service's pool for now). The Failure Reasons table beside it says why.",
       "type": "table",
-      "title": "Operator Status",
+      "title": "Operator Status (HTTP)",
       "id": 22,
       "gridPos": {
         "h": 12,
@@ -1670,7 +1670,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(max by (service_id, operator) (label_replace(sage_drained_operators{job=\"sage\", environment=\"mainnet-sage\"}, \"operator\", \"$1\", \"domain\", \"(.*)\")) > 0) * 0 + 4 or ((sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints_low{job=\"sage\", environment=\"mainnet-sage\"})) >= sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints{job=\"sage\", environment=\"mainnet-sage\"}))) and (sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints{job=\"sage\", environment=\"mainnet-sage\"})) > 0)) * 0 + 3 or (sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints_low{job=\"sage\", environment=\"mainnet-sage\"})) > 0) * 0 + 2 or (sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints{job=\"sage\", environment=\"mainnet-sage\"})) > 0) * 0 + 1",
+          "expr": "(max by (service_id, operator) (label_replace(sage_drained_operators{job=\"sage\", environment=\"mainnet-sage\"}, \"operator\", \"$1\", \"domain\", \"(.*)\")) > 0) * 0 + 4 or ((sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints_low{job=\"sage\", environment=\"mainnet-sage\", rpc_type!=\"websocket\"})) >= sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints{job=\"sage\", environment=\"mainnet-sage\", rpc_type!=\"websocket\"}))) and (sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints{job=\"sage\", environment=\"mainnet-sage\", rpc_type!=\"websocket\"})) > 0)) * 0 + 3 or (sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints_low{job=\"sage\", environment=\"mainnet-sage\", rpc_type!=\"websocket\"})) > 0) * 0 + 2 or (sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints{job=\"sage\", environment=\"mainnet-sage\", rpc_type!=\"websocket\"})) > 0) * 0 + 1",
           "refId": "Status",
           "format": "table",
           "instant": true,
@@ -2089,11 +2089,15 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "right",
-          "showLegend": true
+          "showLegend": true,
+          "values": [
+            "percent",
+            "value"
+          ]
         },
-        "pieType": "pie",
+        "pieType": "donut",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -2147,11 +2151,15 @@
       },
       "options": {
         "legend": {
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "right",
-          "showLegend": true
+          "showLegend": true,
+          "values": [
+            "percent",
+            "value"
+          ]
         },
-        "pieType": "pie",
+        "pieType": "donut",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"

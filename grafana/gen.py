@@ -117,8 +117,9 @@ def pie(title, expr, legend, x, w, h=8, desc=""):
         "datasource": DS, "description": desc, "type": "piechart", "title": title, "id": nid(),
         "gridPos": {"h": h, "w": w, "x": x, "y": y[0]},
         "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "mappings": []}, "overrides": []},
-        "options": {"legend": {"displayMode": "list", "placement": "right", "showLegend": True},
-                    "pieType": "pie", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
+        "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": True,
+                               "values": ["percent", "value"]},
+                    "pieType": "donut", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
                     "sort": "desc", "tooltip": {"mode": "single", "sort": "none"}},
         "targets": [target(expr, legend=legend)],
     })
@@ -367,7 +368,7 @@ table(
         col("Mean Score", mn=0, mx=100, decimals=1, novalue="—", steps=((0, "red"), (50, "yellow"), (80, "green")),
             cell={"mode": "lcd", "type": "gauge", "valueDisplayMode": "color"}, width=120),
         col("Drained", novalue="—", steps=((0, "green"), (1, "red")), cell=BG, width=80),
-        col("Operator", width=145), col("Service", width=84), col("RPC Type", width=100),
+        col("Operator", width=145), col("Service", width=110), col("RPC Type", width=100),
     ],
 )
 y[0] += 18
@@ -404,8 +405,10 @@ y[0] += 12
 
 # Status and failure reasons per operator: what an operator can act on,
 # without the score or the thresholds behind it.
-EPS = f'sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints{{{S}}}))'
-LOW = f'sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints_low{{{S}}}))'
+# HTTP registrations only: WebSocket keys score on a different footing, and
+# mixed in they read an operator healthy over HTTP as demoted.
+EPS = f'sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints{{{S}, rpc_type!="websocket"}}))'
+LOW = f'sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints_low{{{S}, rpc_type!="websocket"}}))'
 DRAINED = (f'max by (service_id, operator) (label_replace(sage_drained_operators{{{S}}}, '
            f'"operator", "$1", "domain", "(.*)"))')
 STATUS_MAP = [{"type": "value", "options": {
@@ -414,7 +417,7 @@ STATUS_MAP = [{"type": "value", "options": {
     "3": {"text": "Demoted", "color": "orange", "index": 2},
     "4": {"text": "Drained", "color": "red", "index": 3}}}]
 table(
-    "Operator Status",
+    "Operator Status (HTTP)",
     [("Status", f'({DRAINED} > 0) * 0 + 4 or (({LOW} >= {EPS}) and ({EPS} > 0)) * 0 + 3 '
                 f'or ({LOW} > 0) * 0 + 2 or ({EPS} > 0) * 0 + 1')],
     {"service_id": 0, "operator": 1, "Value": 2},
