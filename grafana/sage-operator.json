@@ -465,7 +465,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Client requests by the status SAGE answered, last 24h.",
+      "description": "Client requests by the status class SAGE answered, last 24h.",
       "type": "stat",
       "title": "Requests in 24H",
       "id": 9,
@@ -518,10 +518,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (increase(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[24h]))",
+          "expr": "sum by (class) (label_replace(increase(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[24h]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
           "range": true,
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{class}}"
         }
       ]
     },
@@ -530,7 +530,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Client requests by status over the dashboard time range.",
+      "description": "Client requests by status class over the dashboard time range.",
       "type": "stat",
       "title": "Requests in range",
       "id": 10,
@@ -583,10 +583,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (increase(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[$__range]))",
+          "expr": "sum by (class) (label_replace(increase(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[$__range]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
           "range": true,
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{class}}"
         }
       ]
     },
@@ -595,7 +595,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Upstream client relay attempts by the HTTP status the relay miner returned, last 24h.",
+      "description": "Upstream client relay attempts by the HTTP status class the relay miner returned, last 24h. The exact codes are in the Relays by Status Code panel.",
       "type": "stat",
       "title": "Relays in 24H",
       "id": 11,
@@ -648,10 +648,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (increase(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[24h]))",
+          "expr": "sum by (class) (label_replace(increase(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[24h]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
           "range": true,
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{class}}"
         }
       ]
     },
@@ -660,7 +660,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Upstream client relay attempts by status over the dashboard time range.",
+      "description": "Upstream client relay attempts by status class over the dashboard time range.",
       "type": "stat",
       "title": "Relays in range",
       "id": 12,
@@ -713,10 +713,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (increase(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[$__range]))",
+          "expr": "sum by (class) (label_replace(increase(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[$__range]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
           "range": true,
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{class}}"
         }
       ]
     },
@@ -2195,7 +2195,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) * 100",
+          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / (sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) > 0) * 100",
           "refId": "FaultPct",
           "format": "table",
           "instant": true,
@@ -5456,7 +5456,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (service_id, operator, le) (rate(sage_websocket_supplier_tenure_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[1h])))",
+          "expr": "histogram_quantile(0.50, sum by (service_id, operator, le) (rate(sage_websocket_supplier_tenure_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[1h]))) >= 0",
           "refId": "Tenure",
           "format": "table",
           "instant": true,

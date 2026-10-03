@@ -465,7 +465,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Client requests by the status the gateway answered, last 24h.",
+      "description": "Client requests by the status class the gateway answered, last 24h.",
       "type": "stat",
       "title": "Requests in 24H",
       "id": 10,
@@ -518,10 +518,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (increase(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[24h]))",
+          "expr": "sum by (class) (label_replace(increase(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[24h]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
           "range": true,
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{class}}"
         }
       ]
     },
@@ -530,7 +530,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Client requests by status over the dashboard time range.",
+      "description": "Client requests by status class over the dashboard time range.",
       "type": "stat",
       "title": "Requests in range",
       "id": 11,
@@ -583,10 +583,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (increase(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[$__range]))",
+          "expr": "sum by (class) (label_replace(increase(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[$__range]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
           "range": true,
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{class}}"
         }
       ]
     },
@@ -595,7 +595,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Upstream client relay attempts by the HTTP status the relay miner returned, last 24h.",
+      "description": "Upstream client relay attempts by the HTTP status class the relay miner returned, last 24h. The exact codes are in the Relays by Status Code panel.",
       "type": "stat",
       "title": "Relays in 24H",
       "id": 12,
@@ -648,10 +648,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (increase(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[24h]))",
+          "expr": "sum by (class) (label_replace(increase(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[24h]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
           "range": true,
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{class}}"
         }
       ]
     },
@@ -660,7 +660,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Upstream client relay attempts by status over the dashboard time range.",
+      "description": "Upstream client relay attempts by status class over the dashboard time range.",
       "type": "stat",
       "title": "Relays in range",
       "id": 13,
@@ -713,10 +713,10 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (status) (increase(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[$__range]))",
+          "expr": "sum by (class) (label_replace(increase(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[$__range]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
           "range": true,
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{class}}"
         }
       ]
     },
@@ -819,10 +819,6 @@
                   "type": "gauge",
                   "valueDisplayMode": "color"
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 120
               }
             ]
           },
@@ -839,10 +835,6 @@
               {
                 "id": "noValue",
                 "value": "0"
-              },
-              {
-                "id": "custom.width",
-                "value": 90
               }
             ]
           },
@@ -886,10 +878,6 @@
                   "mode": "gradient",
                   "type": "color-background"
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 147
               }
             ]
           },
@@ -926,10 +914,6 @@
                     }
                   ]
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 94
               }
             ]
           },
@@ -966,10 +950,6 @@
                     }
                   ]
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 94
               }
             ]
           },
@@ -1006,10 +986,6 @@
                     }
                   ]
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 94
               }
             ]
           },
@@ -1026,10 +1002,6 @@
               {
                 "id": "decimals",
                 "value": 0
-              },
-              {
-                "id": "custom.width",
-                "value": 114
               }
             ]
           },
@@ -1302,10 +1274,6 @@
                   "mode": "gradient",
                   "type": "gauge"
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 164
               }
             ]
           },
@@ -1349,10 +1317,6 @@
                   "mode": "gradient",
                   "type": "color-background"
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 110
               }
             ]
           },
@@ -1396,10 +1360,6 @@
                   "mode": "gradient",
                   "type": "color-background"
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 110
               }
             ]
           },
@@ -1416,10 +1376,6 @@
               {
                 "id": "noValue",
                 "value": "0"
-              },
-              {
-                "id": "custom.width",
-                "value": 100
               }
             ]
           },
@@ -1436,10 +1392,6 @@
               {
                 "id": "noValue",
                 "value": "0"
-              },
-              {
-                "id": "custom.width",
-                "value": 100
               }
             ]
           },
@@ -1547,7 +1499,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) * 100",
+          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / (sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) > 0) * 100",
           "refId": "FaultPct",
           "format": "table",
           "instant": true,
@@ -1833,10 +1785,6 @@
                   "mode": "gradient",
                   "type": "color-background"
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 120
               }
             ]
           },
@@ -2120,72 +2068,14 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "",
-      "type": "piechart",
-      "title": "Relays by Type (client vs probe)",
-      "id": 30,
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 84
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
-        },
-        "pieType": "pie",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "sort": "desc",
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (request_type) (rate(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))",
-          "refId": "A",
-          "range": true,
-          "legendFormat": "{{request_type}}"
-        }
-      ]
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
       "description": "Every client attempt by whose fault its outcome was; none = a good answer.",
       "type": "piechart",
       "title": "Attempt Attribution",
       "id": 31,
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
+        "w": 12,
+        "x": 0,
         "y": 84
       },
       "fieldConfig": {
@@ -2242,8 +2132,8 @@
       "id": 32,
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
+        "w": 12,
+        "x": 12,
         "y": 84
       },
       "fieldConfig": {
@@ -2314,7 +2204,7 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
+        "x": 0,
         "y": 93
       },
       "fieldConfig": {
@@ -2426,7 +2316,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 101
+        "y": 93
       },
       "fieldConfig": {
         "defaults": {
@@ -2499,7 +2389,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 134
+        "y": 126
       },
       "id": 45,
       "panels": [],
@@ -2519,7 +2409,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 135
+        "y": 127
       },
       "fieldConfig": {
         "defaults": {
@@ -2591,10 +2481,6 @@
                   "mode": "gradient",
                   "type": "gauge"
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 160
               }
             ]
           },
@@ -2611,10 +2497,6 @@
               {
                 "id": "noValue",
                 "value": "0"
-              },
-              {
-                "id": "custom.width",
-                "value": 100
               }
             ]
           },
@@ -2631,10 +2513,6 @@
               {
                 "id": "noValue",
                 "value": "0"
-              },
-              {
-                "id": "custom.width",
-                "value": 343
               }
             ]
           },
@@ -2643,12 +2521,7 @@
               "id": "byName",
               "options": "Service"
             },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 557
-              }
-            ]
+            "properties": []
           }
         ]
       },
@@ -2762,7 +2635,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 143
+        "y": 135
       },
       "id": 47,
       "panels": [],
@@ -2782,7 +2655,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 144
+        "y": 136
       },
       "fieldConfig": {
         "defaults": {
@@ -2860,7 +2733,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 144
+        "y": 136
       },
       "fieldConfig": {
         "defaults": {
@@ -2938,7 +2811,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 144
+        "y": 136
       },
       "fieldConfig": {
         "defaults": {
@@ -3014,9 +2887,9 @@
       "id": 52,
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 152
+        "w": 12,
+        "x": 0,
+        "y": 144
       },
       "fieldConfig": {
         "defaults": {
@@ -3114,9 +2987,9 @@
       "id": 53,
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 152
+        "w": 12,
+        "x": 12,
+        "y": 144
       },
       "fieldConfig": {
         "defaults": {
@@ -3194,7 +3067,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 160
+        "y": 152
       },
       "fieldConfig": {
         "defaults": {
@@ -3254,10 +3127,6 @@
                   "mode": "gradient",
                   "type": "color-background"
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 100
               }
             ]
           },
@@ -3278,10 +3147,6 @@
               {
                 "id": "decimals",
                 "value": 1
-              },
-              {
-                "id": "custom.width",
-                "value": 176
               }
             ]
           },
@@ -3302,10 +3167,6 @@
               {
                 "id": "decimals",
                 "value": 2
-              },
-              {
-                "id": "custom.width",
-                "value": 116
               }
             ]
           },
@@ -3353,10 +3214,6 @@
                   "mode": "gradient",
                   "type": "color-background"
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 118
               }
             ]
           },
@@ -3373,10 +3230,6 @@
               {
                 "id": "noValue",
                 "value": "\u2014"
-              },
-              {
-                "id": "custom.width",
-                "value": 160
               }
             ]
           },
@@ -3424,10 +3277,6 @@
                   "mode": "gradient",
                   "type": "color-background"
                 }
-              },
-              {
-                "id": "custom.width",
-                "value": 125
               }
             ]
           },
@@ -3444,10 +3293,6 @@
               {
                 "id": "decimals",
                 "value": 0
-              },
-              {
-                "id": "custom.width",
-                "value": 109
               }
             ]
           },
@@ -3543,7 +3388,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (service_id, operator, le) (rate(sage_websocket_supplier_tenure_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[1h])))",
+          "expr": "histogram_quantile(0.50, sum by (service_id, operator, le) (rate(sage_websocket_supplier_tenure_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[1h]))) >= 0",
           "refId": "Tenure",
           "format": "table",
           "instant": true,
@@ -3633,7 +3478,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 170
+        "y": 162
       },
       "fieldConfig": {
         "defaults": {

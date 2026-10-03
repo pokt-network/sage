@@ -159,6 +159,15 @@ def table(title, targets, order, rename, x, w, h, desc="", overrides=(), sort=No
         order = {k: v for k, v in order.items() if k.removeprefix("Value #") not in ops_refs}
         rename = {k: v for k, v in rename.items() if k.removeprefix("Value #") not in ops_refs}
         desc = desc_public or desc
+    if PUBLIC:
+        # Fixed widths on every column left a full-screen table ending two
+        # thirds of the way across; only the label columns keep theirs, the
+        # numbers share the rest.
+        keep = {"Operator", "RPC Type", "Service"}
+        overrides = [{**o, "properties": [pr for pr in o["properties"]
+                                          if pr["id"] != "custom.width" or
+                                          (o["matcher"]["options"] in keep and pr["value"] <= 200)]}
+                     for o in overrides]
     ex = dict(HIDE)
     ex.update({k: True for k in hide})
     tx = [{"id": "merge", "options": {}},
@@ -205,6 +214,12 @@ panels.append({
 })
 y[0] = 3
 
+def statusClass(series):
+    """Counts by HTTP status class (2xx, 4xx, 5xx): a dozen codes side by side
+    left each one unreadable in a stat tile."""
+    return f'sum by (class) (label_replace({series}, "class", "${{1}}xx", "status", "([0-9]).*"))'
+
+
 def relay_success(x):
     stat("Relay Success %",
          f'(1 - sum(rate({OF[:-1]}, {FAULT}}}[{RI}])) / sum(rate({OF}[{RI}]))) * 100',
@@ -240,17 +255,18 @@ stat("Client 5xx %",
      20, 4, unit="percent", decimals=3, steps=((0, "green"), (0.5, "yellow"), (2, "red")),
      desc="Share of client requests SAGE answered with a 5xx: what clients actually saw, after retries and hedges.")
 y[0] += 4
-stat("Requests in 24H", f'sum by (status) (increase(sage_client_requests_total{{{S}}}[24h]))', 0, 12,
-     graph="none", decimals=0, legend="{{status}}", desc="Client requests by the status SAGE answered, last 24h.")
-stat("Requests in range", f'sum by (status) (increase(sage_client_requests_total{{{S}}}[$__range]))', 12, 12,
-     graph="none", decimals=0, legend="{{status}}", desc="Client requests by status over the dashboard time range.")
+stat("Requests in 24H", statusClass(f'increase(sage_client_requests_total{{{S}}}[24h])'), 0, 12,
+     graph="none", decimals=0, legend="{{class}}", desc="Client requests by the status class SAGE answered, last 24h.")
+stat("Requests in range", statusClass(f'increase(sage_client_requests_total{{{S}}}[$__range])'), 12, 12,
+     graph="none", decimals=0, legend="{{class}}", desc="Client requests by status class over the dashboard time range.")
 y[0] += 4
-stat("Relays in 24H", f'sum by (status) (increase(sage_relay_total{{{S}, request_type="client"}}[24h]))', 0, 12,
-     graph="none", decimals=0, legend="{{status}}", color="palette-classic-by-name",
-     desc="Upstream client relay attempts by the HTTP status the relay miner returned, last 24h.")
-stat("Relays in range", f'sum by (status) (increase(sage_relay_total{{{S}, request_type="client"}}[$__range]))', 12, 12,
-     graph="none", decimals=0, legend="{{status}}", color="palette-classic-by-name",
-     desc="Upstream client relay attempts by status over the dashboard time range.")
+stat("Relays in 24H", statusClass(f'increase(sage_relay_total{{{S}, request_type="client"}}[24h])'), 0, 12,
+     graph="none", decimals=0, legend="{{class}}", color="palette-classic-by-name",
+     desc="Upstream client relay attempts by the HTTP status class the relay miner returned, last 24h. The exact "
+          "codes are in the Relays by Status Code panel.")
+stat("Relays in range", statusClass(f'increase(sage_relay_total{{{S}, request_type="client"}}[$__range])'), 12, 12,
+     graph="none", decimals=0, legend="{{class}}", color="palette-classic-by-name",
+     desc="Upstream client relay attempts by status class over the dashboard time range.")
 y[0] += 4
 if not PUBLIC:
     relay_success(0)
@@ -362,7 +378,7 @@ table(
         ("Unknown", f'sum by ({by}) (rate({OF[:-1]}, attribution="unknown"}}[{RI}]))'),
         ("Chain", f'sum by ({by}) (rate({OF[:-1]}, attribution="blockchain"}}[{RI}]))'),
         ("Client", f'sum by ({by}) (rate({OF[:-1]}, attribution="client"}}[{RI}]))'),
-        ("FaultPct", f'sum by ({by}) (rate({OF[:-1]}, {FAULT}}}[{RI}])) / sum by ({by}) (rate({OF}[{RI}])) * 100'),
+        ("FaultPct", f'sum by ({by}) (rate({OF[:-1]}, {FAULT}}}[{RI}])) / (sum by ({by}) (rate({OF}[{RI}])) > 0) * 100'),
     ],
     {"operator": 0, "service_id": 1, "rpc_type": 2, "Value #FaultPct": 3, "Value #Supplier": 4,
      "Value #Unknown": 5, "Value #Chain": 6, "Value #Client": 7},
@@ -464,12 +480,14 @@ ts("Hedge Fire Rate by Service",
         "at that service's suppliers, not the gateway.")
 ops[0] = False
 y[0] += 8
+ops[0] = True  # nearly all client: nothing for the public to read
 pie("Relays by Type (client vs probe)", f'sum by (request_type) (rate(sage_relay_total{{{S}}}[{RI}]))',
     "{{request_type}}", 0, 8)
+ops[0] = False
 pie("Attempt Attribution", f'sum by (attribution) (rate(sage_heuristic_verdicts_total{{{S}}}[{RI}]))',
-    "{{attribution}}", 8, 8, desc="Every client attempt by whose fault its outcome was; none = a good answer.")
+    "{{attribution}}", 0 if PUBLIC else 8, 12 if PUBLIC else 8, desc="Every client attempt by whose fault its outcome was; none = a good answer.")
 pie("Relays by Status Code", f'sum by (status) (rate(sage_relay_total{{{S}, request_type="client"}}[{RI}]))',
-    "{{status}}", 16, 8)
+    "{{status}}", 12 if PUBLIC else 16, 12 if PUBLIC else 8)
 y[0] += 8
 
 # ---------------------------------------------------------------------------
@@ -486,9 +504,10 @@ clat = []
 for q in ("0.50", "0.90", "0.95", "0.99"):
     clat.append((f'histogram_quantile({q}, sum by (le) (rate(sage_client_latency_seconds_bucket{{{S}}}[{RI}]))) * 1000',
                  f'P{int(float(q) * 100)}'))
-ts("Client-Facing Latency Percentiles", clat, 12, 12, unit="ms", stack=False, fill=0, sort_mean=False,
+ts("Client-Facing Latency Percentiles", clat, 0 if PUBLIC else 12, 12, unit="ms", stack=False, fill=0, sort_mean=False,
    desc="What the client waited, retries and hedges included: from the request reaching SAGE to the response written.")
-y[0] += 8
+if not PUBLIC:  # public: the 504 panel takes the other half of this row
+    y[0] += 8
 ops[0] = True
 ts("Slow Attempts by Operator (> 2.5s)",
    [(f'topk(10, sum by (service_id, operator) (rate(sage_operator_attempt_seconds_count{{{S}}}[{RI}])) - '
@@ -582,13 +601,13 @@ tenure = []
 for q in ("0.50", "0.90", "0.99"):
     tenure.append((f'histogram_quantile({q}, sum by (le) (rate(sage_websocket_supplier_tenure_seconds_bucket{{{S}}}[{RI}])))',
                    f'p{int(float(q) * 100)}'))
-ts("Supplier Tenure per Connection (p50/p90/p99)", tenure, 8, 8, unit="s", stack=False, placement="bottom",
+ts("Supplier Tenure per Connection (p50/p90/p99)", tenure, 0 if PUBLIC else 8, 12 if PUBLIC else 8, unit="s", stack=False, placement="bottom",
    sort_mean=False,
    desc="How long one supplier served one client connection, bind to rebind or close. A connection that "
         "rebinds is several tenures, so this is a lower bound on connection lifetime.")
 ts("Subscription Notifications by Grade",
    [(f'sum by (grade) (rate(sage_websocket_supplier_notifications_total{{{S}}}[{RI}]))', "{{grade}}")],
-   16, 8, unit="reqps", stack=False, placement="bottom", sort_mean=False,
+   12 if PUBLIC else 16, 12 if PUBLIC else 8, unit="reqps", stack=False, placement="bottom", sort_mean=False,
    desc="ok: for a subscription open on the connection. duplicate: a byte-for-byte repeat of one of the last 8. "
         "unsolicited: for a subscription never opened with that supplier. Both are relays nobody asked for.")
 y[0] += 8
@@ -603,7 +622,7 @@ table(
                f'and on ({wsby}) (sum by ({wsby}) (sage_websocket_supplier_connections{{{S}}}) > 0)'),
         ("Bad", f'sum by ({wsby}) (rate(sage_websocket_supplier_notifications_total{{{S}, grade=~"duplicate|unsolicited"}}[{RI}])) / '
                 f'sum by ({wsby}) (rate(sage_websocket_supplier_notifications_total{{{S}}}[{RI}])) * 100'),
-        ("Tenure", f'histogram_quantile(0.50, sum by ({wsby}, le) (rate(sage_websocket_supplier_tenure_seconds_bucket{{{S}}}[1h])))'),
+        ("Tenure", f'histogram_quantile(0.50, sum by ({wsby}, le) (rate(sage_websocket_supplier_tenure_seconds_bucket{{{S}}}[1h]))) >= 0'),
         # WebSocket reputation beside WebSocket volume: the same columns the
         # HTTP table carries, for the websocket face only.
         ("MeanScore", f'avg by ({wsby}) (sage_operator_reputation_mean{{{S}, rpc_type="websocket"}})'),
