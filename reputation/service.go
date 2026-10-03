@@ -1160,6 +1160,21 @@ func (s *serviceImpl) SelectSpread(ctx context.Context, serviceID domain.Service
 	return pickWeightedByInverseLoad(candidates, activeLoad)
 }
 
+// TopTierer is the optional half of Service that names the endpoints in the
+// best tier present among the ones given (TieredSelector.TopTierCandidates).
+// The WebSocket path asks it before its own preferences (untried endpoints,
+// the share cap), so they narrow within that tier and never out of it.
+type TopTierer interface {
+	TopTier(ctx context.Context, serviceID domain.ServiceID, endpoints domain.EndpointAddrList, rpcType domain.RPCType) domain.EndpointAddrList
+}
+
+var _ TopTierer = (*serviceImpl)(nil)
+
+// TopTier implements TopTierer.
+func (s *serviceImpl) TopTier(ctx context.Context, serviceID domain.ServiceID, endpoints domain.EndpointAddrList, rpcType domain.RPCType) domain.EndpointAddrList {
+	return s.selector.TopTierCandidates(ctx, serviceID, endpoints, rpcType)
+}
+
 // ProbationChecker is the optional half of Service that says whether an
 // endpoint currently sits in the probation band (MinThreshold up to the
 // probation threshold) for an RPC type. SelectEndpoint asks it so a probation

@@ -427,10 +427,12 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		return stalled(subs, r.stallTimeout)
 	}, r.stallCheck))
 
-	// Endpoint loss is a rebind, not a close: pick another supplier this
-	// bridge has not used, move the load counter, and replay the live
-	// subscriptions through a processor that signs for the new supplier.
-	tried := map[domain.EndpointAddr]bool{endpointAddr: true}
+	// Endpoint loss is a rebind, not a close: pick another supplier, move
+	// the load counter, and replay the live subscriptions through a
+	// processor that signs for the new supplier. tried holds the endpoints
+	// this connection lost to a failure since its last planned rebind
+	// (noteRebind), avoided within the best tier.
+	tried := map[domain.EndpointAddr]bool{}
 	bridgeOpts = append(bridgeOpts, websockets.WithEndpointLost(func(ctx context.Context, cause error) (*websocket.Conn, websockets.MessageProcessor, [][]byte, error) {
 		lost := *current.Load()
 		// A miner closing because the supplier's allocation for the session
@@ -443,6 +445,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, lost, domain.RPCTypeWebSocket,
 				reputation.NewSignal(reputation.SignalMajorError, "ws_endpoint_lost:"+cause.Error(), 0))
 		}
+		noteRebind(tried, lost, cause)
 
 		next, _, err := r.resolveEndpoint(ctx, serviceID, tried, live)
 		if err != nil {
@@ -460,7 +463,6 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 			_ = conn.Close()
 			return nil, nil, nil, errors.New("bridge closed during rebind")
 		}
-		tried[next.addr] = true
 		r.decLoad(lost)
 		r.incLoad(next.addr)
 		addr := next.addr
@@ -978,11 +980,19 @@ type wsTarget struct {
 }
 
 // resolveEndpoint picks a WebSocket endpoint for serviceID and resolves its
-// session, URL and signing app. tried names endpoints this connection has
-// already used; they are avoided (operator-aware, like retry) and only fall
-// back in when nothing else advertises WebSocket — a blip on the only host
-// is still worth one reconnect. The second return is the message for the
+// session, URL and signing app. The second return is the message for the
 // HTTP error Open sends when this fails before the upgrade.
+//
+// The order is the point. Fresh endpoints first (freshest), then the best
+// reputation tier among them, and only within that tier the share cap and
+// the avoidance of tried (endpoints this connection lost to a failure,
+// operator-aware like retry). Untried came first until 2026-10-03, and tried
+// held every endpoint a connection had ever been bound to, session-end
+// rebinds included: a connection rebinding at every session end ran out of
+// untried tier-1 operators within the hour, and its next rebind went to
+// whatever was left, a trust-penalised owner among them (mainnet robinhood:
+// 11% of connections). The next tier is reached only when every endpoint of
+// the best one failed on this connection.
 //
 // self is the connection being placed (nil when opening), for the share cap.
 func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.ServiceID, tried map[domain.EndpointAddr]bool, self *wsLive) (*wsTarget, string, error) {
@@ -1004,9 +1014,12 @@ func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.Servic
 	if len(endpoints) == 0 {
 		return nil, "no websocket endpoints available", errors.New("no endpoints for rpc type websocket")
 	}
-	candidates := untriedFirst(endpoints, tried, r.deps.Flags.IsEnabled(ctx, featureflag.FlagOperatorAwareSelection, serviceID))
-	candidates = r.freshest(serviceID, candidates)
+	candidates := r.freshest(serviceID, endpoints)
+	if top := r.topTier(ctx, serviceID, candidates); !allTried(top, tried) {
+		candidates = top
+	}
 	candidates = r.capShare(ctx, serviceID, candidates, self)
+	candidates = untriedFirst(candidates, tried, r.deps.Flags.IsEnabled(ctx, featureflag.FlagOperatorAwareSelection, serviceID))
 	load := r.snapshotLoad()
 	addr := r.deps.Reputation.SelectSpread(ctx, serviceID, candidates, domain.RPCTypeWebSocket, load)
 	if addr == "" {
@@ -1055,6 +1068,44 @@ func (r *WSRelayer) freshest(serviceID domain.ServiceID, candidates domain.Endpo
 		return candidates
 	}
 	return filtered
+}
+
+// topTier narrows candidates to the best reputation tier present, when the
+// reputation service can say (reputation.TopTierer).
+func (r *WSRelayer) topTier(ctx context.Context, serviceID domain.ServiceID, candidates domain.EndpointAddrList) domain.EndpointAddrList {
+	t, ok := r.deps.Reputation.(reputation.TopTierer)
+	if !ok {
+		return candidates
+	}
+	if top := t.TopTier(ctx, serviceID, candidates, domain.RPCTypeWebSocket); len(top) > 0 {
+		return top
+	}
+	return candidates
+}
+
+// allTried reports whether every endpoint in eps is in tried: every one of
+// them failed on this connection.
+func allTried(eps domain.EndpointAddrList, tried map[domain.EndpointAddr]bool) bool {
+	if len(tried) == 0 || len(eps) == 0 {
+		return false
+	}
+	for _, ep := range eps {
+		if !tried[ep] {
+			return false
+		}
+	}
+	return true
+}
+
+// noteRebind updates tried for a rebind away from lost. A planned rebind
+// (a session end, an operator's request) is no failure and starts afresh:
+// tried is cleared. A loss marks lost tried, avoided by the next picks.
+func noteRebind(tried map[domain.EndpointAddr]bool, lost domain.EndpointAddr, cause error) {
+	if errors.Is(cause, websockets.ErrBridgeSessionExpired) || errors.Is(cause, websockets.ErrBridgeReplaceRequested) {
+		clear(tried)
+		return
+	}
+	tried[lost] = true
 }
 
 // untriedFirst narrows endpoints to the ones not in tried, preferring ones
