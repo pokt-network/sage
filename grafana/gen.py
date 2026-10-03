@@ -1,6 +1,7 @@
 """Generate the SAGE dashboards (Grafana JSON) from one source.
 
     python3 grafana/gen.py public > grafana/sage-quality-public.json
+    python3 grafana/gen.py public pqdppf2 > grafana/sage-quality-public-pqdppf2.json
     python3 grafana/gen.py operator > grafana/sage-operator.json
 
 operator is everything, for whoever runs the gateway: reputation internals,
@@ -17,9 +18,12 @@ S = 'job="sage", environment="mainnet-sage"'
 DS = {"type": "prometheus", "uid": "prometheus"}
 RI = "$__rate_interval"
 
-PUBLIC = sys.argv[1:] == ["public"]
-if sys.argv[1:] not in (["public"], ["operator"]):
-    sys.exit("usage: gen.py public|operator")
+PUBLIC = sys.argv[1:2] == ["public"]
+if sys.argv[1:2] not in (["public"], ["operator"]) or len(sys.argv) > 3 or (len(sys.argv) == 3 and not PUBLIC):
+    sys.exit("usage: gen.py public [uid] | gen.py operator")
+# The public dashboard replaced two PATH public dashboards, each kept at its
+# own uid so its URLs and share link keep working; the uid picks which.
+PUBLIC_UID = sys.argv[2] if len(sys.argv) == 3 else "path-quality-dashboard-public-pinned"
 
 panels = []
 _id = [0]
@@ -709,7 +713,7 @@ dash = {
     "title": "SAGE Quality Dashboard (Public — Pinned)" if PUBLIC else "SAGE Gateway Operator",
     # The public dashboard took over the old PATH one at its uid, so its URLs
     # and its public share link keep working.
-    "uid": "path-quality-dashboard-public-pinned" if PUBLIC else "sage-operator",
+    "uid": PUBLIC_UID if PUBLIC else "sage-operator",
     "version": 1,
 }
 
