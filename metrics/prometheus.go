@@ -5,6 +5,7 @@ package metrics
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -82,6 +83,7 @@ type Recorder struct {
 	autoDrains             *prometheus.CounterVec
 	methodBlockEvents      *prometheus.CounterVec
 	reputationAttempts     *prometheus.CounterVec
+	operatorFailures       *prometheus.CounterVec
 	heuristicVerdicts      *prometheus.CounterVec
 	operatorAttempts       *prometheus.CounterVec
 	operatorMethodAttempts *prometheus.CounterVec
@@ -98,6 +100,8 @@ type Recorder struct {
 	// codespaces bounds the relay miner error codespace label, which is a
 	// string chosen by the supplier's relay miner.
 	codespaces *labelPolicy
+	// failureReasons bounds sage_operator_failures_total's reason label.
+	failureReasons *labelPolicy
 
 	// operators bounds the operator label: a registrable domain taken from
 	// staked URLs, a set other people choose.
@@ -393,8 +397,9 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			Name:      "batch_response_bytes_in_flight",
 			Help:      "Sub-relay answer bytes finished and not yet written to the client, across every service. A streamed batch releases each answer as it is written, so one batch holds at most (concurrency_config.max_batch_concurrency + max_batch_window) answers here. A batch whose writer cannot stream (none in production) keeps every answer until it merges, and that merged copy is not counted.",
 		}),
-		codespaces: cappedLabel(maxCodespaceLabels),
-		operators:  cappedLabel(maxOperatorLabels),
+		codespaces:     cappedLabel(maxCodespaceLabels),
+		failureReasons: cappedLabel(maxFailureReasonLabels),
+		operators:      cappedLabel(maxOperatorLabels),
 		// Per operator, the registrable domain, never per host: an operator
 		// is a handful of values per service and stays put, where hosts
 		// rotate with every session and are the series growth the
@@ -443,6 +448,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		// No key label: reputation keys are backend URLs, which is the
 		// unbounded dimension. rpc_type and signal are closed sets and probe
 		// is a boolean, so the series count per service is fixed.
+		operatorFailures: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "operator_failures_total",
+				Help:      "Failures reputation recorded against an operator (the registrable domain of the endpoint's URL), by service, RPC type and reason: the heuristic verdict for client traffic and health checks (transport_timeout, http_5xx, stale_response, …) and the WebSocket path's own (ws_probe_dial_failed, ws_endpoint_lost, …), cut at the first ':' so an error text does not become a label. The outcome an operator can act on, without its score. Operators past the first 128 seen collapse to __other__, reasons past the first 64 to __other__.",
+			},
+			[]string{"service_id", "operator", "rpc_type", "reason"},
+		),
 		reputationAttempts: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -577,6 +590,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.autoDrains,
 		r.methodBlockEvents,
 		r.reputationAttempts,
+		r.operatorFailures,
 		r.heuristicVerdicts,
 		r.operatorAttempts,
 		r.operatorMethodAttempts,
@@ -972,6 +986,15 @@ func (r *Recorder) initHealthCheckSkipped(knownServices []domain.ServiceID) {
 // needs bounding here.
 func (r *Recorder) RecordMethodBlockEvent(serviceID domain.ServiceID, method, event string) {
 	r.methodBlockEvents.WithLabelValues(r.services.serviceValue(serviceID), method, event).Inc()
+}
+
+// RecordOperatorFailure counts one failure reputation recorded against an
+// operator. reason is cut at its first ':' (a WebSocket reason carries the
+// error text after it) and bounded.
+func (r *Recorder) RecordOperatorFailure(serviceID domain.ServiceID, operator, rpcType, reason string) {
+	reason, _, _ = strings.Cut(reason, ":")
+	r.operatorFailures.WithLabelValues(r.services.serviceValue(serviceID), r.operators.value(operator),
+		rpcType, r.failureReasons.value(reason)).Inc()
 }
 
 // RecordReputationAttempt counts one recorded reputation signal. signal is

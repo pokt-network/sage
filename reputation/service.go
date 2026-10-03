@@ -609,7 +609,7 @@ const latencyAlpha = 0.05
 
 // SignalHook is told about every recorded signal: which service, RPC type and
 // endpoint it was charged to, its type, and whether a probe produced it.
-type SignalHook func(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, signal SignalType, probe bool)
+type SignalHook func(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, signal Signal)
 
 // SetSignalHook registers a callback run on every recorded signal, after the
 // state is updated. Wire time only; used for the attempts counter and the
@@ -906,7 +906,7 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	s.enqueue(writeOp{key: key, state: st})
 
 	if s.signalHook != nil {
-		s.signalHook(serviceID, rpcType, endpoint, signal.Type, signal.Probe)
+		s.signalHook(serviceID, rpcType, endpoint, signal)
 	}
 
 	return nil

@@ -844,3 +844,22 @@ func TestRecordOperatorAttempt_KeysByOperator(t *testing.T) {
 		t.Errorf("operator_attempt_seconds has %d series, want 1 (one operator)", n)
 	}
 }
+
+// A failure's reason is the code before any ':' (a WebSocket reason carries
+// its error text after it), so error texts never become label values.
+func TestRecordOperatorFailure_CutsReason(t *testing.T) {
+	r := &Recorder{
+		services:       allowedLabel([]domain.ServiceID{"eth"}),
+		operators:      cappedLabel(maxOperatorLabels),
+		failureReasons: cappedLabel(maxFailureReasonLabels),
+		operatorFailures: prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: "sage_test", Name: "operator_failures_total"},
+			[]string{"service_id", "operator", "rpc_type", "reason"}),
+	}
+	r.RecordOperatorFailure("eth", "op.example", "websocket", "ws_endpoint_lost:read tcp: connection reset")
+	r.RecordOperatorFailure("eth", "op.example", "websocket", "ws_endpoint_lost:close 1006")
+	ch := make(chan prometheus.Metric, 4)
+	r.operatorFailures.Collect(ch)
+	if n := len(ch); n != 1 {
+		t.Fatalf("%d series, want both failures under one ws_endpoint_lost reason", n)
+	}
+}

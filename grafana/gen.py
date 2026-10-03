@@ -371,6 +371,48 @@ table(
     ],
 )
 y[0] += 12
+
+# Status and failure reasons per operator: what an operator can act on,
+# without the score or the thresholds behind it.
+EPS = f'sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints{{{S}}}))'
+LOW = f'sum by (service_id, operator) (max by (service_id, operator, rpc_type) (sage_session_endpoints_low{{{S}}}))'
+DRAINED = (f'max by (service_id, operator) (label_replace(sage_drained_operators{{{S}}}, '
+           f'"operator", "$1", "domain", "(.*)"))')
+STATUS_MAP = [{"type": "value", "options": {
+    "1": {"text": "In rotation", "color": "green", "index": 0},
+    "2": {"text": "Partly demoted", "color": "yellow", "index": 1},
+    "3": {"text": "Demoted", "color": "orange", "index": 2},
+    "4": {"text": "Drained", "color": "red", "index": 3}}}]
+table(
+    "Operator Status",
+    [("Status", f'({DRAINED} > 0) * 0 + 4 or (({LOW} >= {EPS}) and ({EPS} > 0)) * 0 + 3 '
+                f'or ({LOW} > 0) * 0 + 2 or ({EPS} > 0) * 0 + 1')],
+    {"service_id": 0, "operator": 1, "Value": 2},
+    {"service_id": "Service", "operator": "Operator", "Value": "Status"},
+    0, 10, 12, page=True,
+    desc="Where each operator's registrations in the current session stand with the gateway: in rotation (all "
+         "selectable at full weight), partly demoted (some of them sent less traffic after failures), demoted (all of "
+         "them), drained (removed from the service's pool for now). The Failure Reasons table beside it says why.",
+    overrides=[{"matcher": {"id": "byName", "options": "Status"},
+                "properties": [{"id": "mappings", "value": STATUS_MAP},
+                               {"id": "custom.cellOptions", "value": {"type": "color-background"}}]},
+               col("Service", width=140), col("Operator", width=170)],
+)
+table(
+    "Failure Reasons by Operator (last 1h)",
+    [("Failures", f'sum by (service_id, operator, rpc_type, reason) (increase(sage_operator_failures_total{{{S}}}[1h])) > 0')],
+    {"service_id": 0, "operator": 1, "rpc_type": 2, "reason": 3, "Value": 4},
+    {"service_id": "Service", "operator": "Operator", "rpc_type": "RPC Type", "reason": "Reason", "Value": "Failures (1h)"},
+    10, 14, 12, page=True, sort="Failures (1h)",
+    desc="What the gateway recorded against each operator in the last hour, client traffic and health checks: "
+         "transport_timeout (accepted the connection, no answer in time), http_5xx / upstream_5xx (the backend or "
+         "the relay miner failed), stale_response (answered with a chain head behind), html_response (an error "
+         "page), ws_probe_dial_failed (the WebSocket upgrade failed), ws_endpoint_lost (a live WebSocket dropped), "
+         "and the like. Only failures the gateway blames on the supplier's side are counted.",
+    overrides=[col("Failures (1h)", decimals=0, steps=((0, "green"), (10, "yellow"), (100, "red")), cell=BG, width=120),
+               col("Service", width=120), col("Operator", width=160), col("RPC Type", width=100)],
+)
+y[0] += 12
 ops[0] = True
 table(
     "Currently Broken Hosts (Circuit Breaker)",

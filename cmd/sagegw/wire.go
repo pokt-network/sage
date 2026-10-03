@@ -619,10 +619,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// Count what actually reached reputation. The gap between relays served and
 	// signals recorded is the thing scoring gets wrong quietly — an endpoint
 	// with 40000 attempts, all of them probes, scores like a well-tested one.
-	repSvc.SetSignalHook(func(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, signal reputation.SignalType, probe bool) {
-		recorder.RecordReputationAttempt(serviceID, string(rpcType), string(signal), probe)
+	repSvc.SetSignalHook(func(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, sig reputation.Signal) {
+		recorder.RecordReputationAttempt(serviceID, string(rpcType), string(sig.Type), sig.Probe)
+		if sig.Type != reputation.SignalSuccess {
+			recorder.RecordOperatorFailure(serviceID, endpoint.Operator(), string(rpcType), sig.Reason)
+		}
 		if autoDrain != nil {
-			autoDrain.OnSignal(serviceID, rpcType, endpoint, signal, probe)
+			autoDrain.OnSignal(serviceID, rpcType, endpoint, sig.Type, sig.Probe)
 		}
 	})
 

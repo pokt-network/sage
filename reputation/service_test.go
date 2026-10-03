@@ -645,8 +645,8 @@ func TestService_ResetClearsRate(t *testing.T) {
 func TestService_SignalHookSeesProbeFlag(t *testing.T) {
 	svc := newTestService(t, ServiceConfig{})
 	var got []string
-	svc.SetSignalHook(func(sid domain.ServiceID, rpc domain.RPCType, _ domain.EndpointAddr, st SignalType, probe bool) {
-		got = append(got, fmt.Sprintf("%s/%s/%s/%v", sid, rpc, st, probe))
+	svc.SetSignalHook(func(sid domain.ServiceID, rpc domain.RPCType, _ domain.EndpointAddr, sig Signal) {
+		got = append(got, fmt.Sprintf("%s/%s/%s/%v", sid, rpc, sig.Type, sig.Probe))
 	})
 	ep := domain.EndpointAddr("pokt1abc-https://a.example")
 	p := NewSignal(SignalMajorError, "hc", 0)

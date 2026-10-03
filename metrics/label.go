@@ -42,6 +42,11 @@ const (
 	// single digits; the cap is headroom, not an expected count.
 	maxCodespaceLabels = 32
 
+	// maxFailureReasonLabels caps the distinct failure reasons per-operator
+	// failures admit. The heuristic and WebSocket reasons are a few dozen
+	// fixed codes; health checks add their own check names.
+	maxFailureReasonLabels = 64
+
 	// maxOperatorLabels caps the distinct operators the per-operator attempt
 	// metrics admit. Mainnet had a few dozen operators across all services
 	// on 2026-09-27; the cap is headroom against a flood of throwaway
