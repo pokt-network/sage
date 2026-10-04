@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -170,6 +172,11 @@ type serviceImpl struct {
 	// partyWSGate says per service whether party penalties reach websocket
 	// keys (featureflag.FlagPartyPenaltiesWebsocket).
 	partyWSGate atomic.Pointer[func(domain.ServiceID) bool]
+	// seedGate says per service whether a key with no state starts at its
+	// operator's standing (featureflag.FlagSeedFromOperator); keyOps memoizes
+	// the operator of a key for that lookup.
+	seedGate atomic.Pointer[func(domain.ServiceID) bool]
+	keyOps   sync.Map // key -> operator
 	// peerParties reads a peer instance's priced parties (peerparties.go).
 	peerParties atomic.Pointer[func(context.Context) (PartyPenalties, error)]
 	refusals    *opTracker
@@ -460,19 +467,30 @@ func (s *serviceImpl) refreshBaselines() {
 		wellAttempted bool
 	}
 	var keys []keyState
+	// Every key's additive score by its operator, floored ones included:
+	// where a key of that operator with no history starts (seed_from_operator).
+	// The same by party where a party is more than its operator: an owner
+	// whose domains are dedicated to it, over all of them.
+	seeds, partySeeds := map[opID][]float64{}, map[opID][]float64{}
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.RLock()
 		for svc, states := range sh.cache {
 			for key, st := range states {
+				rpc := rpcOfKey(key)
+				op := opID{svc, operatorOfKey(key), rpc}
+				seeds[op] = append(seeds[op], st.Score)
+				if party := domain.PartyOfOperator(op.op); party != op.op {
+					pid := opID{svc, party, rpc}
+					partySeeds[pid] = append(partySeeds[pid], st.Score)
+				}
 				if st.Score == 0 {
 					continue
 				}
-				rpc := rpcOfKey(key)
 				ks := keyState{
 					id:            keyID{svc, key},
 					pool:          poolID{svc, rpc},
-					op:            opID{svc, operatorOfKey(key), rpc},
+					op:            op,
 					rate:          st.Rate,
 					wellAttempted: st.Attempts >= baselineMinAttempts,
 				}
@@ -492,6 +510,7 @@ func (s *serviceImpl) refreshBaselines() {
 		baseline: map[poolID]float64{},
 		opOn:     map[domain.ServiceID]bool{},
 	}
+	s.storeSeeds(&v, seeds, partySeeds)
 	for id, st := range stats {
 		// WebSocket evidence recorded before it was kept out (RecordSignal)
 		// lives on in storage for hours; it is not charged either.
@@ -603,6 +622,79 @@ func (s *serviceImpl) refreshBaselines() {
 	s.chronic.Store(&v)
 }
 
+// storeSeeds sets each operator's and each party's seed in v, the median of
+// its keys' scores per service and RPC type where that is below the initial
+// score, and reads the seed_from_operator gate per service that has one.
+// Called at refresh.
+func (s *serviceImpl) storeSeeds(v *chronicView, byOperator, byParty map[opID][]float64) {
+	for _, src := range []struct {
+		scores map[opID][]float64
+		dst    *map[opID]float64
+	}{{byOperator, &v.opSeed}, {byParty, &v.partySeed}} {
+		for id, scores := range src.scores {
+			median := medianOf(scores)
+			if median >= s.cfg.InitialScore {
+				continue
+			}
+			if *src.dst == nil {
+				*src.dst = map[opID]float64{}
+			}
+			(*src.dst)[id] = median
+			if v.seedOn == nil {
+				v.seedOn = map[domain.ServiceID]bool{}
+				v.seedGate = gateOf(&s.seedGate)
+			}
+			if _, seen := v.seedOn[id.svc]; !seen && v.seedGate != nil {
+				v.seedOn[id.svc] = v.seedGate(id.svc)
+			}
+		}
+	}
+}
+
+// medianOf sorts scores and returns their median.
+func medianOf(scores []float64) float64 {
+	slices.Sort(scores)
+	m := scores[len(scores)/2]
+	if len(scores)%2 == 0 {
+		m = (scores[len(scores)/2-1] + m) / 2
+	}
+	return m
+}
+
+// initialScore is where a key with no state starts: the initial score, or
+// the lower standing of its operator and its party on the service and RPC
+// type when seed_from_operator is on there (chronicView.seedFor).
+func (s *serviceImpl) initialScore(serviceID domain.ServiceID, key string) float64 {
+	v := s.chronic.Load()
+	if v == nil || len(v.opSeed)+len(v.partySeed) == 0 {
+		return s.cfg.InitialScore
+	}
+	if seed, ok := v.seedFor(serviceID, s.operatorOfKeyCached(key), rpcOfKey(key)); ok {
+		return seed
+	}
+	return s.cfg.InitialScore
+}
+
+// operatorOfKeyCached is operatorOfKey memoized: a key with no state is
+// looked up on every selection until it records a signal, and the operator
+// is a public-suffix parse of its URL.
+// ponytail: unbounded like the key memo it sits beside; keys are bounded by
+// the hosts the chain stakes.
+func (s *serviceImpl) operatorOfKeyCached(key string) string {
+	if op, ok := s.keyOps.Load(key); ok {
+		return op.(string)
+	}
+	op := operatorOfKey(key)
+	s.keyOps.Store(key, op)
+	return op
+}
+
+// SetSeedFromOperator gates, per service, whether a key with no state starts
+// at its operator's standing (initialScore). Call at wire time.
+func (s *serviceImpl) SetSeedFromOperator(gate func(domain.ServiceID) bool) {
+	s.seedGate.Store(&gate)
+}
+
 // gateOf reads a per-service gate pointer, nil when unset.
 func gateOf(p *atomic.Pointer[func(domain.ServiceID) bool]) func(domain.ServiceID) bool {
 	gp := p.Load()
@@ -646,7 +738,7 @@ func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.Servi
 		// A key with no state yet still carries its party's penalties: a
 		// party's hosts rotate in fresh every session, and each started at
 		// the initial score, uncharged, until its first signal.
-		st = State{Score: s.cfg.InitialScore}
+		st = State{Score: s.initialScore(serviceID, key)}
 	}
 	return s.effectiveFor(serviceID, key, st), true
 }
@@ -765,7 +857,7 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	}
 	st, ok := svcStates[repKey]
 	if !ok {
-		st = State{Score: s.cfg.InitialScore}
+		st = State{Score: s.initialScore(serviceID, repKey)}
 		if len(svcStates) >= maxScoresPerServiceShard {
 			s.pruneUninformative(svcStates)
 		}
@@ -826,7 +918,12 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 		st.Rate = decayWSRate(st.Rate, prev.UpdatedAt, ts)
 	}
 	if sc.rate.Enabled() && prev.Score != 0 && !deferred && !signal.Leftover {
-		st.Rate += sc.lambda * (FailureWeight(signal.Type) - st.Rate)
+		if w := FailureWeight(signal.Type); w == 0 && signal.Weight > 1 {
+			// n successes at once: each moves the rate λ of the way to zero.
+			st.Rate *= math.Pow(1-sc.lambda, float64(signal.Weight))
+		} else {
+			st.Rate += sc.lambda * (w - st.Rate)
+		}
 	}
 	st.Attempts++
 	// When the key last heard anything, probes included: what "active
@@ -984,7 +1081,7 @@ func (s *serviceImpl) GetScore(_ context.Context, serviceID domain.ServiceID, en
 	st, ok := sh.cache[serviceID][key]
 	sh.mu.RUnlock()
 	if !ok {
-		st = State{Score: s.cfg.InitialScore}
+		st = State{Score: s.initialScore(serviceID, key)}
 	}
 	return s.effectiveFor(serviceID, key, st), nil
 }
@@ -999,7 +1096,7 @@ func (s *serviceImpl) OwnScore(serviceID domain.ServiceID, endpoint domain.Endpo
 	st, ok := sh.cache[serviceID][key]
 	sh.mu.RUnlock()
 	if !ok {
-		st = State{Score: s.cfg.InitialScore}
+		st = State{Score: s.initialScore(serviceID, key)}
 	}
 	return s.scoreWith(serviceID, key, st, 0)
 }

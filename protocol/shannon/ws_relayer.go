@@ -145,6 +145,11 @@ type WSRelayer struct {
 	// probeBackoff spaces out recovery probes of URLs that keep failing.
 	probeBackoff wsProbeBackoff
 
+	// noAnswers is when each endpoint last left a request unanswered
+	// (noAnswerSeverity).
+	noAnswerMu sync.Mutex
+	noAnswers  map[string]time.Time
+
 	// activeLoad tracks the number of open bridges per endpoint, feeding
 	// into reputation.SelectSpread to bias away from hot endpoints.
 	//
@@ -488,7 +493,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		case errors.Is(cause, websockets.ErrBridgeStalled) && noAnswer.Swap(false):
 			lostReason = "no_answer"
 			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, lost, domain.RPCTypeWebSocket,
-				reputation.NewSignal(reputation.SignalMajorError, "ws_no_answer", 0))
+				reputation.NewSignal(r.noAnswerSeverity(serviceID, lost), "ws_no_answer", 0))
 		case lossIsSuppliers(cause):
 			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, lost, domain.RPCTypeWebSocket,
 				reputation.NewSignal(reputation.SignalMajorError, "ws_endpoint_lost:"+cause.Error(), 0))
@@ -577,7 +582,13 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 
 	// Drain frame events off the bridge loop until the bridge closes.
 	safego.Go(logger, "websocket.frame.drain", func() {
-		r.drainFrameEvents(serviceID, frameCh, bridge.Done())
+		r.drainFrameEvents(serviceID, frameCh, bridge.Done(), func() int {
+			p := currentProc.Load()
+			if p == nil || !r.deps.Flags.IsEnabled(context.Background(), featureflag.FlagWSRateCountsAnswers, serviceID) {
+				return 0
+			}
+			return int(p.answered.Swap(0))
+		})
 	})
 
 	<-bridge.Done()
@@ -604,6 +615,79 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 // Nor is a relay miner's own refusal that the HTTP path scores as nothing:
 // a session it no longer serves, or an allocation that is spent
 // (heuristic.MinerRefusal, the table every path reads).
+// wsDrainRebindCooldown spaces the moves off a drained supplier on one
+// connection: if the rebind found nowhere but another drained one, it is not
+// tried again every few seconds.
+const wsDrainRebindCooldown = 5 * time.Minute
+
+// moveOffDrained rebinds a connection whose supplier a drain now covers, as a
+// planned move (ws_drain_rebind), and reports whether it did. A drain changed
+// only who new connections drew; on mainnet robinhood (2026-10-04) thirteen
+// connections stayed on a drained, stale supplier until their sessions
+// ended.
+func (r *WSRelayer) moveOffDrained(serviceID domain.ServiceID, current *atomic.Pointer[wsMessageProcessor], bridge *websockets.Bridge, movedAt *time.Time) bool {
+	p := current.Load()
+	if p == nil || !bridge.Rebindable() || time.Since(*movedAt) < wsDrainRebindCooldown ||
+		!r.drainedWS(serviceID, p.endpointAddr) ||
+		!r.deps.Flags.IsEnabled(context.Background(), featureflag.FlagWSDrainRebind, serviceID) {
+		return false
+	}
+	*movedAt = time.Now()
+	bridge.ReplaceEndpoint(websockets.ErrBridgeReplaceRequested)
+	return true
+}
+
+// drainedWS reports whether a drain covers ep's WebSocket face on serviceID,
+// by the URL it serves WebSocket on, as AvailableEndpoints judges it.
+func (r *WSRelayer) drainedWS(serviceID domain.ServiceID, ep domain.EndpointAddr) bool {
+	proto := r.deps.Protocol
+	if proto == nil || proto.drains == nil || proto.sessions == nil {
+		return false
+	}
+	e, ok := proto.sessions.lookupEndpoint(serviceID, ep)
+	if !ok {
+		return false
+	}
+	url, err := e.GetURL(domain.RPCTypeWebSocket)
+	if err != nil {
+		return false
+	}
+	return proto.drains.Drained(serviceID, operatorOf(url), domain.RPCTypeWebSocket)
+}
+
+// wsNoAnswerWindow is how long a ws_no_answer is remembered against its
+// endpoint: a second inside it is a supplier that goes silent, not a one-off.
+const wsNoAnswerWindow = 10 * time.Minute
+
+// noAnswerSeverity grades one ws_no_answer against ep: minor the first time
+// in wsNoAnswerWindow on this pod, major after (ws_no_answer_minor_first);
+// major every time with the flag off.
+func (r *WSRelayer) noAnswerSeverity(serviceID domain.ServiceID, ep domain.EndpointAddr) reputation.SignalType {
+	now := time.Now()
+	key := string(serviceID) + "|" + string(ep)
+	r.noAnswerMu.Lock()
+	defer r.noAnswerMu.Unlock()
+	if r.noAnswers == nil {
+		r.noAnswers = make(map[string]time.Time)
+	}
+	prev, seen := r.noAnswers[key]
+	r.noAnswers[key] = now
+	// ponytail: pruned only when large; endpoints rotate with sessions, so
+	// the map holds at most a few windows' worth of silent ones.
+	if len(r.noAnswers) > 4096 {
+		for k, at := range r.noAnswers {
+			if now.Sub(at) > wsNoAnswerWindow {
+				delete(r.noAnswers, k)
+			}
+		}
+	}
+	if !r.deps.Flags.IsEnabled(context.Background(), featureflag.FlagWSNoAnswerMinorFirst, serviceID) ||
+		(seen && now.Sub(prev) < wsNoAnswerWindow) {
+		return reputation.SignalMajorError
+	}
+	return reputation.SignalMinorError
+}
+
 // openPhase records how long one phase of opening or rebinding a connection
 // took: resolve (choosing the supplier and its session), dial (the client
 // upgrade and the supplier's WebSocket handshake, before which a client's
@@ -780,12 +864,16 @@ func (r *WSRelayer) watchSessionExpiry(
 	// then the only honest outcome is the close — never a second rebind onto
 	// the same retired session.
 	var actedOn int64
+	var drainMovedAt time.Time
 
 	for {
 		select {
 		case <-bridge.Done():
 			return
 		case <-ticker.C:
+			if r.moveOffDrained(serviceID, current, bridge, &drainMovedAt) {
+				continue
+			}
 			height := r.chainHeight()
 			end := sessionEnd.Load()
 			if height < end {
@@ -861,8 +949,9 @@ func (r *WSRelayer) drainFrameEvents(
 	serviceID domain.ServiceID,
 	ch <-chan wsFrameEvent,
 	done <-chan struct{},
+	answered func() int,
 ) {
-	var gate wsSuccessGate
+	gate := wsSuccessGate{answered: answered}
 	for {
 		select {
 		case evt := <-ch:
@@ -886,6 +975,19 @@ func (r *WSRelayer) drainFrameEvents(
 type wsSuccessGate struct {
 	endpoint domain.EndpointAddr
 	last     time.Time
+	// answered, when set, takes the count of client requests the bridge's
+	// supplier answered since it was last asked (ws_rate_counts_answers).
+	answered func() int
+}
+
+// weight is how many attempts an admitted success stands for in the failure
+// rate (reputation.Signal.Weight): itself, and every request answered since
+// the last one.
+func (g *wsSuccessGate) weight() int {
+	if g == nil || g.answered == nil {
+		return 0
+	}
+	return 1 + g.answered()
 }
 
 // admit reports whether a success for endpoint at now should be recorded. A
@@ -961,6 +1063,9 @@ func (r *WSRelayer) handleEndpointFrame(
 	// wsSuccessSignalInterval). The observation below is sampled either way.
 	if res.ShouldPenalize || gate.admit(endpointAddr, time.Now()) {
 		sig := frameSeverityToSignal(res, latency)
+		if !res.ShouldPenalize {
+			sig.Weight = gate.weight()
+		}
 		_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, endpointAddr, domain.RPCTypeWebSocket, sig)
 	}
 

@@ -202,3 +202,63 @@ func TestPartyPenaltiesWebsocket_SparesOnlyWebsocketKeys(t *testing.T) {
 		t.Errorf("admin view penalties %.0f/%.0f for the spared websocket key, want 0/0", st, tr)
 	}
 }
+
+// With seed_from_operator on, a key with no history starts at the median
+// score of its operator's keys on the service and RPC type, or of its party's
+// (an owner over every domain dedicated to it), whichever is lower: a new host
+// of an operator with a record does not start clean, nor does a new domain of
+// an owner with one. An operator with no keys there starts at 100, and with
+// the flag off everyone does.
+func TestSeedFromOperator(t *testing.T) {
+	// The owner's two domains: dedicated once enough of their suppliers are
+	// seen staked by it.
+	for i := range 10 {
+		domain.RecordOwner(fmt.Sprintf("pokt1seedown%d", i), "pokt1owner", "own-a.example")
+		domain.RecordOwner(fmt.Sprintf("pokt1seedother%d", i), "pokt1owner", "own-b.example")
+	}
+	s := NewService(NewMemoryStorage(), nil, ServiceConfig{StateIdleTTL: -1})
+	on := true
+	s.SetSeedFromOperator(func(domain.ServiceID) bool { return on })
+	ctx := context.Background()
+	charge := func(ep domain.EndpointAddr, majors int) {
+		_ = s.RecordSignal(ctx, "eth", ep, domain.RPCTypeWebSocket, Signal{Type: SignalSuccess, Timestamp: time.Now()})
+		for range majors {
+			_ = s.RecordSignal(ctx, "eth", ep, domain.RPCTypeWebSocket, Signal{Type: SignalMajorError, Timestamp: time.Now()})
+		}
+	}
+	// A lagging operator: three hosts at 80, 70, 60.
+	charge("pokt1a-wss://r1.lag.example", 2)
+	charge("pokt1b-wss://r2.lag.example", 3)
+	charge("pokt1c-wss://r3.lag.example", 4)
+	// The owner's first domain at 50.
+	charge("pokt1seedown0-wss://r1.own-a.example", 5)
+	s.refreshBaselines()
+
+	score := func(ep domain.EndpointAddr) float64 {
+		v, _ := s.scoreForSelector(ctx, "eth", ep, domain.RPCTypeWebSocket)
+		return v
+	}
+	if got := score("pokt1d-wss://r9.lag.example"); got != 70 {
+		t.Errorf("a new host of the lagging operator: %.0f, want its median 70", got)
+	}
+	if got := score("pokt1seedother0-wss://r1.own-b.example"); got != 50 {
+		t.Errorf("a new domain of the owner: %.0f, want the owner's 50", got)
+	}
+	if got := score("pokt1e-wss://r1.clean.example"); got != 100 {
+		t.Errorf("an operator with no keys: %.0f, want 100", got)
+	}
+	if got, _ := s.scoreForSelector(ctx, "eth", "pokt1d-wss://r9.lag.example", domain.RPCTypeJSONRPC); got != 100 {
+		t.Errorf("another RPC type: %.0f, want 100", got)
+	}
+	// The first signal starts from the seed too, not from 100.
+	charge("pokt1d-wss://r9.lag.example", 0)
+	if got := score("pokt1d-wss://r9.lag.example"); got != 75 {
+		t.Errorf("after one success: %.0f, want 70 + 5", got)
+	}
+
+	on = false
+	s.refreshBaselines()
+	if got := score("pokt1f-wss://r8.lag.example"); got != 100 {
+		t.Errorf("flag off: %.0f, want 100", got)
+	}
+}

@@ -665,6 +665,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		return flags.IsEnabled(context.Background(), featureflag.FlagPartyPenaltiesWebsocket, serviceID)
 	}
 	repSvc.SetPartyPenaltiesWebsocket(partyWS)
+	// Where a key with no history starts, on the same refresh.
+	repSvc.SetSeedFromOperator(func(serviceID domain.ServiceID) bool {
+		return flags.IsEnabled(context.Background(), featureflag.FlagSeedFromOperator, serviceID)
+	})
 	prometheus.MustRegister(metrics.NewPartyPenaltiesWebsocketCollector(serviceIDsFrom(cfg), partyWS))
 
 	// A peer instance's priced parties, as a floor under this one's

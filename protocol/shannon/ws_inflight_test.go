@@ -14,8 +14,10 @@ import (
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
+	"github.com/stretchr/testify/require"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/drain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/qos/evm"
@@ -68,12 +70,21 @@ func silentSupplier(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// A supplier that takes a request and stays silent no longer holds the client
-// for ever: past the relay timeout it is charged ws_no_answer and the
-// connection moves. The read goes again to the next supplier and is answered;
-// the write, which the silent one may have applied, is answered with an error
-// rather than sent twice.
-func TestWSOpen_SilentSupplierIsLeftAndEveryRequestAnswered(t *testing.T) {
+// twoSuppliers is a relayer over a session of two WebSocket suppliers: a
+// silent one, the only tier-1 pick, so a connection opens on it, and an echo
+// one, tier 2, which a rebind drops to once the silent one is tried or
+// drained. dial opens a client connection through Open.
+type twoSuppliers struct {
+	r                *WSRelayer
+	p                *Protocol
+	rep              *signalLog
+	spy              *spyWSMetrics
+	silentEP, echoEP domain.EndpointAddr
+	dial             func() *websocket.Conn
+}
+
+func newTwoSuppliers(t *testing.T, flags map[string]bool) *twoSuppliers {
+	t.Helper()
 	silent := silentSupplier(t)
 	echo, _ := echoSupplier(t)
 	silentURL := wsURL(silent)
@@ -92,50 +103,67 @@ func TestWSOpen_SilentSupplierIsLeftAndEveryRequestAnswered(t *testing.T) {
 		Application: &apptypes.Application{Address: "pokt1app"},
 		Suppliers:   []*sharedtypes.Supplier{supplier("pokt1silent", silentURL), supplier("pokt1echo", echoURL)},
 	}
-	silentEP := domain.EndpointAddr("pokt1silent-" + silentURL)
-	echoEP := domain.EndpointAddr("pokt1echo-" + echoURL)
-
+	f := &twoSuppliers{
+		silentEP: domain.EndpointAddr("pokt1silent-" + silentURL),
+		echoEP:   domain.EndpointAddr("pokt1echo-" + echoURL),
+		spy:      &spyWSMetrics{},
+	}
+	if f.silentEP.Operator() == f.echoEP.Operator() {
+		t.Fatalf("fixture: both suppliers are operator %q", f.silentEP.Operator())
+	}
 	fn := &perSupplierFullNode{
 		mockRelayFullNode: mockRelayFullNode{session: session, app: &apptypes.Application{Address: "pokt1app"}},
 		answers:           map[string]string{"pokt1echo": `{"jsonrpc":"2.0","id":7,"result":"0x1"}`},
 	}
-	p := &Protocol{
+	f.p = &Protocol{
 		fullNode: fn, sessions: newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger()),
 		signer: nopSigner{}, bl: newBlacklist(), ownedApps: map[domain.ServiceID][]string{"eth": {"pokt1app"}},
 		metrics: noopSupplierMetrics{}, logger: newTestLogger(),
 	}
-	p.sessions.latestBlockHeight.Store(105)
+	f.p.sessions.latestBlockHeight.Store(105)
 	reg := qos.NewRegistry()
 	if err := reg.Register("eth", evm.NewPlugin(nil, evm.Config{})); err != nil {
 		t.Fatal(err)
 	}
-	// The silent supplier is the only tier-1 pick, so the connection opens
-	// on it; once it is tried, the rebind drops to the echo one.
-	rep := &signalLog{
-		tieredRep: tieredRep{&spyRepSvc{}, map[string]float64{silentEP.Operator(): 100, echoEP.Operator(): 60}},
+	f.rep = &signalLog{
+		tieredRep: tieredRep{&spyRepSvc{}, map[string]float64{f.silentEP.Operator(): 100, f.echoEP.Operator(): 60}},
 		reasons:   map[domain.EndpointAddr][]string{},
 	}
-	if silentEP.Operator() == echoEP.Operator() {
-		t.Fatalf("fixture: both suppliers are operator %q", silentEP.Operator())
+	all := map[string]bool{featureflag.FlagWebsocketRelays: true}
+	for k, v := range flags {
+		all[k] = v
 	}
-	spy := &spyWSMetrics{}
-	r := NewWSRelayer(WSRelayerDeps{
-		Protocol: p, Reputation: rep, Observe: newDisabledQueue(),
-		Flags:  featureflag.NewMemoryStore(map[string]bool{featureflag.FlagWebsocketRelays: true}),
-		Logger: newTestLogger(), Metrics: spy, QoS: reg,
+	f.r = NewWSRelayer(WSRelayerDeps{
+		Protocol: f.p, Reputation: f.rep, Observe: newDisabledQueue(),
+		Flags: featureflag.NewMemoryStore(all), Logger: newTestLogger(), Metrics: f.spy, QoS: reg,
 		RequestTimeout: func(domain.ServiceID) time.Duration { return 300 * time.Millisecond },
 	})
-	r.stallCheck = 50 * time.Millisecond
+	f.r.stallCheck = 50 * time.Millisecond
 
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		_ = r.Open(req.Context(), "eth", req, w)
+		_ = f.r.Open(req.Context(), "eth", req, w)
 	}))
-	defer gw.Close()
-	client, _, err := websocket.DefaultDialer.Dial(wsURL(gw), nil)
-	if err != nil {
-		t.Fatal(err)
+	t.Cleanup(gw.Close)
+	f.dial = func() *websocket.Conn {
+		client, _, err := websocket.DefaultDialer.Dial(wsURL(gw), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = client.Close() })
+		return client
 	}
-	defer client.Close()
+	return f
+}
+
+// A supplier that takes a request and stays silent no longer holds the client
+// for ever: past the relay timeout it is charged ws_no_answer and the
+// connection moves. The read goes again to the next supplier and is answered;
+// the write, which the silent one may have applied, is answered with an error
+// rather than sent twice.
+func TestWSOpen_SilentSupplierIsLeftAndEveryRequestAnswered(t *testing.T) {
+	f := newTwoSuppliers(t, nil)
+	rep, spy, silentEP, echoEP := f.rep, f.spy, f.silentEP, f.echoEP
+	client := f.dial()
 
 	for _, frame := range []string{
 		`{"jsonrpc":"2.0","id":7,"method":"eth_blockNumber","params":[]}`,
@@ -175,5 +203,60 @@ func TestWSOpen_SilentSupplierIsLeftAndEveryRequestAnswered(t *testing.T) {
 	}
 	if strings.Join(spy.phases, ",") != "resolve,dial,rebind_dial" {
 		t.Errorf("open phases %v, want resolve, dial, rebind_dial", spy.phases)
+	}
+}
+
+// A drain on the supplier a live connection is bound to moves it, as a
+// planned rebind, without waiting for the session to end; with
+// ws_drain_rebind off it stays.
+func TestWSOpen_DrainMovesALiveConnection(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		f := newTwoSuppliers(t, map[string]bool{featureflag.FlagWSDrainRebind: on})
+		drains := drain.NewMemoryStore()
+		f.p.SetDrains(drains)
+		f.r.chainHeight = func() int64 { return 105 } // inside the session: no rollover
+		f.r.expiryCheck = 20 * time.Millisecond
+		f.dial()
+		require.Eventually(t, func() bool {
+			f.spy.mu.Lock()
+			defer f.spy.mu.Unlock()
+			return len(f.spy.bound) == 1
+		}, 2*time.Second, 10*time.Millisecond, "the connection never bound")
+
+		require.NoError(t, drains.Set(context.Background(), drain.Entry{
+			Key:   drain.Key{ServiceID: "eth", Operator: f.silentEP.Operator(), RPCType: domain.RPCTypeWebSocket},
+			Until: time.Now().Add(time.Hour),
+		}))
+		moved := func() bool {
+			f.spy.mu.Lock()
+			defer f.spy.mu.Unlock()
+			return len(f.spy.bound) == 2 && strings.HasPrefix(f.spy.bound[1], f.echoEP.Operator())
+		}
+		if on {
+			require.Eventually(t, moved, 2*time.Second, 10*time.Millisecond, "the drained supplier's connection was not moved")
+		} else {
+			time.Sleep(200 * time.Millisecond)
+			require.False(t, moved(), "with ws_drain_rebind off the connection must stay")
+		}
+	}
+}
+
+// A supplier's first silent request is minor; a second within the window is
+// major, and so is every one with ws_no_answer_minor_first off.
+func TestWSNoAnswerSeverity(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		r := NewWSRelayer(WSRelayerDeps{
+			Protocol: &Protocol{}, Reputation: &spyRepSvc{}, Observe: newDisabledQueue(),
+			Flags:  featureflag.NewMemoryStore(map[string]bool{featureflag.FlagWSNoAnswerMinorFirst: on}),
+			Logger: newTestLogger(),
+		})
+		first, second, other := r.noAnswerSeverity("eth", "ep1"), r.noAnswerSeverity("eth", "ep1"), r.noAnswerSeverity("eth", "ep2")
+		want := reputation.SignalMinorError
+		if !on {
+			want = reputation.SignalMajorError
+		}
+		if first != want || second != reputation.SignalMajorError || other != want {
+			t.Errorf("flag %v: first %v second %v other endpoint %v; want %v, major, %v", on, first, second, other, want, want)
+		}
 	}
 }

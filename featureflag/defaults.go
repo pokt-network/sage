@@ -219,6 +219,36 @@ const (
 	// stale HTTP on most EVM services held no WebSocket traffic anywhere, its
 	// WebSocket never measured. On by default: today's behaviour, the undo.
 	FlagPartyPenaltiesWebsocket = "party_penalties_websocket"
+	// FlagWSNoAnswerMinorFirst charges a WebSocket supplier's first silent
+	// request (ws_no_answer) as a minor error, and a second on the same
+	// endpoint within ten minutes on this pod as the major one. A WebSocket
+	// key's failure rate is measured against few successes, so one silent
+	// request among millions of answers cost a heavy endpoint about ten points
+	// for hours (mainnet robinhood, 2026-10-04); a supplier that keeps going
+	// silent still pays the major every time after the first. Off: every
+	// ws_no_answer is major.
+	FlagWSNoAnswerMinorFirst = "ws_no_answer_minor_first"
+	// FlagWSRateCountsAnswers weighs a WebSocket key's failure rate against
+	// the client requests it answered, not only against its successes: the
+	// one success a connection records per 30 s stands for every request
+	// answered since. Notifications do not count, so pushing more cannot buy
+	// a lower rate. Off: one success counts as one.
+	FlagWSRateCountsAnswers = "ws_rate_counts_answers"
+	// FlagWSDrainRebind moves a live WebSocket connection off a supplier its
+	// operator's drain now covers, as a planned rebind, within a few seconds
+	// of the drain. A drain otherwise changed only who new connections draw,
+	// and connections already bound kept the drained supplier until their
+	// session ended. Off: live connections stay until then.
+	FlagWSDrainRebind = "ws_drain_rebind"
+	// FlagSeedFromOperator starts a reputation key with no history at its
+	// operator's standing (the median own score of the operator's other keys
+	// on the same service and RPC type) instead of a clean 100, when that is
+	// lower. Session suppliers rotate while the hosts behind them stay: on
+	// mainnet robinhood (2026-10-04) a lagging operator's endpoints new to a
+	// pod each started at 100, were picked, and failed on the same backend.
+	// An operator with no keys there still starts at 100; party penalties
+	// apply on top as before. Off by default: today's behaviour.
+	FlagSeedFromOperator = "seed_from_operator"
 	// FlagRelativeChronic measures a key's chronic-failure penalty from the
 	// best failure rate in its (service, RPC type) pool rather than from zero,
 	// so a timeout tail every operator shares does not floor all of them. On
@@ -290,6 +320,10 @@ var DefaultFlags = map[string]bool{
 	FlagStateCanary:             false,
 	FlagTrustPenalty:            false,
 	FlagPartyPenaltiesWebsocket: true,
+	FlagWSNoAnswerMinorFirst:    true,
+	FlagWSRateCountsAnswers:     true,
+	FlagWSDrainRebind:           true,
+	FlagSeedFromOperator:        false,
 	FlagRelativeChronic:         true,
 	FlagOperatorChronic:         false,
 	FlagQuorum:                  false,

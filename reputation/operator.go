@@ -78,6 +78,16 @@ type chronicView struct {
 	// websocket keys; wsGate answers for a service with no key at refresh.
 	wsOn   map[domain.ServiceID]bool
 	wsGate func(domain.ServiceID) bool
+	// opSeed is, per operator, service and RPC type, the median own score of
+	// its keys where that is below the initial score: where a key of the
+	// operator with no history starts (seed_from_operator, per service in
+	// seedOn at refresh, seedGate for a service with no key then).
+	opSeed   map[opID]float64
+	seedOn   map[domain.ServiceID]bool
+	seedGate func(domain.ServiceID) bool
+	// partySeed is the same per party (an owner over every domain dedicated
+	// to it), op holding the party.
+	partySeed map[opID]float64
 	// keyParty is each known key's party, so the lookup per candidate does
 	// not parse a URL; an unknown key's is computed (partyOfKey).
 	keyParty map[string]string
@@ -108,6 +118,29 @@ func (v *chronicView) partyPenalties(svc domain.ServiceID, key string) (stale, t
 		}
 	}
 	return stale, trust
+}
+
+// seedFor is where a key of op with no history starts on svc and rpc: the
+// lower of its operator's standing and its party's, when seeding is on there
+// and either has one. A party is an owner over every domain dedicated to it,
+// so a new domain of an owner with a record does not start clean, and nor do
+// the many URLs an owner stakes one per supplier and a session samples.
+func (v *chronicView) seedFor(svc domain.ServiceID, op, rpc string) (float64, bool) {
+	if v == nil || len(v.opSeed)+len(v.partySeed) == 0 {
+		return 0, false
+	}
+	seed, ok := v.opSeed[opID{svc: svc, op: op, rpc: rpc}]
+	if p, pok := v.partySeed[opID{svc: svc, op: domain.PartyOfOperator(op), rpc: rpc}]; pok && (!ok || p < seed) {
+		seed, ok = p, true
+	}
+	if !ok {
+		return 0, false
+	}
+	on, known := v.seedOn[svc]
+	if !known {
+		on = v.seedGate != nil && v.seedGate(svc)
+	}
+	return seed, on
 }
 
 // websocketCharged reports whether a service's websocket keys carry their

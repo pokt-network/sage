@@ -37,6 +37,11 @@ type Signal struct {
 	// Detail is the verdict's own explanation (the block a refusal named,
 	// the node's message), kept on the timeline event and nowhere else.
 	Detail string
+	// Weight is how many successful attempts a success stands for in the
+	// failure rate: a WebSocket connection records one success per 30 s for
+	// every request it answered since. Zero or one is one; it moves only the
+	// rate, never the score.
+	Weight int
 }
 
 // NewSignal creates a signal of type t, timestamped now.

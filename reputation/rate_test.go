@@ -152,3 +152,35 @@ func TestWSRate_FadesWithTime(t *testing.T) {
 		t.Errorf("json_rpc rate %.6f faded with time from %.6f", got, httpBefore)
 	}
 }
+
+// A WebSocket success that stands for many answered requests moves the
+// failure rate as that many successes would: a key that failed often has its
+// rate halved by one half-life's worth of answers, where one success barely
+// moves it. The score moves by one success either way.
+func TestWSRate_WeightedSuccessCountsAnsweredRequests(t *testing.T) {
+	ep := domain.EndpointAddr("pokt1a-https://ws.example")
+	run := func(weight int) (rate, score float64) {
+		s := NewService(NewMemoryStorage(), nil, ServiceConfig{StateIdleTTL: -1})
+		ctx := context.Background()
+		now := time.Now()
+		for range 5 { // 5 majors: score 50, not floored (a floored key's rate is frozen)
+			_ = s.RecordSignal(ctx, "eth", ep, domain.RPCTypeWebSocket, Signal{Type: SignalMajorError, Timestamp: now})
+		}
+		_ = s.RecordSignal(ctx, "eth", ep, domain.RPCTypeWebSocket, Signal{Type: SignalSuccess, Timestamp: now, Weight: weight})
+		views, _ := s.GetStates(ctx, "eth")
+		for _, v := range views {
+			return v.Rate, v.Score
+		}
+		t.Fatal("no state recorded")
+		return 0, 0
+	}
+	oneRate, oneScore := run(1)
+	halfLife := DefaultHalfLifeAttempts
+	manyRate, manyScore := run(halfLife)
+	if math.Abs(manyRate-oneRate/2) > oneRate*0.01 {
+		t.Errorf("a success standing for %d answers left rate %.6f; want about half of %.6f", halfLife, manyRate, oneRate)
+	}
+	if manyScore != oneScore {
+		t.Errorf("weight moved the score: %.1f vs %.1f", manyScore, oneScore)
+	}
+}

@@ -185,3 +185,30 @@ func TestWSProbe_BehindIsAFailure(t *testing.T) {
 		}
 	}
 }
+
+// A connection counts the requests its supplier answered well, which the next
+// success signal stands for in the failure rate; an error answer is not one.
+func TestWSProcessor_CountsGoodAnswers(t *testing.T) {
+	for answer, want := range map[string]int64{
+		`{"jsonrpc":"2.0","id":7,"result":"0x63"}`:                                   1,
+		`{"jsonrpc":"2.0","id":7,"error":{"code":3,"message":"execution reverted"}}`: 0,
+	} {
+		fn := &perSupplierFullNode{answers: map[string]string{"pokt1first": answer}}
+		p := &Protocol{fullNode: fn, signer: &countingSigner{}, bl: newBlacklist(), logger: newTestLogger()}
+		proc := reissueProcessor(p, qos.NewSubscriptionRegistry(&evm.Plugin{}), &spyWSMetrics{}, "pokt1first", func() bool { return true })
+		if _, err := proc.ProcessClientMessage([]byte(`{"jsonrpc":"2.0","id":7,"method":"eth_call","params":[]}`)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := proc.ProcessEndpointMessage([]byte(`wire`)); err != nil {
+			t.Fatal(err)
+		}
+		if got := proc.answered.Load(); got != want {
+			t.Errorf("%s: answered %d, want %d", answer, got, want)
+		}
+	}
+	g := &wsSuccessGate{answered: func() int { return 4 }}
+	var none *wsSuccessGate
+	if g.weight() != 5 || none.weight() != 0 {
+		t.Errorf("weight %d / %d, want 5 (itself and four answers) / 0", g.weight(), none.weight())
+	}
+}

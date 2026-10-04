@@ -91,6 +91,10 @@ type wsMessageProcessor struct {
 	staleness  *wsStaleness
 	staleHeads int
 
+	// answered counts client requests this supplier answered, taken by the
+	// connection's next success signal (wsSuccessGate.weight).
+	answered atomic.Int64
+
 	// metrics, owner and operator attribute every frame to the supplier
 	// that signed it; endpointFrames counts this supplier's frames to the
 	// client for its tenure. Set by the relayer when it binds the supplier;
@@ -303,6 +307,11 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	}
 	if p.reissue(payload, stale) {
 		return nil, fmt.Errorf("ws ProcessEndpointMessage: %w", errReissue)
+	}
+	// A request answered, and answered well: what the next success signal
+	// stands for in the failure rate. Not a stale answer, nor an error one.
+	if !sent.IsZero() && !stale && !qos.JSONRPCHasError(payload) {
+		p.answered.Add(1)
 	}
 	// After validation, before the client: a replay ack is consumed here
 	// (nil, nil — the bridge forwards nothing), a notification may be
