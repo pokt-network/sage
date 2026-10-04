@@ -320,6 +320,17 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	return out, nil
 }
 
+// RetypedToText implements websockets.TextRetypeObserver: this supplier's
+// answer arrived as a binary frame and went to the client as text. Counted
+// per supplier so the operator whose stack sends binary can be told.
+func (p *wsMessageProcessor) RetypedToText() {
+	if p.metrics != nil {
+		p.metrics.SupplierRetyped(domain.ServiceID(p.sessionHeader.ServiceId), p.operator, p.owner)
+	}
+}
+
+var _ websockets.TextRetypeObserver = (*wsMessageProcessor)(nil)
+
 // reissue reports whether payload is a rate limit, a spent quota or (stale)
 // a stale head answering a client request still in flight, now queued to go
 // again to the next supplier after a rebind (qos.SubscriptionRegistry.Reissue).

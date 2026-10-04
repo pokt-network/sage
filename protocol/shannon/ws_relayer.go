@@ -120,6 +120,7 @@ type WSMetrics interface {
 	ShareCap(serviceID domain.ServiceID, outcome string)
 	SessionEndAction(serviceID domain.ServiceID, action string, blocksPast int64)
 	SupplierReissued(serviceID domain.ServiceID, operator, owner string)
+	SupplierRetyped(serviceID domain.ServiceID, operator, owner string)
 }
 
 // WSRelayer is the only public entry point for opening WebSocket bridges in

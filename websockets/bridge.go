@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 
@@ -45,6 +46,36 @@ type MessageProcessor interface {
 	// ProcessEndpointMessage is called for every message received from the
 	// endpoint before it is forwarded to the client.
 	ProcessEndpointMessage(data []byte) ([]byte, error)
+}
+
+// TextRetypeObserver is implemented by a MessageProcessor that wants to know
+// when an endpoint message it processed arrived as a binary frame and went to
+// the client as text (see textJSON), to say which supplier sends them.
+type TextRetypeObserver interface {
+	RetypedToText()
+}
+
+// textJSON reports whether data is a JSON object or array in valid UTF-8:
+// what a JSON-RPC client expects in a text frame.
+//
+// The frame type rides the WebSocket envelope alone, no relay protobuf carries
+// it, so whatever framed the bytes last decides it. On mainnet robinhood
+// (2026-10-04) eight answers in ten reached browser clients as binary frames,
+// valid JSON at the head inside; a browser hands a binary frame over as a
+// Blob, JSON.parse throws, and a public checker kept a row from the last
+// answer it could read, 4,000 blocks old. Both relay miners keep the node's
+// type, so the binary comes from a supplier's own stack.
+func textJSON(data []byte) bool {
+	for i, c := range data {
+		switch c {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{', '[':
+			return utf8.Valid(data[i:])
+		}
+		return false
+	}
+	return false
 }
 
 // Bridge routes data bidirectionally between a client WebSocket connection and
@@ -404,7 +435,14 @@ func (b *Bridge) route(msg message) {
 		if processed == nil {
 			return // Consumed by the processor.
 		}
-		if writeErr := b.clientConn.WriteMessage(msg.messageType, processed); writeErr != nil {
+		messageType := msg.messageType
+		if messageType == websocket.BinaryMessage && textJSON(processed) {
+			messageType = websocket.TextMessage
+			if o, ok := b.processor.(TextRetypeObserver); ok {
+				o.RetypedToText()
+			}
+		}
+		if writeErr := b.clientConn.WriteMessage(messageType, processed); writeErr != nil {
 			b.logger.Error("websocket: write to client failed", "err", writeErr)
 			b.shutdown(fmt.Errorf("%w: write to client: %w", ErrBridgeConnectionFailed, writeErr))
 			return

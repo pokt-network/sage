@@ -519,6 +519,13 @@ type spyWSMetrics struct {
 	mismatches    []string // operator
 	sessionEnds   []string // action|blocksPast
 	reissued      []string // operator
+	retyped       []string // operator
+}
+
+func (s *spyWSMetrics) SupplierRetyped(_ domain.ServiceID, operator, _ string) {
+	s.mu.Lock()
+	s.retyped = append(s.retyped, operator)
+	s.mu.Unlock()
 }
 
 func (s *spyWSMetrics) SupplierReissued(_ domain.ServiceID, operator, _ string) {

@@ -60,6 +60,7 @@ type WebSocketMetrics struct {
 	sessionEndActions     *prometheus.CounterVec
 	sessionEndBlocksPast  *prometheus.HistogramVec
 	reissued              *prometheus.CounterVec
+	retyped               *prometheus.CounterVec
 }
 
 // Caps for the supplier labels. Operators serving WebSocket number in the
@@ -78,7 +79,7 @@ func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
 	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
 		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes,
-		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast, m.reissued)
+		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast, m.reissued, m.retyped)
 	return m
 }
 
@@ -154,6 +155,14 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 				Help:      "WebSocket supplier placements (opens and rebinds) the ws_share_cap flag was asked about, by service and outcome: bound (it kept the connection off a party that would have held more than half the service's frames on this pod), clear (every vouched party was under), or open (it could not bind: fewer than two vouched fresh parties, no traffic yet, or no party under the cap with the connection added). Nothing is counted while the flag is off.",
 			},
 			[]string{"service_id", "outcome"},
+		),
+		retyped: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_retyped_frames_total",
+				Help:      "Answers a supplier sent over WebSocket as binary frames holding JSON, which the gateway forwarded to the client as text frames, by service and supplier (operator, owner). A browser reads a binary frame as a Blob and cannot JSON.parse it; both relay miners keep the node's frame type, so a supplier counted here has something in its own stack (an old relay miner build, a proxy in front of its nodes) sending binary. Non-JSON binary frames are forwarded as they came and not counted.",
+			},
+			supplierLabels,
 		),
 		reissued: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -294,6 +303,13 @@ func (m *WebSocketMetrics) SessionEndAction(serviceID domain.ServiceID, action s
 func (m *WebSocketMetrics) SupplierReissued(serviceID domain.ServiceID, operator, owner string) {
 	sid, op, own := m.supplierValues(serviceID, operator, owner)
 	m.reissued.WithLabelValues(sid, op, own).Inc()
+}
+
+// SupplierRetyped counts one binary JSON answer forwarded to the client as
+// text.
+func (m *WebSocketMetrics) SupplierRetyped(serviceID domain.ServiceID, operator, owner string) {
+	sid, op, own := m.supplierValues(serviceID, operator, owner)
+	m.retyped.WithLabelValues(sid, op, own).Inc()
 }
 
 // ForService returns the per-bridge websockets.Observer for one service.
