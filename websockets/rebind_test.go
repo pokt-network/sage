@@ -406,3 +406,47 @@ func TestBridge_EndpointProcessingErrorRebinds(t *testing.T) {
 	default:
 	}
 }
+
+// A spent loss budget refuses the next loss, not a planned move: the session
+// rollover still goes through, and the loss after it still closes.
+func TestBridge_SpentBudgetStillRollsOver(t *testing.T) {
+	first := newEchoServer(t)
+	defer first.Close()
+	next := newEchoServer(t)
+	defer next.Close()
+	var n atomic.Int32
+	handler := func(context.Context, error) (*websocket.Conn, MessageProcessor, [][]byte, error) {
+		n.Add(1)
+		conn, err := ConnectEndpoint(newTestLogger(), wsURL(next), nil)
+		return conn, &passthroughProcessor{}, nil, err
+	}
+	srv, bridges := startBridgeServer(t, wsURL(first), WithEndpointLost(handler), WithRebindLimit(1))
+	defer srv.Close()
+	client := dialTestServer(t, srv)
+	defer client.Close()
+	b := <-bridges
+
+	b.lossMu.Lock()
+	b.losses = []time.Time{time.Now()} // one loss: a limit of one is spent
+	b.lossMu.Unlock()
+	require.False(t, b.CanRebind())
+
+	b.ReplaceEndpoint(ErrBridgeSessionExpired)
+	require.Equal(t, int32(1), n.Load(), "the rollover must be taken with the budget spent")
+	select {
+	case <-b.Done():
+		t.Fatal("a planned rollover closed the bridge")
+	default:
+	}
+
+	b.ReplaceEndpoint(errors.New("endpoint lost"))
+	require.Eventually(t, func() bool {
+		select {
+		case <-b.Done():
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 5*time.Millisecond, "a loss past the limit must still close")
+	require.Equal(t, int32(1), n.Load())
+}

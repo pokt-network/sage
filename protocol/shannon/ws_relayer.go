@@ -611,12 +611,15 @@ const (
 // bridge of a service at once, as they share one app's session — which is why
 // SAGE's connections lived less than half as long as PATH's. So wait while
 // the ended session is still honoured; past the grace period the manager
-// refreshes synchronously, and the rebind is taken regardless.
-func sessionEndAction(height, end, actedOn, graceEnd int64, canRebind, nextReady bool) sessionEndActionKind {
+// refreshes synchronously, and the rebind is taken regardless. A connection
+// that spent its loss budget still rolls over: the budget stops losses, not
+// planned moves (websockets.Bridge.rebind). Only a bridge that cannot rebind
+// at all (rebindable false) is closed.
+func sessionEndAction(height, end, actedOn, graceEnd int64, rebindable, nextReady bool) sessionEndActionKind {
 	switch {
 	case height < end:
 		return sessionWait
-	case end == actedOn || !canRebind:
+	case end == actedOn || !rebindable:
 		return sessionClose
 	case nextReady || height > graceEnd:
 		return sessionRebind
@@ -715,7 +718,7 @@ func (r *WSRelayer) watchSessionExpiry(
 			if next != nil {
 				ready, graceEnd = next(end)
 			}
-			action := sessionEndAction(height, end, actedOn, graceEnd, bridge.CanRebind(), ready)
+			action := sessionEndAction(height, end, actedOn, graceEnd, bridge.Rebindable(), ready)
 			if action == sessionWait {
 				continue
 			}

@@ -738,7 +738,7 @@ func TestSessionEndAction(t *testing.T) {
 	for _, tc := range []struct {
 		name                   string
 		height, actedOn, grace int64
-		canRebind, ready       bool
+		rebindable, ready      bool
 		want                   sessionEndActionKind
 	}{
 		{"before the end", 99, 0, 101, true, false, sessionWait},
@@ -747,9 +747,9 @@ func TestSessionEndAction(t *testing.T) {
 		{"next session fetched", 100, 0, 101, true, true, sessionRebind},
 		{"past grace", 102, 0, 101, true, false, sessionRebind},
 		{"already rebound for this end", 101, 100, 101, true, true, sessionClose},
-		{"rebind limit spent", 100, 0, 101, false, true, sessionClose},
+		{"no rebind handler", 100, 0, 101, false, true, sessionClose},
 	} {
-		if got := sessionEndAction(tc.height, 100, tc.actedOn, tc.grace, tc.canRebind, tc.ready); got != tc.want {
+		if got := sessionEndAction(tc.height, 100, tc.actedOn, tc.grace, tc.rebindable, tc.ready); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
 	}

@@ -167,7 +167,7 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "websocket_session_end_actions_total",
-				Help:      "What a WebSocket bridge did once its session had ended, by service and action: rebind_next_ready (within grace, the next session was already held; a failed session lookup also reads as held), rebind_grace_elapsed (any rebind taken past the grace period, whether or not the next session was then held: it was taken on whatever the session manager returns), close (the bridge was closed: a rebind already taken for this session end, or no rebind left).",
+				Help:      "What a WebSocket bridge did once its session had ended, by service and action: rebind_next_ready (within grace, the next session was already held; a failed session lookup also reads as held), rebind_grace_elapsed (any rebind taken past the grace period, whether or not the next session was then held: it was taken on whatever the session manager returns), close (the bridge was closed: a rebind already taken for this session end landed on the same session, or the bridge cannot rebind at all). A connection that spent its loss budget still rolls over, since 2026-10-04.",
 			},
 			[]string{"service_id", "action"},
 		),

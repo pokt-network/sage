@@ -496,6 +496,11 @@ func (b *Bridge) ReplaceEndpoint(cause error) {
 	b.rebind(b.endpointConn.Load(), cause)
 }
 
+// Rebindable reports whether the bridge has an endpoint-lost handler, and so
+// takes a planned rebind (a session rollover, an operator's request) whatever
+// its loss budget says. CanRebind is the question for a loss.
+func (b *Bridge) Rebindable() bool { return b.endpointLost != nil }
+
 // CanRebind reports whether an endpoint loss would be met with a rebind
 // rather than a close: a handler is installed and the limit is not spent.
 // Safe from inside a MessageProcessor: it does not take endpointMu, which
@@ -575,16 +580,24 @@ func (b *Bridge) endpointGone(conn *Connection, cause error) {
 // rebind replaces a lost endpoint with one the handler supplies, holding the
 // endpoint lock for the whole swap so client frames queue behind it rather
 // than reaching the dead socket. On success the new endpoint's read loop
-// starts and the replay frames are signed and sent; on failure, or past the
-// limit, the bridge closes with the client told to reconnect.
+// starts and the replay frames are signed and sent; on failure, or a loss
+// past the limit, the bridge closes with the client told to reconnect.
+//
+// The limit stops a loss, never a planned move (a session rollover, an
+// operator's rebind). A connection that had spent it was refused its rollover
+// and closed with 1012 at the next session boundary: on mainnet (2026-10-04)
+// 10-30 an hour on each of robinhood, poly and bsc, connections whose suppliers
+// had failed and that would have moved to a fresh pick. On a pool that keeps
+// dying, the next loss inside the window still closes it.
 func (b *Bridge) rebind(lost *Connection, cause error) {
 	b.endpointMu.Lock()
 	if b.endpointConn.Load() != lost {
 		b.endpointMu.Unlock()
 		return // A loop on an endpoint that was already replaced.
 	}
+	planned := errors.Is(cause, ErrBridgeSessionExpired) || errors.Is(cause, ErrBridgeReplaceRequested)
 	n := b.recentLosses(time.Now())
-	if n >= b.rebindLimit {
+	if !planned && n >= b.rebindLimit {
 		b.endpointMu.Unlock()
 		b.logger.Warn("websocket: rebind limit reached, closing", "rebinds", n, "window", rebindWindow, "cause", cause)
 		b.observe(func(o Observer) { o.Rebound(RebindExhausted) })
@@ -615,7 +628,7 @@ func (b *Bridge) rebind(lost *Connection, cause error) {
 	}
 	b.endpointConn.Store(next)
 	b.processor = processor
-	if !errors.Is(cause, ErrBridgeSessionExpired) && !errors.Is(cause, ErrBridgeReplaceRequested) {
+	if !planned {
 		// A session rollover and an operator's rebind are planned moves, not
 		// evidence of a dying pool; only losses count toward the limit. Three
 		// admin rebinds used to spend the budget, and the next real loss or
