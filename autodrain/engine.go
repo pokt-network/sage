@@ -160,6 +160,9 @@ type Event struct {
 	// FirstAttempts is how many first and probation attempts the operator
 	// answered in the window, the sample the chain-answer shares are read on.
 	FirstAttempts int `json:"first_attempts,omitempty"`
+	// FirstSuccess is the share of them not failed by the supplier, the
+	// severity path's measure.
+	FirstSuccess float64 `json:"first_success"`
 	// ChainShare is the share of them answered with a chain error, and
 	// PeerChainShare the same share over the pool's other operators.
 	ChainShare     float64 `json:"chain_share,omitempty"`
@@ -223,9 +226,10 @@ type poolKey struct {
 }
 
 // opCount is one operator's minute. picks, attempts and successes come from
-// reputation (the collapse and signal hooks); firsts, chain come from the
-// attempt hook, first and probation attempts only.
-type opCount struct{ picks, attempts, successes, firsts, chain int }
+// reputation (the collapse and signal hooks); firsts, chain and firstFails
+// (supplier or unknown) come from the attempt hook, first and probation
+// attempts only.
+type opCount struct{ picks, attempts, successes, firsts, chain, firstFails int }
 
 type slot struct {
 	minute   int64
@@ -360,8 +364,11 @@ func (e *Engine) OnAttempt(svc domain.ServiceID, rpc domain.RPCType, ep domain.E
 	defer e.mu.Unlock()
 	c := e.slot(poolKey{svc, rpc}, now).op(ep.Operator())
 	c.firsts++
-	if attribution == heuristic.AttrBlockchain.String() {
+	switch attribution {
+	case heuristic.AttrBlockchain.String():
 		c.chain++
+	case heuristic.AttrSupplier.String(), heuristic.AttrUnknown.String():
+		c.firstFails++
 	}
 }
 
@@ -506,6 +513,7 @@ func (e *Engine) window(now time.Time) []candidate {
 				t.successes += c.successes
 				t.firsts += c.firsts
 				t.chain += c.chain
+				t.firstFails += c.firstFails
 				ops[name] = t
 				poolFirsts += c.firsts
 				poolChain += c.chain
@@ -524,6 +532,10 @@ func (e *Engine) window(now time.Time) []candidate {
 				opRate = e.opRate(k, name)
 			}
 			chainShare, peerChain, outlier := chainOutlier(c, poolFirsts, poolChain)
+			firstSuccess := 0.0
+			if c.firsts > 0 {
+				firstSuccess = 1 - float64(c.firstFails)/float64(c.firsts)
+			}
 			harm := 0.0
 			if outlier && creq > 0 {
 				harm = (float64(c.chain) - peerChain*float64(c.firsts)) / float64(creq)
@@ -546,7 +558,8 @@ func (e *Engine) window(now time.Time) []candidate {
 					CollapsePicks: collapse, Share: share, Attempts: c.attempts, SuccessRate: success,
 					Trigger: trigger, OperatorRate: opRate,
 					ClientFailure: cshare, ClientRequests: creq,
-					FirstAttempts: c.firsts, ChainShare: chainShare, PeerChainShare: peerChain, AnswerHarm: harm,
+					FirstAttempts: c.firsts, FirstSuccess: firstSuccess,
+					ChainShare: chainShare, PeerChainShare: peerChain, AnswerHarm: harm,
 				},
 			})
 		}
@@ -637,7 +650,16 @@ func (e *Engine) decide(ctx context.Context, k drain.Key, now time.Time, act boo
 	if ev.ClientRequests < minClientRequests {
 		return OutcomeNoClientEvidence
 	}
-	ev.Severe = ev.Attempts >= severeMinAttempts && ev.SuccessRate <= severeMaxSuccess
+	// Severity is read on first attempts, the fair sample (OnAttempt): retries
+	// and hedge arms carry what other operators failed, with what budget was
+	// left. On mainnet bsc (2026-10-04) one operator answered 68% of its first
+	// attempts and 13% of its retries; read across all of them it sat at
+	// 49-60% and was proposed for a drain ten times while no caller failed.
+	// An operator answering nothing on any attempts is severe as well: no
+	// sampling explains 2%, and one that hedge arms keep reaching costs a
+	// paid relay each and leaves those requests unhedged.
+	ev.Severe = ev.FirstAttempts >= severeMinAttempts && ev.FirstSuccess <= severeMaxSuccess ||
+		ev.Attempts >= severeMinAttempts && ev.SuccessRate <= maxSuccess
 	// Chain errors an outlier delivered inside a 200 hurt callers as much as a
 	// 5xx does, and the client-facing status never shows them.
 	if ev.ClientFailure < minClientFailure && ev.AnswerHarm < minClientFailure && !ev.Severe {
@@ -749,7 +771,7 @@ func (e *Engine) emit(ctx context.Context, k drain.Key, ev Event) {
 	e.d.Logger.Log(ctx, level, "autodrain: decision",
 		"outcome", ev.Outcome, "service_id", ev.ServiceID, "rpc_type", ev.RPCType, "operator", ev.Operator,
 		"trigger", ev.Trigger, "collapse_picks", ev.CollapsePicks, "share", ev.Share, "attempts", ev.Attempts,
-		"success_rate", ev.SuccessRate, "operator_rate", ev.OperatorRate,
+		"success_rate", ev.SuccessRate, "first_success", ev.FirstSuccess, "operator_rate", ev.OperatorRate,
 		"client_failure", ev.ClientFailure, "client_requests", ev.ClientRequests,
 		"chain_share", ev.ChainShare, "peer_chain_share", ev.PeerChainShare, "answer_harm", ev.AnswerHarm,
 		"vouched_alternative", ev.Alternative)

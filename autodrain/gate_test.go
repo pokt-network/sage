@@ -52,11 +52,12 @@ func TestEngine_SevereOperatorPassesTheClientGate(t *testing.T) {
 		h.e.OnCollapse(sei, jsonrpc, domain.EndpointAddrList{opb})
 	}
 	for i := 0; i < 300; i++ {
-		st := reputation.SignalSuccess
+		st, attribution := reputation.SignalSuccess, "none"
 		if i%2 == 0 {
-			st = reputation.SignalMajorError
+			st, attribution = reputation.SignalMajorError, "supplier"
 		}
 		h.e.OnSignal(sei, jsonrpc, opa, st, false)
+		h.e.OnAttempt(sei, jsonrpc, opa, attribution, "first")
 	}
 	h.clients(200, 8) // 4%: under the bar
 
@@ -69,6 +70,42 @@ func TestEngine_SevereOperatorPassesTheClientGate(t *testing.T) {
 	evs, _ := h.log.Recent(context.Background(), "", 10)
 	if len(evs) != 1 || !evs[0].Severe || evs[0].Outcome != OutcomeDrained {
 		t.Fatalf("events = %+v, want one drained event marked severe", evs)
+	}
+}
+
+// Severity is read on first attempts. An operator answering 70% of its first
+// attempts and 10% of its retries reads 50% across both, and is not severe:
+// the retries carried what others had failed (mainnet bsc, 2026-10-04: 68%
+// first, 13% retries, proposed ten times while no caller failed). One that
+// answers nothing on any attempts is severe however it is reached.
+func TestEngine_SeverityReadsFirstAttempts(t *testing.T) {
+	for name, tc := range map[string]struct {
+		firstOK, firsts, signalOK int
+		want                      string
+	}{
+		"retries drag it down": {210, 300, 300, OutcomeBelowClient},
+		"answers nothing":      {0, 0, 0, OutcomeDrained},
+	} {
+		h := newHarnessWith(t, fakeVouch{opb: true}, true, fakeRates{"opa.example": 0.25})
+		for i := 0; i < tc.firsts; i++ {
+			attribution := "supplier"
+			if i < tc.firstOK {
+				attribution = "none"
+			}
+			h.e.OnAttempt(sei, jsonrpc, opa, attribution, "first")
+		}
+		for i := 0; i < 600; i++ {
+			st := reputation.SignalMajorError
+			if i < tc.signalOK {
+				st = reputation.SignalSuccess
+			}
+			h.e.OnSignal(sei, jsonrpc, opa, st, false)
+		}
+		h.clients(200, 0)
+		h.e.Evaluate(context.Background())
+		if o := h.outcomes(t); len(o) != 1 || o[0] != "opa.example:"+tc.want {
+			t.Errorf("%s: events = %v, want %s", name, o, tc.want)
+		}
 	}
 }
 

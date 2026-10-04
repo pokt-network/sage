@@ -116,6 +116,19 @@ is long enough that one burst does not act. **All** of the following must hold:
    the same day means neither the drained operator nor any owner of its
    endpoints (`domain.Affiliates`).
 
+   **Severity on first attempts** (changed 2026-10-04). The operator's success
+   rate for the severity path is read on its first and probation attempts,
+   the same fair sample as the third trigger below, not on every attempt
+   reputation records. A retry or a hedge arm carries what other operators
+   already failed, with what budget was left. On mainnet bsc one operator
+   answered 68% of its first attempts and 13% of its retries; across all of
+   them it read 49–60% and was proposed for a drain ten times in a day while no
+   caller failed. Over the 2026-10-02/04 shadow log, 36 severe proposals become
+   about 16. An operator at or below 2% over at least 200 attempts of any kind
+   stays severe, since no sampling explains it: one operator answered none of
+   about 60,000 hedge arms a day on poly-zkevm, each a paid relay that left its
+   request unhedged.
+
 **Second trigger — the operator the collapse share cannot see.** Conditions 2
 and 3 are blind to an operator that spreads one service over many keys: its
 picks never concentrate and it answers most requests, while each key's failure
