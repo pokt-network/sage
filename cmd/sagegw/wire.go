@@ -659,6 +659,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	repSvc.SetTrustPenalty(func(serviceID domain.ServiceID) bool {
 		return flags.IsEnabled(context.Background(), featureflag.FlagTrustPenalty, serviceID)
 	})
+	// Whether those party penalties also reach websocket keys, on the same
+	// refresh.
+	partyWS := func(serviceID domain.ServiceID) bool {
+		return flags.IsEnabled(context.Background(), featureflag.FlagPartyPenaltiesWebsocket, serviceID)
+	}
+	repSvc.SetPartyPenaltiesWebsocket(partyWS)
+	prometheus.MustRegister(metrics.NewPartyPenaltiesWebsocketCollector(serviceIDsFrom(cfg), partyWS))
 
 	// A peer instance's priced parties, as a floor under this one's
 	// (reputation/peerparties.go). Read under the peer's default key name, as

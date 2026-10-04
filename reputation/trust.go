@@ -70,6 +70,14 @@ func (s *serviceImpl) SetTrustPenalty(gate func(domain.ServiceID) bool) {
 	s.trustGate.Store(&gate)
 }
 
+// SetPartyPenaltiesWebsocket decides, per service behind gate, whether the
+// party penalties (trust and stale share) reach websocket keys; a nil or
+// absent gate means they do. Read on the reputation refresh. Call at wire
+// time.
+func (s *serviceImpl) SetPartyPenaltiesWebsocket(gate func(domain.ServiceID) bool) {
+	s.partyWSGate.Store(&gate)
+}
+
 // PartyTrusts reports every party with trust evidence or a penalty in force,
 // for the metrics collector.
 func (s *serviceImpl) PartyTrusts() []PartyTrust {

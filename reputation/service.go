@@ -167,6 +167,9 @@ type serviceImpl struct {
 	// trustGate turns on the trust penalty per service; refusals counts each
 	// (service, party)'s refused_recent verdicts (trust.go).
 	trustGate atomic.Pointer[func(domain.ServiceID) bool]
+	// partyWSGate says per service whether party penalties reach websocket
+	// keys (featureflag.FlagPartyPenaltiesWebsocket).
+	partyWSGate atomic.Pointer[func(domain.ServiceID) bool]
 	// peerParties reads a peer instance's priced parties (peerparties.go).
 	peerParties atomic.Pointer[func(context.Context) (PartyPenalties, error)]
 	refusals    *opTracker
@@ -576,11 +579,16 @@ func (s *serviceImpl) refreshBaselines() {
 		// gate on lookup (the penalty reaches a party's first key there).
 		v.trustGate = gateOf(&s.trustGate)
 		v.trustOn = map[domain.ServiceID]bool{}
+		v.wsGate = gateOf(&s.partyWSGate)
+		v.wsOn = map[domain.ServiceID]bool{}
 		v.keyParty = make(map[string]string, len(keys))
 		for _, ks := range keys {
 			v.keyParty[ks.id.key] = domain.PartyOfOperator(ks.op.op)
 			if _, seen := v.trustOn[ks.id.svc]; !seen && v.trustGate != nil {
 				v.trustOn[ks.id.svc] = v.trustGate(ks.id.svc)
+			}
+			if _, seen := v.wsOn[ks.id.svc]; !seen && v.wsGate != nil {
+				v.wsOn[ks.id.svc] = v.wsGate(ks.id.svc)
 			}
 		}
 	}

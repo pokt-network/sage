@@ -210,6 +210,15 @@ const (
 	// a party down and never takes it out of rotation. The evidence is
 	// measured whatever the flag says (sage_party_trust_*). Off by default.
 	FlagTrustPenalty = "trust_penalty"
+	// FlagPartyPenaltiesWebsocket lets the party penalties (trust_penalty and
+	// stale_share) reach a party's WebSocket keys too. Both are measured from
+	// HTTP answers; turned off for a service, its websocket keys are scored on
+	// their own grades alone (ws_stale_*, ws_no_answer, rate limits, losses),
+	// which since 2026-10-04 measure WebSocket staleness directly, while its
+	// HTTP keys keep the penalties. On mainnet that day an owner charged for
+	// stale HTTP on most EVM services held no WebSocket traffic anywhere, its
+	// WebSocket never measured. On by default: today's behaviour, the undo.
+	FlagPartyPenaltiesWebsocket = "party_penalties_websocket"
 	// FlagRelativeChronic measures a key's chronic-failure penalty from the
 	// best failure rate in its (service, RPC type) pool rather than from zero,
 	// so a timeout tail every operator shares does not floor all of them. On
@@ -264,25 +273,26 @@ var DefaultFlags = map[string]bool{
 	FlagRequestSampler:         true,
 	FlagScoringV2:              true,
 
-	FlagTrafficInformedProbing: false,
-	FlagPeerProbeSkip:          true,
-	FlagAutoDrain:              false,
-	FlagAutoDrainShadow:        true,
-	FlagPenalize408:            true,
-	FlagRESTBodiesAsAnswers:    false,
-	FlagCircuitBreakUpstream:   false,
-	FlagMethodBlock408:         false,
-	FlagMethodBlockRefusal:     false,
-	FlagCosmosEVMHeight:        false,
-	FlagWSShareCap:             false,
-	FlagStaleResponse:          false,
-	FlagInvalidResult:          false,
-	FlagStaleShare:             false,
-	FlagStateCanary:            false,
-	FlagTrustPenalty:           false,
-	FlagRelativeChronic:        true,
-	FlagOperatorChronic:        false,
-	FlagQuorum:                 false,
+	FlagTrafficInformedProbing:  false,
+	FlagPeerProbeSkip:           true,
+	FlagAutoDrain:               false,
+	FlagAutoDrainShadow:         true,
+	FlagPenalize408:             true,
+	FlagRESTBodiesAsAnswers:     false,
+	FlagCircuitBreakUpstream:    false,
+	FlagMethodBlock408:          false,
+	FlagMethodBlockRefusal:      false,
+	FlagCosmosEVMHeight:         false,
+	FlagWSShareCap:              false,
+	FlagStaleResponse:           false,
+	FlagInvalidResult:           false,
+	FlagStaleShare:              false,
+	FlagStateCanary:             false,
+	FlagTrustPenalty:            false,
+	FlagPartyPenaltiesWebsocket: true,
+	FlagRelativeChronic:         true,
+	FlagOperatorChronic:         false,
+	FlagQuorum:                  false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

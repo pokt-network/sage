@@ -74,6 +74,10 @@ type chronicView struct {
 	trustOn   map[domain.ServiceID]bool
 	trustGate func(domain.ServiceID) bool
 	trust     []PartyTrust
+	// wsOn records, per service at refresh, whether party penalties reach
+	// websocket keys; wsGate answers for a service with no key at refresh.
+	wsOn   map[domain.ServiceID]bool
+	wsGate func(domain.ServiceID) bool
 	// keyParty is each known key's party, so the lookup per candidate does
 	// not parse a URL; an unknown key's is computed (partyOfKey).
 	keyParty map[string]string
@@ -84,6 +88,9 @@ type chronicView struct {
 // sum (partyPenalty): both rest on the same evidence where both apply.
 func (v *chronicView) partyPenalties(svc domain.ServiceID, key string) (stale, trust float64) {
 	if v == nil || (len(v.stalePen) == 0 && len(v.trustPen) == 0) {
+		return 0, 0
+	}
+	if rpcOfKey(key) == string(domain.RPCTypeWebSocket) && !v.websocketCharged(svc) {
 		return 0, 0
 	}
 	party, ok := v.keyParty[key]
@@ -101,6 +108,16 @@ func (v *chronicView) partyPenalties(svc domain.ServiceID, key string) (stale, t
 		}
 	}
 	return stale, trust
+}
+
+// websocketCharged reports whether a service's websocket keys carry their
+// party's penalties (featureflag.FlagPartyPenaltiesWebsocket): yes unless the
+// gate says no.
+func (v *chronicView) websocketCharged(svc domain.ServiceID) bool {
+	if on, known := v.wsOn[svc]; known {
+		return on
+	}
+	return v.wsGate == nil || v.wsGate(svc)
 }
 
 // partyPenalty is what a key's party costs it in a service.

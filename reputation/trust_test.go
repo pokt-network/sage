@@ -158,3 +158,47 @@ func TestOwnScoreLeavesThePartyOut(t *testing.T) {
 		t.Fatalf("GetScore %.0f OwnScore %.0f, want 70 and 100", got, s.OwnScore("eth", cache, domain.RPCTypeWebSocket))
 	}
 }
+
+// With party_penalties_websocket off for a service, its websocket keys carry
+// neither the trust nor the stale-share penalty, while the same party's other
+// keys there keep both; on (the default, and with no gate) they carry them as
+// before.
+func TestPartyPenaltiesWebsocket_SparesOnlyWebsocketKeys(t *testing.T) {
+	s := staleShareService(true)
+	s.SetTrustPenalty(func(domain.ServiceID) bool { return true })
+	cache := domain.EndpointAddr("pokt1a-https://r001.cache.example")
+	fresh := domain.EndpointAddr("pokt1b-https://r001.fresh.example")
+	for i := 1; i <= trustStaleServices; i++ {
+		svc := domain.ServiceID(fmt.Sprintf("s%d", i))
+		for _, rpc := range []domain.RPCType{domain.RPCTypeJSONRPC, domain.RPCTypeWebSocket} {
+			_ = s.RecordSignal(context.Background(), svc, cache, rpc, Signal{Type: SignalSuccess, Timestamp: time.Now()})
+			_ = s.RecordSignal(context.Background(), svc, fresh, rpc, Signal{Type: SignalSuccess, Timestamp: time.Now()})
+		}
+		for i := 0; i < 200; i++ {
+			s.RecordHeadAnswer(svc, cache.Party(), i < 160)
+			s.RecordHeadAnswer(svc, fresh.Party(), false)
+		}
+	}
+	score := func(svc domain.ServiceID, rpc domain.RPCType) float64 {
+		v, _ := s.scoreForSelector(context.Background(), svc, cache, rpc)
+		return v
+	}
+
+	s.refreshBaselines() // no gate set: charged everywhere, as before
+	if http, ws := score("s1", domain.RPCTypeJSONRPC), score("s1", domain.RPCTypeWebSocket); http != 60 || ws != 60 {
+		t.Fatalf("no gate: http %.0f ws %.0f, want 60 and 60", http, ws)
+	}
+
+	off := map[domain.ServiceID]bool{"s1": true}
+	s.SetPartyPenaltiesWebsocket(func(svc domain.ServiceID) bool { return !off[svc] })
+	s.refreshBaselines()
+	if http, ws := score("s1", domain.RPCTypeJSONRPC), score("s1", domain.RPCTypeWebSocket); http != 60 || ws != 100 {
+		t.Errorf("off on s1: http %.0f ws %.0f, want 60 and 100", http, ws)
+	}
+	if ws := score("s2", domain.RPCTypeWebSocket); ws != 60 {
+		t.Errorf("on for s2: ws %.0f, want 60", ws)
+	}
+	if st, tr := s.chronic.Load().partyPenalties("s1", s.keyOf(cache, domain.RPCTypeWebSocket)); st != 0 || tr != 0 {
+		t.Errorf("admin view penalties %.0f/%.0f for the spared websocket key, want 0/0", st, tr)
+	}
+}

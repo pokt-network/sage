@@ -432,3 +432,39 @@ func penaltySource(peer bool) string {
 	}
 	return "local"
 }
+
+// PartyPenaltiesWebsocketCollector exposes, per service, whether the party
+// penalties reach its websocket keys (featureflag.FlagPartyPenaltiesWebsocket),
+// read at scrape; the reputation refresh applies a change within 30 s.
+type PartyPenaltiesWebsocketCollector struct {
+	services []domain.ServiceID
+	charged  func(domain.ServiceID) bool
+	desc     *prometheus.Desc
+}
+
+// NewPartyPenaltiesWebsocketCollector reports charged for each of services.
+func NewPartyPenaltiesWebsocketCollector(services []domain.ServiceID, charged func(domain.ServiceID) bool) *PartyPenaltiesWebsocketCollector {
+	return &PartyPenaltiesWebsocketCollector{
+		services: services,
+		charged:  charged,
+		desc: prometheus.NewDesc(
+			"sage_party_penalties_websocket",
+			"1 when a service's WebSocket keys carry their party's trust and stale-share penalties, 0 when they are scored on their own WebSocket grades alone (the party_penalties_websocket flag, applied at the next reputation refresh). HTTP keys carry the penalties either way.",
+			[]string{"service_id"}, nil,
+		),
+	}
+}
+
+// Describe implements prometheus.Collector.
+func (c *PartyPenaltiesWebsocketCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.desc }
+
+// Collect implements prometheus.Collector.
+func (c *PartyPenaltiesWebsocketCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, svc := range c.services {
+		v := 0.0
+		if c.charged(svc) {
+			v = 1
+		}
+		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, v, string(svc))
+	}
+}
