@@ -126,6 +126,8 @@ type WSMetrics interface {
 	SessionEndAction(serviceID domain.ServiceID, action string, blocksPast int64)
 	SupplierReissued(serviceID domain.ServiceID, operator, owner, reason string, n int)
 	SupplierRetyped(serviceID domain.ServiceID, operator, owner string)
+	SupplierAnswer(serviceID domain.ServiceID, operator string, took time.Duration)
+	OpenPhase(serviceID domain.ServiceID, phase string, took time.Duration)
 }
 
 // WSRelayer is the only public entry point for opening WebSocket bridges in
@@ -348,7 +350,9 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	// Pick and resolve an endpoint: tier cascade + load-aware weighted
 	// random, then the session, URL and app that go with it. The same path a
 	// rebind takes later, minus the exclusions.
+	resolveStart := time.Now()
 	target, httpMsg, err := r.resolveEndpoint(ctx, serviceID, nil, nil)
+	r.openPhase(serviceID, "resolve", resolveStart)
 	if err != nil {
 		logger.Error("ws open: resolve endpoint", "err", err)
 		http.Error(w, httpMsg, http.StatusBadGateway)
@@ -495,7 +499,9 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		if err != nil {
 			return nil, nil, nil, err
 		}
+		dialStart := time.Now()
 		conn, err := websockets.ConnectEndpoint(logger, next.url, supplierHeaders)
+		r.openPhase(serviceID, "rebind_dial", dialStart)
 		if err != nil {
 			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, next.addr, domain.RPCTypeWebSocket,
 				reputation.NewSignal(reputation.SignalMajorError, "ws_endpoint_unavailable:"+err.Error(), 0))
@@ -540,7 +546,9 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	// under swapMu — before the first supplier is bound. Holding swapMu
 	// across the start and the bind makes that release wait for the bind.
 	swapMu.Lock()
+	dialStart := time.Now()
 	bridge, err := websockets.StartBridge(ctx, logger, req, w, url, supplierHeaders, processor, bridgeOpts...)
+	r.openPhase(serviceID, "dial", dialStart)
 	if err == nil {
 		bridgeRef.Store(bridge)
 		r.clients.opened(clientIP)
@@ -596,6 +604,16 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 // Nor is a relay miner's own refusal that the HTTP path scores as nothing:
 // a session it no longer serves, or an allocation that is spent
 // (heuristic.MinerRefusal, the table every path reads).
+// openPhase records how long one phase of opening or rebinding a connection
+// took: resolve (choosing the supplier and its session), dial (the client
+// upgrade and the supplier's WebSocket handshake, before which a client's
+// first request waits) or rebind_dial.
+func (r *WSRelayer) openPhase(serviceID domain.ServiceID, phase string, start time.Time) {
+	if r.deps.Metrics != nil {
+		r.deps.Metrics.OpenPhase(serviceID, phase, time.Since(start))
+	}
+}
+
 // lostWriteAnswer is the client's answer to a write request in flight when
 // its supplier was lost: an error, not a retry, since the supplier may have
 // applied it.

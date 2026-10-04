@@ -46,6 +46,7 @@ type WebSocketMetrics struct {
 	rebinds      *prometheus.CounterVec
 	stalls       *prometheus.CounterVec
 	clientTypes  *prometheus.CounterVec
+	openPhases   *prometheus.HistogramVec
 
 	supplierFrames        *prometheus.CounterVec
 	supplierNotifications *prometheus.CounterVec
@@ -62,6 +63,7 @@ type WebSocketMetrics struct {
 	sessionEndBlocksPast  *prometheus.HistogramVec
 	reissued              *prometheus.CounterVec
 	retyped               *prometheus.CounterVec
+	answers               *prometheus.HistogramVec
 }
 
 // Caps for the supplier labels. Operators serving WebSocket number in the
@@ -80,7 +82,7 @@ func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
 	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
 		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes,
-		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast, m.reissued, m.retyped, m.clientTypes)
+		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast, m.reissued, m.retyped, m.clientTypes, m.openPhases, m.answers)
 	return m
 }
 
@@ -266,6 +268,24 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			},
 			[]string{"service_id", "result"},
 		),
+		openPhases: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "websocket_open_seconds",
+				Help:      "How long each phase of opening a WebSocket connection took, by service and phase: resolve (choosing the supplier and the session to sign for), dial (the client upgrade and the supplier's WebSocket handshake; a client's first request waits through it), rebind_dial (the handshake with a replacement supplier). Failed dials are included.",
+				Buckets:   []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+			},
+			[]string{"service_id", "phase"},
+		),
+		answers: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "websocket_answer_seconds",
+				Help:      "How long a supplier took to answer a client request over WebSocket, from the request going to the supplier to its answer arriving, by service and operator. Tracked requests only (not inside a batch, within 256 requests or 256 KiB in flight); a request never answered is not here but in ws_no_answer.",
+				Buckets:   []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20},
+			},
+			[]string{"service_id", "operator"},
+		),
 		clientTypes: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -312,6 +332,16 @@ func (m *WebSocketMetrics) SessionEndAction(serviceID domain.ServiceID, action s
 func (m *WebSocketMetrics) SupplierReissued(serviceID domain.ServiceID, operator, owner, reason string, n int) {
 	sid, op, own := m.supplierValues(serviceID, operator, owner)
 	m.reissued.WithLabelValues(sid, op, own, reason).Add(float64(n))
+}
+
+// SupplierAnswer records how long a supplier took to answer one request.
+func (m *WebSocketMetrics) SupplierAnswer(serviceID domain.ServiceID, operator string, took time.Duration) {
+	m.answers.WithLabelValues(m.services.serviceValue(serviceID), m.operators.value(operator)).Observe(took.Seconds())
+}
+
+// OpenPhase records how long one phase of opening a connection took.
+func (m *WebSocketMetrics) OpenPhase(serviceID domain.ServiceID, phase string, took time.Duration) {
+	m.openPhases.WithLabelValues(m.services.serviceValue(serviceID), phase).Observe(took.Seconds())
 }
 
 // SupplierRetyped counts one JSON answer a supplier framed as binary.

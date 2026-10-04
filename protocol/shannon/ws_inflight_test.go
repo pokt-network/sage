@@ -168,4 +168,12 @@ func TestWSOpen_SilentSupplierIsLeftAndEveryRequestAnswered(t *testing.T) {
 	if len(spy.reissueReasons) != 1 || spy.reissueReasons[0] != "no_answer" {
 		t.Errorf("reissues %v, want one no_answer", spy.reissueReasons)
 	}
+	// The answer is timed against the supplier that gave it; the silent one
+	// gave none. The open is timed by phase, and so is the rebind's dial.
+	if len(spy.answers) != 1 || spy.answers[0] != echoEP.Operator() {
+		t.Errorf("answers timed %v, want one from %s", spy.answers, echoEP.Operator())
+	}
+	if strings.Join(spy.phases, ",") != "resolve,dial,rebind_dial" {
+		t.Errorf("open phases %v, want resolve, dial, rebind_dial", spy.phases)
+	}
 }

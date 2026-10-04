@@ -286,9 +286,15 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 		return payload, nil
 	}
 
+	// How long the supplier took over a request the client is waiting on:
+	// from the frame going out to its answer coming in.
+	req, sent := p.subs.InFlight(payload)
+	if !sent.IsZero() && p.metrics != nil {
+		p.metrics.SupplierAnswer(serviceID, p.operator, time.Since(sent))
+	}
 	// A stale answer is graded here, not by the frame heuristic, which would
 	// pass it: it is a well-formed answer, only an old one.
-	stale := p.staleAnswer(payload)
+	stale := p.staleAnswer(req, payload)
 	switch {
 	case stale:
 		p.staleness.penalize(reasonWSStaleResponse)

@@ -750,19 +750,21 @@ func (r *SubscriptionRegistry) Reissue(data []byte) bool {
 }
 
 // InFlight returns the client request an endpoint frame answers, while it is
-// in flight, or nil: what a check on the answer needs to know was asked. The
-// bytes are the registry's; read them, do not keep or change them.
-func (r *SubscriptionRegistry) InFlight(answer []byte) []byte {
+// in flight, and when it went to the supplier; nil and zero otherwise. What a
+// check on the answer needs to know was asked, and how long the answer took.
+// The bytes are the registry's; read them, do not keep or change them.
+func (r *SubscriptionRegistry) InFlight(answer []byte) ([]byte, time.Time) {
 	if r == nil || r.classifier == nil {
-		return nil
+		return nil, time.Time{}
 	}
 	id := JSONRPCRequestID(answer)
 	if id == "" {
-		return nil
+		return nil, time.Time{}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.inflight[id].frame
+	req := r.inflight[id]
+	return req.frame, req.sent
 }
 
 // track remembers a client request in flight, by its id, for Reissue. A

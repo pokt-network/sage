@@ -521,6 +521,20 @@ type spyWSMetrics struct {
 	reissued       []string // operator
 	reissueReasons []string
 	retyped        []string // operator
+	answers        []string // operator
+	phases         []string
+}
+
+func (s *spyWSMetrics) SupplierAnswer(_ domain.ServiceID, operator string, _ time.Duration) {
+	s.mu.Lock()
+	s.answers = append(s.answers, operator)
+	s.mu.Unlock()
+}
+
+func (s *spyWSMetrics) OpenPhase(_ domain.ServiceID, phase string, _ time.Duration) {
+	s.mu.Lock()
+	s.phases = append(s.phases, phase)
+	s.mu.Unlock()
 }
 
 func (s *spyWSMetrics) SupplierRetyped(_ domain.ServiceID, operator, _ string) {

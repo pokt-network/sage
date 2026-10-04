@@ -75,17 +75,13 @@ func (r *WSRelayer) staleness(serviceID domain.ServiceID, addr domain.EndpointAd
 	}
 }
 
-// staleAnswer reports whether payload answers a request in flight with a head
-// the chain has moved past. Only what the registry tracks in flight is read:
+// staleAnswer reports whether payload answers req, a request in flight
+// (qos.SubscriptionRegistry.InFlight), with a head the chain has moved past. Only what the registry tracks in flight is read:
 // a rebind's replayed subscribe carries a gateway id the registry keeps in its
 // replay table, so its ack is never taken for an answer here.
-func (p *wsMessageProcessor) staleAnswer(payload []byte) bool {
+func (p *wsMessageProcessor) staleAnswer(req, payload []byte) bool {
 	s := p.staleness
-	if s == nil || s.answers == nil || !s.enabled() {
-		return false
-	}
-	req := p.subs.InFlight(payload)
-	if req == nil {
+	if s == nil || s.answers == nil || req == nil || !s.enabled() {
 		return false
 	}
 	_, stale, ok := s.answers.HeadLag(domain.NewPayload(req, domain.RPCTypeWebSocket, qos.JSONRPCMethod(req)), payload, time.Now())
