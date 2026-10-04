@@ -588,6 +588,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		// status says: retry and hedge mean an operator can answer nothing
 		// while the service serves every request.
 		recorder.SetClientRequestHook(autoDrain.OnClientResult)
+		// And on each operator's first attempts with their attribution: an
+		// error the heuristic passes as the chain's answer is a success to
+		// reputation, so only this feed shows an operator answering errors.
+		recorder.SetOperatorAttemptHook(autoDrain.OnAttempt)
 	}
 
 	// The breaker's failure-rate gate keys on hostname; every relay counter

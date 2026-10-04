@@ -24,7 +24,9 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/drain"
 	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/internal/safego"
+	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/reputation"
 )
 
@@ -74,6 +76,24 @@ const (
 	// times in two days while the engine proposed nothing (reputation/operator.go).
 	opRateTrigger = 0.03
 
+	// The third way in, for the operator scoring counts as perfect: one whose
+	// first attempts are answered with a chain error (a JSON-RPC error the
+	// heuristic passes through as the chain's answer, scored a success) far
+	// more often than the pool's other operators' are. A chain error depends
+	// on the request, and every operator in a pool draws from the same
+	// requests, so a share this far above its peers is the operator, not the
+	// chain. On mainnet solana (2026-10-04) one operator's middleware answered
+	// 100% of its first attempts with -32603 against 4% for its peers, scored
+	// 100 throughout, and about 42% of the service's client requests got the
+	// error for at least two days; on hyperliquid another answered 27% with
+	// -32603 against 0% for fourteen hours, about 18% of client requests.
+	// Over 60 hours of mainnet first attempts every pool where all operators
+	// answer many chain errors alike (akash at 45-75%) stayed below the ratio,
+	// and every outlier that reached the client bar below was one of those
+	// incidents or a smaller one of the same kind.
+	chainGap   = 0.20 // its chain-answer share at least this far above its peers'
+	chainRatio = 3.0  // and at least this many times theirs
+
 	drainFor      = 2 * time.Hour
 	maxLivePool   = 1 // live auto drains per (service, RPC type)
 	maxLiveFleet  = 5
@@ -107,6 +127,7 @@ const (
 const (
 	TriggerCollapse     = "collapse"
 	TriggerOperatorRate = "operator_rate"
+	TriggerChainAnswers = "chain_answers"
 )
 
 // Event is one decision and the evidence behind it.
@@ -136,6 +157,19 @@ type Event struct {
 	// Severe marks an operator failing badly enough (severeMaxSuccess over
 	// severeMinAttempts) that the client gate did not apply to it.
 	Severe bool `json:"severe,omitempty"`
+	// FirstAttempts is how many first and probation attempts the operator
+	// answered in the window, the sample the chain-answer shares are read on.
+	FirstAttempts int `json:"first_attempts,omitempty"`
+	// ChainShare is the share of them answered with a chain error, and
+	// PeerChainShare the same share over the pool's other operators.
+	ChainShare     float64 `json:"chain_share,omitempty"`
+	PeerChainShare float64 `json:"peer_chain_share,omitempty"`
+	// AnswerHarm is the chain errors the operator answered beyond its peers'
+	// share, per client request of the service in the window: errors callers
+	// received inside a 200, which ClientFailure cannot see. Set only when the
+	// share is an outlier (chainGap, chainRatio). It overstates a little: a
+	// chain error the heuristic retries is not delivered.
+	AnswerHarm float64 `json:"answer_harm,omitempty"`
 }
 
 // EndpointProvider lists a service's current endpoints for one RPC type.
@@ -188,7 +222,10 @@ type poolKey struct {
 	rpc domain.RPCType
 }
 
-type opCount struct{ picks, attempts, successes int }
+// opCount is one operator's minute. picks, attempts and successes come from
+// reputation (the collapse and signal hooks); firsts, chain come from the
+// attempt hook, first and probation attempts only.
+type opCount struct{ picks, attempts, successes, firsts, chain int }
 
 type slot struct {
 	minute   int64
@@ -308,6 +345,39 @@ func (e *Engine) OnSignal(svc domain.ServiceID, rpc domain.RPCType, ep domain.En
 	}
 }
 
+// OnAttempt is the metrics recorder's attempt hook. It counts only first and
+// probation attempts: the fair sample of how an operator answers. A retry or a
+// hedge arm reaches whoever is left with whatever budget is left, carrying the
+// requests other operators already failed. A client-attributed attempt is
+// nobody's and is not counted.
+func (e *Engine) OnAttempt(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, attribution, kind string) {
+	if !e.counting.Load() || (kind != relay.AttemptFirst && kind != relay.AttemptProbation) ||
+		attribution == heuristic.AttrClient.String() {
+		return
+	}
+	now := e.d.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	c := e.slot(poolKey{svc, rpc}, now).op(ep.Operator())
+	c.firsts++
+	if attribution == heuristic.AttrBlockchain.String() {
+		c.chain++
+	}
+}
+
+// chainOutlier reports whether an operator's chain-answer share stands out
+// from its peers' (chainGap, chainRatio), each side over minAttempts first
+// attempts, and returns both shares.
+func chainOutlier(c opCount, poolFirsts, poolChain int) (share, peers float64, ok bool) {
+	peerFirsts := poolFirsts - c.firsts
+	if c.firsts < minAttempts || peerFirsts < minAttempts {
+		return 0, 0, false
+	}
+	share = float64(c.chain) / float64(c.firsts)
+	peers = float64(poolChain-c.chain) / float64(peerFirsts)
+	return share, peers, share-peers >= chainGap && share >= chainRatio*peers
+}
+
 // clientSlot is one minute of client-facing answers for a service.
 type clientSlot struct {
 	minute        int64
@@ -421,7 +491,7 @@ func (e *Engine) window(now time.Time) []candidate {
 	oldest := now.Unix()/60 - windowSlots + 1
 	var out []candidate
 	for k, p := range e.pools {
-		collapse := 0
+		collapse, poolFirsts, poolChain := 0, 0, 0
 		ops := map[string]opCount{}
 		for i := range p.slots {
 			s := &p.slots[i]
@@ -434,25 +504,37 @@ func (e *Engine) window(now time.Time) []candidate {
 				t.picks += c.picks
 				t.attempts += c.attempts
 				t.successes += c.successes
+				t.firsts += c.firsts
+				t.chain += c.chain
 				ops[name] = t
+				poolFirsts += c.firsts
+				poolChain += c.chain
 			}
 		}
 		cshare, creq := e.clientShare(k.svc, oldest)
 		for name, c := range ops {
-			if c.attempts < minAttempts {
-				continue
-			}
-			share := 0.0
+			share, success, opRate := 0.0, 0.0, 0.0
 			if collapse > 0 {
 				share = float64(c.picks) / float64(collapse)
 			}
-			success := float64(c.successes) / float64(c.attempts)
-			opRate := e.opRate(k, name)
+			if c.attempts > 0 {
+				success = float64(c.successes) / float64(c.attempts)
+			}
+			if c.attempts >= minAttempts {
+				opRate = e.opRate(k, name)
+			}
+			chainShare, peerChain, outlier := chainOutlier(c, poolFirsts, poolChain)
+			harm := 0.0
+			if outlier && creq > 0 {
+				harm = (float64(c.chain) - peerChain*float64(c.firsts)) / float64(creq)
+			}
 			trigger := ""
 			switch {
-			case collapse >= minCollapse && share >= minShare && success <= maxSuccess:
+			case c.attempts >= minAttempts && collapse >= minCollapse && share >= minShare && success <= maxSuccess:
 				trigger = TriggerCollapse
-			case opRate >= opRateTrigger:
+			case outlier:
+				trigger = TriggerChainAnswers
+			case c.attempts >= minAttempts && opRate >= opRateTrigger:
 				trigger = TriggerOperatorRate
 			default:
 				continue
@@ -464,6 +546,7 @@ func (e *Engine) window(now time.Time) []candidate {
 					CollapsePicks: collapse, Share: share, Attempts: c.attempts, SuccessRate: success,
 					Trigger: trigger, OperatorRate: opRate,
 					ClientFailure: cshare, ClientRequests: creq,
+					FirstAttempts: c.firsts, ChainShare: chainShare, PeerChainShare: peerChain, AnswerHarm: harm,
 				},
 			})
 		}
@@ -555,7 +638,9 @@ func (e *Engine) decide(ctx context.Context, k drain.Key, now time.Time, act boo
 		return OutcomeNoClientEvidence
 	}
 	ev.Severe = ev.Attempts >= severeMinAttempts && ev.SuccessRate <= severeMaxSuccess
-	if ev.ClientFailure < minClientFailure && !ev.Severe {
+	// Chain errors an outlier delivered inside a 200 hurt callers as much as a
+	// 5xx does, and the client-facing status never shows them.
+	if ev.ClientFailure < minClientFailure && ev.AnswerHarm < minClientFailure && !ev.Severe {
 		return OutcomeBelowClient
 	}
 	eps, _ := e.d.Endpoints.AvailableEndpoints(ctx, k.ServiceID, k.RPCType)
@@ -596,6 +681,10 @@ func (e *Engine) decide(ctx context.Context, k drain.Key, now time.Time, act boo
 	until := now.Add(d)
 	reason := fmt.Sprintf("%s %d collapse picks (%.0f%% on this operator), success %.1f%% over %d attempts; vouched alternative %s",
 		ReasonPrefix, ev.CollapsePicks, 100*ev.Share, 100*ev.SuccessRate, ev.Attempts, ev.Alternative)
+	if ev.Trigger == TriggerChainAnswers {
+		reason = fmt.Sprintf("%s %.0f%% of %d first attempts answered with a chain error against %.0f%% for the other operators, %.1f%% of client requests; vouched alternative %s",
+			ReasonPrefix, 100*ev.ChainShare, ev.FirstAttempts, 100*ev.PeerChainShare, 100*ev.AnswerHarm, ev.Alternative)
+	}
 	if err := e.d.Drains.Set(ctx, drain.Entry{Key: k, Until: until, Reason: reason}); err != nil {
 		e.d.Logger.Warn("autodrain: setting drain failed", "service_id", k.ServiceID, "operator", k.Operator, "rpc_type", k.RPCType, "error", err)
 		return ""
@@ -662,5 +751,6 @@ func (e *Engine) emit(ctx context.Context, k drain.Key, ev Event) {
 		"trigger", ev.Trigger, "collapse_picks", ev.CollapsePicks, "share", ev.Share, "attempts", ev.Attempts,
 		"success_rate", ev.SuccessRate, "operator_rate", ev.OperatorRate,
 		"client_failure", ev.ClientFailure, "client_requests", ev.ClientRequests,
+		"chain_share", ev.ChainShare, "peer_chain_share", ev.PeerChainShare, "answer_harm", ev.AnswerHarm,
 		"vouched_alternative", ev.Alternative)
 }

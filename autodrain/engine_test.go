@@ -292,3 +292,80 @@ func TestEngine_SharedOwnerAcrossMultiTenantProvidersStillLeavesAnAlternative(t 
 		t.Fatalf("active drains = %+v, want opa.example drained with opb.example as the alternative", active)
 	}
 }
+
+// firsts feeds n attempts of one kind for ep, the first chain of them
+// answered with a chain error and the rest clean.
+func (h *harness) firsts(ep domain.EndpointAddr, kind string, n, chain int) {
+	for i := 0; i < n; i++ {
+		attribution := "none"
+		if i < chain {
+			attribution = "blockchain"
+		}
+		h.e.OnAttempt(sei, jsonrpc, ep, attribution, kind)
+	}
+}
+
+// An operator answering every first attempt with a chain error while its
+// peers answer 4% is a candidate scoring cannot see: each of those answers is
+// a success to reputation, and every caller got a 200. The errors it delivered
+// past its peers' share are the harm the gate reads.
+func TestEngine_ChainAnswerOutlier(t *testing.T) {
+	for _, act := range []bool{false, true} {
+		h := newHarness(t, fakeVouch{opb: true}, act)
+		h.firsts(opa, "first", 60, 60)
+		h.firsts(opb, "first", 100, 4)
+		h.clients(200, 0)
+		h.e.Evaluate(context.Background())
+
+		evs, _ := h.log.Recent(context.Background(), "", 10)
+		want := OutcomeShadow
+		if act {
+			want = OutcomeDrained
+		}
+		if len(evs) != 1 || evs[0].Operator != "opa.example" || evs[0].Outcome != want || evs[0].Trigger != TriggerChainAnswers {
+			t.Fatalf("act=%v: events = %+v, want one %s chain_answers decision on opa", act, evs, want)
+		}
+		if ev := evs[0]; ev.ChainShare != 1 || ev.PeerChainShare != 0.04 || ev.AnswerHarm < 0.28 || ev.AnswerHarm > 0.29 {
+			t.Fatalf("evidence = %+v, want share 1, peers 0.04, harm (60-2.4)/200", ev)
+		}
+		if act {
+			if active := h.drains.Active(context.Background(), sei); len(active) != 1 || !strings.Contains(active[0].Reason, "chain error") {
+				t.Fatalf("drains = %+v, want opa drained naming the chain errors", active)
+			}
+		}
+	}
+}
+
+// Not candidates: a pool whose operators all answer chain errors alike, an
+// outlier measured only on retries and hedge arms (they carry what others
+// failed), and client-attributed answers, which are nobody's. An outlier too
+// small to reach the client bar is recorded and left alone.
+func TestEngine_ChainAnswerNotAnOutlier(t *testing.T) {
+	for name, tc := range map[string]struct {
+		feed    func(h *harness)
+		clients int
+		want    []string
+	}{
+		"pool alike": {func(h *harness) { h.firsts(opa, "first", 60, 36); h.firsts(opb, "first", 100, 60) }, 200, nil},
+		"retries only": {func(h *harness) {
+			h.firsts(opa, "retry", 60, 60)
+			h.firsts(opa, "hedge", 60, 60)
+			h.firsts(opb, "first", 100, 4)
+		}, 200, nil},
+		"client-attributed": {func(h *harness) {
+			for i := 0; i < 60; i++ {
+				h.e.OnAttempt(sei, jsonrpc, opa, "client", "first")
+			}
+			h.firsts(opb, "first", 100, 4)
+		}, 200, nil},
+		"too little harm": {func(h *harness) { h.firsts(opa, "first", 60, 60); h.firsts(opb, "first", 100, 4) }, 5000, []string{"opa.example:" + OutcomeBelowClient}},
+	} {
+		h := newHarness(t, fakeVouch{opb: true}, true)
+		tc.feed(h)
+		h.clients(tc.clients, 0)
+		h.e.Evaluate(context.Background())
+		if o := h.outcomes(t); fmt.Sprint(o) != fmt.Sprint(tc.want) {
+			t.Errorf("%s: events = %v, want %v", name, o, tc.want)
+		}
+	}
+}

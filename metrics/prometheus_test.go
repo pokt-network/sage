@@ -845,6 +845,20 @@ func TestRecordOperatorAttempt_KeysByOperator(t *testing.T) {
 	}
 }
 
+// The attempt hook hears every attempt the counter counts, with the endpoint,
+// attribution and kind the counter keeps by operator.
+func TestRecordOperatorAttempt_Hook(t *testing.T) {
+	r := newIsolatedRecorder(t)
+	var got []string
+	r.SetOperatorAttemptHook(func(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, attribution, kind string) {
+		got = append(got, string(svc)+" "+string(rpc)+" "+string(ep)+" "+attribution+" "+kind)
+	})
+	r.RecordOperatorAttempt("eth", domain.RPCTypeJSONRPC, "s1-https://rm01.node.example.com", "blockchain", "first", "light", time.Millisecond)
+	if len(got) != 1 || got[0] != "eth json_rpc s1-https://rm01.node.example.com blockchain first" {
+		t.Fatalf("hook heard %q", got)
+	}
+}
+
 // A failure's reason is the code before any ':' (a WebSocket reason carries
 // its error text after it), so error texts never become label values.
 func TestRecordOperatorFailure_CutsReason(t *testing.T) {

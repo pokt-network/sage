@@ -131,6 +131,42 @@ harm. The event records which trigger raised it (`collapse` or
 `operator_rate`), the operator rate, and the client failure share behind the
 decision.
 
+**Third trigger — the operator scoring counts as perfect** (added
+2026-10-04). An error the heuristic passes through as the chain's answer — a
+JSON-RPC `-32603` whose wording it does not recognise, a "block not found" — is
+a success to reputation, and the caller gets it inside a 200. An operator whose
+middleware answers everything that way scores 100, wins the latency
+tie-break, and neither the score, the collapse share, the chronic rate nor the
+client gate can see it. On mainnet solana one operator answered 100% of its
+first attempts with `-32603` against 4% for the pool's other operators, for at
+least two days, and about 42% of the service's client requests got the error.
+
+A chain error depends on the request, and every operator in a pool draws from
+the same requests, so the engine compares shares within the pool. It counts
+first and probation attempts only, from the metrics recorder's attempt hook
+(`SetOperatorAttemptHook`): a retry or a hedge arm reaches whoever is left,
+carrying the requests others already failed, and over-represents chain errors
+on floored operators. A candidate is raised when its chain-answer share is at
+least 20 points and at least three times above the share of the pool's other
+operators, each side over the attempt floor. Its gate is the harm it did: the
+chain errors it answered beyond its peers' share, per client request of the
+service in the window, against the same 5% bar. The event records the trigger
+(`chain_answers`), both shares and that harm (`answer_harm`).
+
+Replayed over 60 hours of mainnet first and probation attempts (10-minute
+windows), the outlier condition held at some point for 21 (pool, operator)
+pairs, and the harm bar passed in 4 incidents: the solana operator above (310
+of 310 windows), the same operator on a CometBFT pool (266, harm about 42%),
+another operator answering 27% of hyperliquid with `-32603` against 0% for
+fourteen hours (98 windows, harm about 18%), and one answering 24% of a REST
+pool with 5xx the plugin passes as the chain's (30 windows, about 7%). It also
+passed in 18 scattered windows: 14 of them the first operator on four EVM
+pools, 3 an operator answering 88% chain errors on base, and 1 a window that
+straddled a pod roll and a manual drain. Pools where every
+operator answers many chain errors alike (akash, 45–75%) never met the ratio,
+and floored operators whose share rose on archival leftovers (poly, bsc, 30–60%
+against 1–3%) stayed far below the harm bar (under 1.2%).
+
 Success, attempts and failures are counted from supplier-attributed attempts
 only. Client- and blockchain-attributed outcomes are not attempts, the same
 rule the chronic term uses (`reputation/rate.go:103`). The client-facing share
