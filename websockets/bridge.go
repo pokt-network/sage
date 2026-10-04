@@ -534,6 +534,13 @@ func (b *Bridge) ReplaceEndpoint(cause error) {
 	b.rebind(b.endpointConn.Load(), cause)
 }
 
+// SendToClient writes a text frame the gateway itself owes the client: an
+// answer to a request the endpoint was lost with and that cannot be asked
+// again. Safe from any goroutine; the connection serialises writes.
+func (b *Bridge) SendToClient(data []byte) error {
+	return b.clientConn.WriteMessage(websocket.TextMessage, data)
+}
+
 // Rebindable reports whether the bridge has an endpoint-lost handler, and so
 // takes a planned rebind (a session rollover, an operator's request) whatever
 // its loss budget says. CanRebind is the question for a loss.

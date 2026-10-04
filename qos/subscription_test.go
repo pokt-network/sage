@@ -208,7 +208,7 @@ func TestSubscriptionRegistry_DuplicateWindowResetsOnReplay(t *testing.T) {
 	r.TranslateEndpointFrame([]byte("ok:1:s1"))
 	r.TranslateEndpointFrame([]byte("data:s1:block100"))
 
-	replay := r.ReplayFrames()
+	replay := r.Replay().Frames
 	if len(replay) != 1 {
 		t.Fatalf("ReplayFrames = %d frames, want 1", len(replay))
 	}
@@ -295,7 +295,7 @@ func TestSubscriptionRegistry_AckOutcome(t *testing.T) {
 	if _, _, n := r.TranslateEndpointFrame([]byte("data:s1")); n.Ack != "" {
 		t.Fatalf("notification: note %+v", n)
 	}
-	replay := r.ReplayFrames()
+	replay := r.Replay().Frames
 	if len(replay) != 1 {
 		t.Fatalf("ReplayFrames = %d, want 1", len(replay))
 	}

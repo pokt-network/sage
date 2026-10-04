@@ -36,7 +36,7 @@ func TestSubscriptions_SolanaRebindTranslation(t *testing.T) {
 	r := qos.NewSubscriptionRegistry(&Plugin{})
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"slotSubscribe"}`))
 	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","result":10,"id":1}`))
-	frames := r.ReplayFrames()
+	frames := r.Replay().Frames
 	if len(frames) != 1 {
 		t.Fatalf("replay = %q", frames)
 	}

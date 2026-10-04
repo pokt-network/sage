@@ -1125,6 +1125,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			Metrics:                    metrics.NewWebSocketMetrics(serviceIDsFrom(cfg)),
 			QoS:                        qosReg,
 			ClientIP:                   middleware.RequestClientIP(trustedProxies),
+			RequestTimeout:             timeoutFn,
 		})
 		wsRelayer = relayer
 		wsClients = func(serviceID domain.ServiceID, limit int, onlyShopping bool) any {

@@ -3,10 +3,13 @@ package qos
 import (
 	"fmt"
 	"hash/maphash"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/tidwall/gjson"
+
+	"github.com/pokt-network/sage/domain"
 )
 
 // SubscriptionAction is what a client frame asks of the subscription state.
@@ -159,7 +162,7 @@ const (
 // inert: every frame is SubscriptionNone and nothing is ever active.
 //
 // Across a rebind the client keeps the subscription ids the first supplier
-// assigned. ReplayFrames re-sends each live subscribe to the new supplier
+// assigned. Replay re-sends each live subscribe to the new supplier
 // under a gateway-owned request id; the ack that comes back is consumed
 // here (the client already had one) and its new subscription id is mapped
 // to the client's; notifications are rewritten to the client's id on the
@@ -199,12 +202,17 @@ type SubscriptionRegistry struct {
 	closed map[string]struct{}
 	seed   maphash.Seed
 
-	// Requests in flight, for Reissue: inflight is raw request id → the
-	// client's frame, inflightBytes their total size; reissue holds the
-	// frames Reissue took, for the next ReplayFrames.
-	inflight      map[string][]byte
+	// Requests in flight, for Reissue and Replay: inflight is raw request
+	// id → the client's frame and when it went out, inflightBytes their total
+	// size; reissue holds the frames Reissue took, for the next Replay.
+	inflight      map[string]inflightRequest
 	inflightBytes int
 	reissue       [][]byte
+}
+
+type inflightRequest struct {
+	frame []byte
+	sent  time.Time
 }
 
 type pendingSubscription struct {
@@ -350,7 +358,7 @@ func NewSubscriptionRegistry(classifier SubscriptionClassifier) *SubscriptionReg
 		recent:     make(map[string]*dupRing),
 		closed:     make(map[string]struct{}),
 		seed:       maphash.MakeSeed(),
-		inflight:   make(map[string][]byte),
+		inflight:   make(map[string]inflightRequest),
 	}
 }
 
@@ -364,22 +372,25 @@ func (r *SubscriptionRegistry) TranslateClientFrame(data []byte) []byte {
 	if isJSONArray(data) {
 		// A batch: each member is tracked as if sent alone, so a subscribe
 		// inside one is replayed and graded like any other. The frame goes
-		// out as sent.
+		// out as sent. Its requests are not tracked in flight: sent again
+		// one by one, the client would get single answers to a batch.
 		// ponytail: an unsubscribe inside a batch is not rewritten to the
 		// supplier's id after a rebind; rewrite per member if clients do it.
 		gjson.ParseBytes(data).ForEach(func(_, member gjson.Result) bool {
-			r.translateClientFrame([]byte(member.Raw))
+			r.translateClientFrame([]byte(member.Raw), false)
 			return true
 		})
 		return data
 	}
-	return r.translateClientFrame(data)
+	return r.translateClientFrame(data, true)
 }
 
-func (r *SubscriptionRegistry) translateClientFrame(data []byte) []byte {
+func (r *SubscriptionRegistry) translateClientFrame(data []byte, track bool) []byte {
 	info := r.classifier.ClassifyClientFrame(data)
 	if info.Action == SubscriptionNone {
-		r.track(data)
+		if track {
+			r.track(data)
+		}
 		return data
 	}
 	r.mu.Lock()
@@ -609,19 +620,43 @@ func (r *SubscriptionRegistry) forget(sub Subscription) {
 	}
 }
 
-// ReplayFrames returns the frames to send to a new supplier: a subscribe per
-// live subscription, the client's original request with a fresh
-// gateway-owned request id, then the requests Reissue took, as the client
-// sent them. It arms the registry to consume the subscribes' acks.
-// Frames the registry cannot re-id (no request-id span) are skipped: replaying
-// them would produce an ack the client would see twice.
-func (r *SubscriptionRegistry) ReplayFrames() [][]byte {
+// Replay is what a rebind sends the next supplier, and what it must not.
+type Replay struct {
+	// Frames go to the new supplier in order: each live subscription under a
+	// fresh gateway-owned request id (its ack is consumed here; the client
+	// already had one), each subscribe still unanswered, then the requests
+	// Reissue took and the rest still in flight, oldest first, as the client
+	// sent them.
+	Frames [][]byte
+	// Lost counts the requests among Frames that were simply in flight when
+	// the supplier went, not taken by Reissue: answers the old supplier
+	// owed and will never send.
+	Lost int
+	// Abandoned are the write requests that were in flight (IsWriteMethod):
+	// not sent again, since the old supplier may already have applied one,
+	// and each still owed an answer to the client.
+	Abandoned [][]byte
+}
+
+// Replay empties the registry's account of what is in flight on the
+// supplier being replaced into what to send its replacement, and arms the
+// registry to consume the subscription replays' acks. Everything sent goes
+// back through TranslateClientFrame and is tracked again.
+//
+// Before it, a rebind replayed live subscriptions only. A request the client
+// was waiting on went down with the old supplier's socket, and the client
+// waited on it forever, with no answer, no error and no close: three
+// connections in twelve from a browser on mainnet poly (2026-10-04).
+//
+// A live subscription the registry cannot re-id (no request-id span) is
+// skipped: replaying it would produce an ack the client would see twice.
+func (r *SubscriptionRegistry) Replay() Replay {
 	if r == nil || r.classifier == nil {
-		return nil
+		return Replay{}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var out [][]byte
+	var out Replay
 	for clientID, sub := range r.active {
 		span := JSONRPCRequestIDSpan(sub.Request)
 		if span.Len == 0 {
@@ -630,7 +665,7 @@ func (r *SubscriptionRegistry) ReplayFrames() [][]byte {
 		r.replays++
 		raw := fmt.Sprintf(`"sage-replay-%d"`, r.replays)
 		r.replay[raw] = clientID
-		out = append(out, spliceSpan(sub.Request, span, raw))
+		out.Frames = append(out.Frames, spliceSpan(sub.Request, span, raw))
 		// The stall clock restarts with the replay: until the new
 		// supplier's ack lands, Heartbeat still read the old supplier's
 		// silence, already past the timeout, and the next check called the
@@ -639,18 +674,57 @@ func (r *SubscriptionRegistry) ReplayFrames() [][]byte {
 			r.lastPeriodic = time.Now()
 		}
 	}
-	// After the subscriptions, the requests Reissue took. Whatever else was
-	// in flight went to the supplier being replaced and will not be
-	// answered; the reissued frames are tracked again as they go out.
-	out = append(out, r.reissue...)
+	// A subscribe the old supplier never answered goes again under the
+	// client's own id, so its ack goes to the client as the first would
+	// have. Re-tracked as pending on the way out.
+	for _, queue := range r.pending {
+		for _, p := range queue {
+			out.Frames = append(out.Frames, p.request)
+		}
+	}
+	clear(r.pending)
+	r.npending = 0
+
+	out.Frames = append(out.Frames, r.reissue...)
 	r.reissue = nil
+	lost := make([]inflightRequest, 0, len(r.inflight))
+	for _, req := range r.inflight {
+		lost = append(lost, req)
+	}
+	slices.SortFunc(lost, func(a, b inflightRequest) int { return a.sent.Compare(b.sent) })
+	for _, req := range lost {
+		if domain.IsWriteMethod(JSONRPCMethod(req.frame)) {
+			out.Abandoned = append(out.Abandoned, req.frame)
+			continue
+		}
+		out.Frames = append(out.Frames, req.frame)
+		out.Lost++
+	}
 	clear(r.inflight)
 	r.inflightBytes = 0
 	return out
 }
 
+// OldestInFlight is when the longest-waiting request in flight went out, or
+// zero when none is: a request no answer has come for in a relay timeout is
+// a supplier that has gone silent (the WebSocket stall check).
+func (r *SubscriptionRegistry) OldestInFlight() time.Time {
+	if r == nil {
+		return time.Time{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var oldest time.Time
+	for _, req := range r.inflight {
+		if oldest.IsZero() || req.sent.Before(oldest) {
+			oldest = req.sent
+		}
+	}
+	return oldest
+}
+
 // Reissue takes the client request an endpoint frame answers out of flight
-// and queues it for the next ReplayFrames, after the subscriptions, and
+// and queues it for the next Replay, after the subscriptions, and
 // reports whether there was one. The caller then drops the frame and has the
 // bridge rebind, so the client gets the next supplier's answer in its place.
 // For a refusal the next supplier will not repeat: a rate limit, a spent
@@ -671,7 +745,7 @@ func (r *SubscriptionRegistry) Reissue(data []byte) bool {
 		return false
 	}
 	r.answered(id)
-	r.reissue = append(r.reissue, req)
+	r.reissue = append(r.reissue, req.frame)
 	return true
 }
 
@@ -688,7 +762,7 @@ func (r *SubscriptionRegistry) InFlight(answer []byte) []byte {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.inflight[id]
+	return r.inflight[id].frame
 }
 
 // track remembers a client request in flight, by its id, for Reissue. A
@@ -705,14 +779,14 @@ func (r *SubscriptionRegistry) track(data []byte) {
 	if len(r.inflight) >= maxInflightRequests || r.inflightBytes+len(data) > maxInflightBytes {
 		return
 	}
-	r.inflight[id] = append([]byte(nil), data...)
+	r.inflight[id] = inflightRequest{frame: append([]byte(nil), data...), sent: time.Now()}
 	r.inflightBytes += len(data)
 }
 
 // answered forgets the request in flight under id, if any. Caller holds mu.
 func (r *SubscriptionRegistry) answered(id string) {
 	if req, ok := r.inflight[id]; ok {
-		r.inflightBytes -= len(req)
+		r.inflightBytes -= len(req.frame)
 		delete(r.inflight, id)
 	}
 }

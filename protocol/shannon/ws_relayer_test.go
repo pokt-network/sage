@@ -507,19 +507,20 @@ func TestWSRelayer_NoCapConfigured(t *testing.T) {
 }
 
 type spyWSMetrics struct {
-	mu            sync.Mutex
-	rejected      []string
-	bound         []string // operator|owner
-	released      []string
-	frames        map[string]int // operator|owner|direction
-	notifications map[string]int // operator|owner|topic|kind
-	probes        []string
-	shareCaps     []string
-	heads         []string // operator|lag|delayKnown
-	mismatches    []string // operator
-	sessionEnds   []string // action|blocksPast
-	reissued      []string // operator
-	retyped       []string // operator
+	mu             sync.Mutex
+	rejected       []string
+	bound          []string // operator|owner
+	released       []string
+	frames         map[string]int // operator|owner|direction
+	notifications  map[string]int // operator|owner|topic|kind
+	probes         []string
+	shareCaps      []string
+	heads          []string // operator|lag|delayKnown
+	mismatches     []string // operator
+	sessionEnds    []string // action|blocksPast
+	reissued       []string // operator
+	reissueReasons []string
+	retyped        []string // operator
 }
 
 func (s *spyWSMetrics) SupplierRetyped(_ domain.ServiceID, operator, _ string) {
@@ -528,9 +529,12 @@ func (s *spyWSMetrics) SupplierRetyped(_ domain.ServiceID, operator, _ string) {
 	s.mu.Unlock()
 }
 
-func (s *spyWSMetrics) SupplierReissued(_ domain.ServiceID, operator, _ string) {
+func (s *spyWSMetrics) SupplierReissued(_ domain.ServiceID, operator, _, reason string, n int) {
 	s.mu.Lock()
-	s.reissued = append(s.reissued, operator)
+	for range n {
+		s.reissued = append(s.reissued, operator)
+		s.reissueReasons = append(s.reissueReasons, reason)
+	}
 	s.mu.Unlock()
 }
 

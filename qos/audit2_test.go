@@ -16,7 +16,7 @@ import (
 func TestAudit2_ReplayThroughClientPathLeavesNoPending(t *testing.T) {
 	r := NewSubscriptionRegistry(spanClassifier{})
 	establish(t, r, "1", "old")
-	frames := r.ReplayFrames()
+	frames := r.Replay().Frames
 	if len(frames) != 1 {
 		t.Fatalf("precondition: ReplayFrames = %d frames, want 1", len(frames))
 	}
@@ -41,7 +41,7 @@ func TestAudit2_ReplayThroughClientPathLeavesNoPending(t *testing.T) {
 func TestAudit2_UnsubscribeDuringReplayDoesNotOrphan(t *testing.T) {
 	r := NewSubscriptionRegistry(spanClassifier{})
 	establish(t, r, "1", "old")
-	frames := r.ReplayFrames()
+	frames := r.Replay().Frames
 	if len(frames) != 1 {
 		t.Fatalf("precondition: ReplayFrames = %d frames, want 1", len(frames))
 	}

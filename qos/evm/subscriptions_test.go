@@ -52,7 +52,7 @@ func TestSubscriptions_EVMRebindTranslation(t *testing.T) {
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":7,"method":"eth_subscribe","params":["newHeads"]}`))
 	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":7,"result":"0xold"}`))
 
-	frames := r.ReplayFrames()
+	frames := r.Replay().Frames
 	if len(frames) != 1 || string(frames[0]) != `{"jsonrpc":"2.0","id":"sage-replay-1","method":"eth_subscribe","params":["newHeads"]}` {
 		t.Fatalf("replay = %q", frames)
 	}
@@ -100,7 +100,7 @@ func TestSubscriptions_EVMEverySubscribeIsTracked(t *testing.T) {
 	if a, b := grade(reused, "0xa"), grade(reused, "0xb"); a != qos.NotificationOK || b != qos.NotificationOK {
 		t.Fatalf("reused request id: grades = %v, %v, want both ok", a, b)
 	}
-	if n := len(reused.ReplayFrames()); n != 2 {
+	if n := len(reused.Replay().Frames); n != 2 {
 		t.Fatalf("reused request id: %d subscriptions replayed on rebind, want 2", n)
 	}
 
@@ -110,7 +110,7 @@ func TestSubscriptions_EVMEverySubscribeIsTracked(t *testing.T) {
 	if g := grade(batch, "0xa"); g != qos.NotificationOK {
 		t.Fatalf("subscribe inside a batch: grade = %v, want ok", g)
 	}
-	if n := len(batch.ReplayFrames()); n != 1 {
+	if n := len(batch.Replay().Frames); n != 1 {
 		t.Fatalf("subscribe inside a batch: %d replayed on rebind, want 1", n)
 	}
 }

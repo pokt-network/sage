@@ -53,7 +53,7 @@ func TestSubscriptionRegistry_ReplayFramesCarryFreshIDs(t *testing.T) {
 	establish(t, r, "1", "s1")
 	establish(t, r, "2", "s2")
 
-	frames := r.ReplayFrames()
+	frames := r.Replay().Frames
 	if len(frames) != 2 {
 		t.Fatalf("ReplayFrames = %d frames, want 2", len(frames))
 	}
@@ -71,7 +71,7 @@ func TestSubscriptionRegistry_ReplayFramesCarryFreshIDs(t *testing.T) {
 func TestSubscriptionRegistry_ReplayAckIsConsumedAndIDRemapped(t *testing.T) {
 	r := NewSubscriptionRegistry(spanClassifier{})
 	establish(t, r, "1", "old")
-	frames := r.ReplayFrames()
+	frames := r.Replay().Frames
 	id := replayID(frames[0])
 
 	// The new supplier acks with a new subscription id.
@@ -96,7 +96,7 @@ func TestSubscriptionRegistry_ReplayAckIsConsumedAndIDRemapped(t *testing.T) {
 func TestSubscriptionRegistry_ReplayErrorDropsSubscription(t *testing.T) {
 	r := NewSubscriptionRegistry(spanClassifier{})
 	establish(t, r, "1", "old")
-	frames := r.ReplayFrames()
+	frames := r.Replay().Frames
 	id := replayID(frames[0])
 	if _, fwd, _ := r.TranslateEndpointFrame([]byte("err:" + id)); fwd {
 		t.Fatal("a failed replay ack must not reach the client either")
@@ -111,7 +111,7 @@ func TestSubscriptionRegistry_SameIDAcrossSuppliersNeedsNoRewrite(t *testing.T) 
 	// then carry the replay id — which is exactly the remap case too.
 	r := NewSubscriptionRegistry(spanClassifier{})
 	establish(t, r, "7", "7")
-	frames := r.ReplayFrames()
+	frames := r.Replay().Frames
 	id := replayID(frames[0])
 	r.TranslateEndpointFrame([]byte("ok:" + id + ":" + id))
 	out, fwd, _ := r.TranslateEndpointFrame([]byte("data:" + id))
@@ -123,9 +123,9 @@ func TestSubscriptionRegistry_SameIDAcrossSuppliersNeedsNoRewrite(t *testing.T) 
 func TestSubscriptionRegistry_ReplayTwiceChainsRemaps(t *testing.T) {
 	r := NewSubscriptionRegistry(spanClassifier{})
 	establish(t, r, "1", "old")
-	f1 := r.ReplayFrames()
+	f1 := r.Replay().Frames
 	r.TranslateEndpointFrame([]byte("ok:" + replayID(f1[0]) + ":second"))
-	f2 := r.ReplayFrames()
+	f2 := r.Replay().Frames
 	r.TranslateEndpointFrame([]byte("ok:" + replayID(f2[0]) + ":third"))
 	if out, _, _ := r.TranslateEndpointFrame([]byte("data:third")); string(out) != "data:old" {
 		t.Fatalf("after two rebinds the client must still see its id, got %q", out)

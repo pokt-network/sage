@@ -39,7 +39,7 @@ func TestSubscriptions_CometBFTRebindRewritesEventID(t *testing.T) {
 	r := qos.NewSubscriptionRegistry(&Plugin{})
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"subscribe","params":{"query":"tm.event='NewBlock'"}}`))
 	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
-	frames := r.ReplayFrames()
+	frames := r.Replay().Frames
 	if len(frames) != 1 || string(frames[0]) != `{"jsonrpc":"2.0","id":"sage-replay-1","method":"subscribe","params":{"query":"tm.event='NewBlock'"}}` {
 		t.Fatalf("replay = %q", frames)
 	}

@@ -1,0 +1,171 @@
+package shannon
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	apptypes "github.com/pokt-network/poktroll/x/application/types"
+	servicetypes "github.com/pokt-network/poktroll/x/service/types"
+	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
+	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
+
+	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
+	"github.com/pokt-network/sage/qos"
+	"github.com/pokt-network/sage/qos/evm"
+	"github.com/pokt-network/sage/reputation"
+)
+
+// nopSigner signs nothing, and is safe across the bridge's goroutines.
+type nopSigner struct{}
+
+func (nopSigner) signRelayRequest(_ context.Context, req *servicetypes.RelayRequest, _ *apptypes.Application) (*servicetypes.RelayRequest, error) {
+	return req, nil
+}
+
+// signalLog is tieredRep that records signal reasons safely across goroutines.
+type signalLog struct {
+	tieredRep
+	mu      sync.Mutex
+	reasons map[domain.EndpointAddr][]string
+}
+
+func (s *signalLog) RecordSignal(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType, sig reputation.Signal) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reasons[ep] = append(s.reasons[ep], sig.Reason)
+	return nil
+}
+
+func (s *signalLog) of(ep domain.EndpointAddr) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.reasons[ep]...)
+}
+
+// silentSupplier takes the upgrade and every frame, and never answers.
+func silentSupplier(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A supplier that takes a request and stays silent no longer holds the client
+// for ever: past the relay timeout it is charged ws_no_answer and the
+// connection moves. The read goes again to the next supplier and is answered;
+// the write, which the silent one may have applied, is answered with an error
+// rather than sent twice.
+func TestWSOpen_SilentSupplierIsLeftAndEveryRequestAnswered(t *testing.T) {
+	silent := silentSupplier(t)
+	echo, _ := echoSupplier(t)
+	silentURL := wsURL(silent)
+	echoURL := strings.Replace(wsURL(echo), "127.0.0.1", "localhost", 1) // another operator
+	supplier := func(addr, url string) *sharedtypes.Supplier {
+		return &sharedtypes.Supplier{OperatorAddress: addr, Services: []*sharedtypes.SupplierServiceConfig{{
+			ServiceId: "eth", Endpoints: []*sharedtypes.SupplierEndpoint{{Url: url, RpcType: sharedtypes.RPCType_WEBSOCKET}},
+		}}}
+	}
+	session := &sessiontypes.Session{
+		SessionId: "s1",
+		Header: &sessiontypes.SessionHeader{
+			SessionId: "s1", ServiceId: "eth", ApplicationAddress: "pokt1app",
+			SessionStartBlockHeight: 100, SessionEndBlockHeight: 110,
+		},
+		Application: &apptypes.Application{Address: "pokt1app"},
+		Suppliers:   []*sharedtypes.Supplier{supplier("pokt1silent", silentURL), supplier("pokt1echo", echoURL)},
+	}
+	silentEP := domain.EndpointAddr("pokt1silent-" + silentURL)
+	echoEP := domain.EndpointAddr("pokt1echo-" + echoURL)
+
+	fn := &perSupplierFullNode{
+		mockRelayFullNode: mockRelayFullNode{session: session, app: &apptypes.Application{Address: "pokt1app"}},
+		answers:           map[string]string{"pokt1echo": `{"jsonrpc":"2.0","id":7,"result":"0x1"}`},
+	}
+	p := &Protocol{
+		fullNode: fn, sessions: newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger()),
+		signer: nopSigner{}, bl: newBlacklist(), ownedApps: map[domain.ServiceID][]string{"eth": {"pokt1app"}},
+		metrics: noopSupplierMetrics{}, logger: newTestLogger(),
+	}
+	p.sessions.latestBlockHeight.Store(105)
+	reg := qos.NewRegistry()
+	if err := reg.Register("eth", evm.NewPlugin(nil, evm.Config{})); err != nil {
+		t.Fatal(err)
+	}
+	// The silent supplier is the only tier-1 pick, so the connection opens
+	// on it; once it is tried, the rebind drops to the echo one.
+	rep := &signalLog{
+		tieredRep: tieredRep{&spyRepSvc{}, map[string]float64{silentEP.Operator(): 100, echoEP.Operator(): 60}},
+		reasons:   map[domain.EndpointAddr][]string{},
+	}
+	if silentEP.Operator() == echoEP.Operator() {
+		t.Fatalf("fixture: both suppliers are operator %q", silentEP.Operator())
+	}
+	spy := &spyWSMetrics{}
+	r := NewWSRelayer(WSRelayerDeps{
+		Protocol: p, Reputation: rep, Observe: newDisabledQueue(),
+		Flags:  featureflag.NewMemoryStore(map[string]bool{featureflag.FlagWebsocketRelays: true}),
+		Logger: newTestLogger(), Metrics: spy, QoS: reg,
+		RequestTimeout: func(domain.ServiceID) time.Duration { return 300 * time.Millisecond },
+	})
+	r.stallCheck = 50 * time.Millisecond
+
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		_ = r.Open(req.Context(), "eth", req, w)
+	}))
+	defer gw.Close()
+	client, _, err := websocket.DefaultDialer.Dial(wsURL(gw), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	for _, frame := range []string{
+		`{"jsonrpc":"2.0","id":7,"method":"eth_blockNumber","params":[]}`,
+		`{"jsonrpc":"2.0","id":8,"method":"eth_sendRawTransaction","params":["0xf8"]}`,
+	} {
+		if err := client.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[string]string{}
+	for len(got) < 2 {
+		_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, msg, err := client.ReadMessage()
+		if err != nil {
+			t.Fatalf("client read after %v: %v", got, err)
+		}
+		got[qos.JSONRPCRequestID(msg)] = string(msg)
+	}
+	if got["7"] != `{"jsonrpc":"2.0","id":7,"result":"0x1"}` {
+		t.Errorf("the read was answered %s; want the next supplier's answer", got["7"])
+	}
+	if !strings.Contains(got["8"], `"error"`) || !strings.Contains(got["8"], "may or may not have been applied") {
+		t.Errorf("the write was answered %s; want the lost-write error", got["8"])
+	}
+	if reasons := rep.of(silentEP); len(reasons) != 1 || reasons[0] != "ws_no_answer" {
+		t.Errorf("the silent supplier was charged %v, want one ws_no_answer", reasons)
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.reissueReasons) != 1 || spy.reissueReasons[0] != "no_answer" {
+		t.Errorf("reissues %v, want one no_answer", spy.reissueReasons)
+	}
+}

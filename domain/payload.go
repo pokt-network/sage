@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -130,4 +131,13 @@ func (r *Response) GRPCStatus() (code int, message string, ok bool) {
 		return 0, "", false
 	}
 	return code, r.Headers["grpc-message"], true
+}
+
+// IsWriteMethod reports whether a method name looks state-changing (send,
+// submit, broadcast): a transaction a node may have applied before its answer
+// was lost, so asking again is not the same question. Shared by supplier
+// affinity and the WebSocket replay.
+func IsWriteMethod(method string) bool {
+	m := strings.ToLower(method)
+	return strings.Contains(m, "send") || strings.Contains(m, "submit") || strings.Contains(m, "broadcast")
 }

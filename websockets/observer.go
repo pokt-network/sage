@@ -74,7 +74,7 @@ func WithObserver(o Observer) BridgeOption {
 // EndpointLostHandler replaces a lost endpoint. It returns the connection to
 // the new endpoint, the processor to use with it (signing is per supplier,
 // so the old one cannot be reused), and the raw client frames to replay to
-// it — a subscription registry's ReplayFrames. An error means there is
+// it — a subscription registry's Replay frames. An error means there is
 // nowhere to go; the bridge then closes as it would have without a handler.
 type EndpointLostHandler func(ctx context.Context, cause error) (*websocket.Conn, MessageProcessor, [][]byte, error)
 

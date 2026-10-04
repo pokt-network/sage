@@ -51,7 +51,7 @@ func TestAudit2_ReplayRestartsStallClock(t *testing.T) {
 		t.Fatal("precondition: a newHeads feed silent past the timeout is stalled")
 	}
 
-	if frames := subs.ReplayFrames(); len(frames) != 1 {
+	if frames := subs.Replay().Frames; len(frames) != 1 {
 		t.Fatalf("precondition: ReplayFrames = %d frames, want 1", len(frames))
 	}
 	if stalled(subs, timeout) {

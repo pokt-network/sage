@@ -168,9 +168,9 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "websocket_reissued_total",
-				Help:      "Client requests over WebSocket that a supplier answered with a rate limit, a spent quota or (with stale_response on) a stale head, and that were sent again to the next supplier after a rebind, the refusal never reaching the client, by service and the supplier that refused (operator, owner). A refusal on a bridge with no rebind left goes to the client and is not counted here; the refusals themselves are in sage_operator_failures_total as ws_rate_limited and ws_quota_exceeded.",
+				Help:      "Client requests over WebSocket sent again to the next supplier after a rebind instead of leaving the client without an answer, by service, the supplier they left (operator, owner) and reason: rate_limited or quota_exceeded (it refused them), stale (it answered with a head the chain had moved past, with stale_response on), lost (they were in flight when the connection moved for any other cause) or no_answer (none came within the service's relay timeout). Write requests (send, submit, broadcast) are never sent again: the client is answered with an error instead. A request on a bridge with no rebind left, or not tracked (inside a batch, past 256 requests or 256 KiB in flight), is not counted.",
 			},
-			supplierLabels,
+			append(append([]string{}, supplierLabels...), "reason"),
 		),
 		sessionEndActions: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -298,11 +298,11 @@ func (m *WebSocketMetrics) SessionEndAction(serviceID domain.ServiceID, action s
 	m.sessionEndBlocksPast.WithLabelValues(sid, action).Observe(float64(blocksPast))
 }
 
-// SupplierReissued counts one client request reissued after the supplier
-// refused it for its rate limit or quota.
-func (m *WebSocketMetrics) SupplierReissued(serviceID domain.ServiceID, operator, owner string) {
+// SupplierReissued counts n client requests sent again to the next
+// supplier, by why: rate_limited, quota_exceeded, stale, lost or no_answer.
+func (m *WebSocketMetrics) SupplierReissued(serviceID domain.ServiceID, operator, owner, reason string, n int) {
 	sid, op, own := m.supplierValues(serviceID, operator, owner)
-	m.reissued.WithLabelValues(sid, op, own).Inc()
+	m.reissued.WithLabelValues(sid, op, own, reason).Add(float64(n))
 }
 
 // SupplierRetyped counts one binary JSON answer forwarded to the client as

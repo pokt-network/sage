@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -113,11 +112,5 @@ func prioritize(list domain.EndpointAddrList, preferred domain.EndpointAddr) dom
 // isWriteMethod returns true if the first payload's method looks like a
 // state-changing call (send, submit, broadcast).
 func isWriteMethod(ctx *relay.Context) bool {
-	if len(ctx.Payloads) == 0 {
-		return false
-	}
-	method := strings.ToLower(ctx.Payloads[0].Method())
-	return strings.Contains(method, "send") ||
-		strings.Contains(method, "submit") ||
-		strings.Contains(method, "broadcast")
+	return len(ctx.Payloads) > 0 && domain.IsWriteMethod(ctx.Payloads[0].Method())
 }

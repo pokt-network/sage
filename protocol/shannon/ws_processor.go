@@ -346,13 +346,13 @@ func (p *wsMessageProcessor) reissue(payload []byte, stale bool) bool {
 	if p.canRebind == nil {
 		return false
 	}
+	reason := "stale"
 	if !stale {
 		if !bytes.Contains(payload, []byte(`"error"`)) {
 			return false
 		}
-		switch heuristic.AnalyzeFrame(payload, domain.RPCTypeWebSocket).Reason {
-		case heuristic.ReasonRateLimited, heuristic.ReasonQuotaExceeded:
-		default:
+		reason = heuristic.AnalyzeFrame(payload, domain.RPCTypeWebSocket).Reason
+		if reason != heuristic.ReasonRateLimited && reason != heuristic.ReasonQuotaExceeded {
 			return false
 		}
 	}
@@ -360,7 +360,7 @@ func (p *wsMessageProcessor) reissue(payload []byte, stale bool) bool {
 		return false
 	}
 	if p.metrics != nil {
-		p.metrics.SupplierReissued(domain.ServiceID(p.sessionHeader.ServiceId), p.operator, p.owner)
+		p.metrics.SupplierReissued(domain.ServiceID(p.sessionHeader.ServiceId), p.operator, p.owner, reason, 1)
 	}
 	return true
 }

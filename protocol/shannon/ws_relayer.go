@@ -90,6 +90,11 @@ type WSRelayerDeps struct {
 	// wire (see wire.go).
 	Metrics WSMetrics
 
+	// RequestTimeout is the service's relay timeout: a request a supplier
+	// holds longer with no answer moves the connection (ws_no_answer). Nil or
+	// zero waits for ever, as before.
+	RequestTimeout func(domain.ServiceID) time.Duration
+
 	// QoS resolves the service's plugin. A plugin that implements
 	// qos.SubscriptionClassifier gives the bridge a subscription registry —
 	// the knowledge a rebind and a stall watchdog need. Optional: nil, or a
@@ -119,7 +124,7 @@ type WSMetrics interface {
 	Probed(serviceID domain.ServiceID, result string)
 	ShareCap(serviceID domain.ServiceID, outcome string)
 	SessionEndAction(serviceID domain.ServiceID, action string, blocksPast int64)
-	SupplierReissued(serviceID domain.ServiceID, operator, owner string)
+	SupplierReissued(serviceID domain.ServiceID, operator, owner, reason string, n int)
 	SupplierRetyped(serviceID domain.ServiceID, operator, owner string)
 }
 
@@ -433,8 +438,31 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	// subscriptions and nothing delivered for them in wsStallTimeout while
 	// pings are still answered. Handled exactly like a dead socket — the
 	// rebind below — so the same replay and the same limit apply.
+	//
+	// So is a request the supplier has held past the service's relay
+	// timeout with no answer (noAnswer tells the rebind which it was): a
+	// supplier that takes requests and stays silent held its clients
+	// forever, ungraded. Only while a rebind is left: past the limit the
+	// rebind would close the connection, and a slow answer is better than
+	// none.
+	var noAnswer atomic.Bool
 	bridgeOpts = append(bridgeOpts, websockets.WithStallDetector(func() bool {
-		return stalled(subs, r.stallTimeout)
+		if stalled(subs, r.stallTimeout) {
+			return true
+		}
+		if r.deps.RequestTimeout == nil {
+			return false
+		}
+		timeout := r.deps.RequestTimeout(serviceID)
+		oldest := subs.OldestInFlight()
+		if timeout <= 0 || oldest.IsZero() || time.Since(oldest) <= timeout {
+			return false
+		}
+		if b := bridgeRef.Load(); b == nil || !b.CanRebind() {
+			return false
+		}
+		noAnswer.Store(true)
+		return true
 	}, r.stallCheck))
 
 	// Endpoint loss is a rebind, not a close: pick another supplier, move
@@ -451,7 +479,13 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		if v, ok := heuristic.MinerRefusal(cause); ok && v.Reason == heuristic.ReasonOverServiced {
 			r.deps.Protocol.markOverServed(serviceID, lost.Supplier(), sessionEnd.Load())
 		}
-		if lossIsSuppliers(cause) {
+		lostReason := "lost"
+		switch {
+		case errors.Is(cause, websockets.ErrBridgeStalled) && noAnswer.Swap(false):
+			lostReason = "no_answer"
+			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, lost, domain.RPCTypeWebSocket,
+				reputation.NewSignal(reputation.SignalMajorError, "ws_no_answer", 0))
+		case lossIsSuppliers(cause):
 			_ = r.deps.Reputation.RecordSignal(context.Background(), serviceID, lost, domain.RPCTypeWebSocket,
 				reputation.NewSignal(reputation.SignalMajorError, "ws_endpoint_lost:"+cause.Error(), 0))
 		}
@@ -477,8 +511,9 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		r.incLoad(next.addr)
 		addr := next.addr
 		current.Store(&addr)
-		r.releaseSupplier(serviceID, clientIP, currentProc.Load(), false)
-		live.retired.Add(currentProc.Load().endpointFrames.Load())
+		old := currentProc.Load()
+		r.releaseSupplier(serviceID, clientIP, old, false)
+		live.retired.Add(old.endpointFrames.Load())
 		proc := newProcessor(next)
 		r.bindSupplier(serviceID, proc)
 		currentProc.Store(proc)
@@ -487,7 +522,18 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 			"from", lost, "to", next.addr, "supplier", next.ep.Supplier(),
 			"session_end_height", next.session.Header.SessionEndBlockHeight,
 		)
-		return conn, proc, subs.ReplayFrames(), nil
+		// What the old supplier owed goes to the new one; a write it may
+		// have applied is answered here instead, so no client waits on it.
+		replay := subs.Replay()
+		if b := bridgeRef.Load(); b != nil {
+			for _, req := range replay.Abandoned {
+				_ = b.SendToClient(lostWriteAnswer(req))
+			}
+		}
+		if r.deps.Metrics != nil && replay.Lost > 0 {
+			r.deps.Metrics.SupplierReissued(serviceID, old.operator, old.owner, lostReason, replay.Lost)
+		}
+		return conn, proc, replay.Frames, nil
 	}))
 	// StartBridge starts the endpoint read loop before it returns, so a loss
 	// can reach the rebind handler — which releases the current supplier
@@ -550,6 +596,17 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 // Nor is a relay miner's own refusal that the HTTP path scores as nothing:
 // a session it no longer serves, or an allocation that is spent
 // (heuristic.MinerRefusal, the table every path reads).
+// lostWriteAnswer is the client's answer to a write request in flight when
+// its supplier was lost: an error, not a retry, since the supplier may have
+// applied it.
+func lostWriteAnswer(request []byte) []byte {
+	id := qos.JSONRPCRequestID(request)
+	if id == "" {
+		id = "null"
+	}
+	return []byte(`{"jsonrpc":"2.0","id":` + id + `,"error":{"code":-32603,"message":"upstream connection lost before the answer; the request may or may not have been applied"}}`)
+}
+
 func lossIsSuppliers(cause error) bool {
 	if errors.Is(cause, websockets.ErrBridgeSessionExpired) || errors.Is(cause, websockets.ErrBridgeReplaceRequested) {
 		return false

@@ -124,7 +124,7 @@ func reissueThroughBridge(t *testing.T, firstAnswer, request string, staleness *
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		return conn, proc("pokt1second"), subs.ReplayFrames(), nil
+		return conn, proc("pokt1second"), subs.Replay().Frames, nil
 	}
 	up := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
