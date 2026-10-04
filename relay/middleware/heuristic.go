@@ -125,6 +125,16 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 			// the host's failure (qos.VerdictRefiner).
 			refineVerdict(registry, ctx, &result)
 
+			// A node's own error on a light call is the supplier's
+			// (featureflag.FlagLightMethodErrors): the analyzer's
+			// pass-through is for lookups the chain could not serve, and a
+			// head, a chain id or a health check is never one.
+			if (result.Reason == "internal_error" || result.Reason == "server_error") &&
+				len(ctx.Payloads) == 1 && methodClassOf(ctx.Payloads[0].Method()) == "light" &&
+				flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagLightMethodErrors, ctx.ServiceID) {
+				result = heuristic.LightMethodError(result)
+			}
+
 			// penalize_408 is the live undo for scoring a supplier's 408
 			// (heuristic/analyzer.go): off, the 408 is still retried, not scored.
 			if result.Reason == "http_408" && flags != nil && !flags.IsEnabled(ctx.Ctx, featureflag.FlagPenalize408, ctx.ServiceID) {

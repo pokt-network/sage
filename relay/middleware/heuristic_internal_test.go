@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -55,4 +56,56 @@ func TestHeuristic_MethodNotFound_RetriesOnlyCataloguedMethods(t *testing.T) {
 			t.Fatalf("err = %v, want none without a catalogue to consult", err)
 		}
 	})
+}
+
+// Behind light_method_errors a node's own -32603 on a light call is the
+// supplier's: a retried major penalty. On any other call, or with the flag
+// off, it passes through unscored as before. When every attempt gets it the
+// error is delivered, not SAGE's 5xx.
+func TestHeuristic_LightMethodErrorIsTheSuppliers(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error"}}`)
+	ctxFor := func(method string) *relay.Context {
+		ctx := baseContext()
+		ctx.RPCType = domain.RPCTypeJSONRPC
+		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"`+method+`"}`), domain.RPCTypeJSONRPC, method)}
+		return ctx
+	}
+	send := relay.HandlerFunc(func(c *relay.Context) error {
+		c.Endpoint = c.Endpoints[0]
+		c.Response = &domain.Response{HTTPStatusCode: 200, Body: body}
+		return nil
+	})
+	verdict := func(flags *mockFlags, method string) (*heuristic.AnalysisResult, error) {
+		ctx := ctxFor(method)
+		err := Heuristic(flags, nil, HeuristicOptions{})(send).HandleRelay(ctx)
+		return ctx.HeuristicResult, err
+	}
+
+	on := newFlags("heuristic", "light_method_errors")
+	if r, err := verdict(on, "getSlot"); r == nil || r.Reason != heuristic.ReasonLightMethodError ||
+		r.Attribution != heuristic.AttrSupplier || r.PenaltySeverity != heuristic.SeverityMajor || !domain.IsRetryable(err) {
+		t.Fatalf("light call: verdict %+v err %v, want a retried major light_method_error", r, err)
+	}
+	if r, err := verdict(on, "getAccountInfo"); err != nil || r == nil || r.Reason != "internal_error" || r.ShouldPenalize {
+		t.Fatalf("standard call: verdict %+v err %v, want the unscored pass-through", r, err)
+	}
+	if r, err := verdict(newFlags("heuristic"), "getSlot"); err != nil || r == nil || r.Reason != "internal_error" || r.ShouldPenalize {
+		t.Fatalf("flag off: verdict %+v err %v, want the unscored pass-through", r, err)
+	}
+
+	// The error, then a timeout: the error is still the only answer.
+	attempt := 0
+	thenTimeout := relay.HandlerFunc(func(c *relay.Context) error {
+		if attempt++; attempt > 1 {
+			c.Endpoint = c.Endpoints[0]
+			return domain.NewRelayError(domain.ErrTransport, "timeout", context.DeadlineExceeded, true)
+		}
+		return send(c)
+	})
+	flags := newFlags("retry", "heuristic", "light_method_errors")
+	ctx := ctxFor("getSlot")
+	_ = Retry(flags, retryCfg(1, 0), nil, RetryOptions{})(Heuristic(flags, nil, HeuristicOptions{})(thenTimeout)).HandleRelay(ctx)
+	if ctx.Response == nil || string(ctx.Response.Body) != string(body) {
+		t.Fatalf("error then timeout: delivered %v, want the node's error", ctx.Response)
+	}
 }

@@ -202,9 +202,14 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					// HTML 404 page, an empty body — and delivering it passed a
 					// misrouted vhost's page to the client as its answer
 					// (mainnet solana, 2026-09-15: 2172 client 404s in 10 min).
+					// A stale head and a light call's error are supplier
+					// verdicts on a node's real answer, so they are kept: when
+					// no other party answers, the client gets what PATH would
+					// have passed through, not SAGE's 5xx.
 					if ctx.Response != nil && errors.Is(lastErr, domain.ErrRetryVerdict) &&
 						(ctx.HeuristicResult == nil || ctx.HeuristicResult.Attribution != heuristic.AttrSupplier ||
-							ctx.HeuristicResult.Reason == heuristic.ReasonStaleResponse) &&
+							ctx.HeuristicResult.Reason == heuristic.ReasonStaleResponse ||
+							ctx.HeuristicResult.Reason == heuristic.ReasonLightMethodError) &&
 						(!isStale(ctx.HeuristicResult) || !isStale(keptVerdict) || fresherStale(ctx.HeuristicResult, keptVerdict)) {
 						keptResp, keptEndpoint, keptVerdict, keptErr = ctx.Response, ctx.Endpoint, ctx.HeuristicResult, lastErr
 					}

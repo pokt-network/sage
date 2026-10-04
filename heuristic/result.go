@@ -145,6 +145,26 @@ func InvalidResult(details string) AnalysisResult {
 	}
 }
 
+// ReasonLightMethodError is the verdict on a node's own error answering a
+// call a working node always answers (featureflag.FlagLightMethodErrors).
+const ReasonLightMethodError = "light_method_error"
+
+// LightMethodError re-grades prev, the analyzer's pass-through of a node's
+// own error, as the supplier's: a major penalty, retried on another party.
+// A head, a chain id or a health check has no answer the chain cannot give,
+// so an error on one is the node failing, not the chain refusing.
+func LightMethodError(prev AnalysisResult) AnalysisResult {
+	return AnalysisResult{
+		ShouldRetry:     true,
+		ShouldPenalize:  true,
+		PenaltySeverity: SeverityMajor,
+		Attribution:     AttrSupplier,
+		Confidence:      0.9,
+		Reason:          ReasonLightMethodError,
+		Details:         "error on a call a working node always answers: " + prev.Details,
+	}
+}
+
 // ReasonSuccess is the Reason a verdict carries when the response passed every
 // check. Callers ask IsSuccess rather than comparing against it.
 const ReasonSuccess = "success"

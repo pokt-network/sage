@@ -173,6 +173,18 @@ const (
 	// Such answers are counted in sage_invalid_results_total whatever this
 	// says. Needs the heuristic flag. Off by default.
 	FlagInvalidResult = "invalid_result"
+	// FlagLightMethodErrors grades a node's own JSON-RPC error (a -32603 or
+	// a server-range code the analyzer does not recognise) answering a light
+	// call (a chain head, a chain id, a health check) as light_method_error:
+	// a major supplier penalty and a retry on another party. The analyzer
+	// passes such an error through unscored, which is right for a lookup the
+	// chain could not serve; a light call has no such answer, so on one the
+	// error is the node's. On mainnet solana (2026-10-04) one operator's
+	// middleware answered every call for nodes it had marked down with
+	// -32603 in 40 ms, stayed at 100, won the latency tie-break with it, and
+	// about 44% of the service's requests got the error. Needs the heuristic
+	// flag. Off: such errors pass through unscored, as in PATH.
+	FlagLightMethodErrors = "light_method_errors"
 	// FlagStaleShare charges a party (the owner when its domain is dedicated,
 	// else the operator) for the share of its chain-head answers that are
 	// stale, on every one of its reputation keys in the service: 0 within 15
@@ -316,6 +328,7 @@ var DefaultFlags = map[string]bool{
 	FlagWSShareCap:              false,
 	FlagStaleResponse:           false,
 	FlagInvalidResult:           false,
+	FlagLightMethodErrors:       true,
 	FlagStaleShare:              false,
 	FlagStateCanary:             false,
 	FlagTrustPenalty:            false,
