@@ -160,7 +160,7 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "websocket_retyped_frames_total",
-				Help:      "Answers a supplier sent over WebSocket as binary frames holding JSON, which the gateway forwarded to the client as text frames, by service and supplier (operator, owner). A browser reads a binary frame as a Blob and cannot JSON.parse it; both relay miners keep the node's frame type, so a supplier counted here has something in its own stack (an old relay miner build, a proxy in front of its nodes) sending binary. Non-JSON binary frames are forwarded as they came and not counted.",
+				Help:      "Answers a supplier sent over WebSocket as binary frames holding JSON, by service and supplier (operator, owner). JSON-RPC over WebSocket is text, and a browser reads a binary frame as a Blob it cannot JSON.parse; the gateway answers every client in the frame type it asks in, so this counts the supplier's framing whatever the client got. Both relay miners keep the node's frame type, so a supplier counted here has something in its own stack (an old relay miner build, a proxy in front of its nodes) sending binary.",
 			},
 			supplierLabels,
 		),
@@ -305,8 +305,7 @@ func (m *WebSocketMetrics) SupplierReissued(serviceID domain.ServiceID, operator
 	m.reissued.WithLabelValues(sid, op, own, reason).Add(float64(n))
 }
 
-// SupplierRetyped counts one binary JSON answer forwarded to the client as
-// text.
+// SupplierRetyped counts one JSON answer a supplier framed as binary.
 func (m *WebSocketMetrics) SupplierRetyped(serviceID domain.ServiceID, operator, owner string) {
 	sid, op, own := m.supplierValues(serviceID, operator, owner)
 	m.retyped.WithLabelValues(sid, op, own).Inc()

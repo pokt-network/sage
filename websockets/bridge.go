@@ -48,23 +48,15 @@ type MessageProcessor interface {
 	ProcessEndpointMessage(data []byte) ([]byte, error)
 }
 
-// TextRetypeObserver is implemented by a MessageProcessor that wants to know
-// when an endpoint message it processed arrived as a binary frame and went to
-// the client as text (see textJSON), to say which supplier sends them.
-type TextRetypeObserver interface {
-	RetypedToText()
+// BinaryJSONObserver is implemented by a MessageProcessor that wants to know
+// when an endpoint message it processed arrived as a binary frame holding
+// JSON (see textJSON), to say which supplier sends them.
+type BinaryJSONObserver interface {
+	EndpointSentBinaryJSON()
 }
 
 // textJSON reports whether data is a JSON object or array in valid UTF-8:
 // what a JSON-RPC client expects in a text frame.
-//
-// The frame type rides the WebSocket envelope alone, no relay protobuf carries
-// it, so whatever framed the bytes last decides it. On mainnet robinhood
-// (2026-10-04) eight answers in ten reached browser clients as binary frames,
-// valid JSON at the head inside; a browser hands a binary frame over as a
-// Blob, JSON.parse throws, and a public checker kept a row from the last
-// answer it could read, 4,000 blocks old. Both relay miners keep the node's
-// type, so the binary comes from a supplier's own stack.
 func textJSON(data []byte) bool {
 	for i, c := range data {
 		switch c {
@@ -103,6 +95,9 @@ type Bridge struct {
 	logger    *slog.Logger
 
 	clientConn *Connection
+	// clientType is the frame type of the client's latest message, zero
+	// before its first (see clientFrameType).
+	clientType atomic.Int32
 
 	// endpointConn and processor are replaced together by a rebind.
 	// endpointMu serialises that swap against route and the replay writes,
@@ -393,6 +388,7 @@ func (b *Bridge) route(msg message) {
 
 	switch msg.source {
 	case SourceClient:
+		b.clientType.Store(int32(msg.messageType))
 		processed, err := b.processor.ProcessClientMessage(msg.data)
 		if err != nil {
 			b.logger.Error("websocket: client message processing failed", "err", err)
@@ -435,12 +431,15 @@ func (b *Bridge) route(msg message) {
 		if processed == nil {
 			return // Consumed by the processor.
 		}
-		messageType := msg.messageType
-		if messageType == websocket.BinaryMessage && textJSON(processed) {
-			messageType = websocket.TextMessage
-			if o, ok := b.processor.(TextRetypeObserver); ok {
-				o.RetypedToText()
+		binaryJSON := msg.messageType == websocket.BinaryMessage && textJSON(processed)
+		if binaryJSON {
+			if o, ok := b.processor.(BinaryJSONObserver); ok {
+				o.EndpointSentBinaryJSON()
 			}
+		}
+		messageType := b.clientFrameType()
+		if messageType == websocket.TextMessage && msg.messageType == websocket.BinaryMessage && !binaryJSON {
+			messageType = websocket.BinaryMessage // bytes that are not text cannot ride a text frame
 		}
 		if writeErr := b.clientConn.WriteMessage(messageType, processed); writeErr != nil {
 			b.logger.Error("websocket: write to client failed", "err", writeErr)
@@ -534,11 +533,31 @@ func (b *Bridge) ReplaceEndpoint(cause error) {
 	b.rebind(b.endpointConn.Load(), cause)
 }
 
-// SendToClient writes a text frame the gateway itself owes the client: an
-// answer to a request the endpoint was lost with and that cannot be asked
-// again. Safe from any goroutine; the connection serialises writes.
+// SendToClient writes a frame the gateway itself owes the client, in the
+// client's frame type: an answer to a request the endpoint was lost with and
+// that cannot be asked again. Safe from any goroutine; the connection
+// serialises writes.
 func (b *Bridge) SendToClient(data []byte) error {
-	return b.clientConn.WriteMessage(websocket.TextMessage, data)
+	return b.clientConn.WriteMessage(b.clientFrameType(), data)
+}
+
+// clientFrameType is the frame type the client is answered in: the type of
+// its latest message, text before it has sent one.
+//
+// The frame type rides the WebSocket envelope alone, no relay protobuf carries
+// it, so whatever framed the bytes last decided it, and a supplier's stack
+// that frames JSON as binary had every answer reach browsers as a Blob that
+// JSON.parse throws on: eight robinhood answers in ten on mainnet
+// (2026-10-04), and a public checker kept a row 4,000 blocks old. A client is
+// answered the way it asks, whatever the supplier sent; only bytes that are
+// not text stay binary. Per connection rather than per request: a client
+// does not mix the two, and a subscription's notifications follow the
+// subscribe's type that way too.
+func (b *Bridge) clientFrameType() int {
+	if t := int(b.clientType.Load()); t == websocket.BinaryMessage {
+		return t
+	}
+	return websocket.TextMessage
 }
 
 // Rebindable reports whether the bridge has an endpoint-lost handler, and so

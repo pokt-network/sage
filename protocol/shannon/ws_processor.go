@@ -320,16 +320,17 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	return out, nil
 }
 
-// RetypedToText implements websockets.TextRetypeObserver: this supplier's
-// answer arrived as a binary frame and went to the client as text. Counted
-// per supplier so the operator whose stack sends binary can be told.
-func (p *wsMessageProcessor) RetypedToText() {
+// EndpointSentBinaryJSON implements websockets.BinaryJSONObserver: this
+// supplier framed a JSON answer as binary. Counted per supplier, whatever
+// frame type the client is answered in, so the operator whose stack sends
+// binary can be told.
+func (p *wsMessageProcessor) EndpointSentBinaryJSON() {
 	if p.metrics != nil {
 		p.metrics.SupplierRetyped(domain.ServiceID(p.sessionHeader.ServiceId), p.operator, p.owner)
 	}
 }
 
-var _ websockets.TextRetypeObserver = (*wsMessageProcessor)(nil)
+var _ websockets.BinaryJSONObserver = (*wsMessageProcessor)(nil)
 
 // reissue reports whether payload is a rate limit, a spent quota or (stale)
 // a stale head answering a client request still in flight, now queued to go
