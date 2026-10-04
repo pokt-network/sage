@@ -246,7 +246,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	var redisClient *redis.Client
 	if cfg.Redis.Enabled() {
 		redisClient = newRedisClient(cfg, cfg.Redis.DB, cfg.Redis.PoolSize)
-		if err := redisClient.Ping(ctx).Err(); err != nil {
+		pingCtx, cancelPing := context.WithTimeout(ctx, redisStartupPing)
+		err := redisClient.Ping(pingCtx).Err()
+		cancelPing()
+		if err != nil {
 			logger.Warn("Redis not answering at startup; running on local state until it does", "redis", redisTarget(cfg), "error", err)
 		} else {
 			logger.Info("Redis connected", "redis", redisTarget(cfg))
@@ -1280,6 +1283,11 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobObservationSampleRate, strconv.FormatFloat(rate, 'f', -1, 64))
 }
 
+// redisStartupPing bounds the startup check. It only decides what is logged:
+// the client is kept either way, and a check left to the client's own
+// retries could hold boot for as long as Sentinel takes to give up.
+const redisStartupPing = 10 * time.Second
+
 // peerRedisClient opens a small read client on another instance's Redis
 // database, on this instance's Redis server (active_health_checks.peer_probe_stream).
 func peerRedisClient(cfg *config.Config, db int) *redis.Client {
@@ -1303,6 +1311,15 @@ func newRedisClient(cfg *config.Config, db, poolSize int) *redis.Client {
 			DialTimeout:      rc.DialTimeout,
 			ReadTimeout:      rc.ReadTimeout,
 			WriteTimeout:     rc.WriteTimeout,
+			// One dial per attempt. go-redis retries a failed dial five
+			// times, and under Sentinel a master dial is a lookup that
+			// retries each sentinel's own dial five times, inside a command
+			// that is retried three: with every sentinel down one call took
+			// 39s where the plain client took 2s, and 0.7s with this. The
+			// command retries still carry a failover: with the master killed
+			// and sentinels detecting it after 3s, writes resumed on the new
+			// master about six seconds after the kill, with or without it.
+			DialerRetries: 1,
 		})
 	}
 	return redis.NewClient(&redis.Options{

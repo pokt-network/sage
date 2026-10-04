@@ -119,8 +119,12 @@ func (l *LeaderElector) IsLeader() bool {
 	return l.isLeader.Load()
 }
 
-// tryAcquire attempts to acquire or renew the leader lock.
+// tryAcquire attempts to acquire or renew the leader lock. Bounded by one
+// renew interval, so a Redis that hangs rather than refuses is a fallback by
+// the next tick instead of a stalled election.
 func (l *LeaderElector) tryAcquire(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, renewInterval)
+	defer cancel()
 	if l.isLeader.Load() && !l.fallback.Load() {
 		// Already leader: renew the TTL.
 		ok, err := l.renew(ctx)
