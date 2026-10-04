@@ -214,6 +214,10 @@ func (c RedisConfig) Validate() error {
 	return nil
 }
 
+// DefaultBatchRejectMessage is the batch rejection's message when the config
+// names none (ConcurrencyConfig.BatchRejectMessage).
+const DefaultBatchRejectMessage = "batch has {n} payloads, limit is {max}"
+
 // DefaultRedisKeyPrefix is the namespace every Redis key sits under when
 // RedisConfig.KeyPrefix is unset. It is the literal every key was hard-coded
 // with before the prefix existed, so the default composes byte-identical keys.
@@ -453,6 +457,14 @@ type ConcurrencyConfig struct {
 	// max_batch_concurrency is negative. Applied on reload and
 	// PUT /admin/config without a restart.
 	MaxBatchWindow int `yaml:"max_batch_window"`
+	// BatchRejectMessage is the message of the 413 / -32600 a batch over
+	// max_batch_payloads gets: {n} is replaced by its payload count and
+	// {max} by the limit, and both must appear. The code and data fields stay
+	// fixed for programs; this text is for the person reading it, so it is
+	// the place to say where to ask for more. Default: "batch has {n}
+	// payloads, limit is {max}". The batch.reject_message tuning knob
+	// overrides it at runtime, globally or for one service.
+	BatchRejectMessage string `yaml:"batch_reject_message"`
 
 	// NOTE: PATH's max_parallel_endpoints has no field here on purpose. It means
 	// "how many endpoints to query in parallel per request", and SAGE has no

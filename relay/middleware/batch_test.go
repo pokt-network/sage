@@ -969,3 +969,48 @@ func TestBatch_PayloadCapIsPerService(t *testing.T) {
 		t.Errorf("rejections counted %d, want 1 (eth)", got)
 	}
 }
+
+// The refusal's message is the service's template with the batch's count and
+// the limit filled in; the code and data stay fixed for programs.
+func TestBatch_RejectMessageIsConfigurable(t *testing.T) {
+	limits := func(domain.ServiceID) (int, int, int, int) { return 1000, 2, 0, 0 }
+	inner := relay.HandlerFunc(func(*relay.Context) error { return nil })
+	text := func(svc domain.ServiceID) string {
+		if svc == "eth" {
+			return "batch has {n} payloads, limit is {max} here; ask for more"
+		}
+		return ""
+	}
+	payloads := make([]domain.Payload, 3)
+	for i := range payloads {
+		payloads[i] = domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance"}`), domain.RPCTypeJSONRPC, "eth_getBalance")
+	}
+	for svc, want := range map[domain.ServiceID]string{
+		"eth": "batch has 3 payloads, limit is 2 here; ask for more",
+		"bsc": "batch has 3 payloads, limit is 2",
+	} {
+		ctx := baseContext()
+		ctx.ServiceID = svc
+		ctx.Payloads = payloads
+		ctx.RPCType = domain.RPCTypeJSONRPC
+		w := &rejectWriter{}
+		ctx.Writer = w
+		_ = Batch(limits, nil, nil, nil, WithBatchRejectMessage(text))(inner).HandleRelay(ctx)
+		body := string(w.body)
+		if w.statusCode != http.StatusRequestEntityTooLarge || !strings.Contains(body, `"message":"`+want+`"`) ||
+			!strings.Contains(body, `"code":-32600`) || !strings.Contains(body, `"payloads":3`) || !strings.Contains(body, `"max_batch_payloads":2`) {
+			t.Errorf("%s: %d %s", svc, w.statusCode, body)
+		}
+	}
+}
+
+// rejectWriter records a rejection's status and body.
+type rejectWriter struct {
+	statusCode int
+	body       []byte
+}
+
+func (w *rejectWriter) SetHeader(string, string) {}
+func (w *rejectWriter) SetStatusCode(code int)   { w.statusCode = code }
+func (w *rejectWriter) Write(b []byte) error     { w.body = b; return nil }
+func (w *rejectWriter) SetShadow(bool)           {}

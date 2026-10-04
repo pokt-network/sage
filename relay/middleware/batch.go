@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/internal/safego"
@@ -60,9 +62,13 @@ import (
 // nil, which disables that and leaves scoring to Observe as before.
 //
 // recorder may be nil.
-func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Service, recorder BatchRecorder) relay.Middleware {
+func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Service, recorder BatchRecorder, opts ...BatchOption) relay.Middleware {
 	if recorder == nil {
 		recorder = noopBatchRecorder{}
+	}
+	var o batchOptions
+	for _, opt := range opts {
+		opt(&o)
 	}
 	// Shared by every request, deliberately: see above. Rebuilt only when
 	// max_concurrent_relays changes.
@@ -103,8 +109,8 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 			if maxPayloads > 0 && len(ctx.Payloads) > maxPayloads {
 				recorder.RecordBatchRejected(ctx.ServiceID)
 				return rejectRequest(ctx, nil, http.StatusRequestEntityTooLarge, domain.ErrValidation,
-					fmt.Sprintf("batch has %d payloads, limit is %d", len(ctx.Payloads), maxPayloads), nil,
-					map[string]any{"max_batch_payloads": maxPayloads})
+					o.rejectMessage(ctx.ServiceID, len(ctx.Payloads), maxPayloads), nil,
+					map[string]any{"max_batch_payloads": maxPayloads, "payloads": len(ctx.Payloads)})
 			}
 
 			// One signal per endpoint for the whole batch (docs/scoring.md
@@ -417,6 +423,32 @@ func (noopBatchRecorder) RecordBatchConcurrencyCapped(domain.ServiceID, int)    
 func (noopBatchRecorder) RecordBatchRejected(domain.ServiceID)                    {}
 func (noopBatchRecorder) RecordBatchSeconds(domain.ServiceID, int, time.Duration) {}
 func (noopBatchRecorder) RecordBatchClientDisconnect(domain.ServiceID)            {}
+
+// BatchOption tunes Batch.
+type BatchOption func(*batchOptions)
+
+type batchOptions struct {
+	rejectText func(domain.ServiceID) string
+}
+
+// WithBatchRejectMessage sets where the message of a batch refused over
+// max_batch_payloads comes from, per service: a template in which {n} is the
+// batch's payload count and {max} the limit. Read on every rejection.
+func WithBatchRejectMessage(text func(domain.ServiceID) string) BatchOption {
+	return func(o *batchOptions) { o.rejectText = text }
+}
+
+// rejectMessage renders the rejection's message for a batch of n payloads
+// over max.
+func (o batchOptions) rejectMessage(serviceID domain.ServiceID, n, max int) string {
+	tmpl := config.DefaultBatchRejectMessage
+	if o.rejectText != nil {
+		if t := o.rejectText(serviceID); t != "" {
+			tmpl = t
+		}
+	}
+	return strings.NewReplacer("{n}", strconv.Itoa(n), "{max}", strconv.Itoa(max)).Replace(tmpl)
+}
 
 // BatchLimits reports, for a service, max_concurrent_relays and max_batch_payloads. <= 0
 // disables either bound.

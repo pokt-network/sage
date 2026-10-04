@@ -210,3 +210,27 @@ func mustSet(t *testing.T, s *Store, knob string, serviceID, raw string) {
 		t.Fatalf("set %s=%s: %v", knob, raw, err)
 	}
 }
+
+// A text knob keeps its placeholders and its length bound: a batch message
+// without {n} or {max} would stop naming the numbers a client needs.
+func TestParse_StringKnob(t *testing.T) {
+	ok := "batch has {n} payloads, limit is {max}; contact us"
+	if v, err := Parse(KnobBatchRejectMessage, ok); err != nil || v.Raw != ok {
+		t.Fatalf("valid template: %v %q", err, v.Raw)
+	}
+	for _, bad := range []string{"batch too large", "{n} payloads", "limit {max}", strings.Repeat("x{n}{max}", 100)} {
+		if _, err := Parse(KnobBatchRejectMessage, bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	s := NewStore()
+	if err := s.Set(KnobBatchRejectMessage, "eth", ok); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.String(KnobBatchRejectMessage, "eth", "base"); got != ok {
+		t.Errorf("eth = %q", got)
+	}
+	if got := s.String(KnobBatchRejectMessage, "bsc", "base"); got != "base" {
+		t.Errorf("bsc = %q, want the base", got)
+	}
+}

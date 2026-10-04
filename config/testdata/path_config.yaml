@@ -51,6 +51,7 @@ concurrency_config:
   max_batch_payloads: 4000
   max_batch_concurrency: 16
   max_batch_window: 8
+  batch_reject_message: "fixture: {n} over {max}"
 
 full_node_config:
   rpc_url: "https://fullnode.invalid/rpc"

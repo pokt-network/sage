@@ -822,7 +822,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	})
 	mwReg.Register(relay.MWCache, func() relay.Middleware { return middleware.Cache(flags, respCache, recorder) })
 	mwReg.Register(relay.MWBatch, func() relay.Middleware {
-		return middleware.Batch(newBatchLimits(app.Config.Load, tuningStore), flags, repSvc, recorder)
+		return middleware.Batch(newBatchLimits(app.Config.Load, tuningStore), flags, repSvc, recorder,
+			middleware.WithBatchRejectMessage(func(serviceID domain.ServiceID) string {
+				return tuningStore.String(tuning.KnobBatchRejectMessage, serviceID, app.Config.Load().Concurrency.BatchRejectMessage)
+			}))
 	})
 	mwReg.Register(relay.MWSingleflight, func() relay.Middleware { return middleware.Singleflight(flags, recorder) })
 	mwReg.Register(relay.MWObserve, func() relay.Middleware {
@@ -1294,6 +1297,7 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobObservationSampleRate, strconv.FormatFloat(rate, 'f', -1, 64))
 	store.SetBase(tuning.KnobBatchMaxPayloads, strconv.Itoa(cfg.Concurrency.MaxBatchPayloads))
 	store.SetBase(tuning.KnobBatchMaxConcurrency, strconv.Itoa(cfg.Concurrency.MaxBatchConcurrency))
+	store.SetBase(tuning.KnobBatchRejectMessage, cfg.Concurrency.BatchRejectMessage)
 }
 
 // redisStartupPing bounds the startup check. It only decides what is logged:

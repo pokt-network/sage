@@ -35,6 +35,9 @@ const (
 	KindDuration Kind = "duration"
 	// KindFloat is a ratio or multiplier.
 	KindFloat Kind = "float"
+	// KindString is text; Min and Max bound its length in characters, and
+	// Require lists placeholders it must keep.
+	KindString Kind = "string"
 )
 
 // Canonical knob names. Use the constant, never the string: a typo in a string
@@ -73,6 +76,9 @@ const (
 	// KnobBatchMaxConcurrency overrides concurrency.max_batch_concurrency,
 	// per service as well as globally.
 	KnobBatchMaxConcurrency = "batch.max_concurrency"
+	// KnobBatchRejectMessage overrides concurrency.batch_reject_message, per
+	// service as well as globally.
+	KnobBatchRejectMessage = "batch.reject_message"
 )
 
 // Knob describes one overridable setting.
@@ -91,6 +97,9 @@ type Knob struct {
 	Max float64 `json:"max"`
 	// Unit labels Min/Max for humans. Durations are bounded in milliseconds.
 	Unit string `json:"unit"`
+	// Require lists what a KindString value must contain, such as the
+	// placeholders a message template is rendered from.
+	Require []string `json:"require,omitempty"`
 }
 
 // Knobs is the registry: every setting that can be overridden at runtime.
@@ -110,6 +119,17 @@ var Knobs = []Knob{
 		Min:         1,
 		Max:         100_000,
 		Unit:        "payloads",
+	},
+	{
+		Name: KnobBatchRejectMessage,
+		Kind: KindString,
+		// What a client refused a batch reads; where to ask for more is the
+		// useful part, and it is the operator's, not the code's.
+		Description: "The message of the 413 / -32600 a batch over batch.max_payloads gets: {n} is its payload count, {max} the limit. The code and data (max_batch_payloads, payloads) stay fixed for programs; this is for the person reading it.",
+		Min:         1,
+		Max:         500,
+		Unit:        "characters",
+		Require:     []string{"{n}", "{max}"},
 	},
 	{
 		Name:        KnobBatchMaxConcurrency,
@@ -306,6 +326,17 @@ func Parse(name, raw string) (Value, error) {
 			return Value{}, err
 		}
 		return Value{Float: f, Raw: raw}, nil
+
+	case KindString:
+		if err := checkBounds(knob, float64(len([]rune(raw))), raw); err != nil {
+			return Value{}, err
+		}
+		for _, want := range knob.Require {
+			if !strings.Contains(raw, want) {
+				return Value{}, fmt.Errorf("%s: %q must contain %s", name, raw, want)
+			}
+		}
+		return Value{Raw: raw}, nil
 
 	default:
 		return Value{}, fmt.Errorf("%s: knob has unknown kind %q", name, knob.Kind)

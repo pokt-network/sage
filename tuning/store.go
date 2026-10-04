@@ -275,6 +275,15 @@ func (s *Store) lookup(name string, serviceID domain.ServiceID) (Value, bool) {
 	return Value{}, false
 }
 
+// String returns a KindString knob's text for serviceID, the per-service
+// override over the global one over base.
+func (s *Store) String(name string, serviceID domain.ServiceID, base string) string {
+	if v, ok := s.lookup(name, serviceID); ok {
+		return v.Raw
+	}
+	return base
+}
+
 // Int returns the override for a knob, or base when nothing is set.
 func (s *Store) Int(name string, serviceID domain.ServiceID, base int) int {
 	if v, ok := s.lookup(name, serviceID); ok {

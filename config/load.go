@@ -217,6 +217,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Concurrency.MaxBatchWindow == 0 {
 		cfg.Concurrency.MaxBatchWindow = 32
 	}
+	if cfg.Concurrency.BatchRejectMessage == "" {
+		cfg.Concurrency.BatchRejectMessage = DefaultBatchRejectMessage
+	}
 
 	// Feature flags need no defaulting here: cfg.FeatureFlags carries only what
 	// YAML set, and the stores fall back to featureflag.DefaultFlags for anything
