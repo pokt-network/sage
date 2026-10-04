@@ -91,13 +91,14 @@ func New(apply Applier, backend Backend, base []config.BlockedDomain, opts ...Op
 }
 
 // Start loads the backend once, applies the union, and — when a poll
-// interval is set — keeps re-reading it so a peer's ban lands here too.
+// interval is set — keeps re-reading it so a peer's ban lands here too. A
+// first load that fails is returned, and the poll starts anyway: a pod that
+// booted while Redis was away used to apply the config list alone until its
+// next restart.
 func (m *Manager) Start(ctx context.Context) error {
-	if err := m.reload(ctx); err != nil {
-		return err
-	}
+	err := m.reload(ctx)
 	if m.pollInterval <= 0 {
-		return nil
+		return err
 	}
 	safego.GoCtx(ctx, nil, "blocklist.poll", func(ctx context.Context) {
 		ticker := time.NewTicker(m.pollInterval)
@@ -111,7 +112,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			}
 		}
 	})
-	return nil
+	return err
 }
 
 // SetBlockedDomains replaces the config base and re-applies the union. It is

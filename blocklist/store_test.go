@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -243,4 +244,34 @@ func TestRedisBackend_ErrorsSurface(t *testing.T) {
 	assert.Error(t, be.Delete(ctx, "a.example"))
 	_, err := be.Load(ctx)
 	assert.Error(t, err)
+}
+
+// downBackend fails every Load until up is set, as a Redis away at boot.
+type downBackend struct {
+	*MemoryBackend
+	up atomic.Bool
+}
+
+func (d *downBackend) Load(ctx context.Context) ([]Entry, error) {
+	if !d.up.Load() {
+		return nil, errors.New("connection refused")
+	}
+	return d.MemoryBackend.Load(ctx)
+}
+
+// A backend that fails the first load is still polled: the bans it holds
+// land once it answers.
+func TestManager_StartPollsAfterAFailedFirstLoad(t *testing.T) {
+	ap := &fakeApplier{}
+	be := &downBackend{MemoryBackend: NewMemoryBackend()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	require.NoError(t, be.Save(ctx, Entry{Domain: "held.example", Since: time.Now()}))
+
+	m := New(ap, be, nil, WithPollInterval(5*time.Millisecond))
+	require.Error(t, m.Start(ctx), "the failed first load is reported")
+	be.up.Store(true)
+	require.Eventually(t, func() bool {
+		return len(domains(ap.last())) == 1
+	}, time.Second, time.Millisecond, "the poll never picked up the backend once it answered")
 }
