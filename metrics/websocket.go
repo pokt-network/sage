@@ -45,6 +45,7 @@ type WebSocketMetrics struct {
 	rejected     *prometheus.CounterVec
 	rebinds      *prometheus.CounterVec
 	stalls       *prometheus.CounterVec
+	clientTypes  *prometheus.CounterVec
 
 	supplierFrames        *prometheus.CounterVec
 	supplierNotifications *prometheus.CounterVec
@@ -79,7 +80,7 @@ func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
 	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
 		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes,
-		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast, m.reissued, m.retyped)
+		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast, m.reissued, m.retyped, m.clientTypes)
 	return m
 }
 
@@ -265,6 +266,14 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			},
 			[]string{"service_id", "result"},
 		),
+		clientTypes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_client_frame_types_total",
+				Help:      "WebSocket connections by service and the frame type of the client's first message: text or binary. Every answer on the connection goes back in that type, whatever the supplier framed it in; binary here is a client that asks in binary frames.",
+			},
+			[]string{"service_id", "frame_type"},
+		),
 		stalls: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -372,6 +381,11 @@ func closeCodeLabel(code int) string {
 // Rebound counts one attempt to replace a lost endpoint.
 func (o *webSocketServiceObserver) Rebound(result websockets.RebindResult) {
 	o.m.rebinds.WithLabelValues(o.sid, string(result)).Inc()
+}
+
+// ClientFrameType counts one connection by its client's frame type.
+func (o *webSocketServiceObserver) ClientFrameType(frameType string) {
+	o.m.clientTypes.WithLabelValues(o.sid, frameType).Inc()
 }
 
 // Stalled counts one stall-watchdog verdict.

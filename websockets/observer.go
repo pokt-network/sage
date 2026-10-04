@@ -30,6 +30,10 @@ type Observer interface {
 	// Stalled is called when the stall detector fires: subscriptions are
 	// established and nothing has arrived for them in too long.
 	Stalled()
+	// ClientFrameType is called once per bridge, with the frame type of the
+	// client's first message: "text" or "binary". It is the type the client
+	// is answered in (Bridge.clientFrameType).
+	ClientFrameType(frameType string)
 }
 
 // RebindResult is the outcome of one attempt to replace a lost endpoint.

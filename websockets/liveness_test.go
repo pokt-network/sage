@@ -150,11 +150,18 @@ type recordingObserver struct {
 		initiator CloseInitiator
 		code      int
 	}
-	rebinds []string
-	stalls  int
+	rebinds    []string
+	stalls     int
+	frameTypes []string
 }
 
 func (o *recordingObserver) Stalled() { o.mu.Lock(); o.stalls++; o.mu.Unlock() }
+
+func (o *recordingObserver) ClientFrameType(t string) {
+	o.mu.Lock()
+	o.frameTypes = append(o.frameTypes, t)
+	o.mu.Unlock()
+}
 
 func (o *recordingObserver) Rebound(r RebindResult) {
 	o.mu.Lock()

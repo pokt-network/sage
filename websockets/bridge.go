@@ -388,7 +388,9 @@ func (b *Bridge) route(msg message) {
 
 	switch msg.source {
 	case SourceClient:
-		b.clientType.Store(int32(msg.messageType))
+		if b.clientType.Swap(int32(msg.messageType)) == 0 {
+			b.observe(func(o Observer) { o.ClientFrameType(frameTypeLabel(msg.messageType)) })
+		}
 		processed, err := b.processor.ProcessClientMessage(msg.data)
 		if err != nil {
 			b.logger.Error("websocket: client message processing failed", "err", err)
@@ -539,6 +541,14 @@ func (b *Bridge) ReplaceEndpoint(cause error) {
 // serialises writes.
 func (b *Bridge) SendToClient(data []byte) error {
 	return b.clientConn.WriteMessage(b.clientFrameType(), data)
+}
+
+// frameTypeLabel names a data frame type for the metrics.
+func frameTypeLabel(messageType int) string {
+	if messageType == websocket.BinaryMessage {
+		return "binary"
+	}
+	return "text"
 }
 
 // clientFrameType is the frame type the client is answered in: the type of

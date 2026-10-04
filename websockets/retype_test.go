@@ -99,3 +99,25 @@ func TestBridge_ClientFrameTypeDefaultsToText(t *testing.T) {
 	b.clientType.Store(websocket.TextMessage)
 	require.Equal(t, websocket.TextMessage, b.clientFrameType())
 }
+
+// Each connection is counted once, by the frame type of the client's first
+// message, which is how many clients ask in binary.
+func TestBridge_CountsTheClientsFrameTypeOncePerConnection(t *testing.T) {
+	endpoint := newEchoServer(t)
+	defer endpoint.Close()
+	obs := newRecordingObserver()
+	srv, _ := startBridgeServer(t, wsURL(endpoint), WithObserver(obs))
+	defer srv.Close()
+	client := dialTestServer(t, srv)
+	defer client.Close()
+
+	for _, mt := range []int{websocket.BinaryMessage, websocket.TextMessage, websocket.BinaryMessage} {
+		require.NoError(t, client.WriteMessage(mt, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}`)))
+		_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, err := client.ReadMessage()
+		require.NoError(t, err)
+	}
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	require.Equal(t, []string{"binary"}, obs.frameTypes)
+}
