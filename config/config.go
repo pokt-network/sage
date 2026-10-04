@@ -428,7 +428,8 @@ type ConcurrencyConfig struct {
 	// across all batch requests. Default: 10000.
 	MaxConcurrentRelays int `yaml:"max_concurrent_relays"`
 	// MaxBatchPayloads caps payloads in one batch request. Must be <=
-	// MaxConcurrentRelays. Default: 5500.
+	// MaxConcurrentRelays. Default: 5500. The batch.max_payloads tuning knob
+	// overrides it at runtime, globally or for one service.
 	MaxBatchPayloads int `yaml:"max_batch_payloads"`
 	// MaxBatchConcurrency caps how many of one batch's payloads are relayed at
 	// once, under the global max_concurrent_relays. A larger batch runs that
@@ -436,7 +437,8 @@ type ConcurrencyConfig struct {
 	// one batch holds mid-read, which the global slot count does not: each
 	// response body is held three to four times over while it is decoded.
 	// Default: 32. A negative value removes the cap. Applied on reload and
-	// PUT /admin/config without a restart.
+	// PUT /admin/config without a restart; the batch.max_concurrency tuning
+	// knob overrides it, globally or for one service.
 	MaxBatchConcurrency int `yaml:"max_batch_concurrency"`
 	// MaxBatchWindow is how many finished answers a streamed batch may keep
 	// waiting behind a slower earlier one before it stops starting new

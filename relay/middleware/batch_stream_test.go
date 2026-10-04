@@ -75,7 +75,7 @@ func answerByID(body func(id int) string, delay func(id int) time.Duration, call
 }
 
 func streamLimits(perBatch, window int) BatchLimits {
-	return func() (int, int, int, int) { return 10000, 10000, perBatch, window }
+	return func(domain.ServiceID) (int, int, int, int) { return 10000, 10000, perBatch, window }
 }
 
 func streamedCtx(parent context.Context, payloads []domain.Payload, w http.ResponseWriter) *relay.Context {

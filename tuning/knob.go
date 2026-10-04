@@ -67,6 +67,12 @@ const (
 	// KnobSyncAllowance overrides a service's sync_allowance; meaningful per
 	// service, since the right value is the chain's block cadence.
 	KnobSyncAllowance = "qos.sync_allowance"
+	// KnobBatchMaxPayloads overrides concurrency.max_batch_payloads, per
+	// service as well as globally.
+	KnobBatchMaxPayloads = "batch.max_payloads"
+	// KnobBatchMaxConcurrency overrides concurrency.max_batch_concurrency,
+	// per service as well as globally.
+	KnobBatchMaxConcurrency = "batch.max_concurrency"
 )
 
 // Knob describes one overridable setting.
@@ -93,6 +99,26 @@ type Knob struct {
 // used — see the closures in cmd/sagegw.Build. A knob registered but never read
 // is worse than no knob at all.
 var Knobs = []Knob{
+	{
+		Name: KnobBatchMaxPayloads,
+		Kind: KindInt,
+		// A batch is one client request and len(payloads) upstream relays,
+		// each with its own retry and hedge: on mainnet (2026-10-04) an
+		// address scanner's batches of 80-110 took eth and bsc from about 100
+		// to 4,000 relays a second while client requests stayed flat.
+		Description: "Most payloads one JSON-RPC batch may carry; a larger batch is refused whole with HTTP 413 and a -32600 naming the limit (sage_batch_rejected_total), never truncated. Set per service to cap one chain's scanners without touching the others.",
+		Min:         1,
+		Max:         100_000,
+		Unit:        "payloads",
+	},
+	{
+		Name:        KnobBatchMaxConcurrency,
+		Kind:        KindInt,
+		Description: "How many of one batch's payloads are relayed at once. A larger batch runs that many at a time and takes longer; it is not refused. Lower it to slow a heavy batch client down rather than refuse it.",
+		Min:         1,
+		Max:         1_024,
+		Unit:        "payloads",
+	},
 	{
 		Name:        KnobRetryMaxRetries,
 		Kind:        KindInt,

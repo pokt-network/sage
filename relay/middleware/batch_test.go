@@ -767,7 +767,7 @@ func TestBatch_SubRelaysCarryBatchSize(t *testing.T) {
 
 // fixedLimits is a BatchLimits that never changes.
 func fixedLimits(maxConcurrentRelays, maxPayloads int) BatchLimits {
-	return func() (int, int, int, int) { return maxConcurrentRelays, maxPayloads, 0, 0 }
+	return func(domain.ServiceID) (int, int, int, int) { return maxConcurrentRelays, maxPayloads, 0, 0 }
 }
 
 // Both bounds are read per batch, so an apply that lowers or raises them
@@ -776,7 +776,9 @@ func TestBatch_LimitsChangeOnARunningMiddleware(t *testing.T) {
 	var maxRelays, maxPayloads atomic.Int32
 	maxRelays.Store(1)
 	maxPayloads.Store(2)
-	limits := func() (int, int, int, int) { return int(maxRelays.Load()), int(maxPayloads.Load()), 0, 0 }
+	limits := func(domain.ServiceID) (int, int, int, int) {
+		return int(maxRelays.Load()), int(maxPayloads.Load()), 0, 0
+	}
 
 	var active, peak atomic.Int32
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
@@ -812,6 +814,7 @@ type batchGauges struct {
 	subRelays, peakSub atomic.Int64
 	bytes, peakBytes   atomic.Int64
 	capped             atomic.Int64
+	rejected           atomic.Int64
 	timed              atomic.Int64
 	timedPayloads      atomic.Int64
 	timedNanos         atomic.Int64
@@ -821,6 +824,8 @@ type batchGauges struct {
 func (g *batchGauges) RecordBatchPayloads(_ domain.ServiceID, n int) { g.payloads.Add(int64(n)) }
 
 func (g *batchGauges) RecordBatchConcurrencyCapped(domain.ServiceID, int) { g.capped.Add(1) }
+
+func (g *batchGauges) RecordBatchRejected(domain.ServiceID) { g.rejected.Add(1) }
 
 func (g *batchGauges) RecordBatchClientDisconnect(domain.ServiceID) { g.disconnects.Add(1) }
 
@@ -888,7 +893,7 @@ func TestBatch_PerBatchConcurrencyCap(t *testing.T) {
 		return out
 	}
 	g := &batchGauges{}
-	handler := Batch(func() (int, int, int, int) { return 1000, 100, 3, 0 }, nil, nil, g)(inner)
+	handler := Batch(func(domain.ServiceID) (int, int, int, int) { return 1000, 100, 3, 0 }, nil, nil, g)(inner)
 
 	require.NoError(t, handler.HandleRelay(makeMultiPayloadCtx(payloads(3))))
 	assert.Zero(t, g.capped.Load(), "a batch at the ceiling is not capped")
@@ -929,5 +934,38 @@ func TestMergeBatch_ByteIdenticalToMarshal(t *testing.T) {
 		if wantErr == nil || gotErr == nil {
 			t.Errorf("%s: Marshal err %v, mergeBatch err %v, want both to refuse", bad, wantErr, gotErr)
 		}
+	}
+}
+
+// The payload cap is the service's: a batch over it is refused whole with
+// 413 and counted, the same batch on another service runs.
+func TestBatch_PayloadCapIsPerService(t *testing.T) {
+	g := &batchGauges{}
+	limits := func(svc domain.ServiceID) (int, int, int, int) {
+		if svc == "eth" {
+			return 1000, 2, 0, 0
+		}
+		return 1000, 100, 0, 0
+	}
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`), HTTPStatusCode: 200}
+		return nil
+	})
+	handler := Batch(limits, nil, nil, g)(inner)
+	payloads := make([]domain.Payload, 3)
+	for i := range payloads {
+		payloads[i] = domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance"}`), domain.RPCTypeJSONRPC, "eth_getBalance")
+	}
+	for svc, wantRejected := range map[domain.ServiceID]bool{"eth": true, "bsc": false} {
+		ctx := baseContext()
+		ctx.ServiceID = svc
+		ctx.Payloads = payloads
+		err := handler.HandleRelay(ctx)
+		if rejected := err != nil; rejected != wantRejected {
+			t.Errorf("%s: err %v, want rejected %v", svc, err, wantRejected)
+		}
+	}
+	if got := g.rejected.Load(); got != 1 {
+		t.Errorf("rejections counted %d, want 1 (eth)", got)
 	}
 }

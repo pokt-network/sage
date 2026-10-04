@@ -822,10 +822,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	})
 	mwReg.Register(relay.MWCache, func() relay.Middleware { return middleware.Cache(flags, respCache, recorder) })
 	mwReg.Register(relay.MWBatch, func() relay.Middleware {
-		return middleware.Batch(func() (int, int, int, int) {
-			c := app.Config.Load().Concurrency
-			return c.MaxConcurrentRelays, c.MaxBatchPayloads, c.MaxBatchConcurrency, c.MaxBatchWindow
-		}, flags, repSvc, recorder)
+		return middleware.Batch(newBatchLimits(app.Config.Load, tuningStore), flags, repSvc, recorder)
 	})
 	mwReg.Register(relay.MWSingleflight, func() relay.Middleware { return middleware.Singleflight(flags, recorder) })
 	mwReg.Register(relay.MWObserve, func() relay.Middleware {
@@ -1280,7 +1277,9 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobRetryMaxRetries, strconv.Itoa(retry.MaxRetries))
 	store.SetBase(tuning.KnobRetryMaxLatency, retry.MaxLatency.String())
 	store.SetBase(tuning.KnobHedgeDelay, retry.HedgeDelay.String())
-	store.SetBase(tuning.KnobRelayTimeout, cfg.Gateway.Defaults.Timeout.RelayTimeout.String())
+	// EffectiveDefaults for the same reason: the unified_services block's
+	// timeout is the one relays use there, and the admin read showed 0s.
+	store.SetBase(tuning.KnobRelayTimeout, cfg.Gateway.EffectiveDefaults().Timeout.RelayTimeout.String())
 	store.SetBase(tuning.KnobMaxResponseMB, strconv.Itoa(maxResponseMB(cfg)))
 	store.SetBase(tuning.KnobHealthCheckInterval, effectiveHealthCheckInterval(cfg).String())
 	store.SetBase(tuning.KnobHealthCheckWorkers, strconv.Itoa(cfg.Gateway.HealthChecks.MaxWorkers))
@@ -1293,6 +1292,8 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 		rate = 1
 	}
 	store.SetBase(tuning.KnobObservationSampleRate, strconv.FormatFloat(rate, 'f', -1, 64))
+	store.SetBase(tuning.KnobBatchMaxPayloads, strconv.Itoa(cfg.Concurrency.MaxBatchPayloads))
+	store.SetBase(tuning.KnobBatchMaxConcurrency, strconv.Itoa(cfg.Concurrency.MaxBatchConcurrency))
 }
 
 // redisStartupPing bounds the startup check. It only decides what is logged:
@@ -1376,6 +1377,19 @@ func newRetryFn(cfgFn func() *config.Config, store *tuning.Store) func(domain.Se
 		base.MaxLatency = store.Duration(tuning.KnobRetryMaxLatency, serviceID, base.MaxLatency)
 		base.HedgeDelay = store.Duration(tuning.KnobHedgeDelay, serviceID, base.HedgeDelay)
 		return base
+	}
+}
+
+// newBatchLimits resolves a service's batch limits, read on every batch: the
+// config's concurrency section, with the batch.max_payloads and
+// batch.max_concurrency knobs over it, globally or for the one service.
+func newBatchLimits(cfgFn func() *config.Config, store *tuning.Store) middleware.BatchLimits {
+	return func(serviceID domain.ServiceID) (int, int, int, int) {
+		c := cfgFn().Concurrency
+		return c.MaxConcurrentRelays,
+			store.Int(tuning.KnobBatchMaxPayloads, serviceID, c.MaxBatchPayloads),
+			store.Int(tuning.KnobBatchMaxConcurrency, serviceID, c.MaxBatchConcurrency),
+			c.MaxBatchWindow
 	}
 }
 

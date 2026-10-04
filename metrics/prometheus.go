@@ -71,6 +71,7 @@ type Recorder struct {
 	responseBytes          *prometheus.HistogramVec
 	batchPayloads          *prometheus.HistogramVec
 	batchCapped            *prometheus.CounterVec
+	batchRejected          *prometheus.CounterVec
 	batchSeconds           *prometheus.HistogramVec
 	batchDisconnects       *prometheus.CounterVec
 	quorumRequests         *prometheus.CounterVec
@@ -375,6 +376,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id"},
 		),
+		batchRejected: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "batch_rejected_total",
+				Help:      "JSON-RPC batches refused whole for carrying more payloads than the service's max_batch_payloads (the batch.max_payloads tuning knob, per service, else concurrency.max_batch_payloads), by service. The client gets HTTP 413 and a -32600 naming the limit.",
+			},
+			[]string{"service_id"},
+		),
 		batchCapped: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -599,6 +608,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.responseBytes,
 		r.batchPayloads,
 		r.batchCapped,
+		r.batchRejected,
 		r.batchSeconds,
 		r.batchDisconnects,
 		r.quorumRequests,
@@ -778,6 +788,11 @@ func (r *Recorder) RecordQuorumDissent(serviceID domain.ServiceID, n int) {
 // max_batch_concurrency. Satisfies middleware.BatchRecorder.
 func (r *Recorder) RecordBatchConcurrencyCapped(serviceID domain.ServiceID, n int) {
 	r.batchCapped.WithLabelValues(r.services.serviceValue(serviceID), batchSize(n)).Inc()
+}
+
+// RecordBatchRejected counts one batch refused over max_batch_payloads.
+func (r *Recorder) RecordBatchRejected(serviceID domain.ServiceID) {
+	r.batchRejected.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
 }
 
 // RecordBatchSeconds observes one batch's wall time.

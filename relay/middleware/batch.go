@@ -92,7 +92,7 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 				return next.HandleRelay(ctx)
 			}
 			start := time.Now()
-			maxConcurrentRelays, maxPayloads, maxPerBatch, maxWindow := limits()
+			maxConcurrentRelays, maxPayloads, maxPerBatch, maxWindow := limits(ctx.ServiceID)
 			// Before the cap, so a rejected batch still says how large the
 			// batches clients send are.
 			recorder.RecordBatchPayloads(ctx.ServiceID, len(ctx.Payloads))
@@ -101,6 +101,7 @@ func Batch(limits BatchLimits, flags featureflag.FlagStore, repSvc reputation.Se
 			sem := semFor(maxConcurrentRelays)
 
 			if maxPayloads > 0 && len(ctx.Payloads) > maxPayloads {
+				recorder.RecordBatchRejected(ctx.ServiceID)
 				return rejectRequest(ctx, nil, http.StatusRequestEntityTooLarge, domain.ErrValidation,
 					fmt.Sprintf("batch has %d payloads, limit is %d", len(ctx.Payloads), maxPayloads), nil,
 					map[string]any{"max_batch_payloads": maxPayloads})
@@ -392,6 +393,9 @@ type BatchRecorder interface {
 	// AddBatchResponseBytes moves the count of sub-relay response bytes held
 	// by batches that have not returned.
 	AddBatchResponseBytes(delta int64)
+	// RecordBatchRejected counts a batch refused for carrying more payloads
+	// than max_batch_payloads allows.
+	RecordBatchRejected(serviceID domain.ServiceID)
 	// RecordBatchConcurrencyCapped counts a batch of n payloads larger than
 	// max_batch_concurrency, which runs its sub-relays that many at a time.
 	RecordBatchConcurrencyCapped(serviceID domain.ServiceID, n int)
@@ -410,12 +414,13 @@ func (noopBatchRecorder) RecordBatchPayloads(domain.ServiceID, int)             
 func (noopBatchRecorder) AddBatchSubRelays(int)                                   {}
 func (noopBatchRecorder) AddBatchResponseBytes(int64)                             {}
 func (noopBatchRecorder) RecordBatchConcurrencyCapped(domain.ServiceID, int)      {}
+func (noopBatchRecorder) RecordBatchRejected(domain.ServiceID)                    {}
 func (noopBatchRecorder) RecordBatchSeconds(domain.ServiceID, int, time.Duration) {}
 func (noopBatchRecorder) RecordBatchClientDisconnect(domain.ServiceID)            {}
 
-// BatchLimits reports max_concurrent_relays and max_batch_payloads. <= 0
+// BatchLimits reports, for a service, max_concurrent_relays and max_batch_payloads. <= 0
 // disables either bound.
-type BatchLimits func() (maxConcurrentRelays, maxPayloads, maxPerBatch, maxWindow int)
+type BatchLimits func(serviceID domain.ServiceID) (maxConcurrentRelays, maxPayloads, maxPerBatch, maxWindow int)
 
 // mergeBatch renders the batch response array: byte for byte what
 // json.Marshal of the []json.RawMessage produces — each item compacted and

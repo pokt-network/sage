@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/config"
+	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/tuning"
 )
 
@@ -97,5 +98,39 @@ func TestTuningOverridesReachTheMiddlewares(t *testing.T) {
 	store.Delete(tuning.KnobRelayTimeout, "eth")
 	if got := timeoutFn("eth"); got != 20*time.Second {
 		t.Fatalf("relay timeout = %s after clearing, want the configured 20s back", got)
+	}
+}
+
+// The batch knobs reach the batch middleware's limits, per service: an
+// override on one chain caps its batches and leaves the others on config,
+// and clearing it restores config.
+func TestBatchKnobsReachTheLimits(t *testing.T) {
+	cfg := &config.Config{Concurrency: config.ConcurrencyConfig{
+		MaxConcurrentRelays: 10000, MaxBatchPayloads: 5500, MaxBatchConcurrency: 32, MaxBatchWindow: 32,
+	}}
+	store := tuning.NewStore()
+	limits := newBatchLimits(func() *config.Config { return cfg }, store)
+	payloads := func(svc string) (int, int) {
+		_, p, c, _ := limits(domain.ServiceID(svc))
+		return p, c
+	}
+	if p, c := payloads("eth"); p != 5500 || c != 32 {
+		t.Fatalf("config: payloads %d concurrency %d, want 5500 and 32", p, c)
+	}
+	if err := store.Set(tuning.KnobBatchMaxPayloads, "eth", "50"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(tuning.KnobBatchMaxConcurrency, "", "8"); err != nil {
+		t.Fatal(err)
+	}
+	if p, c := payloads("eth"); p != 50 || c != 8 {
+		t.Errorf("eth: payloads %d concurrency %d, want 50 and the global 8", p, c)
+	}
+	if p, _ := payloads("bsc"); p != 5500 {
+		t.Errorf("bsc payloads %d, want config's 5500: the cap was set for eth only", p)
+	}
+	store.Delete(tuning.KnobBatchMaxPayloads, "eth")
+	if p, _ := payloads("eth"); p != 5500 {
+		t.Errorf("after clearing eth payloads %d, want config's 5500", p)
 	}
 }
