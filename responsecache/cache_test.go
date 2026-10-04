@@ -113,3 +113,51 @@ func TestCache_ZeroOrNegativeTTL_NotStored(t *testing.T) {
 		t.Fatal("expected miss: negative TTL should not store")
 	}
 }
+
+// The cache holds at most maxBytes of bodies: least-recently-used entries go
+// to make room, a body larger than the whole cap is never stored, and an
+// overwrite or an eviction gives its bytes back.
+func TestCache_ByteCap(t *testing.T) {
+	c := NewCache(100)
+	c.maxBytes = 10
+
+	c.Set("a", makeResponse("aaaa"), time.Minute)
+	c.Set("b", makeResponse("bbbb"), time.Minute)
+	c.Get("a") // a is now the most recently used
+	c.Set("c", makeResponse("cccc"), time.Minute)
+	if _, ok := c.Get("b"); ok {
+		t.Error("b, least recently used, should have made room for c")
+	}
+	for _, k := range []string{"a", "c"} {
+		if _, ok := c.Get(k); !ok {
+			t.Errorf("%s should still be cached", k)
+		}
+	}
+	if c.bytes != 8 {
+		t.Errorf("bytes = %d, want 8", c.bytes)
+	}
+
+	c.Set("a", makeResponse("aa"), time.Minute)
+	if c.bytes != 6 {
+		t.Errorf("bytes after overwrite = %d, want 6", c.bytes)
+	}
+
+	c.Set("huge", makeResponse("0123456789x"), time.Minute)
+	if _, ok := c.Get("huge"); ok || c.bytes != 6 {
+		t.Errorf("a body over the whole cap was stored (bytes %d)", c.bytes)
+	}
+}
+
+// Expired entries at the least-recently-used end are dropped on Set, not left
+// holding their bodies until the cache fills.
+func TestCache_SetSweepsExpired(t *testing.T) {
+	c := NewCache(100)
+	c.Set("old1", makeResponse("1111"), time.Millisecond)
+	c.Set("old2", makeResponse("2222"), time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
+
+	c.Set("new", makeResponse("nn"), time.Minute)
+	if len(c.entries) != 1 || c.bytes != 2 {
+		t.Errorf("entries %d bytes %d after Set; want only the new entry", len(c.entries), c.bytes)
+	}
+}
