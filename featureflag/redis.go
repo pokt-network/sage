@@ -382,11 +382,17 @@ func (s *RedisStore) updateSnapshot(key string, value *bool) {
 // ctx is cancelled. Without a client there is nothing to poll. A refresh
 // that fails keeps the previous snapshot, so a Redis outage freezes the
 // flags at their last known state rather than stalling relays.
+//
+// A first refresh that fails leaves an empty snapshot: the flags are the
+// config's and the defaults until Redis answers. With no snapshot every flag
+// read on the relay path would ask Redis itself, a dial per uncached key
+// against a Redis that is not there.
 func (s *RedisStore) Start(ctx context.Context) {
 	if s.client == nil {
 		return
 	}
 	s.refresh(ctx)
+	s.snapshot.CompareAndSwap(nil, &map[string]bool{})
 	safego.Go(slog.Default(), "featureflag.refresh", func() {
 		t := time.NewTicker(s.cacheTTL)
 		defer t.Stop()

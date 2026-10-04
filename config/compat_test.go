@@ -49,7 +49,7 @@ func TestConfigCompatibility_GlobalSections(t *testing.T) {
 			ReadTimeout:  4 * time.Second,
 			WriteTimeout: 3 * time.Second,
 		}
-		if cfg.Redis != want {
+		if !reflect.DeepEqual(cfg.Redis, want) {
 			t.Errorf("redis = %+v, want %+v", cfg.Redis, want)
 		}
 	})
@@ -471,6 +471,11 @@ func TestConfigFixturesHaveNoIgnoredKeys(t *testing.T) {
 func TestConfigCompatibility_UnifiedServicesFormat(t *testing.T) {
 	cfg := loadFixture(t, unifiedFixturePath)
 	g := cfg.Gateway
+
+	if r := cfg.Redis; r.SentinelMaster != "fixture-master" || len(r.SentinelAddresses) != 2 ||
+		r.SentinelPassword != "fixture-sentinel-password" || r.Username != "fixture-user" || r.Validate() != nil {
+		t.Errorf("sentinel redis_config = %+v", r)
+	}
 
 	if len(g.Services) != 0 {
 		t.Fatal("fixture should define services only under unified_services")

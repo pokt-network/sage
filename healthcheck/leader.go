@@ -23,7 +23,9 @@ const (
 )
 
 // LeaderElector uses Redis SET NX to elect a single leader among replicas.
-// When Redis is unavailable, the instance acts as leader (local-only mode).
+// Without Redis the instance acts as leader (local-only mode), and so it does
+// while a configured Redis errors (fallback), until an election can be held
+// again.
 type LeaderElector struct {
 	redis    *redis.Client
 	key      string
@@ -31,6 +33,9 @@ type LeaderElector struct {
 	ttl      time.Duration
 	logger   *slog.Logger
 	isLeader atomic.Bool
+	// fallback is set while Redis errors and this instance leads only
+	// itself.
+	fallback atomic.Bool
 	cancel   context.CancelFunc
 }
 
@@ -96,7 +101,7 @@ func (l *LeaderElector) Stop() error {
 	if l.cancel != nil {
 		l.cancel()
 	}
-	if l.redis == nil || !l.isLeader.Load() {
+	if l.redis == nil || !l.isLeader.Load() || l.fallback.Load() {
 		return nil
 	}
 	// Release only if we still hold the lock.
@@ -116,12 +121,11 @@ func (l *LeaderElector) IsLeader() bool {
 
 // tryAcquire attempts to acquire or renew the leader lock.
 func (l *LeaderElector) tryAcquire(ctx context.Context) {
-	if l.isLeader.Load() {
+	if l.isLeader.Load() && !l.fallback.Load() {
 		// Already leader: renew the TTL.
 		ok, err := l.renew(ctx)
 		if err != nil {
-			l.logger.Warn("healthcheck leader: renew failed", "error", err)
-			l.isLeader.Store(false)
+			l.fallBack(err)
 			return
 		}
 		if !ok {
@@ -132,16 +136,36 @@ func (l *LeaderElector) tryAcquire(ctx context.Context) {
 		return
 	}
 
-	// Not yet leader: try to acquire.
+	// Not yet leader, or leading only itself while Redis was away: try to
+	// acquire.
 	ok, err := l.acquire(ctx)
 	if err != nil {
-		l.logger.Warn("healthcheck leader: acquire failed", "error", err)
+		l.fallBack(err)
 		return
 	}
+	if l.fallback.Swap(false) {
+		l.logger.Warn("healthcheck leader: Redis answers again; leadership is by election")
+	}
+	l.isLeader.Store(ok)
 	if ok {
-		l.isLeader.Store(true)
 		l.logger.Info("healthcheck leader: acquired leadership", "id", l.id)
 	}
+}
+
+// fallBack makes this instance its own leader while Redis errors.
+//
+// Leadership used to lapse on a Redis error and nothing took it up: every
+// replica stopped probing at once and stayed stopped until Redis came back,
+// scores frozen and recovered suppliers left demoted. Probing for itself, as
+// a replica without Redis always has, costs one probe per replica for the
+// outage's length instead. A replica cut off from a Redis the others still
+// reach probes alongside the elected leader for as long, which is the same
+// cost.
+func (l *LeaderElector) fallBack(err error) {
+	if !l.fallback.Swap(true) {
+		l.logger.Warn("healthcheck leader: Redis unreachable; probing for this instance until it answers", "error", err)
+	}
+	l.isLeader.Store(true)
 }
 
 // acquire runs SET key id NX EX ttl.

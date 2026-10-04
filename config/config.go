@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -146,9 +147,25 @@ type WebSocketConfig struct {
 // it each instance keeps its own, which is a smaller pool of experience but a
 // working gateway. Nothing on the relay path may hard-require it.
 type RedisConfig struct {
-	// Address is the Redis host:port. **Empty disables Redis entirely** — the
-	// gateway runs local-only rather than failing to start.
+	// Address is the Redis host:port. **Empty, with no sentinel_master,
+	// disables Redis entirely** — the gateway runs local-only rather than
+	// failing to start. Not set together with sentinel_master.
 	Address string `yaml:"address"`
+	// SentinelMaster is the master name Redis Sentinel monitors (often
+	// "mymaster"). Set, SAGE asks the sentinels in sentinel_addresses which
+	// node is the master, connects there, and follows a failover to the new
+	// master without a restart. Requires sentinel_addresses; replaces address.
+	SentinelMaster string `yaml:"sentinel_master"`
+	// SentinelAddresses are the sentinels' host:port (usually :26379), any
+	// one of which is enough to find the master. Requires sentinel_master.
+	SentinelAddresses []string `yaml:"sentinel_addresses"`
+	// SentinelPassword authenticates to the sentinels themselves, which a
+	// deployment often protects with a password other than the data nodes'.
+	// Empty means no AUTH.
+	SentinelPassword string `yaml:"sentinel_password"`
+	// Username is the Redis 6+ ACL user for the data nodes, with password.
+	// Empty authenticates with the password alone (the default user).
+	Username string `yaml:"username"`
 	// Password authenticates to Redis. Empty means no AUTH.
 	Password string `yaml:"password"`
 	// KeyPrefix namespaces every Redis key SAGE writes: reputation scores, the
@@ -174,6 +191,27 @@ type RedisConfig struct {
 	ReadTimeout time.Duration `yaml:"read_timeout"`
 	// WriteTimeout bounds a single Redis write. Zero takes the client default.
 	WriteTimeout time.Duration `yaml:"write_timeout"`
+}
+
+// Enabled reports whether a Redis is configured at all: an address, or a
+// Sentinel master.
+func (c RedisConfig) Enabled() bool {
+	return c.Address != "" || c.SentinelMaster != ""
+}
+
+// Validate rejects a Redis config that names two ways to connect, or half of
+// the Sentinel one: either would otherwise boot against something the
+// operator did not mean.
+func (c RedisConfig) Validate() error {
+	switch {
+	case c.Address != "" && c.SentinelMaster != "":
+		return errors.New("redis: address and sentinel_master are both set; use address for one Redis, sentinel_master with sentinel_addresses for Sentinel")
+	case c.SentinelMaster != "" && len(c.SentinelAddresses) == 0:
+		return errors.New("redis: sentinel_master is set without sentinel_addresses")
+	case c.SentinelMaster == "" && len(c.SentinelAddresses) > 0:
+		return errors.New("redis: sentinel_addresses is set without sentinel_master")
+	}
+	return nil
 }
 
 // DefaultRedisKeyPrefix is the namespace every Redis key sits under when

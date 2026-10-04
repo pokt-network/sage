@@ -33,6 +33,10 @@ import (
 // keys (parsed by shannon.New against a live full node). Both belong to
 // sections a reload reports as needing a restart anyway.
 func validateConfig(cfg *config.Config) error {
+	if err := cfg.Redis.Validate(); err != nil {
+		return err
+	}
+
 	// A misspelled granularity must not fall through to the default: it would
 	// silently change what scores are attached to, and nothing downstream could
 	// tell the difference until an incident.

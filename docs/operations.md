@@ -145,7 +145,7 @@ log is where you find out that a key you set is doing nothing:
 - `middleware is registered but not in the chain, so it will not run`.
 - `admin API is reachable from outside this host` / `pprof is reachable from
   outside this host` — fix these before anything else.
-- `Redis connection failed, running in local-only mode` — see below.
+- `Redis not answering at startup; running on local state until it does` — see below.
 
 None of these stop the process. All of them mean the gateway you are running is
 not the gateway you configured.
@@ -164,8 +164,17 @@ being shared between instances; each falls back to its own local view. The
 gateway keeps serving. Practically: each instance re-learns which endpoints are
 bad from its own traffic, flags set through the admin API apply only to the
 instance that received the call, and a circuit break opened on one instance
-does not protect the others. Flag reads degrade to defaults for one cache TTL
-rather than stalling the relay path.
+does not protect the others. Flags hold their last known state (the config's
+and the defaults when Redis was away from boot) without stalling the relay
+path. Every instance probes for itself, as its own health-check leader, until
+an election can be held again: one probe per instance instead of one for the
+fleet, for the outage's length.
+
+All of it rejoins without a restart when Redis answers again, including on a
+pod that booted while it was away: the client reconnects, and the election,
+the flag poll, overrides, drains and bans pick up where Redis is. With
+`sentinel_master` set the client asks the sentinels for the master and follows
+a failover by itself, so a failover is this mode for its few seconds.
 
 **Pool collapse.** When every endpoint for a service scores below the minimum
 threshold, selection returns the *least bad* one rather than nothing. Returning

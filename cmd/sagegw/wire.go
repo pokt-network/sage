@@ -235,23 +235,21 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	app.Config.Store(cfg)
 
 	// 1. Redis (optional)
+	//
+	// A Redis that does not answer at boot is kept, not dropped: the client
+	// reconnects on its own, and everything built on it already runs on its
+	// local state while Redis errors (flags on their defaults, reputation in
+	// memory, each pod its own health-check leader) and shares again once it
+	// answers. Dropping it left the pod local-only until its next restart, so
+	// a Redis failover that overlapped a roll split the fleet: pods that
+	// booted during it never saw another flag or drain.
 	var redisClient *redis.Client
-	if cfg.Redis.Address != "" {
-		redisClient = redis.NewClient(&redis.Options{
-			Addr:         cfg.Redis.Address,
-			Password:     cfg.Redis.Password,
-			DB:           cfg.Redis.DB,
-			PoolSize:     cfg.Redis.PoolSize,
-			DialTimeout:  cfg.Redis.DialTimeout,
-			ReadTimeout:  cfg.Redis.ReadTimeout,
-			WriteTimeout: cfg.Redis.WriteTimeout,
-		})
+	if cfg.Redis.Enabled() {
+		redisClient = newRedisClient(cfg, cfg.Redis.DB, cfg.Redis.PoolSize)
 		if err := redisClient.Ping(ctx).Err(); err != nil {
-			logger.Warn("Redis connection failed, running in local-only mode", "error", err)
-			redisClient.Close()
-			redisClient = nil
+			logger.Warn("Redis not answering at startup; running on local state until it does", "redis", redisTarget(cfg), "error", err)
 		} else {
-			logger.Info("Redis connected", "address", cfg.Redis.Address)
+			logger.Info("Redis connected", "redis", redisTarget(cfg))
 		}
 		app.Redis = redisClient
 	}
@@ -1285,15 +1283,47 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 // peerRedisClient opens a small read client on another instance's Redis
 // database, on this instance's Redis server (active_health_checks.peer_probe_stream).
 func peerRedisClient(cfg *config.Config, db int) *redis.Client {
+	return newRedisClient(cfg, db, 2)
+}
+
+// newRedisClient connects to the configured Redis on database db: the one
+// address, or under Sentinel the current master, followed across a failover.
+// Both are a *redis.Client, so nothing built on it knows which.
+func newRedisClient(cfg *config.Config, db, poolSize int) *redis.Client {
+	rc := cfg.Redis
+	if rc.SentinelMaster != "" {
+		return redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:       rc.SentinelMaster,
+			SentinelAddrs:    rc.SentinelAddresses,
+			SentinelPassword: rc.SentinelPassword,
+			Username:         rc.Username,
+			Password:         rc.Password,
+			DB:               db,
+			PoolSize:         poolSize,
+			DialTimeout:      rc.DialTimeout,
+			ReadTimeout:      rc.ReadTimeout,
+			WriteTimeout:     rc.WriteTimeout,
+		})
+	}
 	return redis.NewClient(&redis.Options{
-		Addr:         cfg.Redis.Address,
-		Password:     cfg.Redis.Password,
+		Addr:         rc.Address,
+		Username:     rc.Username,
+		Password:     rc.Password,
 		DB:           db,
-		PoolSize:     2,
-		DialTimeout:  cfg.Redis.DialTimeout,
-		ReadTimeout:  cfg.Redis.ReadTimeout,
-		WriteTimeout: cfg.Redis.WriteTimeout,
+		PoolSize:     poolSize,
+		DialTimeout:  rc.DialTimeout,
+		ReadTimeout:  rc.ReadTimeout,
+		WriteTimeout: rc.WriteTimeout,
 	})
+}
+
+// redisTarget names what the Redis client connects to, for the startup log:
+// the address, or the Sentinel master name and the sentinels asked for it.
+func redisTarget(cfg *config.Config) string {
+	if cfg.Redis.SentinelMaster != "" {
+		return "sentinel master " + cfg.Redis.SentinelMaster + " via " + strings.Join(cfg.Redis.SentinelAddresses, ",")
+	}
+	return cfg.Redis.Address
 }
 
 // maxResponseMB is router.max_response_body_bytes in whole MiB, the knob's

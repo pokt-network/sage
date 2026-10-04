@@ -2,6 +2,7 @@ package featureflag
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,10 +18,14 @@ type snapshotRedis struct {
 	mu   sync.Mutex
 	m    map[string]string
 	gets atomic.Int64
+	down atomic.Bool // every read fails, as against a Redis that is not there
 }
 
 func (f *snapshotRedis) Get(_ context.Context, key string) *redis.StringCmd {
 	f.gets.Add(1)
+	if f.down.Load() {
+		return redis.NewStringResult("", errors.New("connection refused"))
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	v, ok := f.m[key]
@@ -51,6 +56,9 @@ func (f *snapshotRedis) Del(_ context.Context, keys ...string) *redis.IntCmd {
 }
 
 func (f *snapshotRedis) Scan(_ context.Context, _ uint64, match string, _ int64) *redis.ScanCmd {
+	if f.down.Load() {
+		return redis.NewScanCmdResult(nil, 0, errors.New("connection refused"))
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	prefix := strings.TrimSuffix(match, "*")
@@ -110,5 +118,34 @@ func TestRedisStore_SnapshotServesTheHotPath(t *testing.T) {
 	_ = reader.Delete(ctx, FlagShadowMode, "")
 	if reader.IsEnabled(ctx, FlagShadowMode, "") {
 		t.Fatal("own delete must show at once")
+	}
+}
+
+// A Redis that does not answer when the store starts: flags are the config's
+// and the defaults, the relay path never asks Redis for one, and the store
+// picks up what Redis holds once it answers.
+func TestRedisStore_RedisDownAtStart(t *testing.T) {
+	shared := &snapshotRedis{m: map[string]string{testPrefix + FlagDebugLog: "1"}}
+	shared.down.Store(true)
+	s := NewRedisStore(shared, testPrefix, map[string]bool{FlagCache: false})
+	s.cacheTTL = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+
+	if s.IsEnabled(ctx, FlagCache, "eth") || s.IsEnabled(ctx, FlagDebugLog, "eth") != DefaultFlags[FlagDebugLog] {
+		t.Fatal("with Redis down the flags must be the config's and the defaults")
+	}
+	if n := shared.gets.Load(); n != 0 {
+		t.Fatalf("the relay path asked Redis %d times while it was down", n)
+	}
+
+	shared.down.Store(false)
+	deadline := time.Now().Add(2 * time.Second)
+	for !s.IsEnabled(ctx, FlagDebugLog, "eth") {
+		if time.Now().After(deadline) {
+			t.Fatal("the flag set in Redis was not picked up once Redis answered")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

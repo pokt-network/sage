@@ -41,3 +41,28 @@ func TestRedisKey_PrefixIsolatesDeployments(t *testing.T) {
 		t.Errorf("Key = %q, want mainnet:reputation:", got)
 	}
 }
+
+// One Redis or Sentinel, never both, and never half of Sentinel: each of
+// these would boot against something the operator did not mean.
+func TestRedisConfig_Validate(t *testing.T) {
+	sentinels := []string{"s1:26379", "s2:26379"}
+	for name, tc := range map[string]struct {
+		cfg     RedisConfig
+		wantErr bool
+	}{
+		"none":                     {RedisConfig{}, false},
+		"address":                  {RedisConfig{Address: "r:6379"}, false},
+		"sentinel":                 {RedisConfig{SentinelMaster: "mymaster", SentinelAddresses: sentinels}, false},
+		"both":                     {RedisConfig{Address: "r:6379", SentinelMaster: "mymaster", SentinelAddresses: sentinels}, true},
+		"master without sentinels": {RedisConfig{SentinelMaster: "mymaster"}, true},
+		"sentinels without master": {RedisConfig{SentinelAddresses: sentinels}, true},
+		"address beside sentinels": {RedisConfig{Address: "r:6379", SentinelAddresses: sentinels}, true},
+	} {
+		if err := tc.cfg.Validate(); (err != nil) != tc.wantErr {
+			t.Errorf("%s: Validate() = %v, want error %v", name, err, tc.wantErr)
+		}
+	}
+	if !(RedisConfig{SentinelMaster: "m", SentinelAddresses: sentinels}).Enabled() || (RedisConfig{}).Enabled() {
+		t.Error("Enabled must be true for Sentinel and false for nothing configured")
+	}
+}

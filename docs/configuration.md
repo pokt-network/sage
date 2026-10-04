@@ -52,7 +52,11 @@ working gateway. Nothing on the relay path may hard-require it.
 
 | Key | Type | Description |
 |---|---|---|
-| `address` | string | The Redis host:port. **Empty disables Redis entirely** — the gateway runs local-only rather than failing to start. |
+| `address` | string | The Redis host:port. **Empty, with no sentinel_master, disables Redis entirely** — the gateway runs local-only rather than failing to start. Not set together with sentinel_master. |
+| `sentinel_master` | string | The master name Redis Sentinel monitors (often "mymaster"). Set, SAGE asks the sentinels in sentinel_addresses which node is the master, connects there, and follows a failover to the new master without a restart. Requires sentinel_addresses; replaces address. |
+| `sentinel_addresses` | list of string | Are the sentinels' host:port (usually :26379), any one of which is enough to find the master. Requires sentinel_master. |
+| `sentinel_password` | string | Authenticates to the sentinels themselves, which a deployment often protects with a password other than the data nodes'. Empty means no AUTH. |
+| `username` | string | The Redis 6+ ACL user for the data nodes, with password. Empty authenticates with the password alone (the default user). |
 | `password` | string | Authenticates to Redis. Empty means no AUTH. |
 | `key_prefix` | string | Namespaces every Redis key SAGE writes: reputation scores, the health-check leader lock and probe stream, feature-flag and admin overrides, drains, auto-drain events, blocked domains and circuit breakers. Default: "sage:", which reproduces the keys every release before 2026-09-18 used, so leaving it unset changes nothing. Set it when two SAGE deployments share one Redis database. They otherwise share all of it: one deployment's pod can hold the other's health-check leadership and probe on its behalf, which mainnet spent at least four hours doing on 2026-09-18 while its own three pods sent no probes at all and inherited a neighbour's reputation scores. Separate databases are still the cleaner split; this is for when they cannot be. |
 | `db` | integer | The Redis logical database number. Default: 0. |

@@ -7,6 +7,14 @@
 # Only the keys that differ from path_config.yaml are set; the exhaustiveness
 # check treats the two files as one corpus.
 
+# Redis through Sentinel (SAGE only; PATH has no such keys).
+redis_config:
+  sentinel_master: "fixture-master"
+  sentinel_addresses: ["sentinel-a.invalid:26379", "sentinel-b.invalid:26379"]
+  sentinel_password: "fixture-sentinel-password"
+  username: "fixture-user"
+  password: "fixture-password"
+
 full_node_config:
   rpc_url: "https://fullnode.invalid/rpc"
   grpc_config:
