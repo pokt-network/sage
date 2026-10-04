@@ -93,7 +93,7 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "websocket_probes_total",
-				Help:      "WebSocket recovery probes, by service and result: ok, other_dialect (answered -32601 method not found: alive but serving another API on that socket, e.g. a Cosmos EVM chain's EVM surface; graded ok), dial_failed (the upgrade was refused or never completed), no_answer (connected, no valid answer in time), invalid (the answer failed relay validation), error_response (a valid relay carrying a JSON-RPC error or no result), unresolved (nothing to sign with; not graded). Probes go only to WebSocket endpoints below full reputation, which a connection-only signal gave no way back.",
+				Help:      "WebSocket recovery probes, by service and result: ok, other_dialect (answered -32601 method not found: alive but serving another API on that socket, e.g. a Cosmos EVM chain's EVM surface; graded ok), dial_failed (the upgrade was refused or never completed), no_answer (connected, no valid answer in time), invalid (the answer failed relay validation), error_response (a valid relay carrying a JSON-RPC error or no result), behind (an answer naming a head the chain has moved past, with stale_response on; graded major), unresolved (nothing to sign with; not graded). Probes go only to WebSocket endpoints below full reputation, which a connection-only signal gave no way back.",
 			},
 			[]string{"service_id", "result"},
 		),
@@ -159,7 +159,7 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "websocket_reissued_total",
-				Help:      "Client requests over WebSocket that a supplier answered with a rate limit or a spent quota and that were sent again to the next supplier after a rebind, the refusal never reaching the client, by service and the supplier that refused (operator, owner). A refusal on a bridge with no rebind left goes to the client and is not counted here; the refusals themselves are in sage_operator_failures_total as ws_rate_limited and ws_quota_exceeded.",
+				Help:      "Client requests over WebSocket that a supplier answered with a rate limit, a spent quota or (with stale_response on) a stale head, and that were sent again to the next supplier after a rebind, the refusal never reaching the client, by service and the supplier that refused (operator, owner). A refusal on a bridge with no rebind left goes to the client and is not counted here; the refusals themselves are in sage_operator_failures_total as ws_rate_limited and ws_quota_exceeded.",
 			},
 			supplierLabels,
 		),

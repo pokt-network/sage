@@ -101,6 +101,7 @@ const (
 	wsProbeInvalid       = "invalid"        // the answer failed relay validation
 	wsProbeErrorResponse = "error_response" // a valid relay whose payload is a JSON-RPC error or no result
 	wsProbeRefused       = "refused"        // the miner refused as protocol says it should (heuristic.MinerRefusal): not graded
+	wsProbeBehind        = "behind"         // answered with a head the chain has moved past (ws_stale.go), under stale_response
 )
 
 // jsonRPCMethodNotFound is the JSON-RPC 2.0 "method not found" error code.
@@ -329,8 +330,27 @@ func (r *WSRelayer) runProbe(ctx context.Context, t wsProbeTarget) string {
 		}
 		_ = conn.WriteControl(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "probe done"), time.Now().Add(time.Second))
+		if r.probeBehind(t, payload) {
+			return wsProbeBehind
+		}
 		return wsProbeOK
 	}
+}
+
+// probeBehind reports whether a probe's answer names a head the chain has
+// moved past. The EVM probe is eth_blockNumber, so its answer is a head; a
+// probe that passed on any answer read a supplier thousands of blocks behind
+// as healthy. Under stale_response, like the HTTP grade.
+func (r *WSRelayer) probeBehind(t wsProbeTarget, payload []byte) bool {
+	if r.deps.QoS == nil || !r.deps.Flags.IsEnabled(context.Background(), featureflag.FlagStaleResponse, t.serviceID) {
+		return false
+	}
+	lagger, ok := r.deps.QoS.Get(t.serviceID).(qos.HeadLagReader)
+	if !ok {
+		return false
+	}
+	_, stale, ok := lagger.HeadLag(domain.NewPayload(t.frame, domain.RPCTypeWebSocket, qos.JSONRPCMethod(t.frame)), payload, time.Now())
+	return ok && stale
 }
 
 // probeFailure is failed, unless err is a relay miner's refusal the HTTP path

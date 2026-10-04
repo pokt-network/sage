@@ -26,10 +26,15 @@ import (
 // shuts down with CloseServiceRestart so the client reconnects.
 var ErrSessionExpired = errors.New("shannon ws: session expired")
 
-// errSupplierLimited ends a supplier's tenure on a bridge when it refused a
-// client request for its rate limit or quota: the bridge rebinds, and the
-// request goes again to the next supplier (wsMessageProcessor.reissue).
-var errSupplierLimited = errors.New("supplier refused a request for its rate limit or quota")
+// errReissue ends a supplier's tenure on a bridge when it refused a client
+// request for its rate limit or quota, or answered it with a stale head: the
+// bridge rebinds, and the request goes again to the next supplier
+// (wsMessageProcessor.reissue).
+var errReissue = errors.New("supplier refused or answered stale a request that goes again to the next supplier")
+
+// errSupplierBehind ends a supplier's tenure on a bridge whose newHeads it
+// pushes behind the chain head (wsMessageProcessor.staleHead).
+var errSupplierBehind = errors.New("supplier pushes heads behind the chain head")
 
 // frameCallback is invoked after each endpoint-originated frame is validated
 // and unwrapped. Keeps the processor decoupled from reputation/observation/
@@ -79,6 +84,12 @@ type wsMessageProcessor struct {
 	// a rebind. Nil (a probe, or before the bridge is up) means no, and a
 	// rate limit then reaches the client; see reissue.
 	canRebind func() bool
+
+	// staleness grades head answers and newHeads pushes against the chain
+	// head (ws_stale.go); nil when the plugin measures no head. staleHeads
+	// is this supplier's run of stale pushes; bridge loop only.
+	staleness  *wsStaleness
+	staleHeads int
 
 	// metrics, owner and operator attribute every frame to the supplier
 	// that signed it; endpointFrames counts this supplier's frames to the
@@ -275,11 +286,17 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 		return payload, nil
 	}
 
-	if p.onEndpointFrame != nil {
+	// A stale answer is graded here, not by the frame heuristic, which would
+	// pass it: it is a well-formed answer, only an old one.
+	stale := p.staleAnswer(payload)
+	switch {
+	case stale:
+		p.staleness.penalize(reasonWSStaleResponse)
+	case p.onEndpointFrame != nil:
 		p.onEndpointFrame(payload, nil, latency)
 	}
-	if p.reissue(payload) {
-		return nil, fmt.Errorf("ws ProcessEndpointMessage: %w", errSupplierLimited)
+	if p.reissue(payload, stale) {
+		return nil, fmt.Errorf("ws ProcessEndpointMessage: %w", errReissue)
 	}
 	// After validation, before the client: a replay ack is consumed here
 	// (nil, nil — the bridge forwards nothing), a notification may be
@@ -294,8 +311,8 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 		p.samples.observe(serviceID, p.operator, p.owner, note.Topic, payload)
 		p.countTopic(note.Topic)
 	}
-	if note.Kind == qos.NotificationOK && note.Topic == "newHeads" {
-		p.observeHead(serviceID, payload)
+	if note.Kind == qos.NotificationOK && note.Topic == "newHeads" && p.observeHead(serviceID, payload) {
+		return nil, fmt.Errorf("ws ProcessEndpointMessage: %w", errSupplierBehind)
 	}
 	if !forward {
 		return nil, nil
@@ -303,25 +320,30 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	return out, nil
 }
 
-// reissue reports whether payload is a rate limit or a spent quota answering
-// a client request still in flight, now queued to go again to the next
-// supplier after a rebind (qos.SubscriptionRegistry.Reissue). The caller
-// drops the frame and returns errSupplierLimited, which the bridge meets with
-// that rebind. The client is waiting on an answer, and this supplier will not
-// give one until its window resets; on mainnet robinhood (2026-10-03) a
-// metered plan's -32029 went to the client as the answer.
+// reissue reports whether payload is a rate limit, a spent quota or (stale)
+// a stale head answering a client request still in flight, now queued to go
+// again to the next supplier after a rebind (qos.SubscriptionRegistry.Reissue).
+// The caller drops the frame and returns errReissue, which the bridge meets
+// with that rebind. The client is waiting on an answer this supplier will not
+// give: on mainnet robinhood (2026-10-03) a metered plan's -32029 went to the
+// client as the answer, and (2026-10-04) a head 3,985 blocks old.
 //
-// Graded already, by onEndpointFrame. Not when the bridge has no rebind left:
-// then it would close, and the refusal is a better answer than a closed
+// Graded already, by onEndpointFrame or as stale. Not when the bridge has no
+// rebind left: then it would close, and the answer is better than a closed
 // connection.
-func (p *wsMessageProcessor) reissue(payload []byte) bool {
-	if p.canRebind == nil || !bytes.Contains(payload, []byte(`"error"`)) {
+func (p *wsMessageProcessor) reissue(payload []byte, stale bool) bool {
+	if p.canRebind == nil {
 		return false
 	}
-	switch heuristic.AnalyzeFrame(payload, domain.RPCTypeWebSocket).Reason {
-	case heuristic.ReasonRateLimited, heuristic.ReasonQuotaExceeded:
-	default:
-		return false
+	if !stale {
+		if !bytes.Contains(payload, []byte(`"error"`)) {
+			return false
+		}
+		switch heuristic.AnalyzeFrame(payload, domain.RPCTypeWebSocket).Reason {
+		case heuristic.ReasonRateLimited, heuristic.ReasonQuotaExceeded:
+		default:
+			return false
+		}
 	}
 	if !p.canRebind() || !p.subs.Reissue(payload) {
 		return false

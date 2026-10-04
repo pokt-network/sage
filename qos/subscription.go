@@ -675,6 +675,22 @@ func (r *SubscriptionRegistry) Reissue(data []byte) bool {
 	return true
 }
 
+// InFlight returns the client request an endpoint frame answers, while it is
+// in flight, or nil: what a check on the answer needs to know was asked. The
+// bytes are the registry's; read them, do not keep or change them.
+func (r *SubscriptionRegistry) InFlight(answer []byte) []byte {
+	if r == nil || r.classifier == nil {
+		return nil
+	}
+	id := JSONRPCRequestID(answer)
+	if id == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inflight[id]
+}
+
 // track remembers a client request in flight, by its id, for Reissue. A
 // reused id replaces the request before it: the answer will be read as the
 // newer one's. Caller does not hold mu.

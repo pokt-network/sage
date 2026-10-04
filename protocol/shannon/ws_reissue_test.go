@@ -78,11 +78,33 @@ func reissueProcessor(p *Protocol, subs *qos.SubscriptionRegistry, spy *spyWSMet
 // reaches the client: the bridge rebinds and the request goes again to the
 // next supplier, whose answer is the one the client reads.
 func TestWSReissue_QuotaRefusalIsAnsweredByTheNextSupplier(t *testing.T) {
+	got, rebinds, secondGot, spy := reissueThroughBridge(t, quotaAnswer,
+		`{"jsonrpc":"2.0","id":7,"method":"eth_getBalance","params":["0xabc","latest"]}`, nil)
+	if got != `{"jsonrpc":"2.0","id":7,"result":"0x64"}` {
+		t.Fatalf("client got %s; want the next supplier's answer, never the quota refusal", got)
+	}
+	if rebinds != 1 || secondGot != 1 {
+		t.Errorf("rebinds %d, frames at the next supplier %d; want 1 and 1", rebinds, secondGot)
+	}
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.reissued) != 1 || spy.reissued[0] != "pokt1first.example" {
+		t.Errorf("reissues counted %v, want one against pokt1first.example", spy.reissued)
+	}
+}
+
+// reissueThroughBridge runs a real bridge from a client to a first supplier
+// answering request 7 with firstAnswer, and a second answering it "0x64"; it
+// returns what the client read, the rebinds taken, the frames the second
+// supplier received, and the metrics. staleness, when set, is each
+// processor's (nil: none).
+func reissueThroughBridge(t *testing.T, firstAnswer, request string, staleness *wsStaleness) (string, int32, int32, *spyWSMetrics) {
+	t.Helper()
 	first, _ := echoSupplier(t)
 	second, secondGot := echoSupplier(t)
 	fn := &perSupplierFullNode{answers: map[string]string{
-		"pokt1first":  quotaAnswer,
-		"pokt1second": `{"jsonrpc":"2.0","id":7,"result":"0x1"}`,
+		"pokt1first":  firstAnswer,
+		"pokt1second": `{"jsonrpc":"2.0","id":7,"result":"0x64"}`,
 	}}
 	p := &Protocol{fullNode: fn, signer: &countingSigner{}, bl: newBlacklist(), logger: newTestLogger()}
 	subs := qos.NewSubscriptionRegistry(&evm.Plugin{})
@@ -90,6 +112,11 @@ func TestWSReissue_QuotaRefusalIsAnsweredByTheNextSupplier(t *testing.T) {
 
 	var bridgeRef atomic.Pointer[websockets.Bridge]
 	canRebind := func() bool { b := bridgeRef.Load(); return b != nil && b.CanRebind() }
+	proc := func(supplier string) *wsMessageProcessor {
+		pr := reissueProcessor(p, subs, spy, supplier, canRebind)
+		pr.staleness = staleness
+		return pr
+	}
 	var rebinds atomic.Int32
 	lost := func(_ context.Context, _ error) (*websocket.Conn, websockets.MessageProcessor, [][]byte, error) {
 		rebinds.Add(1)
@@ -97,12 +124,12 @@ func TestWSReissue_QuotaRefusalIsAnsweredByTheNextSupplier(t *testing.T) {
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		return conn, reissueProcessor(p, subs, spy, "pokt1second", canRebind), subs.ReplayFrames(), nil
+		return conn, proc("pokt1second"), subs.ReplayFrames(), nil
 	}
 	up := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, err := websockets.StartBridge(context.Background(), newTestLogger(), r, w, wsURL(first), nil,
-			reissueProcessor(p, subs, spy, "pokt1first", canRebind), websockets.WithEndpointLost(lost))
+			proc("pokt1first"), websockets.WithEndpointLost(lost))
 		if err != nil {
 			return
 		}
@@ -110,16 +137,16 @@ func TestWSReissue_QuotaRefusalIsAnsweredByTheNextSupplier(t *testing.T) {
 		close(up)
 		<-b.Done()
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	client, _, err := websocket.DefaultDialer.Dial(wsURL(srv), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	t.Cleanup(func() { _ = client.Close() })
 	<-up
 
-	if err := client.WriteMessage(websocket.TextMessage, []byte(`{"jsonrpc":"2.0","id":7,"method":"eth_getBalance","params":["0xabc","latest"]}`)); err != nil {
+	if err := client.WriteMessage(websocket.TextMessage, []byte(request)); err != nil {
 		t.Fatal(err)
 	}
 	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
@@ -127,17 +154,7 @@ func TestWSReissue_QuotaRefusalIsAnsweredByTheNextSupplier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client read: %v", err)
 	}
-	if string(got) != `{"jsonrpc":"2.0","id":7,"result":"0x1"}` {
-		t.Fatalf("client got %s; want the next supplier's answer, never the quota refusal", got)
-	}
-	if rebinds.Load() != 1 || secondGot.Load() != 1 {
-		t.Errorf("rebinds %d, frames at the next supplier %d; want 1 and 1", rebinds.Load(), secondGot.Load())
-	}
-	spy.mu.Lock()
-	defer spy.mu.Unlock()
-	if len(spy.reissued) != 1 || spy.reissued[0] != "pokt1first.example" {
-		t.Errorf("reissues counted %v, want one against pokt1first.example", spy.reissued)
-	}
+	return string(got), rebinds.Load(), secondGot.Load(), spy
 }
 
 // What is not reissued reaches the client as it came: a refusal on a bridge

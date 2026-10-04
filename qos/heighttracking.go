@@ -51,6 +51,12 @@ func (h *HeightTracking) LastHeightObservation(endpoints domain.EndpointAddrList
 	return h.Consensus.LastHeightObservation(endpoints)
 }
 
+// HeightLag measures a pushed head height against the head expected at at
+// (HeightLagReader; BlockConsensus.AnswerLag).
+func (h *HeightTracking) HeightLag(height uint64, at time.Time) (lag uint64, stale, ok bool) {
+	return h.Consensus.AnswerLag(height, at)
+}
+
 // SyncAllowance implements SyncAllowanceTuner.
 func (h *HeightTracking) SyncAllowance() uint64 { return h.syncAllowance.Load() }
 

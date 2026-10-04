@@ -168,17 +168,19 @@ func (s *wsServiceHeads) settle() []wsHeadPusher {
 	return wrong
 }
 
-// observeHead feeds one newHeads notification to the tracker and the
-// metrics. The header is params.result: number and hash.
-func (p *wsMessageProcessor) observeHead(serviceID domain.ServiceID, payload []byte) {
-	if p.heads == nil || p.metrics == nil {
-		return
-	}
+// observeHead feeds one newHeads notification to the staleness check, the
+// tracker and the metrics, and reports whether the bridge should move off this
+// supplier (staleHead). The header is params.result: number and hash.
+func (p *wsMessageProcessor) observeHead(serviceID domain.ServiceID, payload []byte) (rebind bool) {
 	res := gjson.GetBytes(payload, "params.result")
 	number, ok := hexUint(res.Get("number"))
+	if !ok {
+		return false
+	}
+	rebind = p.staleHead(number)
 	hash := res.Get("hash").String()
-	if !ok || hash == "" {
-		return
+	if p.heads == nil || p.metrics == nil || hash == "" {
+		return rebind
 	}
 	var consensus uint64
 	if p.consensusHead != nil {
@@ -186,10 +188,11 @@ func (p *wsMessageProcessor) observeHead(serviceID domain.ServiceID, payload []b
 	}
 	r, fresh := p.heads.observe(serviceID, wsHeadPusher{p.operator, p.owner}, number, hash, time.Now(), consensus)
 	if !fresh {
-		return
+		return rebind
 	}
 	p.metrics.SupplierHead(serviceID, p.operator, p.owner, r.lag, r.delay, r.delayKnown)
 	for _, w := range r.mismatched {
 		p.metrics.SupplierHeadMismatch(serviceID, w.operator, w.owner)
 	}
+	return rebind
 }

@@ -250,6 +250,14 @@ type HeadLagReader interface {
 	HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool)
 }
 
+// HeightLagReader measures a bare head height, one a supplier pushed rather
+// than answered (an EVM newHeads notification), the way HeadLagReader
+// measures an answer's: lag behind the head expected at at, stale past the
+// same tolerance. HeightTracking implements it for every height-aware plugin.
+type HeightLagReader interface {
+	HeightLag(height uint64, at time.Time) (lag uint64, stale, ok bool)
+}
+
 // ResultValidator is implemented by a plugin that knows a method's result
 // encoding. InvalidResult reports a successful answer whose result no node
 // produces for that method (an EVM DATA result that is not hex bytes), with
