@@ -111,15 +111,24 @@ func (h *harness) feedTraffic(opaSuccess, opaAttempts int) {
 		if i < opaSuccess {
 			st = reputation.SignalSuccess
 		}
-		h.e.OnSignal(sei, jsonrpc, opa, st, false)
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first")
 	}
 	for i := 0; i < 100; i++ {
 		st := reputation.SignalSuccess
 		if i%10 >= 7 {
 			st = reputation.SignalMajorError
 		}
-		h.e.OnSignal(sei, jsonrpc, opb, st, false)
+		h.e.OnAttempt(sei, jsonrpc, opb, attr(st), "first")
 	}
+}
+
+// attr is the attribution the metrics attempt hook carries for an attempt
+// reputation would grade st.
+func attr(st reputation.SignalType) string {
+	if st == reputation.SignalSuccess {
+		return "none"
+	}
+	return "supplier"
 }
 
 func (h *harness) outcomes(t *testing.T) []string {
@@ -248,7 +257,7 @@ func TestEngine_RateLimitedPerService(t *testing.T) {
 		h.e.OnCollapse(sei, domain.RPCTypeREST, domain.EndpointAddrList{opa})
 	}
 	for i := 0; i < 60; i++ {
-		h.e.OnSignal(sei, domain.RPCTypeREST, opa, reputation.SignalMajorError, false)
+		h.e.OnAttempt(sei, domain.RPCTypeREST, opa, attr(reputation.SignalMajorError), "first")
 	}
 	h.e.Evaluate(context.Background())
 

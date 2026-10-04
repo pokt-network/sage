@@ -225,10 +225,10 @@ type poolKey struct {
 	rpc domain.RPCType
 }
 
-// opCount is one operator's minute. picks, attempts and successes come from
-// reputation (the collapse and signal hooks); firsts, chain and firstFails
-// (supplier or unknown) come from the attempt hook, first and probation
-// attempts only.
+// opCount is one operator's minute. picks come from the collapse hook;
+// attempts and successes from the attempt hook (from the signal hook on a
+// WebSocket pool); firsts, chain and firstFails (supplier or unknown) from the
+// attempt hook, first and probation attempts only.
 type opCount struct{ picks, attempts, successes, firsts, chain, firstFails int }
 
 type slot struct {
@@ -333,10 +333,16 @@ func (e *Engine) OnCollapse(svc domain.ServiceID, rpc domain.RPCType, served dom
 	}
 }
 
-// OnSignal is the reputation signal hook. Probes are not traffic: a drained
+// OnSignal is the reputation signal hook, read for WebSocket pools only: their
+// attempts never pass the metrics attempt hook. Every other RPC type is
+// counted per attempt by OnAttempt, because reputation collapses a batch's
+// items to one signal per endpoint, the worst (relay.ScoreSink): an operator
+// failing one item in each batch reads as answering nothing. On mainnet poly
+// (2026-10-04) that showed one operator at 0% over 563 signals while it
+// answered about half of its attempts. Probes are not traffic: a drained
 // endpoint is not probed either, so only relays count.
 func (e *Engine) OnSignal(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, st reputation.SignalType, probe bool) {
-	if probe || !e.counting.Load() {
+	if probe || rpc != domain.RPCTypeWebSocket || !e.counting.Load() {
 		return
 	}
 	now := e.d.Now()
@@ -349,20 +355,30 @@ func (e *Engine) OnSignal(svc domain.ServiceID, rpc domain.RPCType, ep domain.En
 	}
 }
 
-// OnAttempt is the metrics recorder's attempt hook. It counts only first and
-// probation attempts: the fair sample of how an operator answers. A retry or a
+// OnAttempt is the metrics recorder's attempt hook: every relay attempt, a
+// batch item included, with its attribution and kind. Every kind counts toward
+// the operator's attempts and successes (an answer, a chain error included),
+// as the fallback feeds retries too. First and probation attempts also count
+// toward the fair sample the chain-answer and severity reads use: a retry or a
 // hedge arm reaches whoever is left with whatever budget is left, carrying the
 // requests other operators already failed. A client-attributed attempt is
 // nobody's and is not counted.
 func (e *Engine) OnAttempt(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, attribution, kind string) {
-	if !e.counting.Load() || (kind != relay.AttemptFirst && kind != relay.AttemptProbation) ||
-		attribution == heuristic.AttrClient.String() {
+	if !e.counting.Load() || attribution == heuristic.AttrClient.String() {
 		return
 	}
 	now := e.d.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c := e.slot(poolKey{svc, rpc}, now).op(ep.Operator())
+	failed := attribution == heuristic.AttrSupplier.String() || attribution == heuristic.AttrUnknown.String()
+	c.attempts++
+	if !failed {
+		c.successes++
+	}
+	if kind != relay.AttemptFirst && kind != relay.AttemptProbation {
+		return
+	}
 	c.firsts++
 	switch attribution {
 	case heuristic.AttrBlockchain.String():

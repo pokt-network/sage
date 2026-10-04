@@ -52,12 +52,7 @@ func TestEngine_SevereOperatorPassesTheClientGate(t *testing.T) {
 		h.e.OnCollapse(sei, jsonrpc, domain.EndpointAddrList{opb})
 	}
 	for i := 0; i < 300; i++ {
-		st, attribution := reputation.SignalSuccess, "none"
-		if i%2 == 0 {
-			st, attribution = reputation.SignalMajorError, "supplier"
-		}
-		h.e.OnSignal(sei, jsonrpc, opa, st, false)
-		h.e.OnAttempt(sei, jsonrpc, opa, attribution, "first")
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i%2 == 1)), "first")
 	}
 	h.clients(200, 8) // 4%: under the bar
 
@@ -80,32 +75,69 @@ func TestEngine_SevereOperatorPassesTheClientGate(t *testing.T) {
 // answers nothing on any attempts is severe however it is reached.
 func TestEngine_SeverityReadsFirstAttempts(t *testing.T) {
 	for name, tc := range map[string]struct {
-		firstOK, firsts, signalOK int
-		want                      string
+		firstOK, firsts, retryOK, retries int
+		kind                              string
+		want                              string
 	}{
-		"retries drag it down": {210, 300, 300, OutcomeBelowClient},
-		"answers nothing":      {0, 0, 0, OutcomeDrained},
+		// 210 of 300 first attempts, 90 of 300 retries: 50% across both.
+		"retries drag it down": {210, 300, 90, 300, "retry", OutcomeBelowClient},
+		// None of 600 hedge arms, and no first attempts at all.
+		"answers nothing": {0, 0, 0, 600, "hedge", OutcomeDrained},
 	} {
 		h := newHarnessWith(t, fakeVouch{opb: true}, true, fakeRates{"opa.example": 0.25})
 		for i := 0; i < tc.firsts; i++ {
-			attribution := "supplier"
-			if i < tc.firstOK {
-				attribution = "none"
-			}
-			h.e.OnAttempt(sei, jsonrpc, opa, attribution, "first")
+			h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i < tc.firstOK)), "first")
 		}
-		for i := 0; i < 600; i++ {
-			st := reputation.SignalMajorError
-			if i < tc.signalOK {
-				st = reputation.SignalSuccess
-			}
-			h.e.OnSignal(sei, jsonrpc, opa, st, false)
+		for i := 0; i < tc.retries; i++ {
+			h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i < tc.retryOK)), tc.kind)
 		}
 		h.clients(200, 0)
 		h.e.Evaluate(context.Background())
 		if o := h.outcomes(t); len(o) != 1 || o[0] != "opa.example:"+tc.want {
 			t.Errorf("%s: events = %v, want %s", name, o, tc.want)
 		}
+	}
+}
+
+// okIf is a success signal when ok, a major error otherwise.
+func okIf(ok bool) reputation.SignalType {
+	if ok {
+		return reputation.SignalSuccess
+	}
+	return reputation.SignalMajorError
+}
+
+// Reputation collapses a batch's items to one signal per endpoint, the worst,
+// so an operator failing one item per batch reads as answering nothing. HTTP
+// attempts are counted per item from the attempt hook, and the signal hook is
+// read for WebSocket pools only (mainnet poly, 2026-10-04: 0% over 563 signals
+// while about half of the operator's attempts were answered).
+func TestEngine_HTTPCountsItemsNotSignals(t *testing.T) {
+	h := newHarness(t, fakeVouch{opb: true}, true)
+	for i := 0; i < 40; i++ {
+		h.e.OnCollapse(sei, jsonrpc, domain.EndpointAddrList{opa})
+	}
+	for i := 0; i < 60; i++ {
+		h.e.OnSignal(sei, jsonrpc, opa, reputation.SignalMajorError, false) // one worst signal per batch
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i%2 == 0)), "first")
+	}
+	h.clients(200, 40)
+	h.e.Evaluate(context.Background())
+	if o := h.outcomes(t); len(o) != 0 {
+		t.Fatalf("events = %v: an operator answering half its items was read as answering none", o)
+	}
+
+	// The same shape on WebSocket, where the signal is the only feed.
+	ws := domain.RPCTypeWebSocket
+	for i := 0; i < 40; i++ {
+		h.e.OnCollapse(sei, ws, domain.EndpointAddrList{opa})
+	}
+	for i := 0; i < 60; i++ {
+		h.e.OnSignal(sei, ws, opa, reputation.SignalMajorError, false)
+	}
+	h.e.Evaluate(context.Background())
+	if o := h.outcomes(t); len(o) != 1 || o[0] != "opa.example:"+OutcomeDrained {
+		t.Fatalf("events = %v, want the WebSocket operator drained on its signals", o)
 	}
 }
 
@@ -118,7 +150,7 @@ func TestEngine_MildOperatorStillMeetsTheClientGate(t *testing.T) {
 		if i%10 == 0 {
 			st = reputation.SignalMajorError
 		}
-		h.e.OnSignal(sei, jsonrpc, opa, st, false)
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first")
 	}
 	h.clients(200, 1)
 
@@ -164,7 +196,7 @@ func dilutedFeed(h *harness) {
 		if i%10 == 0 {
 			st = reputation.SignalMajorError
 		}
-		h.e.OnSignal(sei, jsonrpc, opa, st, false)
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first")
 	}
 	h.clients(200, 40)
 }
@@ -198,8 +230,8 @@ func TestEngine_TwoOperatorPoolNeverDrainsBoth(t *testing.T) {
 	vouch := fakeVouch{opa: true, opa2: true, opb: true}
 	bothFailing := func(h *harness) {
 		for i := 0; i < 100; i++ {
-			h.e.OnSignal(sei, jsonrpc, opa, reputation.SignalMajorError, false)
-			h.e.OnSignal(sei, jsonrpc, opb, reputation.SignalMajorError, false)
+			h.e.OnAttempt(sei, jsonrpc, opa, attr(reputation.SignalMajorError), "first")
+			h.e.OnAttempt(sei, jsonrpc, opb, attr(reputation.SignalMajorError), "first")
 		}
 		h.clients(200, 40)
 	}

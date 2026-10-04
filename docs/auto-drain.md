@@ -180,9 +180,17 @@ operator answers many chain errors alike (akash, 45–75%) never met the ratio,
 and floored operators whose share rose on archival leftovers (poly, bsc, 30–60%
 against 1–3%) stayed far below the harm bar (under 1.2%).
 
-Success, attempts and failures are counted from supplier-attributed attempts
-only. Client- and blockchain-attributed outcomes are not attempts, the same
-rule the chronic term uses (`reputation/rate.go:103`). The client-facing share
+Attempts and successes are counted per attempt, a batch item included, from
+the metrics attempt hook: an answer is a success (a chain error included, as
+reputation grades it), a supplier- or unknown-attributed outcome a failure,
+and a client-attributed one is not an attempt. Until 2026-10-05 they came
+from the reputation signal hook, which a batch feeds one signal per endpoint,
+the worst of its items (`relay.ScoreSink`). An operator failing one item per
+batch then read as answering nothing: on mainnet poly, during a burst of
+upstream 5xx, one operator showed 0% over 563 signals while it answered about
+half of its attempts, and the collapse trigger proposed draining half the
+pool's traffic. WebSocket attempts never pass the metrics middleware, so a
+WebSocket pool is still counted from the signal hook. The client-facing share
 in condition 6 is the opposite measurement on purpose: one count per client
 request, whatever retry did underneath.
 
