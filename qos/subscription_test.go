@@ -307,3 +307,45 @@ func TestSubscriptionRegistry_AckOutcome(t *testing.T) {
 		t.Fatal("a refused replay must drop the subscription")
 	}
 }
+
+// A connection's duplicate window is shared across its subscriptions
+// (dupBudget): one that opens many cannot make the gateway hold a full window
+// for each. With 64 subscriptions each generation holds 256 notifications, so
+// a repeat after 600 others is out of the window.
+func TestSubscriptionRegistry_DuplicateWindowSharesTheBudget(t *testing.T) {
+	r := NewSubscriptionRegistry(fakeClassifier{})
+	for i := 0; i < 64; i++ {
+		r.TranslateClientFrame([]byte(fmt.Sprintf("sub:%d", i)))
+		r.TranslateEndpointFrame([]byte(fmt.Sprintf("ok:%d:s%d", i, i)))
+	}
+	r.TranslateEndpointFrame([]byte("data:s0:first"))
+	for i := 0; i < 600; i++ {
+		r.TranslateEndpointFrame([]byte(fmt.Sprintf("data:s0:other%d", i)))
+	}
+	if _, _, n := r.TranslateEndpointFrame([]byte("data:s0:first")); n.Kind != NotificationOK {
+		t.Fatalf("repeat past a shared-down window: %+v, want ok", n)
+	}
+	if _, _, n := r.TranslateEndpointFrame([]byte("data:s0:other599")); n.Kind != NotificationDuplicate {
+		t.Fatalf("recent repeat: %+v, want duplicate", n)
+	}
+}
+
+// A generation closes after dupGenerationAge, so the window spans 20-40s
+// whatever the feed's rate: a repeat 25s later is caught, one 45s later is
+// not, and a subscription idle past both generations starts afresh.
+func TestDupWindow_AgesOut(t *testing.T) {
+	sec := func(s int) int64 { return int64(s) * int64(time.Second) }
+	var d dupWindow
+	d.seen(1, sec(0), dupGeneration)
+	if gap, dup := d.seen(1, sec(25), dupGeneration); !dup || gap != 25*time.Second {
+		t.Fatalf("25s later: dup %v gap %v, want a duplicate 25s after first sight", dup, gap)
+	}
+	if _, dup := d.seen(1, sec(46), dupGeneration); dup {
+		t.Fatal("46s later: a duplicate, want out of the window")
+	}
+	var idle dupWindow
+	idle.seen(2, sec(0), dupGeneration)
+	if _, dup := idle.seen(2, sec(41), dupGeneration); dup {
+		t.Fatal("after 41s idle: a duplicate, want both generations cleared")
+	}
+}

@@ -91,6 +91,10 @@ type wsMessageProcessor struct {
 	staleness  *wsStaleness
 	staleHeads int
 
+	// duplicates counts this supplier's repeated notifications
+	// (ws_duplicates.go); nil for a probe.
+	duplicates *wsDuplicates
+
 	// answered counts client requests this supplier answered, taken by the
 	// connection's next success signal (wsSuccessGate.weight).
 	answered atomic.Int64
@@ -325,6 +329,9 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	if note.Kind == qos.NotificationOK || note.Kind == qos.NotificationDuplicate {
 		p.samples.observe(serviceID, p.operator, p.owner, note.Topic, payload)
 		p.countTopic(note.Topic)
+		if p.duplicates.observe(note.Kind == qos.NotificationDuplicate, time.Now()) {
+			return nil, nil
+		}
 	}
 	if note.Kind == qos.NotificationOK && note.Topic == "newHeads" && p.observeHead(serviceID, payload) {
 		return nil, fmt.Errorf("ws ProcessEndpointMessage: %w", errSupplierBehind)

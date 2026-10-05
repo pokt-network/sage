@@ -198,7 +198,7 @@ type SubscriptionRegistry struct {
 
 	// Notification grading. recent is keyed by the client-facing id; closed
 	// holds endpoint ids unsubscribed recently; seed hashes frames.
-	recent map[string]*dupRing
+	recent map[string]*dupWindow
 	closed map[string]struct{}
 	seed   maphash.Seed
 
@@ -239,9 +239,9 @@ const (
 	NotificationNone NotificationKind = iota
 	// NotificationOK is data for a subscription open on this connection.
 	NotificationOK
-	// NotificationDuplicate repeats, byte for byte, one of the last
-	// dupWindow notifications for the same subscription from the same
-	// supplier.
+	// NotificationDuplicate repeats, byte for byte, a notification the same
+	// supplier sent on the same subscription within the duplicate window
+	// (dupGeneration).
 	NotificationDuplicate
 	// NotificationUnsolicited names a subscription this connection never
 	// opened with the current supplier.
@@ -253,9 +253,8 @@ type Notification struct {
 	Kind NotificationKind
 	// Topic is the subscription's topic; "" when unknown (unsolicited).
 	Topic string
-	// Gap is how long ago the same notification was last seen on this
-	// subscription, when it was inside the gap window; 0 otherwise. Wider
-	// than the duplicate grade on purpose, see gapWindow.
+	// Gap is how long ago a duplicate was first seen on this subscription;
+	// 0 for anything else.
 	Gap time.Duration
 	// Ack is the outcome of a subscribe this frame answers, the client's or
 	// a rebind's replay: AckOK, AckError, or "" for any other frame.
@@ -276,67 +275,61 @@ func ackOf(info EndpointFrameInfo) string {
 	return AckOK
 }
 
-// gapWindow and gapMaxAge bound how far back a repeat is looked for when
-// measuring its gap. The duplicate grade looks at the last dupWindow (8)
-// notifications only, which on a feed of 250 a second is about 30ms: a second
-// node's copy of the same transaction half a second later is outside it, so
-// every repeat the grade catches on a busy feed looks like an immediate
-// resend. The gap needs the wider view to tell a merged mempool feed (a copy
-// 0.1-5s later) from padding (an immediate or periodic resend).
+// The duplicate window holds, per subscription, the notifications of the last
+// one to two generations: a supplier's repeat of any of them is a duplicate. A
+// generation closes after dupGenerationAge, or sooner once it holds the
+// subscription's share of dupGeneration. It was the last 8 notifications until
+// 2026-10-05, about 30ms on a pending-transaction feed of 250 a second, while
+// two operators' bsc repeats came 1.0-1.7s after the first copy at the median,
+// 5-10s at p90 and 16-17s at p99: a client saw 9% of their pending hashes
+// twice and the grade counted 0.8-0.9%.
+//
+// Memory is the trade-off: an exact window costs about 35 bytes a remembered
+// notification (Go map of hash to first-seen time). A 250-a-second feed holds
+// at most about 350KB; a head or log feed of a few a second, a few KB.
+// dupGeneration caps a faster feed (its window shrinks below 20s), and
+// dupBudget caps a connection's share however many subscriptions it opens, at
+// about 1.1MB. Mainnet pods ran at about 520MB of a 3GiB limit when this was
+// written. ponytail: exact maps; a fixed-size open-addressed table would
+// halve the cost if fast feeds per pod reach the hundreds.
 const (
-	gapWindow = 64
-	gapMaxAge = 10 * time.Second
+	dupGenerationAge = 20 * time.Second
+	dupGeneration    = 8192
+	dupBudget        = 16384
 )
 
-// gapRing remembers when a subscription's last gapWindow notifications were
-// seen.
-type gapRing struct {
-	hashes [gapWindow]uint64
-	at     [gapWindow]int64
-	n      int
+// dupWindow remembers when a subscription's recent notifications were first
+// seen, in two generations: a closed current one becomes the previous and the
+// old previous is cleared for reuse.
+type dupWindow struct {
+	cur, prev map[uint64]int64
+	curStart  int64
 }
 
-// since reports how long ago h was last seen within gapMaxAge, then records h
-// at now.
-func (g *gapRing) since(h uint64, now time.Time) time.Duration {
-	var gap time.Duration
-	cut := now.Add(-gapMaxAge).UnixNano()
-	for i := 0; i < min(g.n, gapWindow); i++ {
-		if g.hashes[i] == h && g.at[i] >= cut {
-			if d := time.Duration(now.UnixNano() - g.at[i]); gap == 0 || d < gap {
-				gap = d
-			}
-		}
+// seen reports whether h is in the window and how long ago it was first seen;
+// otherwise it records h at now, closing the current generation once it is
+// dupGenerationAge old or holds limit notifications.
+func (d *dupWindow) seen(h uint64, now int64, limit int) (time.Duration, bool) {
+	if age := time.Duration(now - d.curStart); age >= 2*dupGenerationAge {
+		clear(d.prev) // both generations are past the window
+		clear(d.cur)
+		d.curStart = now
+	} else if age >= dupGenerationAge || len(d.cur) >= limit {
+		d.prev, d.cur = d.cur, d.prev
+		clear(d.cur)
+		d.curStart = now
 	}
-	g.hashes[g.n%gapWindow] = h
-	g.at[g.n%gapWindow] = now.UnixNano()
-	g.n++
-	return gap
-}
-
-// dupWindow is how many recent notifications per subscription are
-// remembered for duplicate detection. A duplicate that matters is an
-// immediate repeat; eight covers a supplier that interleaves a few.
-const dupWindow = 8
-
-// dupRing remembers the hashes of a subscription's last dupWindow
-// notifications.
-type dupRing struct {
-	hashes [dupWindow]uint64
-	n      int
-	gaps   gapRing
-}
-
-// seen reports whether h is in the ring, then records it.
-func (d *dupRing) seen(h uint64) bool {
-	for i := 0; i < min(d.n, dupWindow); i++ {
-		if d.hashes[i] == h {
-			return true
-		}
+	if at, ok := d.cur[h]; ok {
+		return time.Duration(now - at), true
 	}
-	d.hashes[d.n%dupWindow] = h
-	d.n++
-	return false
+	if at, ok := d.prev[h]; ok {
+		return time.Duration(now - at), true
+	}
+	if d.cur == nil {
+		d.cur = make(map[uint64]int64)
+	}
+	d.cur[h] = now
+	return 0, false
 }
 
 // maxClosedIDs bounds the ids remembered after an unsubscribe, so a
@@ -355,7 +348,7 @@ func NewSubscriptionRegistry(classifier SubscriptionClassifier) *SubscriptionReg
 		toClient:   make(map[string]string),
 		replay:     make(map[string]string),
 		orphaned:   make(map[string]struct{}),
-		recent:     make(map[string]*dupRing),
+		recent:     make(map[string]*dupWindow),
 		closed:     make(map[string]struct{}),
 		seed:       maphash.MakeSeed(),
 		inflight:   make(map[string]inflightRequest),
@@ -549,16 +542,17 @@ func (r *SubscriptionRegistry) touch(clientID string) {
 // Caller holds mu.
 func (r *SubscriptionRegistry) grade(clientID string, data []byte) Notification {
 	note := Notification{Kind: NotificationOK, Topic: r.active[clientID].Topic}
-	ring := r.recent[clientID]
-	if ring == nil {
-		ring = &dupRing{}
-		r.recent[clientID] = ring
+	w := r.recent[clientID]
+	if w == nil {
+		w = &dupWindow{}
+		r.recent[clientID] = w
 	}
-	h := maphash.Bytes(r.seed, data)
-	if ring.seen(h) {
-		note.Kind = NotificationDuplicate
+	// A generation per subscription, shared down so a connection holds at
+	// most dupBudget per generation however many subscriptions it opens.
+	limit := max(1, min(dupGeneration, dupBudget/max(1, len(r.active))))
+	if gap, dup := w.seen(maphash.Bytes(r.seed, data), time.Now().UnixNano(), limit); dup {
+		note.Kind, note.Gap = NotificationDuplicate, gap
 	}
-	note.Gap = ring.gaps.since(h, time.Now())
 	return note
 }
 

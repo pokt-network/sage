@@ -425,6 +425,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		)
 		p.subs, p.samples = subs, r.samples
 		p.staleness = r.staleness(serviceID, addr)
+		p.duplicates = r.duplicates(serviceID, addr)
 		p.canRebind = func() bool {
 			b := bridgeRef.Load()
 			return b != nil && b.CanRebind()

@@ -252,6 +252,17 @@ const (
 	// and connections already bound kept the drained supplier until their
 	// session ended. Off: live connections stay until then.
 	FlagWSDrainRebind = "ws_drain_rebind"
+	// FlagWSDropDuplicates keeps a supplier's repeat of a subscription
+	// notification it already sent (qos.NotificationDuplicate) from the
+	// client. A client counts every pending hash and every log it is pushed;
+	// on mainnet bsc (2026-10-05) a client saw 9% of two operators' pending
+	// hashes twice. The repeat is still counted as graded. Off: forwarded.
+	FlagWSDropDuplicates = "ws_drop_duplicates"
+	// FlagWSDuplicatePenalty charges a supplier a minor ws_duplicate_notifications
+	// signal for each minute in which more than 1% of at least 500 notifications
+	// it pushed on a connection were repeats. Off: repeats are counted, not
+	// scored.
+	FlagWSDuplicatePenalty = "ws_duplicate_penalty"
 	// FlagSeedFromOperator starts a reputation key with no history at its
 	// operator's standing (the median own score of the operator's other keys
 	// on the same service and RPC type) instead of a clean 100, when that is
@@ -336,6 +347,8 @@ var DefaultFlags = map[string]bool{
 	FlagWSNoAnswerMinorFirst:    true,
 	FlagWSRateCountsAnswers:     true,
 	FlagWSDrainRebind:           true,
+	FlagWSDropDuplicates:        true,
+	FlagWSDuplicatePenalty:      true,
 	FlagSeedFromOperator:        false,
 	FlagRelativeChronic:         true,
 	FlagOperatorChronic:         false,

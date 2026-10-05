@@ -115,31 +115,34 @@ func TestSubscriptions_EVMEverySubscribeIsTracked(t *testing.T) {
 	}
 }
 
-// The duplicate grade looks back 8 notifications; the gap looks back 64 and
-// 10s, so a copy that arrives after a burst of others is still measured.
-func TestSubscriptions_EVMDuplicateGapSeesPastTheGradeWindow(t *testing.T) {
+// A repeat is a duplicate across the whole window, not only right after the
+// first copy: a merged mempool feed sends its second copy after hundreds of
+// others (mainnet bsc, 2026-10-05: 9% of two operators' pending hashes seen
+// twice by a client, 0.8% graded). The gap is measured from the first sight.
+func TestSubscriptions_EVMDuplicateAcrossTheWindow(t *testing.T) {
 	r := qos.NewSubscriptionRegistry(&Plugin{})
 	r.TranslateClientFrame([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newPendingTransactions"]}`))
 	r.TranslateEndpointFrame([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xa"}`))
 	frame := func(tx string) []byte {
 		return []byte(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0xa","result":"` + tx + `"}}`)
 	}
-	if _, _, n := r.TranslateEndpointFrame(frame("0x1")); n.Gap != 0 {
-		t.Fatalf("first sight: gap %v, want 0", n.Gap)
+	if _, _, n := r.TranslateEndpointFrame(frame("0x1")); n.Kind != qos.NotificationOK || n.Gap != 0 {
+		t.Fatalf("first sight: %+v, want ok with no gap", n)
 	}
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 1000; i++ {
 		r.TranslateEndpointFrame(frame(fmt.Sprintf("0x%x", 100+i)))
 	}
-	// A pause before each repeat: two calls inside one clock tick measure a
-	// gap of exactly 0, which reads as "first sight".
+	// A pause first: two calls inside one clock tick measure a gap of 0.
 	time.Sleep(time.Millisecond)
-	_, _, late := r.TranslateEndpointFrame(frame("0x1"))
-	if late.Kind != qos.NotificationOK || late.Gap <= 0 {
-		t.Fatalf("repeat after 20 others: %+v, want graded ok with a gap", late)
+	if _, _, late := r.TranslateEndpointFrame(frame("0x1")); late.Kind != qos.NotificationDuplicate || late.Gap <= 0 || late.Gap > time.Second {
+		t.Fatalf("repeat after 1000 others: %+v, want a duplicate with its gap", late)
 	}
-	time.Sleep(time.Millisecond)
-	_, _, again := r.TranslateEndpointFrame(frame("0x1"))
-	if again.Kind != qos.NotificationDuplicate || again.Gap <= 0 || again.Gap > time.Second {
-		t.Fatalf("immediate repeat: %+v, want duplicate with a small gap", again)
+
+	// Past two full generations of other notifications the first is forgotten.
+	for i := 0; i < 17000; i++ {
+		r.TranslateEndpointFrame(frame(fmt.Sprintf("0x%x", 100000+i)))
+	}
+	if _, _, old := r.TranslateEndpointFrame(frame("0x1")); old.Kind != qos.NotificationOK {
+		t.Fatalf("repeat after 17000 others: %+v, want ok, out of the window", old)
 	}
 }
