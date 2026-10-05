@@ -271,6 +271,17 @@ const (
 	// it pushed on a connection were repeats. Off: repeats are counted, not
 	// scored.
 	FlagWSDuplicatePenalty = "ws_duplicate_penalty"
+	// FlagWSDuplicateShare charges a party for the share of its WebSocket
+	// notifications that repeat, relative to the service's cleanest party, on
+	// every websocket key it has there (sage_party_duplicate_share): 0 within
+	// websocket.duplicate_share_floor, linear to -40 at
+	// websocket.duplicate_share_full. A per-key signal cannot rank such a
+	// party down: its keys are one URL per node, renewed each session. On
+	// mainnet bsc (2026-10-05) parties repeating 25-28% held WebSocket keys at
+	// 95-100. Measured whatever this says; not affected by
+	// party_penalties_websocket, which is about penalties measured on HTTP.
+	// Off by default.
+	FlagWSDuplicateShare = "ws_duplicate_share"
 	// FlagSeedFromOperator starts a reputation key with no history at its
 	// operator's standing (the median own score of the operator's other keys
 	// on the same service and RPC type) instead of a clean 100, when that is
@@ -357,6 +368,7 @@ var DefaultFlags = map[string]bool{
 	FlagWSDrainRebind:           true,
 	FlagWSDropDuplicates:        true,
 	FlagHeadAnswersHeight:       true,
+	FlagWSDuplicateShare:        false,
 	FlagWSDuplicatePenalty:      true,
 	FlagSeedFromOperator:        false,
 	FlagRelativeChronic:         true,

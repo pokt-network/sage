@@ -172,6 +172,12 @@ type serviceImpl struct {
 	// partyWSGate says per service whether party penalties reach websocket
 	// keys (featureflag.FlagPartyPenaltiesWebsocket).
 	partyWSGate atomic.Pointer[func(domain.ServiceID) bool]
+	// dupGate turns on the WebSocket repeat-share penalty per service, and
+	// dupLimits gives its floor and full excess; dups is the per-party
+	// evidence it prices (dupshare.go). Not persisted.
+	dupGate   atomic.Pointer[func(domain.ServiceID) bool]
+	dupLimits atomic.Pointer[func(domain.ServiceID) (float64, float64)]
+	dups      *opTracker
 	// seedGate says per service whether a key with no state starts at its
 	// operator's standing (featureflag.FlagSeedFromOperator); keyOps memoizes
 	// the operator of a key for that lookup.
@@ -228,6 +234,8 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	s.heads.dirty = nil // never persisted, so nothing takes the marks
 	s.refusals = newOpTracker(refusalHalfLife)
 	s.refusals.dirty = nil
+	s.dups = newOpTracker(dupShareHalfLife)
+	s.dups.dirty = nil
 	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, nil)))
 	selCfg := cfg.Selector
 	if selCfg == (SelectorConfig{}) {
@@ -591,8 +599,25 @@ func (s *serviceImpl) refreshBaselines() {
 			v.trustPen[t.Party] = t.Penalty
 		}
 	}
+	// The WebSocket repeat-share term, charged to every websocket key of a
+	// priced party.
+	var prevDup []PartyDuplicates
+	if old := s.chronic.Load(); old != nil {
+		prevDup = old.dup
+	}
+	var dupLimits func(domain.ServiceID) (float64, float64)
+	if lp := s.dupLimits.Load(); lp != nil {
+		dupLimits = *lp
+	}
+	v.dup = partyDuplicates(s.dups.snapshot(now), gateOf(&s.dupGate), dupLimits, prevDup, now)
+	v.dupPen = map[opID]float64{}
+	for _, p := range v.dup {
+		if p.Penalty < 0 {
+			v.dupPen[opID{svc: p.ServiceID, op: p.Party}] = p.Penalty
+		}
+	}
 	// Party lookups only matter while some party is charged.
-	if len(v.stalePen)+len(v.trustPen) > 0 {
+	if len(v.stalePen)+len(v.trustPen)+len(v.dupPen) > 0 {
 		// The flag per service is read here, once a refresh, for every
 		// service with a key; a service with none yet falls back to the
 		// gate on lookup (the penalty reaches a party's first key there).

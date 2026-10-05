@@ -93,6 +93,15 @@ const (
 	// KnobWSDuplicateBudget is how many notifications a connection's
 	// duplicate windows hold per generation, per service as well as globally.
 	KnobWSDuplicateBudget = "websocket.duplicate_budget"
+	// KnobWSDuplicateMajorShare is the repeat share above which a WebSocket
+	// supplier's minute is charged major instead of minor.
+	KnobWSDuplicateMajorShare = "websocket.duplicate_major_share"
+	// KnobWSDuplicateShareFloor is how far above the service's cleanest party
+	// a party's repeat share may sit before ws_duplicate_share charges it.
+	KnobWSDuplicateShareFloor = "websocket.duplicate_share_floor"
+	// KnobWSDuplicateShareFull is the excess over the cleanest party charged
+	// the whole ws_duplicate_share penalty.
+	KnobWSDuplicateShareFull = "websocket.duplicate_share_full"
 )
 
 // Knob describes one overridable setting.
@@ -122,6 +131,30 @@ type Knob struct {
 // used — see the closures in cmd/sagegw.Build. A knob registered but never read
 // is worse than no knob at all.
 var Knobs = []Knob{
+	{
+		Name:        KnobWSDuplicateMajorShare,
+		Kind:        KindFloat,
+		Description: "Repeat share of a WebSocket supplier's notifications on one connection, over a minute, above which the minute is charged major (feeding the failure rate) instead of minor. Below it and above websocket.duplicate_max_share it stays minor.",
+		Min:         0,
+		Max:         1,
+		Unit:        "share",
+	},
+	{
+		Name:        KnobWSDuplicateShareFloor,
+		Kind:        KindFloat,
+		Description: "How far a party's WebSocket repeat share may sit above the service's cleanest party before ws_duplicate_share charges every websocket key it has there (sage_party_duplicate_penalty).",
+		Min:         0,
+		Max:         1,
+		Unit:        "share",
+	},
+	{
+		Name:        KnobWSDuplicateShareFull,
+		Kind:        KindFloat,
+		Description: "The repeat-share excess over the service's cleanest party at which ws_duplicate_share charges its whole -40; linear from websocket.duplicate_share_floor.",
+		Min:         0,
+		Max:         1,
+		Unit:        "share",
+	},
 	{
 		Name: KnobWSDuplicateWindow,
 		Kind: KindDuration,

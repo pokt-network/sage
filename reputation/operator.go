@@ -78,6 +78,11 @@ type chronicView struct {
 	// websocket keys; wsGate answers for a service with no key at refresh.
 	wsOn   map[domain.ServiceID]bool
 	wsGate func(domain.ServiceID) bool
+	// dupPen is the WebSocket repeat-share penalty of each priced (service,
+	// party), charged to websocket keys only and whatever wsOn says, since it
+	// is measured on WebSocket; dup is every measured party (dupshare.go).
+	dupPen map[opID]float64
+	dup    []PartyDuplicates
 	// opSeed is, per operator, service and RPC type, the median own score of
 	// its keys where that is below the initial score: where a key of the
 	// operator with no history starts (seed_from_operator, per service in
@@ -153,10 +158,11 @@ func (v *chronicView) websocketCharged(svc domain.ServiceID) bool {
 	return v.wsGate == nil || v.wsGate(svc)
 }
 
-// partyPenalty is what a key's party costs it in a service.
+// partyPenalty is what a key's party costs it in a service: the largest of
+// its stale-share, trust and (on a websocket key) repeat-share penalties.
 func (v *chronicView) partyPenalty(svc domain.ServiceID, key string) float64 {
 	stale, trust := v.partyPenalties(svc, key)
-	return min(stale, trust)
+	return min(stale, trust, v.duplicatePenalty(svc, key))
 }
 
 // partyOfKey is the party a reputation key belongs to.

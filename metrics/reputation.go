@@ -378,6 +378,53 @@ func (c *StaleShareCollector) Collect(ch chan<- prometheus.Metric) {
 	})
 }
 
+// DuplicateShareCollector exposes each party's WebSocket repeat share and the
+// penalty it is charged (reputation.PartyDuplicates), as the last refresh left
+// them.
+type DuplicateShareCollector struct {
+	each      func(yield func(serviceID domain.ServiceID, party string, share, penalty float64))
+	parties   *labelPolicy
+	shareDesc *prometheus.Desc
+	penDesc   *prometheus.Desc
+}
+
+// NewDuplicateShareCollector builds the collector over each, which yields every
+// measured party.
+func NewDuplicateShareCollector(each func(yield func(serviceID domain.ServiceID, party string, share, penalty float64))) *DuplicateShareCollector {
+	return &DuplicateShareCollector{
+		each:    each,
+		parties: cappedLabel(maxOperatorLabels),
+		shareDesc: prometheus.NewDesc(
+			"sage_party_duplicate_share",
+			"Share of a party's WebSocket subscription notifications that repeated one it had already sent on the subscription, by service and party, over counts halving every 30 minutes. Only parties with at least 500 notifications' evidence on this replica. Measured whatever the flags say.",
+			[]string{"service_id", "party"}, nil,
+		),
+		penDesc: prometheus.NewDesc(
+			"sage_party_duplicate_penalty",
+			"Points the ws_duplicate_share flag takes off every WebSocket reputation key of a party: 0 while its repeat share is within websocket.duplicate_share_floor of the service's cleanest party, then linear to -40 at websocket.duplicate_share_full. 0 where the flag is off or the service has one measured party.",
+			[]string{"service_id", "party"}, nil,
+		),
+	}
+}
+
+// Describe implements prometheus.Collector.
+func (c *DuplicateShareCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.shareDesc
+	ch <- c.penDesc
+}
+
+// Collect implements prometheus.Collector.
+func (c *DuplicateShareCollector) Collect(ch chan<- prometheus.Metric) {
+	c.each(func(serviceID domain.ServiceID, party string, share, penalty float64) {
+		sid, p := sanitizeLabel(string(serviceID)), c.parties.value(party)
+		if p == otherLabel {
+			return
+		}
+		ch <- prometheus.MustNewConstMetric(c.shareDesc, prometheus.GaugeValue, share, sid, p)
+		ch <- prometheus.MustNewConstMetric(c.penDesc, prometheus.GaugeValue, penalty, sid, p)
+	})
+}
+
 // TrustCollector exposes each party's trust evidence and the trust penalty in
 // force (reputation.PartyTrust), as the last refresh left them.
 type TrustCollector struct {

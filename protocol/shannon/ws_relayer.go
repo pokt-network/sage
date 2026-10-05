@@ -95,11 +95,10 @@ type WSRelayerDeps struct {
 	// zero waits for ever, as before.
 	RequestTimeout func(domain.ServiceID) time.Duration
 
-	// DuplicateLimits is the repeat share a supplier may push on a
-	// connection in a minute, and the notifications that minute needs before
-	// it is judged (ws_duplicate_penalty). Nil takes DuplicateMaxShare and
-	// DuplicateMinNotifications.
-	DuplicateLimits func(domain.ServiceID) (maxShare float64, minNotes int)
+	// DuplicateLimits is how a supplier's repeats in a minute on a connection
+	// are charged (ws_duplicate_penalty). Nil takes DuplicateMaxShare,
+	// DuplicateMajorShare and DuplicateMinNotifications.
+	DuplicateLimits func(domain.ServiceID) DuplicateLimits
 
 	// DuplicateWindow is the duplicate window's generation length and a
 	// connection's budget (qos.SubscriptionRegistry.SetDuplicateWindow). Nil

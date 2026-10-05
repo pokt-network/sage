@@ -198,6 +198,18 @@ func (t *opTracker) record(id opID, failure float64, now time.Time) {
 	}
 }
 
+// recordN adds n attempts, failures of them failed, in one step: a minute of a
+// WebSocket feed reported at once. No healing: the trackers that take it read
+// the plain share.
+func (t *opTracker) recordN(id opID, n, failures float64, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	st := t.stats[id].decayTo(now, t.halfLife)
+	st.Attempts += n
+	st.Failures += failures
+	t.stats[id] = st
+}
+
 // get returns one operator's stat, decayed to now.
 func (t *opTracker) get(id opID, now time.Time) (OperatorStat, bool) {
 	t.mu.RLock()

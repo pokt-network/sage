@@ -469,6 +469,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			yield(p.ServiceID, p.Party, p.Share, p.Penalty, p.Peer())
 		}
 	}))
+	prometheus.MustRegister(metrics.NewDuplicateShareCollector(func(yield func(domain.ServiceID, string, float64, float64)) {
+		for _, p := range repSvc.PartyDuplicateShares() {
+			yield(p.ServiceID, p.Party, p.Share, p.Penalty)
+		}
+	}))
 	// What each service's current session holds, per operator: the
 	// registration count PATH's dashboard shows, and the mean score over it.
 	if app.Protocol != nil {
@@ -1149,12 +1154,23 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 				return tuningStore.Duration(tuning.KnobWSDuplicateWindow, serviceID, qos.DefaultDuplicateWindow),
 					tuningStore.Int(tuning.KnobWSDuplicateBudget, serviceID, qos.DefaultDuplicateBudget)
 			},
-			DuplicateLimits: func(serviceID domain.ServiceID) (float64, int) {
-				return tuningStore.Float(tuning.KnobWSDuplicateMaxShare, serviceID, shannon.DuplicateMaxShare),
-					tuningStore.Int(tuning.KnobWSDuplicateMinNotifications, serviceID, shannon.DuplicateMinNotifications)
+			DuplicateLimits: func(serviceID domain.ServiceID) shannon.DuplicateLimits {
+				return shannon.DuplicateLimits{
+					MaxShare:         tuningStore.Float(tuning.KnobWSDuplicateMaxShare, serviceID, shannon.DuplicateMaxShare),
+					MajorShare:       tuningStore.Float(tuning.KnobWSDuplicateMajorShare, serviceID, shannon.DuplicateMajorShare),
+					MinNotifications: tuningStore.Int(tuning.KnobWSDuplicateMinNotifications, serviceID, shannon.DuplicateMinNotifications),
+				}
 			},
 		})
 		wsRelayer = relayer
+		// A party's WebSocket repeat share, priced on the reputation refresh;
+		// the connections above report each minute's counts to it.
+		repSvc.SetDuplicateShare(func(serviceID domain.ServiceID) bool {
+			return flags.IsEnabled(context.Background(), featureflag.FlagWSDuplicateShare, serviceID)
+		}, func(serviceID domain.ServiceID) (float64, float64) {
+			return tuningStore.Float(tuning.KnobWSDuplicateShareFloor, serviceID, reputation.DefaultDuplicateShareFloor),
+				tuningStore.Float(tuning.KnobWSDuplicateShareFull, serviceID, reputation.DefaultDuplicateShareFull)
+		})
 		wsClients = func(serviceID domain.ServiceID, limit int, onlyShopping bool) any {
 			return relayer.Clients(serviceID, limit, onlyShopping)
 		}
@@ -1319,6 +1335,9 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobWSDuplicateMinNotifications, strconv.Itoa(shannon.DuplicateMinNotifications))
 	store.SetBase(tuning.KnobWSDuplicateWindow, qos.DefaultDuplicateWindow.String())
 	store.SetBase(tuning.KnobWSDuplicateBudget, strconv.Itoa(qos.DefaultDuplicateBudget))
+	store.SetBase(tuning.KnobWSDuplicateMajorShare, strconv.FormatFloat(shannon.DuplicateMajorShare, 'f', -1, 64))
+	store.SetBase(tuning.KnobWSDuplicateShareFloor, strconv.FormatFloat(reputation.DefaultDuplicateShareFloor, 'f', -1, 64))
+	store.SetBase(tuning.KnobWSDuplicateShareFull, strconv.FormatFloat(reputation.DefaultDuplicateShareFull, 'f', -1, 64))
 }
 
 // redisStartupPing bounds the startup check. It only decides what is logged:
