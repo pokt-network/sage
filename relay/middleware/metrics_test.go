@@ -288,6 +288,29 @@ func TestMetrics_RecordsOperatorAttemptPerAttempt(t *testing.T) {
 	}
 }
 
+// The attempt hook hears each attempt with what the counter keeps, plus the
+// method as the service's plugin catalogues it, the key method blocks use.
+func TestMetrics_AttemptHookCarriesTheCataloguedMethod(t *testing.T) {
+	var got []string
+	hook := WithAttemptHook(func(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, attribution, kind, method string) {
+		got = append(got, string(svc)+" "+string(rpc)+" "+ep.Operator()+" "+attribution+" "+kind+" "+method)
+	})
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ctx.Endpoint = "supplierA-https://rm01.node.example.com"
+		ctx.HeuristicResult = &heuristic.AnalysisResult{Reason: "internal_error", Attribution: heuristic.AttrBlockchain}
+		return nil
+	})
+	ctx := baseContext()
+	ctx.RPCType = domain.RPCTypeJSONRPC
+	ctx.Plugin = normPlugin{}
+	ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, "getSlot")}
+	_ = Metrics(&operatorRecorder{}, hook)(inner).HandleRelay(ctx)
+
+	if len(got) != 1 || got[0] != "eth json_rpc example.com blockchain first getSlot" {
+		t.Fatalf("hook heard %q", got)
+	}
+}
+
 // The attempt label is only a fair sample if the chain writes it: a first
 // attempt reads first, the one after a failure reads retry, and the second arm
 // of a fired hedge reads hedge.

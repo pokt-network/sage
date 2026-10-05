@@ -18,6 +18,7 @@ const (
 	opa2    = domain.EndpointAddr("pokt1c-https://s029.opa.example")
 	opb     = domain.EndpointAddr("pokt1b-https://node1.opb.example")
 	sei     = domain.ServiceID("sei")
+	method  = "eth_call"
 	jsonrpc = domain.RPCTypeJSONRPC
 )
 
@@ -111,14 +112,14 @@ func (h *harness) feedTraffic(opaSuccess, opaAttempts int) {
 		if i < opaSuccess {
 			st = reputation.SignalSuccess
 		}
-		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first")
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first", method)
 	}
 	for i := 0; i < 100; i++ {
 		st := reputation.SignalSuccess
 		if i%10 >= 7 {
 			st = reputation.SignalMajorError
 		}
-		h.e.OnAttempt(sei, jsonrpc, opb, attr(st), "first")
+		h.e.OnAttempt(sei, jsonrpc, opb, attr(st), "first", method)
 	}
 }
 
@@ -257,7 +258,7 @@ func TestEngine_RateLimitedPerService(t *testing.T) {
 		h.e.OnCollapse(sei, domain.RPCTypeREST, domain.EndpointAddrList{opa})
 	}
 	for i := 0; i < 60; i++ {
-		h.e.OnAttempt(sei, domain.RPCTypeREST, opa, attr(reputation.SignalMajorError), "first")
+		h.e.OnAttempt(sei, domain.RPCTypeREST, opa, attr(reputation.SignalMajorError), "first", method)
 	}
 	h.e.Evaluate(context.Background())
 
@@ -310,7 +311,7 @@ func (h *harness) firsts(ep domain.EndpointAddr, kind string, n, chain int) {
 		if i < chain {
 			attribution = "blockchain"
 		}
-		h.e.OnAttempt(sei, jsonrpc, ep, attribution, kind)
+		h.e.OnAttempt(sei, jsonrpc, ep, attribution, kind, method)
 	}
 }
 
@@ -363,7 +364,7 @@ func TestEngine_ChainAnswerNotAnOutlier(t *testing.T) {
 		}, 200, nil},
 		"client-attributed": {func(h *harness) {
 			for i := 0; i < 60; i++ {
-				h.e.OnAttempt(sei, jsonrpc, opa, "client", "first")
+				h.e.OnAttempt(sei, jsonrpc, opa, "client", "first", method)
 			}
 			h.firsts(opb, "first", 100, 4)
 		}, 200, nil},
@@ -376,5 +377,73 @@ func TestEngine_ChainAnswerNotAnOutlier(t *testing.T) {
 		if o := h.outcomes(t); fmt.Sprint(o) != fmt.Sprint(tc.want) {
 			t.Errorf("%s: events = %v, want %v", name, o, tc.want)
 		}
+	}
+}
+
+// answers feeds n first attempts on method m for ep, the first chain of them
+// chain errors and the rest clean.
+func (h *harness) answers(ep domain.EndpointAddr, m string, n, chain int) {
+	for i := 0; i < n; i++ {
+		attribution := "none"
+		if i < chain {
+			attribution = "blockchain"
+		}
+		h.e.OnAttempt(sei, jsonrpc, ep, attribution, "first", m)
+	}
+}
+
+// Shares are compared method by method, over methods the peers answer.
+// Selection steers a method away from hosts that refused it, and then only one
+// operator answers it: its errors to that method are no evidence (mainnet
+// osmosis, 2026-10-05: every peer host method-blocked on CometBFT block, one
+// operator's ordinary 500s to bad-height queries read as 27-39% against 0%).
+// A peer's 408 is not an answer either. An operator erring on methods the
+// peers answer cleanly is still flagged.
+func TestEngine_ChainAnswersComparedByMethod(t *testing.T) {
+	for name, tc := range map[string]struct {
+		feed func(h *harness)
+		want []string
+	}{
+		"only it answers the method": {func(h *harness) {
+			h.answers(opa, "block", 60, 60)
+			h.answers(opa, "status", 60, 0)
+			h.answers(opb, "status", 100, 0)
+		}, nil},
+		"peers fail the method instead of answering": {func(h *harness) {
+			h.answers(opa, "block", 60, 60)
+			for i := 0; i < 100; i++ {
+				h.e.OnAttempt(sei, jsonrpc, opb, "supplier", "first", "block")
+			}
+		}, nil},
+		"peers too thin on the method": {func(h *harness) {
+			h.answers(opa, "getSlot", 60, 60)
+			h.answers(opb, "getSlot", 10, 0)
+		}, nil},
+		"errs on every method the peers answer": {func(h *harness) {
+			for _, m := range []string{"getSlot", "getAccountInfo", "getBlock"} {
+				h.answers(opa, m, 30, 30)
+				h.answers(opb, m, 40, 2)
+			}
+		}, []string{"opa.example:" + OutcomeShadow}},
+	} {
+		h := newHarness(t, fakeVouch{opb: true}, false)
+		tc.feed(h)
+		h.clients(200, 0)
+		h.e.Evaluate(context.Background())
+		if o := h.outcomes(t); fmt.Sprint(o) != fmt.Sprint(tc.want) {
+			t.Errorf("%s: events = %v, want %v", name, o, tc.want)
+		}
+	}
+}
+
+// An operator's methods are bounded per minute; the rest share one bucket,
+// which is never compared.
+func TestOpCount_MethodsFoldPastTheCap(t *testing.T) {
+	var c opCount
+	for i := 0; i < maxMethods+10; i++ {
+		c.method(fmt.Sprintf("m%d", i)).answered++
+	}
+	if len(c.methods) != maxMethods+1 || c.methods[overflowMethod].answered != 10 {
+		t.Fatalf("methods = %d, overflow = %+v; want %d and 10 folded", len(c.methods), c.methods[overflowMethod], maxMethods+1)
 	}
 }

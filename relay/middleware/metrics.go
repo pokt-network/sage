@@ -7,6 +7,7 @@ import (
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/heuristic"
+	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -64,6 +65,23 @@ var heavyMethods = map[string]bool{
 	"block_results": true,
 }
 
+// AttemptHook is told every attempt Metrics records against an operator:
+// service, RPC type, endpoint, attribution (none, blockchain, supplier,
+// unknown, client), kind (first, retry, hedge, probation) and the method as
+// the service's plugin catalogues it ("" when it has no notion of one).
+type AttemptHook func(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution, kind, method string)
+
+// MetricsOption configures Metrics.
+type MetricsOption func(*metricsOptions)
+
+type metricsOptions struct{ attemptHook AttemptHook }
+
+// WithAttemptHook installs fn, run on every attempt after it is recorded. It
+// runs on every attempt, so it must not block.
+func WithAttemptHook(fn AttemptHook) MetricsOption {
+	return func(o *metricsOptions) { o.attemptHook = fn }
+}
+
 // Metrics returns a middleware that records one upstream attempt via recorder
 // after it completes: status, the endpoint the attempt picked, and the
 // attempt's own latency. It belongs inside retry, hedge and batch and outside
@@ -71,7 +89,11 @@ var heavyMethods = map[string]bool{
 // hedged request is recorded once per attempt. The middleware always calls
 // next.HandleRelay; recording is best-effort and never affects the returned
 // error.
-func Metrics(recorder MetricsRecorder) relay.Middleware {
+func Metrics(recorder MetricsRecorder, opts ...MetricsOption) relay.Middleware {
+	var o metricsOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			start := time.Now()
@@ -114,13 +136,26 @@ func Metrics(recorder MetricsRecorder) relay.Middleware {
 				if len(ctx.Payloads) > 0 {
 					method = ctx.Payloads[0].Method()
 				}
+				attribution := attemptAttribution(ctx.HeuristicResult, err)
 				recorder.RecordOperatorAttempt(ctx.ServiceID, ctx.RPCType, ctx.Endpoint,
-					attemptAttribution(ctx.HeuristicResult, err), kind, methodClassOf(method), latency)
+					attribution, kind, methodClassOf(method), latency)
+				if o.attemptHook != nil {
+					o.attemptHook(ctx.ServiceID, ctx.RPCType, ctx.Endpoint, attribution, kind, cataloguedMethod(ctx))
+				}
 			}
 
 			return err
 		})
 	}
+}
+
+// cataloguedMethod is the request's method as the service's plugin names it,
+// the key method blocks steer by; "" when the plugin has no notion of one.
+func cataloguedMethod(ctx *relay.Context) string {
+	if n, ok := ctx.Plugin.(qos.MethodNormalizer); ok && len(ctx.Payloads) > 0 {
+		return n.NormalizeMethod(ctx.Payloads[0])
+	}
+	return ""
 }
 
 // verdictAttribution is the attribution label for a verdict. A success carries

@@ -567,6 +567,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// the traffic, and runs its own engine only once it stops following.
 	var autoDrain *autodrain.Engine
 	var autoDrainEvents autodrain.EventLog
+	var metricsOpts []middleware.MetricsOption
 	if following := cfg.Gateway.HealthChecks.PeerProbeStream.Enabled && redisClient != nil; drainStore != nil && !following {
 		autoDrainEvents = &autodrain.MemoryLog{}
 		if redisClient != nil {
@@ -588,11 +589,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		// status says: retry and hedge mean an operator can answer nothing
 		// while the service serves every request.
 		recorder.SetClientRequestHook(autoDrain.OnClientResult)
-		// And on every attempt, a batch item included, with its attribution:
-		// reputation scores a batch once per endpoint, and an error the
-		// heuristic passes as the chain's answer is a success to it, so only
-		// this feed shows what each operator answered.
-		recorder.SetOperatorAttemptHook(autoDrain.OnAttempt)
+		// And on every attempt, a batch item included, with its attribution
+		// and method: reputation scores a batch once per endpoint, and an
+		// error the heuristic passes as the chain's answer is a success to it,
+		// so only this feed shows what each operator answered, and to what.
+		metricsOpts = append(metricsOpts, middleware.WithAttemptHook(autoDrain.OnAttempt))
 	}
 
 	// The breaker's failure-rate gate keys on hostname; every relay counter
@@ -806,7 +807,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	})
 	mwReg.Register(relay.MWRequestID, func() relay.Middleware { return middleware.RequestID() })
 	mwReg.Register(relay.MWClientIP, func() relay.Middleware { return middleware.ClientIP(trustedProxies) })
-	mwReg.Register(relay.MWMetrics, func() relay.Middleware { return middleware.Metrics(recorder) })
+	mwReg.Register(relay.MWMetrics, func() relay.Middleware { return middleware.Metrics(recorder, metricsOpts...) })
 	rpcTypesFn := func(svcID domain.ServiceID) []string {
 		if sc := cfg.Gateway.GetServiceConfig(string(svcID)); sc != nil {
 			return sc.RPCTypes

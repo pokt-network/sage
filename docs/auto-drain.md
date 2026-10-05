@@ -154,20 +154,35 @@ client gate can see it. On mainnet solana one operator answered 100% of its
 first attempts with `-32603` against 4% for the pool's other operators, for at
 least two days, and about 42% of the service's client requests got the error.
 
-A chain error depends on the request, and every operator in a pool draws from
-the same requests, so the engine compares shares within the pool. It counts
-first and probation attempts only, from the metrics recorder's attempt hook
-(`SetOperatorAttemptHook`): a retry or a hedge arm reaches whoever is left,
-carrying the requests others already failed, and over-represents chain errors
-on floored operators. A candidate is raised when its chain-answer share is at
-least 20 points and at least three times above the share of the pool's other
-operators, each side over the attempt floor. Its gate is the harm it did: the
-chain errors it answered beyond its peers' share, per client request of the
-service in the window, against the same 5% bar. The event records the trigger
-(`chain_answers`), both shares and that harm (`answer_harm`).
+A chain error depends on the request, so the engine compares shares method by
+method, on the method as the service's plugin catalogues it (the key method
+blocks use). It reads first and probation attempts only, from the Metrics
+middleware's attempt hook (`middleware.WithAttemptHook`): a retry or a hedge
+arm reaches whoever is left, carrying the requests others already failed. On
+each side it counts answers only; a 408 or a refusal is not an answer to
+compare. For every method the pool's other operators answered at least 20
+times in the window, the operator's answers and chain errors are summed, along
+with the chain errors the peers' rate on that method predicts. A candidate is
+raised when, over at least the attempt floor of such matched answers, its
+chain-error share is at least 20 points and at least three times the predicted
+share. Its gate is the harm it did: the chain errors above the prediction, per
+client request of the service in the window, against the same 5% bar. The
+event records the trigger (`chain_answers`), the matched answers, both shares
+and that harm (`answer_harm`).
 
-Replayed over 60 hours of mainnet first and probation attempts (10-minute
-windows), the outlier condition held at some point for 21 (pool, operator)
+The comparison was pool-wide until 2026-10-05, and selection broke it.
+Selection steers a method away from hosts that refused it, so the pool's other
+operators stop answering it. On mainnet osmosis every peer host was
+method-blocked on CometBFT `block`, and one operator's ordinary 500s to
+bad-height queries read as 27–39% chain errors against 0%: 11 shadow proposals
+overnight. A method the peers do not answer is no evidence either way. Height
+filters steer the same way. No series carries operator by method, so the
+per-method version could not be replayed; the shadow log is its test. A pool
+whose only other operator spreads its answers thinly across methods may fall
+below the floors and stop qualifying.
+
+Replayed pool-wide over 60 hours of mainnet first and probation attempts
+(10-minute windows), before the per-method change, the outlier condition held at some point for 21 (pool, operator)
 pairs, and the harm bar passed in 4 incidents: the solana operator above (310
 of 310 windows), the same operator on a CometBFT pool (266, harm about 42%),
 another operator answering 27% of hyperliquid with `-32603` against 0% for

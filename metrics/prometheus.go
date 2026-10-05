@@ -47,10 +47,6 @@ type Recorder struct {
 	// counted. Wire time only; the auto-drain engine reads it so its gate sees
 	// what callers saw rather than what one attempt did.
 	clientRequestHook atomic.Pointer[func(domain.ServiceID, int)]
-	// operatorAttemptHook, when set, is told every attempt RecordOperatorAttempt
-	// counts, with its attribution and kind. Wire time only; the auto-drain
-	// engine reads it for the answers reputation scores as successes.
-	operatorAttemptHook atomic.Pointer[func(domain.ServiceID, domain.RPCType, domain.EndpointAddr, string, string)]
 
 	relayTotal             *prometheus.CounterVec
 	clientRequestsTotal    *prometheus.CounterVec
@@ -722,14 +718,6 @@ func (r *Recorder) SetClientRequestHook(fn func(domain.ServiceID, int)) {
 	r.clientRequestHook.Store(&fn)
 }
 
-// SetOperatorAttemptHook installs a callback run on every attempt
-// RecordOperatorAttempt counts: service, RPC type, endpoint, attribution
-// (none, client, blockchain, supplier, unknown) and kind (first, retry, hedge,
-// probation). Wire time only: it runs on every attempt, so it must not block.
-func (r *Recorder) SetOperatorAttemptHook(fn func(domain.ServiceID, domain.RPCType, domain.EndpointAddr, string, string)) {
-	r.operatorAttemptHook.Store(&fn)
-}
-
 // RecordResponseSize observes one supplier response body's size in bytes.
 // Satisfies the protocol's supplier metrics.
 func (r *Recorder) RecordResponseSize(serviceID domain.ServiceID, bytes int) {
@@ -1113,9 +1101,6 @@ func (r *Recorder) RecordOperatorAttempt(serviceID domain.ServiceID, rpcType dom
 	op := r.operators.value(endpoint.Operator())
 	r.operatorAttempts.WithLabelValues(svc, op, string(rpcType), attribution, kind).Inc()
 	r.operatorLatency.WithLabelValues(svc, op, string(rpcType)).Observe(latency.Seconds())
-	if fn := r.operatorAttemptHook.Load(); fn != nil {
-		(*fn)(serviceID, rpcType, endpoint, attribution, kind)
-	}
 	if kind != "first" {
 		return
 	}

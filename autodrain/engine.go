@@ -77,22 +77,27 @@ const (
 	opRateTrigger = 0.03
 
 	// The third way in, for the operator scoring counts as perfect: one whose
-	// first attempts are answered with a chain error (a JSON-RPC error the
-	// heuristic passes through as the chain's answer, scored a success) far
-	// more often than the pool's other operators' are. A chain error depends
-	// on the request, and every operator in a pool draws from the same
-	// requests, so a share this far above its peers is the operator, not the
-	// chain. On mainnet solana (2026-10-04) one operator's middleware answered
-	// 100% of its first attempts with -32603 against 4% for its peers, scored
-	// 100 throughout, and about 42% of the service's client requests got the
-	// error for at least two days; on hyperliquid another answered 27% with
-	// -32603 against 0% for fourteen hours, about 18% of client requests.
-	// Over 60 hours of mainnet first attempts every pool where all operators
-	// answer many chain errors alike (akash at 45-75%) stayed below the ratio,
-	// and every outlier that reached the client bar below was one of those
-	// incidents or a smaller one of the same kind.
-	chainGap   = 0.20 // its chain-answer share at least this far above its peers'
-	chainRatio = 3.0  // and at least this many times theirs
+	// answers are chain errors (an error the heuristic passes through as the
+	// chain's answer, scored a success) far more often than the pool's other
+	// operators' answers to the same methods are. A chain error depends on
+	// the request, so the shares are compared method by method, on the
+	// method as the plugin catalogues it, the key method blocks use. Selection
+	// steers a method away from hosts that refused it, and a pool-wide share
+	// then compares one operator's answers to a method with peers that no
+	// longer answer it: on mainnet osmosis (2026-10-05) every peer host was
+	// method-blocked on CometBFT block, and one operator's ordinary 500s to
+	// bad-height queries read as 27-39% chain errors against 0%. A method the
+	// peers do not answer is no evidence either way. On mainnet solana
+	// (2026-10-04) one operator's middleware answered every method with -32603
+	// against 4% for its peers, scored 100 throughout, and about 42% of the
+	// service's client requests got the error for at least two days.
+	chainGap       = 0.20 // its chain-answer share at least this far above its peers'
+	chainRatio     = 3.0  // and at least this many times theirs
+	minMethodPeers = 20   // peers' answers to a method before it is compared
+	// maxMethods bounds the methods kept per operator per minute; the rest
+	// share one bucket that is never compared.
+	maxMethods     = 64
+	overflowMethod = "\x00overflow"
 
 	drainFor      = 2 * time.Hour
 	maxLivePool   = 1 // live auto drains per (service, RPC type)
@@ -158,13 +163,16 @@ type Event struct {
 	// severeMinAttempts) that the client gate did not apply to it.
 	Severe bool `json:"severe,omitempty"`
 	// FirstAttempts is how many first and probation attempts the operator
-	// answered in the window, the sample the chain-answer shares are read on.
+	// received in the window, the fair sample the severity path reads.
 	FirstAttempts int `json:"first_attempts,omitempty"`
 	// FirstSuccess is the share of them not failed by the supplier, the
 	// severity path's measure.
 	FirstSuccess float64 `json:"first_success"`
-	// ChainShare is the share of them answered with a chain error, and
-	// PeerChainShare the same share over the pool's other operators.
+	// MatchedAnswers is how many of its first and probation answers were to
+	// methods the pool's other operators also answered (minMethodPeers).
+	// ChainShare is the share of them that were chain errors, and
+	// PeerChainShare the share expected from the peers' rate on each method.
+	MatchedAnswers int     `json:"matched_answers,omitempty"`
 	ChainShare     float64 `json:"chain_share,omitempty"`
 	PeerChainShare float64 `json:"peer_chain_share,omitempty"`
 	// AnswerHarm is the chain errors the operator answered beyond its peers'
@@ -227,9 +235,35 @@ type poolKey struct {
 
 // opCount is one operator's minute. picks come from the collapse hook;
 // attempts and successes from the attempt hook (from the signal hook on a
-// WebSocket pool); firsts, chain and firstFails (supplier or unknown) from the
-// attempt hook, first and probation attempts only.
-type opCount struct{ picks, attempts, successes, firsts, chain, firstFails int }
+// WebSocket pool); firsts, firstFails (supplier or unknown) and methods from
+// the attempt hook, first and probation attempts only.
+type opCount struct {
+	picks, attempts, successes, firsts, firstFails int
+	methods                                        map[string]*methodCount
+}
+
+// methodCount is an operator's first and probation answers to one method, and
+// the chain errors among them.
+type methodCount struct{ answered, chain int }
+
+// method returns the operator's count for name, folding past maxMethods.
+func (c *opCount) method(name string) *methodCount {
+	if c.methods == nil {
+		c.methods = make(map[string]*methodCount)
+	}
+	if m := c.methods[name]; m != nil {
+		return m
+	}
+	if len(c.methods) >= maxMethods {
+		name = overflowMethod
+		if m := c.methods[name]; m != nil {
+			return m
+		}
+	}
+	m := &methodCount{}
+	c.methods[name] = m
+	return m
+}
 
 type slot struct {
 	minute   int64
@@ -355,15 +389,16 @@ func (e *Engine) OnSignal(svc domain.ServiceID, rpc domain.RPCType, ep domain.En
 	}
 }
 
-// OnAttempt is the metrics recorder's attempt hook: every relay attempt, a
-// batch item included, with its attribution and kind. Every kind counts toward
+// OnAttempt is the Metrics middleware's attempt hook: every relay attempt, a
+// batch item included, with its attribution, its kind and its method as the
+// plugin catalogues it. Every kind counts toward
 // the operator's attempts and successes (an answer, a chain error included),
 // as the fallback feeds retries too. First and probation attempts also count
 // toward the fair sample the chain-answer and severity reads use: a retry or a
 // hedge arm reaches whoever is left with whatever budget is left, carrying the
 // requests other operators already failed. A client-attributed attempt is
 // nobody's and is not counted.
-func (e *Engine) OnAttempt(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, attribution, kind string) {
+func (e *Engine) OnAttempt(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, attribution, kind, method string) {
 	if !e.counting.Load() || attribution == heuristic.AttrClient.String() {
 		return
 	}
@@ -380,25 +415,40 @@ func (e *Engine) OnAttempt(svc domain.ServiceID, rpc domain.RPCType, ep domain.E
 		return
 	}
 	c.firsts++
-	switch attribution {
-	case heuristic.AttrBlockchain.String():
-		c.chain++
-	case heuristic.AttrSupplier.String(), heuristic.AttrUnknown.String():
+	if failed {
 		c.firstFails++
+		return
+	}
+	m := c.method(method)
+	m.answered++
+	if attribution == heuristic.AttrBlockchain.String() {
+		m.chain++
 	}
 }
 
-// chainOutlier reports whether an operator's chain-answer share stands out
-// from its peers' (chainGap, chainRatio), each side over minAttempts first
-// attempts, and returns both shares.
-func chainOutlier(c opCount, poolFirsts, poolChain int) (share, peers float64, ok bool) {
-	peerFirsts := poolFirsts - c.firsts
-	if c.firsts < minAttempts || peerFirsts < minAttempts {
-		return 0, 0, false
+// matchedChain compares an operator's chain-error share with its peers',
+// method by method over the methods the peers answered at least
+// minMethodPeers times: matched is the operator's answers to those, share its
+// chain errors among them, peers the share the peers' per-method rates
+// predict, excess the chain errors above that prediction. ok reports an
+// outlier (chainGap, chainRatio) over at least minAttempts matched answers.
+// Answers only, on both sides: a 408 or a refusal is not an answer to compare.
+func matchedChain(op, pool map[string]methodCount) (matched int, share, peers, excess float64, ok bool) {
+	chain, expected := 0, 0.0
+	for name, c := range op {
+		peerAnswered := pool[name].answered - c.answered
+		if name == overflowMethod || c.answered == 0 || peerAnswered < minMethodPeers {
+			continue
+		}
+		matched += c.answered
+		chain += c.chain
+		expected += float64(pool[name].chain-c.chain) / float64(peerAnswered) * float64(c.answered)
 	}
-	share = float64(c.chain) / float64(c.firsts)
-	peers = float64(poolChain-c.chain) / float64(peerFirsts)
-	return share, peers, share-peers >= chainGap && share >= chainRatio*peers
+	if matched < minAttempts {
+		return matched, 0, 0, 0, false
+	}
+	share, peers = float64(chain)/float64(matched), expected/float64(matched)
+	return matched, share, peers, float64(chain) - expected, share-peers >= chainGap && share >= chainRatio*peers
 }
 
 // clientSlot is one minute of client-facing answers for a service.
@@ -514,8 +564,10 @@ func (e *Engine) window(now time.Time) []candidate {
 	oldest := now.Unix()/60 - windowSlots + 1
 	var out []candidate
 	for k, p := range e.pools {
-		collapse, poolFirsts, poolChain := 0, 0, 0
+		collapse := 0
 		ops := map[string]opCount{}
+		methods := map[string]map[string]methodCount{} // operator → method
+		poolMethods := map[string]methodCount{}
 		for i := range p.slots {
 			s := &p.slots[i]
 			if s.minute < oldest {
@@ -528,11 +580,17 @@ func (e *Engine) window(now time.Time) []candidate {
 				t.attempts += c.attempts
 				t.successes += c.successes
 				t.firsts += c.firsts
-				t.chain += c.chain
 				t.firstFails += c.firstFails
 				ops[name] = t
-				poolFirsts += c.firsts
-				poolChain += c.chain
+				if methods[name] == nil {
+					methods[name] = map[string]methodCount{}
+				}
+				for m, mc := range c.methods {
+					om, pm := methods[name][m], poolMethods[m]
+					om.answered, om.chain = om.answered+mc.answered, om.chain+mc.chain
+					pm.answered, pm.chain = pm.answered+mc.answered, pm.chain+mc.chain
+					methods[name][m], poolMethods[m] = om, pm
+				}
 			}
 		}
 		cshare, creq := e.clientShare(k.svc, oldest)
@@ -547,14 +605,14 @@ func (e *Engine) window(now time.Time) []candidate {
 			if c.attempts >= minAttempts {
 				opRate = e.opRate(k, name)
 			}
-			chainShare, peerChain, outlier := chainOutlier(c, poolFirsts, poolChain)
+			matched, chainShare, peerChain, excess, outlier := matchedChain(methods[name], poolMethods)
 			firstSuccess := 0.0
 			if c.firsts > 0 {
 				firstSuccess = 1 - float64(c.firstFails)/float64(c.firsts)
 			}
 			harm := 0.0
 			if outlier && creq > 0 {
-				harm = (float64(c.chain) - peerChain*float64(c.firsts)) / float64(creq)
+				harm = excess / float64(creq)
 			}
 			trigger := ""
 			switch {
@@ -574,7 +632,7 @@ func (e *Engine) window(now time.Time) []candidate {
 					CollapsePicks: collapse, Share: share, Attempts: c.attempts, SuccessRate: success,
 					Trigger: trigger, OperatorRate: opRate,
 					ClientFailure: cshare, ClientRequests: creq,
-					FirstAttempts: c.firsts, FirstSuccess: firstSuccess,
+					FirstAttempts: c.firsts, FirstSuccess: firstSuccess, MatchedAnswers: matched,
 					ChainShare: chainShare, PeerChainShare: peerChain, AnswerHarm: harm,
 				},
 			})
@@ -720,8 +778,8 @@ func (e *Engine) decide(ctx context.Context, k drain.Key, now time.Time, act boo
 	reason := fmt.Sprintf("%s %d collapse picks (%.0f%% on this operator), success %.1f%% over %d attempts; vouched alternative %s",
 		ReasonPrefix, ev.CollapsePicks, 100*ev.Share, 100*ev.SuccessRate, ev.Attempts, ev.Alternative)
 	if ev.Trigger == TriggerChainAnswers {
-		reason = fmt.Sprintf("%s %.0f%% of %d first attempts answered with a chain error against %.0f%% for the other operators, %.1f%% of client requests; vouched alternative %s",
-			ReasonPrefix, 100*ev.ChainShare, ev.FirstAttempts, 100*ev.PeerChainShare, 100*ev.AnswerHarm, ev.Alternative)
+		reason = fmt.Sprintf("%s %.0f%% of %d answers were chain errors against %.0f%% for the other operators on the same methods, %.1f%% of client requests; vouched alternative %s",
+			ReasonPrefix, 100*ev.ChainShare, ev.MatchedAnswers, 100*ev.PeerChainShare, 100*ev.AnswerHarm, ev.Alternative)
 	}
 	if err := e.d.Drains.Set(ctx, drain.Entry{Key: k, Until: until, Reason: reason}); err != nil {
 		e.d.Logger.Warn("autodrain: setting drain failed", "service_id", k.ServiceID, "operator", k.Operator, "rpc_type", k.RPCType, "error", err)
