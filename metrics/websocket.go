@@ -511,6 +511,21 @@ func NewWebSocketShoppingGauge(count func() int) prometheus.GaugeFunc {
 	)
 }
 
+// NewWebSocketDuplicateWindowGauge exposes how many notifications the open
+// WebSocket bridges' duplicate windows hold on this replica:
+//
+//	sage_websocket_duplicate_window_entries <count>
+func NewWebSocketDuplicateWindowGauge(count func() int) prometheus.GaugeFunc {
+	return prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Namespace: "sage",
+			Name:      "websocket_duplicate_window_entries",
+			Help:      "Notifications the open WebSocket bridges' duplicate windows hold on this replica, about 35 bytes each: the memory the duplicate grade costs. Lower websocket.duplicate_window or websocket.duplicate_budget to shrink it; a window of 0 keeps only the last few notifications per subscription.",
+		},
+		func() float64 { return float64(count()) },
+	)
+}
+
 // SupplierHead records one new head a supplier pushed: its lag behind the
 // known head and, when another operator pushed the same block, its delay.
 func (m *WebSocketMetrics) SupplierHead(serviceID domain.ServiceID, operator, owner string, lagBlocks uint64, delay time.Duration, delayKnown bool) {

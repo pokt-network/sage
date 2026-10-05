@@ -1143,6 +1143,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			QoS:                        qosReg,
 			ClientIP:                   middleware.RequestClientIP(trustedProxies),
 			RequestTimeout:             timeoutFn,
+			DuplicateWindow: func(serviceID domain.ServiceID) (time.Duration, int) {
+				return tuningStore.Duration(tuning.KnobWSDuplicateWindow, serviceID, qos.DefaultDuplicateWindow),
+					tuningStore.Int(tuning.KnobWSDuplicateBudget, serviceID, qos.DefaultDuplicateBudget)
+			},
 			DuplicateLimits: func(serviceID domain.ServiceID) (float64, int) {
 				return tuningStore.Float(tuning.KnobWSDuplicateMaxShare, serviceID, shannon.DuplicateMaxShare),
 					tuningStore.Int(tuning.KnobWSDuplicateMinNotifications, serviceID, shannon.DuplicateMinNotifications)
@@ -1159,6 +1163,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			})
 		}
 		prometheus.MustRegister(metrics.NewWebSocketShoppingGauge(relayer.ShoppingClients))
+		prometheus.MustRegister(metrics.NewWebSocketDuplicateWindowGauge(relayer.DuplicateWindowEntries))
 		// Recovery probes: the only way back for a demoted WebSocket key,
 		// which gets no connections to earn score from (see ws_probe.go).
 		safego.GoCtx(ctx, logger, "websocket.probes", func(ctx context.Context) {
@@ -1310,6 +1315,8 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobBatchRejectMessage, cfg.Concurrency.BatchRejectMessage)
 	store.SetBase(tuning.KnobWSDuplicateMaxShare, strconv.FormatFloat(shannon.DuplicateMaxShare, 'f', -1, 64))
 	store.SetBase(tuning.KnobWSDuplicateMinNotifications, strconv.Itoa(shannon.DuplicateMinNotifications))
+	store.SetBase(tuning.KnobWSDuplicateWindow, qos.DefaultDuplicateWindow.String())
+	store.SetBase(tuning.KnobWSDuplicateBudget, strconv.Itoa(qos.DefaultDuplicateBudget))
 }
 
 // redisStartupPing bounds the startup check. It only decides what is logged:

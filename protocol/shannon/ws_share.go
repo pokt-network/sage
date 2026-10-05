@@ -23,6 +23,9 @@ type wsLive struct {
 	opened  time.Time
 	// retired counts the frames of the suppliers this bridge has left.
 	retired atomic.Int64
+	// subs is the bridge's subscription registry, read for the duplicate
+	// window's size.
+	subs *qos.SubscriptionRegistry
 }
 
 // rate is the bridge's supplier frames a second over its life. A heavy

@@ -101,6 +101,11 @@ type WSRelayerDeps struct {
 	// DuplicateMinNotifications.
 	DuplicateLimits func(domain.ServiceID) (maxShare float64, minNotes int)
 
+	// DuplicateWindow is the duplicate window's generation length and a
+	// connection's budget (qos.SubscriptionRegistry.SetDuplicateWindow). Nil
+	// takes qos.DefaultDuplicateWindow and qos.DefaultDuplicateBudget.
+	DuplicateWindow func(domain.ServiceID) (window time.Duration, budget int)
+
 	// QoS resolves the service's plugin. A plugin that implements
 	// qos.SubscriptionClassifier gives the bridge a subscription registry —
 	// the knowledge a rebind and a stall watchdog need. Optional: nil, or a
@@ -414,6 +419,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	frameCh := make(chan wsFrameEvent, wsFrameEventQueueSize)
 
 	subs := r.subscriptionRegistry(serviceID)
+	live.subs = subs
 	consensusHead := r.consensusHead(serviceID)
 	// The bridge, once up: a processor asks it whether a rate-limited
 	// request can be reissued after a rebind.
@@ -754,11 +760,26 @@ func relayMinerHeaders(serviceID domain.ServiceID, appAddr string) http.Header {
 // subscriptionRegistry builds the registry for one bridge from the service's
 // plugin, or an inert one when nothing can classify this chain's frames.
 func (r *WSRelayer) subscriptionRegistry(serviceID domain.ServiceID) *qos.SubscriptionRegistry {
-	if r.deps.QoS == nil {
-		return qos.NewSubscriptionRegistry(nil)
+	var classifier qos.SubscriptionClassifier
+	if r.deps.QoS != nil {
+		classifier, _ = r.deps.QoS.Get(serviceID).(qos.SubscriptionClassifier)
 	}
-	classifier, _ := r.deps.QoS.Get(serviceID).(qos.SubscriptionClassifier)
-	return qos.NewSubscriptionRegistry(classifier)
+	subs := qos.NewSubscriptionRegistry(classifier)
+	if r.deps.DuplicateWindow != nil {
+		subs.SetDuplicateWindow(func() (time.Duration, int) { return r.deps.DuplicateWindow(serviceID) })
+	}
+	return subs
+}
+
+// DuplicateWindowEntries is how many notifications the open bridges'
+// duplicate windows hold between them, about 35 bytes each.
+func (r *WSRelayer) DuplicateWindowEntries() int {
+	n := 0
+	r.live.Range(func(_, v any) bool {
+		n += v.(*wsLive).subs.DuplicateEntries()
+		return true
+	})
+	return n
 }
 
 // sessionEndActionKind is what a bridge's expiry watcher does on one tick.

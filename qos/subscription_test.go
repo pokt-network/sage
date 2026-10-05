@@ -309,7 +309,7 @@ func TestSubscriptionRegistry_AckOutcome(t *testing.T) {
 }
 
 // A connection's duplicate window is shared across its subscriptions
-// (dupBudget): one that opens many cannot make the gateway hold a full window
+// (DefaultDuplicateBudget): one that opens many cannot make the gateway hold a full window
 // for each. With 64 subscriptions each generation holds 256 notifications, so
 // a repeat after 600 others is out of the window.
 func TestSubscriptionRegistry_DuplicateWindowSharesTheBudget(t *testing.T) {
@@ -330,22 +330,43 @@ func TestSubscriptionRegistry_DuplicateWindowSharesTheBudget(t *testing.T) {
 	}
 }
 
-// A generation closes after dupGenerationAge, so the window spans 20-40s
+// A generation closes after DefaultDuplicateWindow, so the window spans 20-40s
 // whatever the feed's rate: a repeat 25s later is caught, one 45s later is
 // not, and a subscription idle past both generations starts afresh.
 func TestDupWindow_AgesOut(t *testing.T) {
 	sec := func(s int) int64 { return int64(s) * int64(time.Second) }
 	var d dupWindow
-	d.seen(1, sec(0), dupGeneration)
-	if gap, dup := d.seen(1, sec(25), dupGeneration); !dup || gap != 25*time.Second {
+	d.seen(1, sec(0), dupGeneration, DefaultDuplicateWindow)
+	if gap, dup := d.seen(1, sec(25), dupGeneration, DefaultDuplicateWindow); !dup || gap != 25*time.Second {
 		t.Fatalf("25s later: dup %v gap %v, want a duplicate 25s after first sight", dup, gap)
 	}
-	if _, dup := d.seen(1, sec(46), dupGeneration); dup {
+	if _, dup := d.seen(1, sec(46), dupGeneration, DefaultDuplicateWindow); dup {
 		t.Fatal("46s later: a duplicate, want out of the window")
 	}
 	var idle dupWindow
-	idle.seen(2, sec(0), dupGeneration)
-	if _, dup := idle.seen(2, sec(41), dupGeneration); dup {
+	idle.seen(2, sec(0), dupGeneration, DefaultDuplicateWindow)
+	if _, dup := idle.seen(2, sec(41), dupGeneration, DefaultDuplicateWindow); dup {
 		t.Fatal("after 41s idle: a duplicate, want both generations cleared")
+	}
+}
+
+// The window can be shrunk at runtime: 0 keeps only the last few
+// notifications, as before the window, and a smaller budget shares less out.
+// A change reaches a live connection within a second.
+func TestSubscriptionRegistry_DuplicateWindowIsTunable(t *testing.T) {
+	r := NewSubscriptionRegistry(fakeClassifier{})
+	window, budget := time.Duration(0), DefaultDuplicateBudget
+	r.SetDuplicateWindow(func() (time.Duration, int) { return window, budget })
+	r.TranslateClientFrame([]byte("sub:1"))
+	r.TranslateEndpointFrame([]byte("ok:1:s1"))
+	r.TranslateEndpointFrame([]byte("data:s1:first"))
+	for i := 0; i < 10; i++ {
+		r.TranslateEndpointFrame([]byte(fmt.Sprintf("data:s1:other%d", i)))
+	}
+	if _, _, n := r.TranslateEndpointFrame([]byte("data:s1:first")); n.Kind != NotificationOK {
+		t.Fatalf("window 0, repeat after 10 others: %+v, want ok", n)
+	}
+	if got := r.DuplicateEntries(); got > 2*dupMinimal {
+		t.Fatalf("window 0 holds %d notifications, want at most %d", got, 2*dupMinimal)
 	}
 }

@@ -87,6 +87,12 @@ const (
 	// connection needs before its repeat share is judged, per service as well
 	// as globally.
 	KnobWSDuplicateMinNotifications = "websocket.duplicate_min_notifications"
+	// KnobWSDuplicateWindow is how long a generation of the WebSocket
+	// duplicate window stays open, per service as well as globally.
+	KnobWSDuplicateWindow = "websocket.duplicate_window"
+	// KnobWSDuplicateBudget is how many notifications a connection's
+	// duplicate windows hold per generation, per service as well as globally.
+	KnobWSDuplicateBudget = "websocket.duplicate_budget"
 )
 
 // Knob describes one overridable setting.
@@ -116,6 +122,24 @@ type Knob struct {
 // used — see the closures in cmd/sagegw.Build. A knob registered but never read
 // is worse than no knob at all.
 var Knobs = []Knob{
+	{
+		Name: KnobWSDuplicateWindow,
+		Kind: KindDuration,
+		// The memory lever: the window is held for grading whatever the
+		// duplicate flags say (sage_websocket_duplicate_window_entries).
+		Description: "How long a generation of the WebSocket duplicate window stays open; a repeat is caught 1-2 windows after the first copy (bsc repeats arrive 1-17s later). Lower it to cut the memory the window holds; 0 keeps only the last 4-8 notifications per subscription.",
+		Min:         0,
+		Max:         300_000,
+		Unit:        "ms",
+	},
+	{
+		Name:        KnobWSDuplicateBudget,
+		Kind:        KindInt,
+		Description: "Notifications one WebSocket connection's duplicate windows may hold per generation, shared across its subscriptions (about 35 bytes each, two generations). Lower it to cap the memory a connection holding many subscriptions costs.",
+		Min:         64,
+		Max:         1_000_000,
+		Unit:        "notifications",
+	},
 	{
 		Name: KnobWSDuplicateMaxShare,
 		Kind: KindFloat,

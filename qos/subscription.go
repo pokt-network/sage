@@ -198,9 +198,15 @@ type SubscriptionRegistry struct {
 
 	// Notification grading. recent is keyed by the client-facing id; closed
 	// holds endpoint ids unsubscribed recently; seed hashes frames.
-	recent map[string]*dupWindow
-	closed map[string]struct{}
-	seed   maphash.Seed
+	// dupLimits gives the window and budget, read into dupAge and dupBudget
+	// at most once a second (dupReadAt).
+	recent    map[string]*dupWindow
+	dupLimits func() (window time.Duration, budget int)
+	dupAge    time.Duration
+	dupBudget int
+	dupReadAt int64
+	closed    map[string]struct{}
+	seed      maphash.Seed
 
 	// Requests in flight, for Reissue and Replay: inflight is raw request
 	// id → the client's frame and when it went out, inflightBytes their total
@@ -277,7 +283,7 @@ func ackOf(info EndpointFrameInfo) string {
 
 // The duplicate window holds, per subscription, the notifications of the last
 // one to two generations: a supplier's repeat of any of them is a duplicate. A
-// generation closes after dupGenerationAge, or sooner once it holds the
+// generation closes after DefaultDuplicateWindow, or sooner once it holds the
 // subscription's share of dupGeneration. It was the last 8 notifications until
 // 2026-10-05, about 30ms on a pending-transaction feed of 250 a second, while
 // two operators' bsc repeats came 1.0-1.7s after the first copy at the median,
@@ -288,14 +294,21 @@ func ackOf(info EndpointFrameInfo) string {
 // notification (Go map of hash to first-seen time). A 250-a-second feed holds
 // at most about 350KB; a head or log feed of a few a second, a few KB.
 // dupGeneration caps a faster feed (its window shrinks below 20s), and
-// dupBudget caps a connection's share however many subscriptions it opens, at
-// about 1.1MB. Mainnet pods ran at about 520MB of a 3GiB limit when this was
+// DefaultDuplicateBudget caps a connection's share however many subscriptions
+// it opens, at about 1.1MB. Both the window and the budget can be lowered at
+// runtime (SetDuplicateWindow); DuplicateEntries is what the windows hold. Mainnet pods ran at about 520MB of a 3GiB limit when this was
 // written. ponytail: exact maps; a fixed-size open-addressed table would
 // halve the cost if fast feeds per pod reach the hundreds.
 const (
-	dupGenerationAge = 20 * time.Second
-	dupGeneration    = 8192
-	dupBudget        = 16384
+	// DefaultDuplicateWindow is how long a generation stays open.
+	DefaultDuplicateWindow = 20 * time.Second
+	// DefaultDuplicateBudget is how many notifications a connection's
+	// subscriptions may hold per generation between them.
+	DefaultDuplicateBudget = 16384
+	dupGeneration          = 8192
+	// dupMinimal is a generation's size with the window turned off (age 0):
+	// the last 4-8 notifications, about the 8 the grade looked at before.
+	dupMinimal = 4
 )
 
 // dupWindow remembers when a subscription's recent notifications were first
@@ -308,13 +321,17 @@ type dupWindow struct {
 
 // seen reports whether h is in the window and how long ago it was first seen;
 // otherwise it records h at now, closing the current generation once it is
-// dupGenerationAge old or holds limit notifications.
-func (d *dupWindow) seen(h uint64, now int64, limit int) (time.Duration, bool) {
-	if age := time.Duration(now - d.curStart); age >= 2*dupGenerationAge {
+// window old or holds limit notifications. A window of 0 keeps only the last
+// dupMinimal to twice that.
+func (d *dupWindow) seen(h uint64, now int64, limit int, window time.Duration) (time.Duration, bool) {
+	if window <= 0 {
+		limit, window = dupMinimal, time.Duration(1<<62)
+	}
+	if age := time.Duration(now - d.curStart); age >= 2*window {
 		clear(d.prev) // both generations are past the window
 		clear(d.cur)
 		d.curStart = now
-	} else if age >= dupGenerationAge || len(d.cur) >= limit {
+	} else if age >= window || len(d.cur) >= limit {
 		d.prev, d.cur = d.cur, d.prev
 		clear(d.cur)
 		d.curStart = now
@@ -349,6 +366,8 @@ func NewSubscriptionRegistry(classifier SubscriptionClassifier) *SubscriptionReg
 		replay:     make(map[string]string),
 		orphaned:   make(map[string]struct{}),
 		recent:     make(map[string]*dupWindow),
+		dupAge:     DefaultDuplicateWindow,
+		dupBudget:  DefaultDuplicateBudget,
 		closed:     make(map[string]struct{}),
 		seed:       maphash.MakeSeed(),
 		inflight:   make(map[string]inflightRequest),
@@ -547,10 +566,15 @@ func (r *SubscriptionRegistry) grade(clientID string, data []byte) Notification 
 		w = &dupWindow{}
 		r.recent[clientID] = w
 	}
+	now := time.Now().UnixNano()
+	if r.dupLimits != nil && now-r.dupReadAt >= int64(time.Second) {
+		r.dupAge, r.dupBudget = r.dupLimits()
+		r.dupReadAt = now
+	}
 	// A generation per subscription, shared down so a connection holds at
-	// most dupBudget per generation however many subscriptions it opens.
-	limit := max(1, min(dupGeneration, dupBudget/max(1, len(r.active))))
-	if gap, dup := w.seen(maphash.Bytes(r.seed, data), time.Now().UnixNano(), limit); dup {
+	// most its budget per generation however many subscriptions it opens.
+	limit := max(1, min(dupGeneration, r.dupBudget/max(1, len(r.active))))
+	if gap, dup := w.seen(maphash.Bytes(r.seed, data), now, limit, r.dupAge); dup {
 		note.Kind, note.Gap = NotificationDuplicate, gap
 	}
 	return note
@@ -834,6 +858,30 @@ func (r *SubscriptionRegistry) Heartbeat() (periodic bool, last time.Time) {
 		}
 	}
 	return false, time.Time{}
+}
+
+// SetDuplicateWindow makes fn the source of the duplicate window's length and
+// the connection's budget, read at most once a second; nil keeps
+// DefaultDuplicateWindow and DefaultDuplicateBudget. Call before frames flow.
+func (r *SubscriptionRegistry) SetDuplicateWindow(fn func() (window time.Duration, budget int)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dupLimits = fn
+}
+
+// DuplicateEntries is how many notifications the connection's duplicate
+// windows hold, about 35 bytes each.
+func (r *SubscriptionRegistry) DuplicateEntries() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, w := range r.recent {
+		n += len(w.cur) + len(w.prev)
+	}
+	return n
 }
 
 // Dropped counts subscribe frames that were forwarded but not tracked because
