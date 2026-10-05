@@ -250,6 +250,17 @@ type HeadLagReader interface {
 	HeadLag(payload domain.Payload, response []byte, at time.Time) (lag uint64, stale, ok bool)
 }
 
+// HeadRecorder takes the head a client answer names (an eth_blockNumber, a
+// "latest" block) as the answering endpoint's height
+// (featureflag.FlagHeadAnswersHeight). Health checks reach an endpoint once a
+// cycle (2 minutes on mainnet), so between them the height filter reads an
+// old number; an endpoint serving traffic answers head calls many times a
+// second. Only the endpoint's height is written, not the consensus: a party
+// already casts one vote there, and a busy one would crowd the window.
+type HeadRecorder interface {
+	RecordHead(endpoint domain.EndpointAddr, payload domain.Payload, response []byte)
+}
+
 // HeightLagReader measures a bare head height, one a supplier pushed rather
 // than answered (an EVM newHeads notification), the way HeadLagReader
 // measures an answer's: lag behind the head expected at at, stale past the

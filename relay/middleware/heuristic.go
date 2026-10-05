@@ -74,6 +74,7 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 			var headStale bool
 			if ctx.Response != nil {
 				headLag, headStale = o.observeHeadLag(registry, ctx)
+				recordHead(flags, registry, ctx)
 			}
 
 			// Skip analysis if the flag is disabled.
@@ -260,6 +261,19 @@ func (o HeuristicOptions) observeHeadLag(registry *qos.Registry, ctx *relay.Cont
 		o.HeadLag(ctx.ServiceID, ctx.Endpoint.Party(), ctx.Payloads[0].Method(), lag, stale)
 	}
 	return lag, stale
+}
+
+// recordHead hands a head answer to the plugin as the endpoint's height
+// (qos.HeadRecorder), behind featureflag.FlagHeadAnswersHeight.
+func recordHead(flags featureflag.FlagStore, registry *qos.Registry, ctx *relay.Context) {
+	if len(ctx.Payloads) != 1 || ctx.Response.HTTPStatusCode != 200 || ctx.Endpoint == "" {
+		return
+	}
+	recorder, ok := pluginOf(registry, ctx).(qos.HeadRecorder)
+	if !ok || flags == nil || !flags.IsEnabled(ctx.Ctx, featureflag.FlagHeadAnswersHeight, ctx.ServiceID) {
+		return
+	}
+	recorder.RecordHead(ctx.Endpoint, ctx.Payloads[0], ctx.Response.Body)
 }
 
 // budget is the time this attempt has (the smaller of the per-attempt timeout

@@ -481,9 +481,7 @@ var _ qos.HeadLagReader = (*Plugin)(nil)
 // eth_getBlockByNumber("latest"), the state canary) and measures it against
 // consensus at at. Shared by every plugin that serves an EVM face.
 func HeadLag(payload domain.Payload, response []byte, at time.Time, consensus *qos.BlockConsensus) (lag uint64, stale, ok bool) {
-	var head uint64
-	switch payload.Method() {
-	case "eth_call":
+	if payload.Method() == "eth_call" {
 		if !isCanary(payload.Bytes()) {
 			return 0, false, false
 		}
@@ -492,6 +490,19 @@ func HeadLag(payload domain.Payload, response []byte, at time.Time, consensus *q
 			return 0, false, false
 		}
 		return consensus.StateLag(ts, at)
+	}
+	head := answeredHead(payload, response)
+	if head == 0 {
+		return 0, false, false
+	}
+	return consensus.AnswerLag(head, at)
+}
+
+// answeredHead is the head an EVM answer names: eth_blockNumber's, or the
+// number of eth_getBlockByNumber("latest"); 0 for anything else.
+func answeredHead(payload domain.Payload, response []byte) uint64 {
+	var head uint64
+	switch payload.Method() {
 	case "eth_blockNumber":
 		head, _ = ParseBlockNumber(response)
 	case "eth_getBlockByNumber":
@@ -499,11 +510,18 @@ func HeadLag(payload domain.Payload, response []byte, at time.Time, consensus *q
 			head, _ = parseHexUint64(gjson.GetBytes(response, "result.number").String())
 		}
 	}
-	if head == 0 {
-		return 0, false, false
-	}
-	return consensus.AnswerLag(head, at)
+	return head
 }
+
+// RecordHead implements qos.HeadRecorder: the head an answer names becomes
+// the answering endpoint's height, without a consensus observation.
+func (p *Plugin) RecordHead(endpoint domain.EndpointAddr, payload domain.Payload, response []byte) {
+	if head := answeredHead(payload, response); head > 0 {
+		p.store.ObserveHeight(endpoint, func(ep *evmEndpoint) { ep.BlockNumber = head })
+	}
+}
+
+var _ qos.HeadRecorder = (*Plugin)(nil)
 
 // RefineVerdict implements qos.VerdictRefiner: a missing-state answer about a
 // block too recent to have been discarded is the supplier refusing

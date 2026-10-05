@@ -134,3 +134,35 @@ func TestHeuristic_CometBFT500FromTheMinerIsTheNodesAnswer(t *testing.T) {
 		t.Fatalf("status: err %v verdict %+v, want a retried light_method_error", err, ctx.HeuristicResult)
 	}
 }
+
+// headRecorderPlugin counts the head answers handed to it.
+type headRecorderPlugin struct {
+	normPlugin
+	recorded *int
+}
+
+func (p headRecorderPlugin) RecordHead(domain.EndpointAddr, domain.Payload, []byte) { *p.recorded++ }
+
+// Every single-payload 200 answer reaches the plugin's head recorder behind
+// head_answers_height; off, none does.
+func TestHeuristic_HeadAnswersReachTheRecorder(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		n := 0
+		ctx := baseContext()
+		ctx.Plugin = headRecorderPlugin{recorded: &n}
+		ctx.RPCType = domain.RPCTypeJSONRPC
+		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber")}
+		flags := newFlags("heuristic")
+		if on {
+			flags = newFlags("heuristic", "head_answers_height")
+		}
+		_ = Heuristic(flags, nil, HeuristicOptions{})(relay.HandlerFunc(func(c *relay.Context) error {
+			c.Endpoint = c.Endpoints[0]
+			c.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"0x10"}`)}
+			return nil
+		})).HandleRelay(ctx)
+		if want := map[bool]int{true: 1, false: 0}[on]; n != want {
+			t.Errorf("flag %v: recorded %d, want %d", on, n, want)
+		}
+	}
+}

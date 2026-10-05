@@ -258,6 +258,14 @@ const (
 	// on mainnet bsc (2026-10-05) a client saw 9% of two operators' pending
 	// hashes twice. The repeat is still counted as graded. Off: forwarded.
 	FlagWSDropDuplicates = "ws_drop_duplicates"
+	// FlagHeadAnswersHeight takes the head a client answer names
+	// (eth_blockNumber, a "latest" block) as the answering endpoint's height
+	// for the height filter (qos.HeadRecorder). Health checks reach an endpoint
+	// once a cycle, 2 minutes on mainnet, and the filter read that number in
+	// between: one operator's bsc node, about 12 blocks behind on average, was
+	// last probed 600 behind. The consensus head is not fed from it. Off: only
+	// probes and sampled observations write heights.
+	FlagHeadAnswersHeight = "head_answers_height"
 	// FlagWSDuplicatePenalty charges a supplier a minor ws_duplicate_notifications
 	// signal for each minute in which more than 1% of at least 500 notifications
 	// it pushed on a connection were repeats. Off: repeats are counted, not
@@ -348,6 +356,7 @@ var DefaultFlags = map[string]bool{
 	FlagWSRateCountsAnswers:     true,
 	FlagWSDrainRebind:           true,
 	FlagWSDropDuplicates:        true,
+	FlagHeadAnswersHeight:       true,
 	FlagWSDuplicatePenalty:      true,
 	FlagSeedFromOperator:        false,
 	FlagRelativeChronic:         true,

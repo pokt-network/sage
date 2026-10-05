@@ -1004,3 +1004,32 @@ func isArchivalEndpoint(p *Plugin, endpoint domain.EndpointAddr) bool {
 	archival, known := p.archival.get(hostKey(endpoint))
 	return known && archival
 }
+
+// A client's head answer becomes the answering endpoint's height, so the
+// height filter reads it at once rather than at the next probe; the consensus
+// head is left to probes and sampled observations.
+func TestRecordHead_UpdatesTheEndpointNotTheConsensus(t *testing.T) {
+	p := NewPlugin(nil, Config{SyncAllowance: 100})
+	ep := domain.EndpointAddr("pokt1a-https://node.example")
+	p.UpdateBlockHeight(ep, 1000)
+	perceived := p.Consensus.PerceivedBlock()
+
+	p.RecordHead(ep, domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`), domain.RPCTypeJSONRPC, "eth_blockNumber"),
+		[]byte(`{"jsonrpc":"2.0","id":1,"result":"0x3e9"}`))
+	if got, _ := p.store.Get(ep); got.BlockNumber != 1001 {
+		t.Fatalf("after an eth_blockNumber answer: height %d, want 1001", got.BlockNumber)
+	}
+	latest := domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["latest",false]}`), domain.RPCTypeJSONRPC, "eth_getBlockByNumber")
+	p.RecordHead(ep, latest, []byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x3ea"}}`))
+	if got, _ := p.store.Get(ep); got.BlockNumber != 1002 {
+		t.Fatalf("after a latest block: height %d, want 1002", got.BlockNumber)
+	}
+	p.RecordHead(ep, domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}`), domain.RPCTypeJSONRPC, "eth_chainId"),
+		[]byte(`{"jsonrpc":"2.0","id":1,"result":"0x38"}`))
+	if got, _ := p.store.Get(ep); got.BlockNumber != 1002 {
+		t.Fatalf("after a non-head answer: height %d, want it untouched", got.BlockNumber)
+	}
+	if p.Consensus.PerceivedBlock() != perceived {
+		t.Fatalf("perceived moved from %d to %d; head answers must not feed the consensus", perceived, p.Consensus.PerceivedBlock())
+	}
+}
