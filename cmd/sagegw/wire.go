@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -322,6 +323,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		Rate:           cfg.Gateway.Reputation.RateConfig(),
 		Selector:       cfg.Gateway.Reputation.SelectorConfig(),
 	})
+	// This pod's name in the notification counts the fleet shares, so a
+	// party's WebSocket repeat share is priced on every pod's connections.
+	if host, err := os.Hostname(); err == nil {
+		repSvc.SetInstanceID(host)
+	}
 	repSvc.Start()
 	app.RepSvc = repSvc
 

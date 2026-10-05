@@ -110,6 +110,31 @@ func (s *LeaderOnlyStorage) DeleteStale(ctx context.Context, olderThan time.Time
 	return sd.DeleteStale(ctx, olderThan)
 }
 
+// PutNotificationCounts writes through on every pod: each writes its own
+// counts (NotificationCountStore). A no-op over a store without them.
+func (s *LeaderOnlyStorage) PutNotificationCounts(ctx context.Context, pod string, c NotificationCounts) error {
+	if st, ok := s.inner.(NotificationCountStore); ok {
+		return st.PutNotificationCounts(ctx, pod, c)
+	}
+	return nil
+}
+
+// NotificationCounts reads through; none over a store without them.
+func (s *LeaderOnlyStorage) NotificationCounts(ctx context.Context) (map[string]NotificationCounts, error) {
+	if st, ok := s.inner.(NotificationCountStore); ok {
+		return st.NotificationCounts(ctx)
+	}
+	return nil, nil
+}
+
+// DeleteNotificationCounts writes through on every pod.
+func (s *LeaderOnlyStorage) DeleteNotificationCounts(ctx context.Context, pods ...string) error {
+	if st, ok := s.inner.(NotificationCountStore); ok {
+		return st.DeleteNotificationCounts(ctx, pods...)
+	}
+	return nil
+}
+
 // GetPartyPenalties reads through.
 func (s *LeaderOnlyStorage) GetPartyPenalties(ctx context.Context) (PartyPenalties, error) {
 	return s.inner.GetPartyPenalties(ctx)

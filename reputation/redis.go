@@ -272,6 +272,52 @@ func (r *RedisStorage) GetPartyPenalties(ctx context.Context) (PartyPenalties, e
 	return p, nil
 }
 
+// notesKey holds each pod's notification counts, one field per pod
+// (NotificationCountStore).
+func (r *RedisStorage) notesKey() string {
+	return r.hashKey + "notifications"
+}
+
+// PutNotificationCounts replaces one pod's notification counts.
+func (r *RedisStorage) PutNotificationCounts(ctx context.Context, pod string, c NotificationCounts) error {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", r.notesKey(), err)
+	}
+	if err := r.client.HSet(ctx, r.notesKey(), pod, string(b)).Err(); err != nil {
+		return fmt.Errorf("redis HSET %s: %w", r.notesKey(), err)
+	}
+	return nil
+}
+
+// NotificationCounts reads every pod's notification counts; a field that does
+// not decode is skipped.
+func (r *RedisStorage) NotificationCounts(ctx context.Context) (map[string]NotificationCounts, error) {
+	raw, err := r.client.HGetAll(ctx, r.notesKey()).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis HGETALL %s: %w", r.notesKey(), err)
+	}
+	out := make(map[string]NotificationCounts, len(raw))
+	for pod, val := range raw {
+		var c NotificationCounts
+		if json.Unmarshal([]byte(val), &c) == nil {
+			out[pod] = c
+		}
+	}
+	return out, nil
+}
+
+// DeleteNotificationCounts drops the named pods' counts.
+func (r *RedisStorage) DeleteNotificationCounts(ctx context.Context, pods ...string) error {
+	if len(pods) == 0 {
+		return nil
+	}
+	if err := r.client.HDel(ctx, r.notesKey(), pods...).Err(); err != nil {
+		return fmt.Errorf("redis HDEL %s: %w", r.notesKey(), err)
+	}
+	return nil
+}
+
 // SetPartyPenalties replaces the stored priced parties.
 func (r *RedisStorage) SetPartyPenalties(ctx context.Context, p PartyPenalties) error {
 	b, err := json.Marshal(p)

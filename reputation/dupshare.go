@@ -1,6 +1,7 @@
 package reputation
 
 import (
+	"context"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -45,6 +46,99 @@ func (s *serviceImpl) RecordNotifications(serviceID domain.ServiceID, party stri
 		return
 	}
 	s.dups.recordN(opID{svc: serviceID, op: party}, float64(notes), float64(dups), time.Now())
+}
+
+// A WebSocket connection stays on the pod that opened it, so one pod's counts
+// say nothing about a party whose connections sit on other pods: priced per
+// pod, the penalty landed only where the repeater's connections happened to
+// be, and a pod whose connections had moved away stopped charging and picked
+// the party again (mainnet gnosis, 2026-10-05). So every pod writes its counts
+// to the shared store on each refresh and prices every party on the fleet's
+// sum: its own counts plus every other pod's last write, aged to now.
+const (
+	// dupShareFleetMaxAge is how old another pod's write may be and still
+	// count: a pod gone (rolled, scaled in) stops writing, and its counts are
+	// dropped and deleted past this.
+	dupShareFleetMaxAge = 10 * time.Minute
+	// dupShareFleetTimeout bounds the shared store's round trips on a refresh.
+	dupShareFleetTimeout = 2 * time.Second
+)
+
+// NotificationCounts is one pod's per-party notification counts, aged to At.
+type NotificationCounts struct {
+	At     int64                `json:"at"`
+	Counts []PartyNotifications `json:"counts"`
+}
+
+// PartyNotifications is one party's notifications and repeats in a service.
+type PartyNotifications struct {
+	Service domain.ServiceID `json:"s"`
+	Party   string           `json:"p"`
+	Notes   float64          `json:"n"`
+	Dups    float64          `json:"d"`
+}
+
+// NotificationCountStore is the optional half of Storage that shares each
+// pod's notification counts with the fleet. Every pod writes, the leader or
+// not.
+type NotificationCountStore interface {
+	PutNotificationCounts(ctx context.Context, pod string, c NotificationCounts) error
+	NotificationCounts(ctx context.Context) (map[string]NotificationCounts, error)
+	DeleteNotificationCounts(ctx context.Context, pods ...string) error
+}
+
+// SetInstanceID names this pod in the shared notification counts; without one
+// the repeat share is priced on this pod's own counts. Call at wire time.
+func (s *serviceImpl) SetInstanceID(id string) { s.instanceID = id }
+
+// fleetDuplicates is the evidence the repeat share is priced on: this pod's
+// counts plus every other pod's last write within dupShareFleetMaxAge, each
+// aged to now. This pod's counts are written first. Without a shared store, or
+// when it fails, this pod's own.
+func (s *serviceImpl) fleetDuplicates(now time.Time) map[opID]OperatorStat {
+	local := s.dups.snapshot(now)
+	store, ok := s.storage.(NotificationCountStore)
+	if !ok || s.instanceID == "" {
+		return local
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), dupShareFleetTimeout)
+	defer cancel()
+	mine := NotificationCounts{At: now.Unix()}
+	for id, st := range local {
+		mine.Counts = append(mine.Counts, PartyNotifications{Service: id.svc, Party: id.op, Notes: st.Attempts, Dups: st.Failures})
+	}
+	_ = store.PutNotificationCounts(ctx, s.instanceID, mine)
+	all, err := store.NotificationCounts(ctx)
+	if err != nil {
+		return local
+	}
+	out := make(map[opID]OperatorStat, len(local))
+	for id, st := range local {
+		out[id] = st
+	}
+	var gone []string
+	for pod, c := range all {
+		if pod == s.instanceID {
+			continue
+		}
+		at := time.Unix(c.At, 0)
+		if now.Sub(at) > dupShareFleetMaxAge {
+			gone = append(gone, pod)
+			continue
+		}
+		for _, pc := range c.Counts {
+			aged := OperatorStat{Attempts: pc.Notes, Failures: pc.Dups, UpdatedAt: c.At}.decayTo(now, dupShareHalfLife)
+			id := opID{svc: pc.Service, op: pc.Party}
+			st := out[id]
+			st.Attempts += aged.Attempts
+			st.Failures += aged.Failures
+			out[id] = st
+		}
+	}
+	if len(gone) > 0 {
+		_ = store.DeleteNotificationCounts(ctx, gone...)
+	}
+	return out
 }
 
 // SetDuplicateShare turns on the repeat-share penalty per service behind gate;

@@ -178,6 +178,9 @@ type serviceImpl struct {
 	dupGate   atomic.Pointer[func(domain.ServiceID) bool]
 	dupLimits atomic.Pointer[func(domain.ServiceID) (float64, float64)]
 	dups      *opTracker
+	// instanceID names this pod in the shared notification counts
+	// (fleetDuplicates); set at wire time, before the refresh loop starts.
+	instanceID string
 	// seedGate says per service whether a key with no state starts at its
 	// operator's standing (featureflag.FlagSeedFromOperator); keyOps memoizes
 	// the operator of a key for that lookup.
@@ -609,7 +612,7 @@ func (s *serviceImpl) refreshBaselines() {
 	if lp := s.dupLimits.Load(); lp != nil {
 		dupLimits = *lp
 	}
-	v.dup = partyDuplicates(s.dups.snapshot(now), gateOf(&s.dupGate), dupLimits, prevDup, now)
+	v.dup = partyDuplicates(s.fleetDuplicates(now), gateOf(&s.dupGate), dupLimits, prevDup, now)
 	v.dupPen = map[opID]float64{}
 	for _, p := range v.dup {
 		if p.Penalty < 0 {

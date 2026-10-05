@@ -17,6 +17,7 @@ type MemoryStorage struct {
 	states  map[string]State
 	opStats map[string]OperatorStat
 	parties PartyPenalties
+	notes   map[string]NotificationCounts
 }
 
 // NewMemoryStorage creates a new in-memory storage backend.
@@ -113,5 +114,37 @@ func (m *MemoryStorage) SetPartyPenalties(_ context.Context, p PartyPenalties) e
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.parties = p
+	return nil
+}
+
+// PutNotificationCounts replaces one pod's notification counts.
+func (m *MemoryStorage) PutNotificationCounts(_ context.Context, pod string, c NotificationCounts) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.notes == nil {
+		m.notes = make(map[string]NotificationCounts)
+	}
+	m.notes[pod] = c
+	return nil
+}
+
+// NotificationCounts returns every pod's notification counts.
+func (m *MemoryStorage) NotificationCounts(_ context.Context) (map[string]NotificationCounts, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]NotificationCounts, len(m.notes))
+	for pod, c := range m.notes {
+		out[pod] = c
+	}
+	return out, nil
+}
+
+// DeleteNotificationCounts drops the named pods' counts.
+func (m *MemoryStorage) DeleteNotificationCounts(_ context.Context, pods ...string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, pod := range pods {
+		delete(m.notes, pod)
+	}
 	return nil
 }

@@ -102,3 +102,65 @@ func TestDuplicateShareIsRelative(t *testing.T) {
 		}
 	}
 }
+
+// Every pod prices a party on the fleet's counts: a pod holding none of the
+// repeater's connections charges it from the pods that do. Another pod's
+// counts past dupShareFleetMaxAge (a pod gone) are dropped and deleted.
+func TestDuplicateShareIsPricedOnTheFleet(t *testing.T) {
+	repeater := domain.EndpointAddr("pokt1a-https://r001.repeat.example")
+	clean := domain.EndpointAddr("pokt1b-https://r001.clean.example")
+	shared := NewMemoryStorage()
+	pod := func(id string) *serviceImpl {
+		s := NewService(shared, nil, ServiceConfig{})
+		s.SetDuplicateShare(func(domain.ServiceID) bool { return true }, func(domain.ServiceID) (float64, float64) {
+			return DefaultDuplicateShareFloor, DefaultDuplicateShareFull
+		})
+		s.SetInstanceID(id)
+		return s
+	}
+	holder, other := pod("pod-a"), pod("pod-b")
+	feedNotifications(holder, repeater, 6000, 1500) // 25%, all on pod-a
+	feedNotifications(holder, clean, 6000, 0)
+	_ = other.RecordSignal(context.Background(), rateSvc, repeater, domain.RPCTypeWebSocket, Signal{Type: SignalSuccess, Timestamp: time.Now()})
+	holder.refreshBaselines() // writes pod-a's counts
+	other.refreshBaselines()
+
+	if got := scoreOf(t, other, repeater, domain.RPCTypeWebSocket); got > 61 {
+		t.Fatalf("pod with no repeater connections scored it %.1f, want ~60 from the fleet's counts", got)
+	}
+
+	_ = shared.PutNotificationCounts(context.Background(), "pod-gone", NotificationCounts{
+		At:     time.Now().Add(-dupShareFleetMaxAge - time.Minute).Unix(),
+		Counts: []PartyNotifications{{Service: rateSvc, Party: clean.Party(), Notes: 100000, Dups: 90000}},
+	})
+	other.refreshBaselines()
+	all, _ := shared.NotificationCounts(context.Background())
+	if _, ok := all["pod-gone"]; ok {
+		t.Fatal("a pod's counts past the max age were not deleted")
+	}
+	if got := scoreOf(t, other, clean, domain.RPCTypeWebSocket); got != 100 {
+		t.Fatalf("a gone pod's counts charged the clean party: %.1f, want 100", got)
+	}
+}
+
+// The leader-only wrapper production uses passes every pod's notification
+// counts through: a follower's are the ones the fleet most needs.
+func TestLeaderOnlyStoragePassesNotificationCounts(t *testing.T) {
+	inner := NewMemoryStorage()
+	follower := NewLeaderOnlyStorage(inner, func() bool { return false })
+	require := func(err error) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	require(follower.PutNotificationCounts(context.Background(), "pod-b", NotificationCounts{At: 1}))
+	all, err := follower.NotificationCounts(context.Background())
+	require(err)
+	if _, ok := all["pod-b"]; !ok {
+		t.Fatalf("a follower's counts were not written: %v", all)
+	}
+	require(follower.DeleteNotificationCounts(context.Background(), "pod-b"))
+	if all, _ := inner.NotificationCounts(context.Background()); len(all) != 0 {
+		t.Fatalf("delete did not pass through: %v", all)
+	}
+}
