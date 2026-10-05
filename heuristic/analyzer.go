@@ -80,9 +80,29 @@ func RESTBodyAnswer(body []byte, httpStatusCode int) (AnalysisResult, bool) {
 	return successResult(), true
 }
 
+// CometBFTErrorAnswer reports whether a response is a CometBFT node's own
+// JSON-RPC error answer: CometBFT sends every handler error, a client's miss
+// included (a height past the head, a pruned height, a transaction not found),
+// as HTTP 500 with the JSON-RPC error envelope. The 500 is its transport habit,
+// not a server fault, so the answer is graded by its body as a 200 would be.
+// Until 2026-10-05 it was graded http_5xx, a major penalty and a retry, so an
+// operator that passed the node's status through truthfully paid for every
+// client's miss; mainnet comet_bft 5xx were then charged to three operators
+// at about 13,000 an hour.
+func CometBFTErrorAnswer(rpcType domain.RPCType, statusCode int, body []byte) bool {
+	if rpcType != domain.RPCTypeCometBFT || statusCode != http.StatusInternalServerError {
+		return false
+	}
+	a, ok := parseJSONRPC(body)
+	return ok && a.hasError && (!a.hasResult || a.resultIsNull)
+}
+
 // analyzeTier0 checks HTTP status codes.
 func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (AnalysisResult, bool) {
 	switch {
+	case CometBFTErrorAnswer(rpcType, statusCode, response):
+		return AnalysisResult{}, false // graded by the body (Tier 2)
+
 	// A node's 5xx, relayed inside a signed response. Retried and scored
 	// major, no breaker vote: one 5xx is a weak statement about a host. On
 	// the 2026-09-14 canary osmosis's REST 5xx stream was mostly queries a

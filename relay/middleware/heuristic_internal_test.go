@@ -109,3 +109,28 @@ func TestHeuristic_LightMethodErrorIsTheSuppliers(t *testing.T) {
 		t.Fatalf("error then timeout: delivered %v, want the node's error", ctx.Response)
 	}
 }
+
+// A CometBFT node's error answer the HA relay miner handed on as its own 500
+// is the node's answer: delivered with its body, graded by it, and on a light
+// call still the supplier's.
+func TestHeuristic_CometBFT500FromTheMinerIsTheNodesAnswer(t *testing.T) {
+	envelope := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"height 101 must be less than or equal to the current blockchain height 100"}}`)
+	run := func(method string) (*relay.Context, error) {
+		ctx := baseContext()
+		ctx.RPCType = domain.RPCTypeCometBFT
+		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{}`), domain.RPCTypeCometBFT, method)}
+		err := Heuristic(newFlags("heuristic", "light_method_errors"), nil, HeuristicOptions{})(relay.HandlerFunc(func(c *relay.Context) error {
+			c.Endpoint = c.Endpoints[0]
+			return domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable", &domain.UpstreamStatusError{Status: 500, Body: envelope}, true)
+		})).HandleRelay(ctx)
+		return ctx, err
+	}
+	ctx, err := run("block")
+	if err != nil || ctx.Response == nil || string(ctx.Response.Body) != string(envelope) ||
+		ctx.HeuristicResult.Attribution != heuristic.AttrBlockchain || ctx.HeuristicResult.ShouldPenalize {
+		t.Fatalf("block: err %v response %v verdict %+v, want the node's answer delivered, unscored", err, ctx.Response, ctx.HeuristicResult)
+	}
+	if ctx, err := run("status"); !domain.IsRetryable(err) || ctx.HeuristicResult.Reason != heuristic.ReasonLightMethodError {
+		t.Fatalf("status: err %v verdict %+v, want a retried light_method_error", err, ctx.HeuristicResult)
+	}
+}

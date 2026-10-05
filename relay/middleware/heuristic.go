@@ -30,7 +30,14 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			budget, full := o.budget(ctx)
 			// Run the inner chain first.
-			if err := next.HandleRelay(ctx); err != nil {
+			err := next.HandleRelay(ctx)
+			// A CometBFT node's error answer that the HA relay miner handed on
+			// as its own 500 is still the node's answer: graded by its body
+			// like a signed one (heuristic.CometBFTErrorAnswer).
+			if resp, ok := upstreamAnswer(err); ok && heuristic.CometBFTErrorAnswer(ctx.RPCType, resp.HTTPStatusCode, resp.Body) {
+				ctx.Response, ctx.Err, err = resp, nil, nil
+			}
+			if err != nil {
 				// No body to analyse, but the failure itself is evidence: a
 				// dead host, a host that cannot do this method, or a client
 				// that hung up. Without a verdict here none of that reached

@@ -720,3 +720,27 @@ func TestAnalyze_QuotaIsMajorABusyLimitMinor(t *testing.T) {
 		t.Errorf("busy: reason %q severity %v, want rate_limited, minor", r.Reason, r.PenaltySeverity)
 	}
 }
+
+// CometBFT sends every handler error as HTTP 500 with the JSON-RPC error
+// envelope, a client's miss included, so on a CometBFT request that 500 is
+// graded by its body: a height past the head is the chain's answer, scored
+// nothing. The same 500 on another RPC type, or a 500 without the envelope,
+// is still the server failing.
+func TestAnalyze_CometBFT500IsGradedByItsBody(t *testing.T) {
+	envelope := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"height 101 must be less than or equal to the current blockchain height 100"}}`)
+	r := Analyze(envelope, 500, domain.RPCTypeCometBFT)
+	if r.Reason == "http_5xx" || r.ShouldPenalize || r.Attribution != AttrBlockchain {
+		t.Fatalf("CometBFT 500 envelope: %+v, want the chain's answer, unscored", r)
+	}
+	for name, tc := range map[string]struct {
+		body []byte
+		rpc  domain.RPCType
+	}{
+		"json_rpc 500":      {envelope, domain.RPCTypeJSONRPC},
+		"CometBFT 500 html": {[]byte(`<html>500 Internal Server Error</html>`), domain.RPCTypeCometBFT},
+	} {
+		if r := Analyze(tc.body, 500, tc.rpc); r.Reason != "http_5xx" || r.PenaltySeverity != SeverityMajor {
+			t.Errorf("%s: %+v, want http_5xx major", name, r)
+		}
+	}
+}
