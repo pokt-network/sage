@@ -1,6 +1,7 @@
 package heuristic
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -204,6 +205,20 @@ var methodUnsupportedPatterns = []string{
 	"is not available on this node",
 }
 
+// methodUnsupported is the verdict on a node saying it does not serve the
+// method: retried elsewhere, nobody scored, and the method kept away from the
+// host for a while.
+func methodUnsupported(details string) AnalysisResult {
+	return AnalysisResult{
+		ShouldRetry:    true,
+		Attribution:    AttrBlockchain,
+		Confidence:     0.85,
+		Reason:         "method_unsupported",
+		Details:        "method not served by this endpoint (" + details + ")",
+		MethodBlocking: true,
+	}
+}
+
 // reportsMethodUnsupported reports whether message is one of the
 // methodUnsupportedPatterns wordings. It does not fold case: it expects an
 // already-lowercased message, which is how every caller has it.
@@ -287,6 +302,29 @@ var blockchainErrorPatterns = append([]string{
 	"block range exceeds",
 	"must be less than or equal to",
 }, capabilityLimitationPatterns...)
+
+// heightAheadRe reads CometBFT's wording for a height past the node's head.
+var heightAheadRe = regexp.MustCompile(`height (\d+) must be less than or equal to the current blockchain height (\d+)`)
+
+// heightAheadRetry is how far past a node's head a requested height may be for
+// another node to hold it already. ponytail: a fixed block count; scale by the
+// chain's block time if a fast chain needs more.
+const heightAheadRetry = 10
+
+// heightJustAhead reports whether lowerMsg says the requested height is past
+// the node's head by at most heightAheadRetry blocks.
+func heightJustAhead(lowerMsg string) bool {
+	if !strings.Contains(lowerMsg, "current blockchain height") {
+		return false
+	}
+	m := heightAheadRe.FindStringSubmatch(lowerMsg)
+	if m == nil {
+		return false
+	}
+	asked, err1 := strconv.ParseInt(m[1], 10, 64)
+	head, err2 := strconv.ParseInt(m[2], 10, 64)
+	return err1 == nil && err2 == nil && asked > head && asked-head <= heightAheadRetry
+}
 
 // supplierInfraPatterns are the wordings of a supplier's own infrastructure
 // failing, in either the -32000 range or -32603.
@@ -477,16 +515,7 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 	// correctly about itself; it is not at fault, and it must not receive
 	// that method again for a while.
 	if reportsMethodUnsupported(lowerMsg) {
-		return AnalysisResult{
-			ShouldRetry:        true,
-			ShouldCircuitBreak: false,
-			ShouldPenalize:     false,
-			Attribution:        AttrBlockchain,
-			Confidence:         0.85,
-			Reason:             "method_unsupported",
-			Details:            "method not served by this endpoint (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
-			MethodBlocking:     true,
-		}
+		return methodUnsupported("code " + strconv.FormatInt(code, 10) + ": " + lowerMsg)
 	}
 
 	// Default for the server error range: the node answered the request with
@@ -517,6 +546,23 @@ func classifyInternalError(lowerMsg string) AnalysisResult {
 			Confidence:         0.85,
 			Reason:             "supplier_internal_error",
 			Details:            "supplier internal error: " + lowerMsg,
+		}
+	}
+
+	// A node a few blocks behind the height asked for: CometBFT answers a
+	// block the node has not reached yet with -32603 "height N must be less
+	// than or equal to the current blockchain height M". When N is within
+	// heightAheadRetry of M, another node may already hold it, so it is
+	// retried and nobody is scored. Delivered without a retry it was about
+	// 600 an hour on mainnet osmosis (2026-10-05). A height far past the head
+	// is the client's miss, which every node answers alike: passed through.
+	if heightJustAhead(lowerMsg) {
+		return AnalysisResult{
+			ShouldRetry: true,
+			Attribution: AttrBlockchain,
+			Confidence:  0.85,
+			Reason:      "blockchain_error",
+			Details:     "node behind the height asked for: " + lowerMsg,
 		}
 	}
 

@@ -114,7 +114,7 @@ func TestHeuristic_LightMethodErrorIsTheSuppliers(t *testing.T) {
 // is the node's answer: delivered with its body, graded by it, and on a light
 // call still the supplier's.
 func TestHeuristic_CometBFT500FromTheMinerIsTheNodesAnswer(t *testing.T) {
-	envelope := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"height 101 must be less than or equal to the current blockchain height 100"}}`)
+	envelope := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"tx (ABCD) not found"}}`)
 	run := func(method string) (*relay.Context, error) {
 		ctx := baseContext()
 		ctx.RPCType = domain.RPCTypeCometBFT

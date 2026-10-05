@@ -3,6 +3,7 @@ package heuristic
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/tidwall/gjson"
 
@@ -303,6 +304,15 @@ func analyzeTier1(body []byte, httpStatusCode int) (AnalysisResult, bool) {
 	}
 
 	if IsPlainText(body) {
+		// A node refusing a method it does not serve, in its own words:
+		// java-tron's lite fullnode answers its closed history routes with a
+		// 200 and "this API is closed because this node is a lite fullnode".
+		// The same wording as a JSON-RPC error is method_unsupported; as
+		// plain text it was a major penalty, about 3,600 an hour across two
+		// tron operators (mainnet, 2026-10-05).
+		if msg := strings.ToLower(string(body[:min(len(body), 512)])); reportsMethodUnsupported(msg) {
+			return methodUnsupported("plain text: " + strings.TrimSpace(msg)), true
+		}
 		return AnalysisResult{
 			ShouldRetry:        true,
 			ShouldCircuitBreak: false,

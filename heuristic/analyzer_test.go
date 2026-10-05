@@ -744,3 +744,31 @@ func TestAnalyze_CometBFT500IsGradedByItsBody(t *testing.T) {
 		}
 	}
 }
+
+// java-tron's lite fullnode answers its closed history routes with a 200 and a
+// plain-text refusal. That is the node not serving the method: retried
+// elsewhere, nobody scored, the method kept away from the host. Any other
+// plain text is still a broken answer.
+func TestAnalyze_PlainTextMethodRefusal(t *testing.T) {
+	r := Analyze([]byte("this API is closed because this node is a lite fullnode"), 200, domain.RPCTypeREST)
+	if r.Reason != "method_unsupported" || !r.ShouldRetry || r.ShouldPenalize || !r.MethodBlocking {
+		t.Fatalf("lite fullnode refusal: %+v, want a retried, unscored method block", r)
+	}
+	if r := Analyze([]byte("upstream connect error"), 200, domain.RPCTypeREST); r.Reason != "plain_text_response" || !r.ShouldPenalize {
+		t.Fatalf("other plain text: %+v, want plain_text_response", r)
+	}
+}
+
+// A CometBFT node asked for a block just past its head answers -32603 "must
+// be less than or equal to the current blockchain height", whatever its HTTP
+// status. Another node may hold it: retried, nobody scored. A height far past
+// the head stays the client's miss (TestAnalyze_Tier2_InternalError_PassesThroughWithoutPenalty).
+func TestAnalyze_CometBFTHeightAheadIsRetried(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"height 101 must be less than or equal to the current blockchain height 100"}}`)
+	for _, status := range []int{200, 500} {
+		r := Analyze(body, status, domain.RPCTypeCometBFT)
+		if !r.ShouldRetry || r.ShouldPenalize || r.Attribution != AttrBlockchain {
+			t.Errorf("status %d: %+v, want retried, unscored", status, r)
+		}
+	}
+}
