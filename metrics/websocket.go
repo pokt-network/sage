@@ -207,7 +207,8 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 				Namespace: "sage",
 				Name:      "websocket_duplicate_gap_seconds",
 				Help:      "For a subscription notification graded duplicate (the same supplier sent it on the same subscription within the last 20-40 seconds, fewer notifications on a very fast feed or a connection holding many subscriptions), how long ago it was first seen, by service, operator and topic. A merged mempool feed (a second node relaying the same transaction) repeats seconds later; an immediate or fixed-period resend is padding. Read it against other operators on the same service and topic before concluding anything.",
-				Buckets:   []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+				// Out to the window's 40s: past 10s every gap read as 10.
+				Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 40},
 			},
 			[]string{"service_id", "operator", "topic"},
 		),
