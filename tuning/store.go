@@ -64,6 +64,9 @@ type Store struct {
 	// already has. Empty for a knob nobody registered, which reads as unknown
 	// rather than as zero.
 	base map[string]string
+	// serviceBase is SetServiceBase's: a per-service knob's config value for
+	// each service, where the reader can tell the store what it is.
+	serviceBase map[string]map[domain.ServiceID]string
 }
 
 // NewStore returns an empty store. Nothing is seeded from config: an entry here
@@ -71,10 +74,11 @@ type Store struct {
 // every knob look overridden and hide the ones that are.
 func NewStore(opts ...Option) *Store {
 	s := &Store{
-		global:  make(map[string]Override),
-		service: make(map[string]map[domain.ServiceID]Override),
-		base:    make(map[string]string),
-		logger:  slog.Default(),
+		global:      make(map[string]Override),
+		service:     make(map[string]map[domain.ServiceID]Override),
+		base:        make(map[string]string),
+		serviceBase: make(map[string]map[domain.ServiceID]string),
+		logger:      slog.Default(),
 	}
 	for _, o := range opts {
 		o(s)
@@ -386,6 +390,28 @@ func (s *Store) SetBase(name, value string) {
 	s.base[name] = value
 }
 
+// SetServiceBase records what one service's config says for a per-service
+// knob, so an operator asking sees each service's value and what overrides it.
+func (s *Store) SetServiceBase(name string, serviceID domain.ServiceID, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.serviceBase[name] == nil {
+		s.serviceBase[name] = make(map[domain.ServiceID]string)
+	}
+	s.serviceBase[name][serviceID] = value
+}
+
+// ServiceEffective is what is in force for one knob on one service.
+type ServiceEffective struct {
+	// Base is the service's config value.
+	Base string `json:"base"`
+	// Value is what applies: the service's override, else the global one,
+	// else Base.
+	Value string `json:"value"`
+	// Overridden says whether Value came from an override.
+	Overridden bool `json:"overridden"`
+}
+
 // Effective describes what is in force for one knob, for an operator asking
 // rather than for a reader resolving.
 type Effective struct {
@@ -399,15 +425,18 @@ type Effective struct {
 	// Global and ServiceOverrides are the raw overrides behind the answer.
 	Global           *Override                     `json:"global,omitempty"`
 	ServiceOverrides map[domain.ServiceID]Override `json:"service_overrides,omitempty"`
+	// Services is what is in force on each service whose config base a reader
+	// registered (SetServiceBase), or that carries an override.
+	Services map[domain.ServiceID]ServiceEffective `json:"services,omitempty"`
 }
 
-// EffectiveFor reports what is in force for one knob globally, and whether the
-// knob exists at all.
+// EffectiveFor reports what is in force for one knob, globally and on every
+// service the store can answer for, and whether the knob exists at all.
 //
-// Deliberately global-only. A per-service answer would have to invent the
-// service's config base, which the store does not have and cannot derive — so
-// it would be a confident guess, and the per-service overrides are listed here
-// instead for the caller to read against their own config.
+// A service's answer needs its config base, which only a reader can resolve;
+// the store reports a service only once one registered it (SetServiceBase) or
+// it carries an override, and never invents a base: a service with an override
+// and no registered base shows the global base.
 func (s *Store) EffectiveFor(name string) (Effective, bool) {
 	knob, ok := Lookup(name)
 	if !ok {
@@ -428,6 +457,29 @@ func (s *Store) EffectiveFor(name string) (Effective, bool) {
 		eff.ServiceOverrides = make(map[domain.ServiceID]Override, len(byService))
 		for id, o := range byService {
 			eff.ServiceOverrides[id] = o
+		}
+	}
+	services := map[domain.ServiceID]bool{}
+	for id := range s.serviceBase[name] {
+		services[id] = true
+	}
+	for id := range s.service[name] {
+		services[id] = true
+	}
+	if len(services) > 0 {
+		eff.Services = make(map[domain.ServiceID]ServiceEffective, len(services))
+		for id := range services {
+			base, ok := s.serviceBase[name][id]
+			if !ok {
+				base = s.base[name]
+			}
+			se := ServiceEffective{Base: base, Value: base}
+			if o, set := s.service[name][id]; set {
+				se.Value, se.Overridden = o.Value.Raw, true
+			} else if eff.Global != nil {
+				se.Value, se.Overridden = eff.Global.Value.Raw, true
+			}
+			eff.Services[id] = se
 		}
 	}
 	return eff, true

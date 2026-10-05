@@ -70,3 +70,28 @@ func TestEffectiveFor(t *testing.T) {
 		}
 	})
 }
+
+// A per-service knob answers for every service a reader registered: its config
+// value, and what applies once a global or a service override is set.
+func TestStore_EffectiveForReportsEachService(t *testing.T) {
+	s := NewStore()
+	s.SetServiceBase(KnobSyncAllowance, "bsc", "100")
+	s.SetServiceBase(KnobSyncAllowance, "eth", "10")
+	eff, _ := s.EffectiveFor(KnobSyncAllowance)
+	if got := eff.Services["bsc"]; got.Base != "100" || got.Value != "100" || got.Overridden {
+		t.Fatalf("bsc unset: %+v, want base and value 100", got)
+	}
+	if err := s.Set(KnobSyncAllowance, "bsc", "40"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set(KnobSyncAllowance, "", "500"); err != nil {
+		t.Fatal(err)
+	}
+	eff, _ = s.EffectiveFor(KnobSyncAllowance)
+	if got := eff.Services["bsc"]; got.Base != "100" || got.Value != "40" || !got.Overridden {
+		t.Fatalf("bsc overridden: %+v, want base 100, value 40", got)
+	}
+	if got := eff.Services["eth"]; got.Base != "10" || got.Value != "500" || !got.Overridden {
+		t.Fatalf("eth under a global override: %+v, want base 10, value 500", got)
+	}
+}

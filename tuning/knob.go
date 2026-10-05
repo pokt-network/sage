@@ -293,7 +293,7 @@ var Knobs = []Knob{
 	{
 		Name:        KnobSyncAllowance,
 		Kind:        KindInt,
-		Description: "How many blocks behind the perceived head an endpoint may be and still be selected in tier 1 (tier 2 allows twice this). Set per service: the right number is that chain's block cadence. 0 keeps the plugin's own default.",
+		Description: "How many blocks behind the perceived head an endpoint may be and still be selected in tier 1 (tier 2 allows twice this). Set per service: the right number is that chain's block cadence. Each service's config value and what applies are under services in GET /admin/tuning/qos.sync_allowance. On an EVM service 0 turns the height filter off.",
 		Min:         0,
 		Max:         10_000_000,
 		Unit:        "blocks",

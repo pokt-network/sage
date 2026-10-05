@@ -749,6 +749,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	for _, svc := range cfg.Gateway.AllServices() {
 		if tuner, ok := qosReg.Get(domain.ServiceID(svc.ID)).(qos.SyncAllowanceTuner); ok {
 			syncBases[domain.ServiceID(svc.ID)] = tuner.SyncAllowance()
+			// What the admin read shows as this service's config value.
+			tuningStore.SetServiceBase(tuning.KnobSyncAllowance, domain.ServiceID(svc.ID), strconv.FormatUint(tuner.SyncAllowance(), 10))
 		}
 	}
 	// Which height tier each selection settled on, per service: the tier was
