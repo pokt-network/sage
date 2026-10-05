@@ -95,6 +95,12 @@ type WSRelayerDeps struct {
 	// zero waits for ever, as before.
 	RequestTimeout func(domain.ServiceID) time.Duration
 
+	// DuplicateLimits is the repeat share a supplier may push on a
+	// connection in a minute, and the notifications that minute needs before
+	// it is judged (ws_duplicate_penalty). Nil takes DuplicateMaxShare and
+	// DuplicateMinNotifications.
+	DuplicateLimits func(domain.ServiceID) (maxShare float64, minNotes int)
+
 	// QoS resolves the service's plugin. A plugin that implements
 	// qos.SubscriptionClassifier gives the bridge a subscription registry —
 	// the knowledge a rebind and a stall watchdog need. Optional: nil, or a

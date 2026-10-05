@@ -23,7 +23,7 @@ func TestWSProcessor_DropsDuplicateNotifications(t *testing.T) {
 			"pokt1supplier", "pokt1supplier-https://rel001.op-alpha.example",
 			&apptypes.Application{Address: "pokt1app"}, nil)
 		proc.subs = qos.NewSubscriptionRegistry(&evm.Plugin{})
-		proc.duplicates = &wsDuplicates{drop: func() bool { return drop }, penalize: func() bool { return false }, record: func() {}}
+		proc.duplicates = &wsDuplicates{drop: func() bool { return drop }, penalize: func() bool { return false }, record: func() {}, limits: defaultDupLimits}
 		endpoint := func(payload string) []byte {
 			t.Helper()
 			fn.validateResponse = &servicetypes.RelayResponse{Payload: []byte(payload)}
@@ -47,21 +47,25 @@ func TestWSProcessor_DropsDuplicateNotifications(t *testing.T) {
 	}
 }
 
-// A supplier is charged once per period in which more than 1% of at least
-// 500 notifications were repeats, and only behind ws_duplicate_penalty.
+// A supplier is charged once per period in which more than the max share of
+// at least the minimum notifications were repeats (1% of 500 by default, both
+// tuning knobs), and only behind ws_duplicate_penalty.
 func TestWSDuplicates_PenalizesARepeatingSupplier(t *testing.T) {
 	for name, tc := range map[string]struct {
 		notes, dups int
 		on          bool
+		limits      func() (float64, int)
 		want        int
 	}{
-		"2% of 600":      {600, 12, true, 1},
-		"0.5% of 600":    {600, 3, true, 0},
-		"2% of 400":      {400, 8, true, 0},
-		"2% of 600, off": {600, 12, false, 0},
+		"2% of 600":                   {600, 12, true, defaultDupLimits, 1},
+		"0.5% of 600":                 {600, 3, true, defaultDupLimits, 0},
+		"2% of 400":                   {400, 8, true, defaultDupLimits, 0},
+		"2% of 600, off":              {600, 12, false, defaultDupLimits, 0},
+		"2% of 600, max share 5%":     {600, 12, true, func() (float64, int) { return 0.05, 500 }, 0},
+		"2% of 400, min notes at 300": {400, 8, true, func() (float64, int) { return 0.01, 300 }, 1},
 	} {
 		charged := 0
-		d := &wsDuplicates{drop: func() bool { return false }, penalize: func() bool { return tc.on }, record: func() { charged++ }}
+		d := &wsDuplicates{drop: func() bool { return false }, penalize: func() bool { return tc.on }, record: func() { charged++ }, limits: tc.limits}
 		start := time.Unix(0, 0)
 		for i := 0; i < tc.notes; i++ {
 			d.observe(i < tc.dups, start.Add(time.Duration(i)*time.Millisecond))
@@ -72,3 +76,5 @@ func TestWSDuplicates_PenalizesARepeatingSupplier(t *testing.T) {
 		}
 	}
 }
+
+func defaultDupLimits() (float64, int) { return DuplicateMaxShare, DuplicateMinNotifications }

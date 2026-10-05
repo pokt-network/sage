@@ -79,6 +79,14 @@ const (
 	// KnobBatchRejectMessage overrides concurrency.batch_reject_message, per
 	// service as well as globally.
 	KnobBatchRejectMessage = "batch.reject_message"
+	// KnobWSDuplicateMaxShare is the repeat share over which a WebSocket
+	// supplier is charged ws_duplicate_notifications, per service as well as
+	// globally.
+	KnobWSDuplicateMaxShare = "websocket.duplicate_max_share"
+	// KnobWSDuplicateMinNotifications is how many notifications a minute a
+	// connection needs before its repeat share is judged, per service as well
+	// as globally.
+	KnobWSDuplicateMinNotifications = "websocket.duplicate_min_notifications"
 )
 
 // Knob describes one overridable setting.
@@ -108,6 +116,24 @@ type Knob struct {
 // used — see the closures in cmd/sagegw.Build. A knob registered but never read
 // is worse than no knob at all.
 var Knobs = []Knob{
+	{
+		Name: KnobWSDuplicateMaxShare,
+		Kind: KindFloat,
+		// A merged mempool feed repeats a little; on mainnet bsc (2026-10-05)
+		// the cleanest repeating operator sat at 0.1% and two others at 9%.
+		Description: "Share of a WebSocket supplier's notifications on one connection, over a minute, that may be repeats before it is charged a minor ws_duplicate_notifications (ws_duplicate_penalty). Raise it for a chain whose honest feeds repeat more; repeats are dropped from the client whatever this says (ws_drop_duplicates).",
+		Min:         0,
+		Max:         1,
+		Unit:        "share",
+	},
+	{
+		Name:        KnobWSDuplicateMinNotifications,
+		Kind:        KindInt,
+		Description: "Notifications a WebSocket supplier must push on one connection in a minute before its repeat share is judged (websocket.duplicate_max_share). Below it the minute is not charged: a few repeats on a quiet feed say little.",
+		Min:         1,
+		Max:         1_000_000,
+		Unit:        "notifications",
+	},
 	{
 		Name: KnobBatchMaxPayloads,
 		Kind: KindInt,

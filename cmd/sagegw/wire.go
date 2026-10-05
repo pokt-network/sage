@@ -1143,6 +1143,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			QoS:                        qosReg,
 			ClientIP:                   middleware.RequestClientIP(trustedProxies),
 			RequestTimeout:             timeoutFn,
+			DuplicateLimits: func(serviceID domain.ServiceID) (float64, int) {
+				return tuningStore.Float(tuning.KnobWSDuplicateMaxShare, serviceID, shannon.DuplicateMaxShare),
+					tuningStore.Int(tuning.KnobWSDuplicateMinNotifications, serviceID, shannon.DuplicateMinNotifications)
+			},
 		})
 		wsRelayer = relayer
 		wsClients = func(serviceID domain.ServiceID, limit int, onlyShopping bool) any {
@@ -1304,6 +1308,8 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobBatchMaxPayloads, strconv.Itoa(cfg.Concurrency.MaxBatchPayloads))
 	store.SetBase(tuning.KnobBatchMaxConcurrency, strconv.Itoa(cfg.Concurrency.MaxBatchConcurrency))
 	store.SetBase(tuning.KnobBatchRejectMessage, cfg.Concurrency.BatchRejectMessage)
+	store.SetBase(tuning.KnobWSDuplicateMaxShare, strconv.FormatFloat(shannon.DuplicateMaxShare, 'f', -1, 64))
+	store.SetBase(tuning.KnobWSDuplicateMinNotifications, strconv.Itoa(shannon.DuplicateMinNotifications))
 }
 
 // redisStartupPing bounds the startup check. It only decides what is logged:
