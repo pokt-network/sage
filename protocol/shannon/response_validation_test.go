@@ -69,6 +69,8 @@ func (r *recordingMetrics) RecordOverServedExclusion(domain.ServiceID) {
 	r.overServed++
 }
 
+func (r *recordingMetrics) RecordOverServedLoad(domain.ServiceID, string, float64) {}
+
 func (r *recordingMetrics) snapshot() ([]string, []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

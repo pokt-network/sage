@@ -60,7 +60,9 @@ type Protocol struct {
 	bl       *blacklist
 	// overServed excludes a supplier for the rest of a session it refused
 	// for over-servicing (overserved.go).
-	overServed  *overServed
+	overServed *overServed
+	// sessionLoad counts what each supplier took this session (sessionload.go).
+	sessionLoad *sessionLoad
 	gatewayAddr string
 	// ownedApps maps serviceID → list of app addresses for centralized gateway mode.
 	ownedApps map[domain.ServiceID][]string
@@ -150,6 +152,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 		signer:           signer,
 		bl:               newBlacklist(),
 		overServed:       newOverServed(),
+		sessionLoad:      newSessionLoad(),
 		gatewayAddr:      cfg.Gateway.GatewayAddress,
 		ownedApps:        ownedApps,
 		httpClient:       httpClient,
@@ -387,6 +390,9 @@ func (p *Protocol) sendRelay(
 	}
 	tHTTP := time.Now()
 	signDur := tHTTP.Sub(tSign)
+	if ev == nil {
+		p.sessionLoad.add(serviceID, ep.Supplier(), session.Header.SessionEndBlockHeight)
+	}
 
 	// Send the relay. gRPC does not go over the miner's HTTP path: that one
 	// rebuilds the request as HTTP/1.1, which a gRPC backend refuses. Only the
@@ -449,7 +455,7 @@ func (p *Protocol) sendRelay(
 			)
 			body := bytes.Clone(respBz[:min(len(respBz), domain.UpstreamBodyMax)])
 			if heuristic.IsOverServiced(body) {
-				p.markOverServed(serviceID, ep.Supplier(), session.Header.SessionEndBlockHeight)
+				p.markOverServed(serviceID, ep.Addr(), session.Header.SessionEndBlockHeight)
 			}
 			return nil, domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable",
 				&domain.UpstreamStatusError{Status: httpStatus, Body: body}, true)
@@ -482,7 +488,7 @@ func (p *Protocol) sendRelay(
 	// 41,110 times a day, one blacklisting per report.
 	if minerErr := unsignedMinerError(relayResp, err); minerErr != nil {
 		if heuristic.MinerOverServiced(minerErr.Codespace, minerErr.Code, minerErr.Message) {
-			p.markOverServed(serviceID, ep.Supplier(), session.Header.SessionEndBlockHeight)
+			p.markOverServed(serviceID, ep.Addr(), session.Header.SessionEndBlockHeight)
 		}
 		return nil, domain.NewRelayError(domain.ErrEndpoint, "relay miner refused the relay", minerErr, true)
 	}
@@ -794,13 +800,17 @@ func (p *Protocol) checkKeyURL(serviceID domain.ServiceID, endpointAddr domain.E
 	}
 }
 
-// markOverServed excludes supplier from serviceID for the rest of the
-// session ending at sessionEnd (overServed) and counts each new exclusion.
-func (p *Protocol) markOverServed(serviceID domain.ServiceID, supplier string, sessionEnd int64) {
+// markOverServed excludes ep's supplier from serviceID for the rest of the
+// session ending at sessionEnd (overServed), counts each new exclusion, and
+// records what the supplier took this session against its peers.
+func (p *Protocol) markOverServed(serviceID domain.ServiceID, ep domain.EndpointAddr, sessionEnd int64) {
 	if p.overServed == nil {
 		return
 	}
-	if p.overServed.mark(serviceID, supplier, sessionEnd) {
+	if p.overServed.mark(serviceID, ep.Supplier(), sessionEnd) {
 		p.supplierMetricsRecorder().RecordOverServedExclusion(serviceID)
+		if r, ok := p.sessionLoad.ratio(serviceID, ep.Supplier(), sessionEnd); ok {
+			p.supplierMetricsRecorder().RecordOverServedLoad(serviceID, ep.Operator(), r)
+		}
 	}
 }

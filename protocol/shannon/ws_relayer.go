@@ -498,7 +498,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		// is spent (the HA miner's 4002, the poktroll miner's wording): it is
 		// out for the rest of the session, here and on HTTP (overServed).
 		if v, ok := heuristic.MinerRefusal(cause); ok && v.Reason == heuristic.ReasonOverServiced {
-			r.deps.Protocol.markOverServed(serviceID, lost.Supplier(), sessionEnd.Load())
+			r.deps.Protocol.markOverServed(serviceID, lost, sessionEnd.Load())
 		}
 		lostReason := "lost"
 		switch {

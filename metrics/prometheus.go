@@ -65,6 +65,7 @@ type Recorder struct {
 	supplierBlacklists     *prometheus.CounterVec
 	relayMinerErrors       *prometheus.CounterVec
 	overServedExclusions   *prometheus.CounterVec
+	overServedLoad         *prometheus.HistogramVec
 	keyMismatches          *prometheus.CounterVec
 	sessionFetches         *prometheus.CounterVec
 	oversizedResponses     *prometheus.CounterVec
@@ -257,6 +258,15 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Help:      "Suppliers excluded for the rest of a session after refusing a relay for over-servicing (the application's relay allocation for that supplier and session is spent: the poktroll relay miner's relayer_proxy code 7, the HA relay miner's 429 \"session relay limit reached\"), by service. One count per supplier and session. The supplier is not penalized and serves again in the next session; other suppliers behind the same URL keep serving.",
 			},
 			[]string{"service_id"},
+		),
+		overServedLoad: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "sage",
+				Name:      "over_served_load_ratio",
+				Help:      "For each over-servicing refusal that excluded a supplier for the session, the relays this replica sent that supplier in the session (HTTP relays and WebSocket answers and notifications) over the median of its session peers that took any, by service and operator. Every supplier in a session holds the same allocation, so a refusal far below 1 was not for a spent allocation. Only with three or more peers.",
+				Buckets:   []float64{0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 4},
+			},
+			[]string{"service_id", "operator"},
 		),
 		keyMismatches: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -602,6 +612,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.supplierBlacklists,
 		r.relayMinerErrors,
 		r.overServedExclusions,
+		r.overServedLoad,
 		r.keyMismatches,
 		r.sessionFetches,
 		r.oversizedResponses,
@@ -916,6 +927,12 @@ func (r *Recorder) RecordSupplierBlacklist(serviceID domain.ServiceID, reason st
 // session after an over-servicing refusal.
 func (r *Recorder) RecordOverServedExclusion(serviceID domain.ServiceID) {
 	r.overServedExclusions.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
+}
+
+// RecordOverServedLoad observes what a supplier excluded for over-servicing
+// took in its session, relative to its session peers.
+func (r *Recorder) RecordOverServedLoad(serviceID domain.ServiceID, operator string, ratio float64) {
+	r.overServedLoad.WithLabelValues(r.services.serviceValue(serviceID), r.operators.value(operator)).Observe(ratio)
 }
 
 // RecordKeyMismatch counts one relay whose reputation key names a URL other

@@ -322,6 +322,9 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	// rewritten to the subscription id the client holds.
 	out, forward, note := p.subs.TranslateEndpointFrame(payload)
 	p.endpointFrames.Add(1)
+	if p.protocol != nil && p.sessionHeader != nil {
+		p.protocol.sessionLoad.add(serviceID, p.supplierAddr, p.sessionHeader.SessionEndBlockHeight)
+	}
 	if p.metrics != nil {
 		p.metrics.SupplierFrame(serviceID, p.operator, p.owner, websockets.SourceEndpoint)
 		p.metrics.SupplierNotification(serviceID, p.operator, p.owner, note)
