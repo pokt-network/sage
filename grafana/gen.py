@@ -19,6 +19,18 @@ S = 'job="sage", environment="mainnet-sage"'
 DS = {"type": "prometheus", "uid": "prometheus"}
 RI = "$__rate_interval"
 
+
+def rec(name, matchers=""):
+    """A recorded rate: Prometheus precomputes rate(sage_<name>[4m]) every
+    minute (pnf-ops, kps/alerts/dashboard-recording-rules.yaml), so a panel
+    reads a few hundred series instead of re-summing 10k-41k raw ones on every
+    view — loads took 2.5-8s before. The rules cover mainnet-sage only and keep
+    environment, service_id, operator, rpc_type, attempt, attribution,
+    request_type and le; renaming any of those empties these panels. Windows
+    other than $__rate_interval ([1h], [24h]) stay on the raw series."""
+    m = 'environment="mainnet-sage"' + (", " + matchers if matchers else "")
+    return f"sage:{name}:rate4m{{{m}}}"
+
 PUBLIC = sys.argv[1:2] == ["public"]
 if sys.argv[1:2] not in (["public"], ["operator"]) or len(sys.argv) > 3 or (len(sys.argv) == 3 and not PUBLIC):
     sys.exit("usage: gen.py public [uid] | gen.py operator")
@@ -51,10 +63,12 @@ def row(title):
     y[0] += 1
 
 
-def target(expr, ref="A", legend=None, table=False):
+def target(expr, ref="A", legend=None, table=False, instant=False):
     t = {"datasource": DS, "editorMode": "code", "expr": expr, "refId": ref}
     if table:
         t.update({"format": "table", "instant": True, "range": False})
+    elif instant:
+        t.update({"instant": True, "range": False})
     else:
         t["range"] = True
     if legend:
@@ -82,7 +96,9 @@ def stat(title, expr, x, w, h=4, unit="short", desc="", steps=((0, "green"),), m
         "options": {"colorMode": "value", "graphMode": graph, "justifyMode": "auto", "orientation": "auto",
                     "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
                     "showPercentChange": False, "textMode": "auto", "wideLayout": True},
-        "targets": [target(expr, legend=legend or "__auto")],
+        # A tile with no sparkline shows only the last value: one instant
+        # query, not a range evaluated at every step to throw all but one away.
+        "targets": [target(expr, legend=legend or "__auto", instant=graph == "none")],
     })
 
 
@@ -194,15 +210,27 @@ GAUGE = {"mode": "basic", "type": "gauge", "valueDisplayMode": "color"}
 BG = {"mode": "gradient", "type": "color-background"}
 PCT_GOOD = ((0, "red"), (80, "yellow"), (95, "green"))
 
-# Shorthands for the per-operator series (added in 9380153).
+# Shorthands for the per-operator series (added in 9380153). OA is raw, for
+# the [1h] windows; the rest are recorded rates, for $__rate_interval panels.
 OA = f'sage_operator_attempts_total{{{S}}}'
+FAULT = 'attribution=~"supplier|unknown"'
+RA = rec("operator_attempts")
 # First attempts only: the fair sample of an operator. Retries arrive with less
 # budget after another host failed, and an operator reputation has demoted is
 # sent mostly those, so a success rate over all attempts condemns it for being
 # demoted.
-OF = f'sage_operator_attempts_total{{{S}, attempt="first"}}'
-OAB = 'sage_operator_attempt_seconds_bucket{' + S + '}'
-FAULT = 'attribution=~"supplier|unknown"'
+RF = rec("operator_attempts", 'attempt="first"')
+RFF = rec("operator_attempts", f'attempt="first", {FAULT}')
+RAB = rec("operator_attempt_seconds_bucket")
+RL = rec("relay_latency_seconds_bucket", 'request_type="client"')
+RCL = rec("client_latency_seconds_bucket")
+RWT = rec("websocket_supplier_tenure_seconds_bucket")
+
+
+def rfa(attribution):
+    """First attempts with one attribution, recorded."""
+    return rec("operator_attempts", f'attempt="first", attribution="{attribution}"')
+
 
 # ---------------------------------------------------------------------------
 panels.append({
@@ -223,7 +251,7 @@ def statusClass(series):
 
 def relay_success(x):
     stat("Relay Success %",
-         f'(1 - sum(rate({OF[:-1]}, {FAULT}}}[{RI}])) / sum(rate({OF}[{RI}]))) * 100',
+         f'(1 - sum({RFF}) / sum({RF})) * 100',
          x, 4, unit="percent", mn=0, mx=100, steps=PCT_GOOD,
          desc="First client attempts whose outcome the heuristic did not blame on the supplier: a good answer, or a "
               "chain or client error the supplier answered honestly (block not found, execution reverted). First "
@@ -248,7 +276,7 @@ stat("Probe Success %",
      desc="Health-check relays answered 2xx. Independent of client traffic; only the probe leader sends them.")
 ops[0] = False
 stat("Relay Latency P50",
-     f'histogram_quantile(0.50, sum by (le) (rate(sage_relay_latency_seconds_bucket{{{S}, request_type="client"}}[{RI}]))) * 1000',
+     f'histogram_quantile(0.50, sum by (le) ({RL})) * 1000',
      16, 4, unit="ms", steps=((0, "green"), (500, "yellow"), (1000, "red")),
      desc="Median upstream attempt latency, client traffic. Client-facing latency is in the Latency row.")
 stat("Client 5xx %",
@@ -312,13 +340,13 @@ by = "service_id, operator, rpc_type"
 table(
     "HTTP Supplier Quality — excludes WebSocket",
     [
-        ("RPS", f'sum by ({by}) (rate({OA}[{RI}]))'),
-        ("Success", f'(1 - (sum by ({by}) (rate({OF[:-1]}, {FAULT}}}[{RI}])) or sum by ({by}) (rate({OF}[{RI}])) * 0) '
-                    f'/ (sum by ({by}) (rate({OF}[{RI}])) > 0)) * 100'),
-        ("SupplierErr", f'sum by ({by}) (rate({OF[:-1]}, {FAULT}}}[{RI}]))'),
-        ("P50", f'histogram_quantile(0.50, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
-        ("P95", f'histogram_quantile(0.95, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
-        ("P99", f'histogram_quantile(0.99, sum by ({by}, le) (rate({OAB}[{RI}]))) * 1000'),
+        ("RPS", f'sum by ({by}) ({RA})'),
+        ("Success", f'(1 - (sum by ({by}) ({RFF}) or sum by ({by}) ({RF}) * 0) '
+                    f'/ (sum by ({by}) ({RF}) > 0)) * 100'),
+        ("SupplierErr", f'sum by ({by}) ({RFF})'),
+        ("P50", f'histogram_quantile(0.50, sum by ({by}, le) ({RAB})) * 1000'),
+        ("P95", f'histogram_quantile(0.95, sum by ({by}, le) ({RAB})) * 1000'),
+        ("P99", f'histogram_quantile(0.99, sum by ({by}, le) ({RAB})) * 1000'),
         # Reputation rows for WebSocket keys belong in the WebSocket table
         # below: joined here they showed with RPS 0 (HTTP metrics), which
         # read as an operator carrying no WebSocket traffic at all.
@@ -375,11 +403,11 @@ y[0] += 18
 table(
     "Error Attribution by Operator — what's dragging Success %",
     [
-        ("Supplier", f'sum by ({by}) (rate({OF[:-1]}, attribution="supplier"}}[{RI}]))'),
-        ("Unknown", f'sum by ({by}) (rate({OF[:-1]}, attribution="unknown"}}[{RI}]))'),
-        ("Chain", f'sum by ({by}) (rate({OF[:-1]}, attribution="blockchain"}}[{RI}]))'),
-        ("Client", f'sum by ({by}) (rate({OF[:-1]}, attribution="client"}}[{RI}]))'),
-        ("FaultPct", f'sum by ({by}) (rate({OF[:-1]}, {FAULT}}}[{RI}])) / (sum by ({by}) (rate({OF}[{RI}])) > 0) * 100'),
+        ("Supplier", f'sum by ({by}) ({rfa("supplier")})'),
+        ("Unknown", f'sum by ({by}) ({rfa("unknown")})'),
+        ("Chain", f'sum by ({by}) ({rfa("blockchain")})'),
+        ("Client", f'sum by ({by}) ({rfa("client")})'),
+        ("FaultPct", f'sum by ({by}) ({RFF}) / (sum by ({by}) ({RF}) > 0) * 100'),
     ],
     {"operator": 0, "service_id": 1, "rpc_type": 2, "Value #FaultPct": 3, "Value #Supplier": 4,
      "Value #Unknown": 5, "Value #Chain": 6, "Value #Client": 7},
@@ -497,7 +525,7 @@ y[0] += 8
 row("Latency Analysis")
 lat = []
 for q in ("0.50", "0.90", "0.95", "0.99"):
-    lat.append((f'histogram_quantile({q}, sum by (le) (rate(sage_relay_latency_seconds_bucket{{{S}, request_type="client"}}[{RI}]))) * 1000',
+    lat.append((f'histogram_quantile({q}, sum by (le) ({RL})) * 1000',
                 f'P{int(float(q) * 100)}'))
 ops[0] = True
 ts("Relay Attempt Latency Percentiles", lat, 0, 12, unit="ms", stack=False, fill=0, sort_mean=False,
@@ -505,7 +533,7 @@ ts("Relay Attempt Latency Percentiles", lat, 0, 12, unit="ms", stack=False, fill
 ops[0] = False
 clat = []
 for q in ("0.50", "0.90", "0.95", "0.99"):
-    clat.append((f'histogram_quantile({q}, sum by (le) (rate(sage_client_latency_seconds_bucket{{{S}}}[{RI}]))) * 1000',
+    clat.append((f'histogram_quantile({q}, sum by (le) ({RCL})) * 1000',
                  f'P{int(float(q) * 100)}'))
 ts("Client-Facing Latency Percentiles", clat, 0 if PUBLIC else 12, 12, unit="ms", stack=False, fill=0, sort_mean=False,
    desc="What the client waited, retries and hedges included: from the request reaching SAGE to the response written.")
@@ -513,8 +541,10 @@ if not PUBLIC:  # public: the 504 panel takes the other half of this row
     y[0] += 8
 ops[0] = True
 ts("Slow Attempts by Operator (> 2.5s)",
-   [(f'topk(10, sum by (service_id, operator) (rate(sage_operator_attempt_seconds_count{{{S}}}[{RI}])) - '
-     f'sum by (service_id, operator) (rate(sage_operator_attempt_seconds_bucket{{{S}, le="2.5"}}[{RI}])))',
+   # All attempts are the +Inf bucket: both sides of the subtraction then come
+   # from one rule evaluation.
+   [('topk(10, sum by (service_id, operator) (' + rec("operator_attempt_seconds_bucket", 'le="+Inf"') + ') - '
+     'sum by (service_id, operator) (' + rec("operator_attempt_seconds_bucket", 'le="2.5"') + '))',
      "{{service_id}} {{operator}}")],
    0, 12, unit="reqps", stack=False, fill=10,
    desc="Attempts that took longer than 2.5s, by service and operator, top 10. A slow tail is what runs a request out "
@@ -602,7 +632,7 @@ ts("Rebinds, Stalls & Unresponsive Peers",
 ops[0] = False
 tenure = []
 for q in ("0.50", "0.90", "0.99"):
-    tenure.append((f'histogram_quantile({q}, sum by (le) (rate(sage_websocket_supplier_tenure_seconds_bucket{{{S}}}[{RI}])))',
+    tenure.append((f'histogram_quantile({q}, sum by (le) ({RWT}))',
                    f'p{int(float(q) * 100)}'))
 ts("Supplier Tenure per Connection (p50/p90/p99)", tenure, 0 if PUBLIC else 8, 12 if PUBLIC else 8, unit="s", stack=False, placement="bottom",
    sort_mean=False,

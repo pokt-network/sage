@@ -308,7 +308,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(1 - sum(rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / sum(rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval]))) * 100",
+          "expr": "(1 - sum(sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}) / sum(sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\"})) * 100",
           "refId": "A",
           "range": true,
           "legendFormat": "__auto"
@@ -380,7 +380,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(sage_relay_latency_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[$__rate_interval]))) * 1000",
+          "expr": "histogram_quantile(0.50, sum by (le) (sage:relay_latency_seconds_bucket:rate4m{environment=\"mainnet-sage\", request_type=\"client\"})) * 1000",
           "refId": "A",
           "range": true,
           "legendFormat": "__auto"
@@ -520,7 +520,8 @@
           "editorMode": "code",
           "expr": "sum by (class) (label_replace(increase(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[24h]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
-          "range": true,
+          "instant": true,
+          "range": false,
           "legendFormat": "{{class}}"
         }
       ]
@@ -585,7 +586,8 @@
           "editorMode": "code",
           "expr": "sum by (class) (label_replace(increase(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[$__range]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
-          "range": true,
+          "instant": true,
+          "range": false,
           "legendFormat": "{{class}}"
         }
       ]
@@ -650,7 +652,8 @@
           "editorMode": "code",
           "expr": "sum by (class) (label_replace(increase(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[24h]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
-          "range": true,
+          "instant": true,
+          "range": false,
           "legendFormat": "{{class}}"
         }
       ]
@@ -715,7 +718,8 @@
           "editorMode": "code",
           "expr": "sum by (class) (label_replace(increase(sage_relay_total{job=\"sage\", environment=\"mainnet-sage\", request_type=\"client\"}[$__range]), \"class\", \"${1}xx\", \"status\", \"([0-9]).*\"))",
           "refId": "A",
-          "range": true,
+          "instant": true,
+          "range": false,
           "legendFormat": "{{class}}"
         }
       ]
@@ -1061,7 +1065,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\"})",
           "refId": "RPS",
           "format": "table",
           "instant": true,
@@ -1073,7 +1077,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(1 - (sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) or sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) * 0) / (sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) > 0)) * 100",
+          "expr": "(1 - (sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}) or sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\"}) * 0) / (sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\"}) > 0)) * 100",
           "refId": "Success",
           "format": "table",
           "instant": true,
@@ -1085,7 +1089,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"})",
           "refId": "SupplierErr",
           "format": "table",
           "instant": true,
@@ -1097,7 +1101,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (service_id, operator, rpc_type, le) (rate(sage_operator_attempt_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))) * 1000",
+          "expr": "histogram_quantile(0.50, sum by (service_id, operator, rpc_type, le) (sage:operator_attempt_seconds_bucket:rate4m{environment=\"mainnet-sage\"})) * 1000",
           "refId": "P50",
           "format": "table",
           "instant": true,
@@ -1109,7 +1113,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (service_id, operator, rpc_type, le) (rate(sage_operator_attempt_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))) * 1000",
+          "expr": "histogram_quantile(0.95, sum by (service_id, operator, rpc_type, le) (sage:operator_attempt_seconds_bucket:rate4m{environment=\"mainnet-sage\"})) * 1000",
           "refId": "P95",
           "format": "table",
           "instant": true,
@@ -1121,7 +1125,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (service_id, operator, rpc_type, le) (rate(sage_operator_attempt_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))) * 1000",
+          "expr": "histogram_quantile(0.99, sum by (service_id, operator, rpc_type, le) (sage:operator_attempt_seconds_bucket:rate4m{environment=\"mainnet-sage\"})) * 1000",
           "refId": "P99",
           "format": "table",
           "instant": true,
@@ -1451,7 +1455,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=\"supplier\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\", attribution=\"supplier\"})",
           "refId": "Supplier",
           "format": "table",
           "instant": true,
@@ -1463,7 +1467,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=\"unknown\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\", attribution=\"unknown\"})",
           "refId": "Unknown",
           "format": "table",
           "instant": true,
@@ -1475,7 +1479,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=\"blockchain\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\", attribution=\"blockchain\"})",
           "refId": "Chain",
           "format": "table",
           "instant": true,
@@ -1487,7 +1491,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=\"client\"}[$__rate_interval]))",
+          "expr": "sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\", attribution=\"client\"})",
           "refId": "Client",
           "format": "table",
           "instant": true,
@@ -1499,7 +1503,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}[$__rate_interval])) / (sum by (service_id, operator, rpc_type) (rate(sage_operator_attempts_total{job=\"sage\", environment=\"mainnet-sage\", attempt=\"first\"}[$__rate_interval])) > 0) * 100",
+          "expr": "sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\", attribution=~\"supplier|unknown\"}) / (sum by (service_id, operator, rpc_type) (sage:operator_attempts:rate4m{environment=\"mainnet-sage\", attempt=\"first\"}) > 0) * 100",
           "refId": "FaultPct",
           "format": "table",
           "instant": true,
@@ -2271,7 +2275,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(sage_client_latency_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))) * 1000",
+          "expr": "histogram_quantile(0.50, sum by (le) (sage:client_latency_seconds_bucket:rate4m{environment=\"mainnet-sage\"})) * 1000",
           "refId": "A",
           "range": true,
           "legendFormat": "P50"
@@ -2282,7 +2286,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.90, sum by (le) (rate(sage_client_latency_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))) * 1000",
+          "expr": "histogram_quantile(0.90, sum by (le) (sage:client_latency_seconds_bucket:rate4m{environment=\"mainnet-sage\"})) * 1000",
           "refId": "B",
           "range": true,
           "legendFormat": "P90"
@@ -2293,7 +2297,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(sage_client_latency_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))) * 1000",
+          "expr": "histogram_quantile(0.95, sum by (le) (sage:client_latency_seconds_bucket:rate4m{environment=\"mainnet-sage\"})) * 1000",
           "refId": "C",
           "range": true,
           "legendFormat": "P95"
@@ -2304,7 +2308,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(sage_client_latency_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval]))) * 1000",
+          "expr": "histogram_quantile(0.99, sum by (le) (sage:client_latency_seconds_bucket:rate4m{environment=\"mainnet-sage\"})) * 1000",
           "refId": "D",
           "range": true,
           "legendFormat": "P99"
@@ -2955,7 +2959,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(sage_websocket_supplier_tenure_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (sage:websocket_supplier_tenure_seconds_bucket:rate4m{environment=\"mainnet-sage\"}))",
           "refId": "A",
           "range": true,
           "legendFormat": "p50"
@@ -2966,7 +2970,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.90, sum by (le) (rate(sage_websocket_supplier_tenure_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.90, sum by (le) (sage:websocket_supplier_tenure_seconds_bucket:rate4m{environment=\"mainnet-sage\"}))",
           "refId": "B",
           "range": true,
           "legendFormat": "p90"
@@ -2977,7 +2981,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(sage_websocket_supplier_tenure_seconds_bucket{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (sage:websocket_supplier_tenure_seconds_bucket:rate4m{environment=\"mainnet-sage\"}))",
           "refId": "C",
           "range": true,
           "legendFormat": "p99"
