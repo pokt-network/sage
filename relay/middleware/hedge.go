@@ -214,6 +214,19 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					}
 
 				case res := <-hedgeCh:
+					if errors.Is(res.err, errHedgeRuledOut) {
+						// Nothing was sent: the race is the primary's alone.
+						recordHedge(ctx, "suppressed_ruled_out")
+						if !primaryDone {
+							select {
+							case primaryRes = <-primaryCh:
+							case <-ctx.Ctx.Done():
+								return deadlineInFlight(ctx, primaryCtx.SelectedEndpoint.Load())
+							}
+						}
+						mergeContext(ctx, primaryRes.ctx)
+						return primaryRes.err
+					}
 					hedgeRes = res
 					hedgeDone = true
 					if res.err == nil {

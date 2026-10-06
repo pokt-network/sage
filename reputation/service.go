@@ -1486,6 +1486,17 @@ func (s *serviceImpl) Vouched(_ context.Context, serviceID domain.ServiceID, end
 	return ok && score >= s.selector.cfg.Load().ProbationThreshold
 }
 
+// RuledOutChecker is the optional half of Service that says whether an
+// endpoint is ranked out for an RPC type: a recorded score below the
+// selector's MinThreshold. A list in which every endpoint is ruled out is the
+// one the pool-collapse guard serves from, and SelectEndpoint asks it so a
+// hedge arm is not sent into that guard (see SelectEndpoint).
+type RuledOutChecker interface {
+	RuledOut(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType) bool
+}
+
+var _ RuledOutChecker = (*serviceImpl)(nil)
+
 // RuledOut reports whether an endpoint has a recorded score for the RPC type
 // below the selector's MinThreshold: ranked out, not merely unproven. An
 // endpoint with no score is not ruled out.

@@ -185,7 +185,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "hedge_total",
-				Help:      "Hedged relays by outcome: primary_before_delay (the primary answered inside the hedge delay, so no hedge was sent), and, once the hedge was sent, primary_won, hedge_won or both_failed; plus suppressed_large_batch, an item of a batch over retry_config.hedge_max_batch_size that ran unhedged; and suppressed_stale, a hedge not sent because every host left for it was far behind the chain head while the primary was not. The share of races where a hedge fired is (primary_won + hedge_won + both_failed) over the sum of the first four. Before 2026-09-27 primary_before_delay was counted as primary_won.",
+				Help:      "Hedged relays by outcome: primary_before_delay (the primary answered inside the hedge delay, so no hedge was sent), and, once the hedge was sent, primary_won, hedge_won or both_failed; plus suppressed_large_batch, an item of a batch over retry_config.hedge_max_batch_size that ran unhedged; suppressed_stale, a hedge not sent because every host left for it was far behind the chain head while the primary was not; and suppressed_ruled_out, a hedge not sent because every host left for it was ranked below reputation's minimum (the pool-collapse guard would have served one). The share of races where a hedge fired is (primary_won + hedge_won + both_failed) over the sum of the first four. Before 2026-09-27 primary_before_delay was counted as primary_won.",
 			},
 			[]string{"service_id", "result"},
 		),

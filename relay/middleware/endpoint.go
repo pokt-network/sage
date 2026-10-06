@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -67,6 +68,17 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 				return domain.NewRelayError(domain.ErrProtocol, "no endpoint available for service", nil, false)
 			}
 
+			// A hedge is a second path to an answer while the primary is
+			// still running. When every endpoint left for it is ruled out,
+			// the pool-collapse guard would serve the least-bad of them: a
+			// guard against reputation emptying a pool into an outage, which
+			// a hedge never is. On mainnet poly and poly-zkevm (2026-10-06)
+			// every collapse pick, ~5,400 an hour, was a hedge arm sent to an
+			// operator whose backend answered 503 to all of them.
+			if ctx.AttemptKind == relay.AttemptHedge && allRuledOut(repSvc, ctx, candidates) {
+				return errHedgeRuledOut
+			}
+
 			// Select the best endpoint by reputation.
 			ctx.Endpoint = repSvc.SelectBest(ctx.Ctx, ctx.ServiceID, candidates, ctx.RPCType)
 
@@ -107,6 +119,26 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 			return next.HandleRelay(ctx)
 		})
 	}
+}
+
+// errHedgeRuledOut is what SelectEndpoint answers a hedge arm whose every
+// candidate is ruled out. No relay was sent; Hedge waits on the primary.
+var errHedgeRuledOut = errors.New("hedge: every endpoint left for it is ruled out")
+
+// allRuledOut reports whether every endpoint in eps is ranked out by
+// reputation. False when the service cannot say, and for an endpoint with no
+// score yet: an unproven host is not a dead one.
+func allRuledOut(repSvc reputation.Service, ctx *relay.Context, eps domain.EndpointAddrList) bool {
+	c, ok := repSvc.(reputation.RuledOutChecker)
+	if !ok {
+		return false
+	}
+	for _, ep := range eps {
+		if !c.RuledOut(ctx.ServiceID, ep, ctx.RPCType) {
+			return false
+		}
+	}
+	return true
 }
 
 // narrowsIntoStale reports whether narrowing full to narrowed leaves only

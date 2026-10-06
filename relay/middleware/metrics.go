@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -99,6 +100,9 @@ func Metrics(recorder MetricsRecorder, opts ...MetricsOption) relay.Middleware {
 			start := time.Now()
 
 			err := next.HandleRelay(ctx)
+			if errors.Is(err, errHedgeRuledOut) {
+				return err // no attempt was made
+			}
 
 			latency := time.Since(start)
 

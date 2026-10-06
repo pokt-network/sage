@@ -11,8 +11,10 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/relay"
+	"github.com/pokt-network/sage/reputation"
 )
 
 func hedgeCfg(delay time.Duration) func(domain.ServiceID) config.RetryConfig {
@@ -771,4 +773,84 @@ func TestHedge_SteersOnAFirstAttemptWithNoPool(t *testing.T) {
 	if len(picked) != 2 || picked[0].Operator() == picked[1].Operator() {
 		t.Fatalf("hedge did not steer off the primary's operator: %v", picked)
 	}
+}
+
+// relayCounter counts every RecordRelay, which operatorRecorder keeps only the
+// last of.
+type relayCounter struct {
+	operatorRecorder
+	relays atomic.Int32
+}
+
+func (r *relayCounter) RecordRelay(domain.ServiceID, domain.EndpointAddr, int, time.Duration, error) {
+	r.relays.Add(1)
+}
+
+// A hedge arm whose every candidate reputation has ranked out is not sent.
+// The pool-collapse guard would have served one of them, and that guard keeps
+// reputation from emptying a pool into an outage — which a hedge, its primary
+// in flight, never is. On mainnet poly-zkevm (2026-10-06) the only alternative
+// to the healthy operator was a host answering every relay with an error, and
+// it took ~3,800 hedge arms an hour; on poly ~1,600.
+func TestHedge_NotSentIntoARuledOutPool(t *testing.T) {
+	healthy := domain.EndpointAddr("s1-https://h1.alpha.example.com")
+	dead := domain.EndpointAddr("s2-https://r1.dead.example.net")
+	flags := newFlags(featureflag.FlagHedge)
+
+	run := func(t *testing.T, rep reputation.Service) ([]domain.EndpointAddr, []string, *relayCounter) {
+		t.Helper()
+		var mu sync.Mutex
+		var sent []domain.EndpointAddr
+		send := relay.HandlerFunc(func(c *relay.Context) error {
+			mu.Lock()
+			sent = append(sent, c.Endpoint)
+			mu.Unlock()
+			time.Sleep(60 * time.Millisecond)
+			c.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{}`)}
+			return nil
+		})
+		hedges := &recordingHedgeRec{}
+		rec := &relayCounter{}
+		ctx := baseContext()
+		ctx.RPCType = domain.RPCTypeJSONRPC
+		ctx.Endpoints = domain.EndpointAddrList{healthy, dead}
+		h := Hedge(flags, hedgeCfg(10*time.Millisecond), hedges, nil)(Metrics(rec)(SelectEndpoint(rep, nil, nil, flags)(send)))
+		if err := h.HandleRelay(ctx); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return sent, hedges.results, rec
+	}
+
+	t.Run("every candidate ruled out", func(t *testing.T) {
+		rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.ServiceConfig{})
+		for range 10 {
+			_ = rep.RecordSignal(context.Background(), "eth", dead, domain.RPCTypeJSONRPC, reputation.NewSignal(reputation.SignalCriticalError, "503", 0))
+		}
+		if !rep.RuledOut("eth", dead, domain.RPCTypeJSONRPC) {
+			t.Fatal("setup: the dead host is not ruled out")
+		}
+		sent, results, rec := run(t, rep)
+		if len(sent) != 1 || sent[0] != healthy {
+			t.Fatalf("sent to %v: only the primary may go out", sent)
+		}
+		if len(results) != 1 || results[0] != "suppressed_ruled_out" {
+			t.Fatalf("hedge outcomes = %v, want one suppressed_ruled_out", results)
+		}
+		if got := rec.relays.Load(); got != 1 {
+			t.Fatalf("relays recorded = %d, want 1: the hedge arm made no attempt", got)
+		}
+		if len(rec.kinds) != 1 || rec.kinds[0] != relay.AttemptFirst {
+			t.Fatalf("operator attempts = %v, want the primary's only", rec.kinds)
+		}
+	})
+
+	t.Run("an unproven candidate still gets the hedge", func(t *testing.T) {
+		rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.ServiceConfig{})
+		sent, _, _ := run(t, rep)
+		if len(sent) != 2 || sent[1] != dead {
+			t.Fatalf("sent to %v: a host with no score is not ruled out", sent)
+		}
+	})
 }
