@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -848,8 +849,10 @@ func TestHedge_NotSentIntoARuledOutPool(t *testing.T) {
 
 	t.Run("an unproven candidate still gets the hedge", func(t *testing.T) {
 		rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.ServiceConfig{})
+		// Neither host has a score, so the primary picks either; the hedge
+		// must go to the other.
 		sent, _, _ := run(t, rep)
-		if len(sent) != 2 || sent[1] != dead {
+		if len(sent) != 2 || !slices.Contains(sent, dead) || !slices.Contains(sent, healthy) {
 			t.Fatalf("sent to %v: a host with no score is not ruled out", sent)
 		}
 	})
