@@ -392,7 +392,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Share of client requests the gateway answered with a 5xx: what clients actually saw, after retries and hedges.",
+      "description": "Share of client requests the gateway answered with a 5xx: what clients actually saw, after retries and hedges. A node's own 5xx answer (CometBFT's HTTP 500 for an unknown tx) is the chain answering and is left out.",
       "type": "stat",
       "title": "Client 5xx %",
       "id": 9,
@@ -453,7 +453,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\", status=~\"5..\"}[$__rate_interval])) / sum(rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval])) * 100",
+          "expr": "sum(rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\", status=~\"5..\", origin!=\"chain\"}[$__rate_interval])) / sum(rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval])) * 100",
           "refId": "A",
           "range": true,
           "legendFormat": "__auto"
@@ -2563,7 +2563,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id) (rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\", status=~\"5..\"}[$__rate_interval]))",
+          "expr": "sum by (service_id) (rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\", status=~\"5..\", origin!=\"chain\"}[$__rate_interval]))",
           "refId": "Err",
           "format": "table",
           "instant": true,
@@ -2575,7 +2575,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service_id) (rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\", status=~\"5..\"}[$__rate_interval])) / sum by (service_id) (rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval])) * 100 > 0",
+          "expr": "sum by (service_id) (rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\", status=~\"5..\", origin!=\"chain\"}[$__rate_interval])) / sum by (service_id) (rate(sage_client_requests_total{job=\"sage\", environment=\"mainnet-sage\"}[$__rate_interval])) * 100 > 0",
           "refId": "Pct",
           "format": "table",
           "instant": true,

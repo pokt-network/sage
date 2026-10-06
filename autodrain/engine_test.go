@@ -87,7 +87,7 @@ func (h *harness) clients(total, failed int) {
 		if i < failed {
 			status = 504
 		}
-		h.e.OnClientResult(sei, status)
+		h.e.OnClientResult(sei, status, domain.OriginSupplier)
 	}
 }
 

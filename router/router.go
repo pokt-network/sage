@@ -21,6 +21,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/relay"
@@ -38,7 +39,7 @@ type WebSocketOpener interface {
 // what the caller/edge sees, distinct from sage_relay_total's per-attempt view.
 // metrics.Recorder satisfies it; nil disables recording.
 type ClientMetrics interface {
-	RecordClientRequest(serviceID domain.ServiceID, status int)
+	RecordClientRequest(serviceID domain.ServiceID, status int, origin domain.AnswerOrigin)
 	// RecordDegraded counts an answer that went out with X-Degraded: some
 	// stage of selection settled for less than it wanted. tier is the
 	// sage_degraded_total label; the router records "response".
@@ -258,7 +259,7 @@ func (r *Router) serveStaticRoute(w http.ResponseWriter, req *http.Request) bool
 		r.logger.Debug("static route: write failed", "service", serviceID, "path", rt.Path, "error", err)
 	}
 	if r.clientMetrics != nil {
-		r.clientMetrics.RecordClientRequest(serviceID, status)
+		r.clientMetrics.RecordClientRequest(serviceID, status, domain.OriginGateway)
 	}
 	return true
 }
@@ -389,11 +390,14 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 	// Record the client-facing status once, whichever path answers — this is
 	// what an edge dashboard sees, unlike sage_relay_total's per-attempt view.
 	// The latency beside it is the caller's wait, retries and hedges
-	// included; relay_latency_seconds never says that.
+	// included; relay_latency_seconds never says that. origin is set below by
+	// whichever path answers; a request refused before any attempt
+	// keeps the gateway's.
+	origin := domain.OriginGateway
 	if r.clientMetrics != nil {
 		start := time.Now()
 		defer func() {
-			r.clientMetrics.RecordClientRequest(ctx.ServiceID, rw.Status())
+			r.clientMetrics.RecordClientRequest(ctx.ServiceID, rw.Status(), origin)
 			r.clientMetrics.RecordClientLatency(ctx.ServiceID, rw.Status(), time.Since(start))
 			r.recordRPCType(ctx)
 			// Where the wall time went, stage by stage. The sum over stages
@@ -434,6 +438,7 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 				"service", ctx.ServiceID, "endpoint", ctx.Endpoint, "verdict", err)
 		} else {
 			r.logger.Error("relay chain error", append([]any{"service", ctx.ServiceID, "endpoint", ctx.Endpoint, "error", err, "attempts", ctx.Attempts}, requestShape(ctx)...)...)
+			origin = failureOrigin(ctx)
 			r.writeRelayError(rw, ctx, err)
 			return
 		}
@@ -445,6 +450,7 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 		r.logger.Warn("relay chain returned nil response", "service", ctx.ServiceID, "endpoint", ctx.Endpoint, "degraded", ctx.Degraded)
 	}
 	if ctx.Response != nil {
+		origin = answerOrigin(ctx)
 		status := ctx.Response.HTTPStatusCode
 		if status == 0 {
 			status = http.StatusOK
@@ -477,6 +483,29 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 		}
 		ctx.Stages.Add("router_write", time.Since(writeStart))
 	}
+}
+
+// answerOrigin says whose answer a delivered upstream response is: the
+// chain's, unless the heuristic graded it the supplier's fault. A success is
+// graded AttrClient and an ungraded one (a cache hit) is a node's answer too.
+// AttrUnknown counts as the supplier's so a failure no rule could place stays
+// in the failure rate rather than being excused as the chain's.
+func answerOrigin(ctx *relay.Context) domain.AnswerOrigin {
+	v := ctx.HeuristicResult
+	if v != nil && (v.Attribution == heuristic.AttrSupplier || v.Attribution == heuristic.AttrUnknown) {
+		return domain.OriginSupplier
+	}
+	return domain.OriginChain
+}
+
+// failureOrigin says who a gateway-made error stands for: a supplier when the
+// relay reached one (an endpoint was picked, or retry recorded an attempt),
+// the gateway when it was refused before that.
+func failureOrigin(ctx *relay.Context) domain.AnswerOrigin {
+	if ctx.Endpoint != "" || len(ctx.Attempts) > 0 {
+		return domain.OriginSupplier
+	}
+	return domain.OriginGateway
 }
 
 // stageSummary renders stage times as "name=ms" pairs for the debug line,

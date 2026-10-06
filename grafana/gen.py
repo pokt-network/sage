@@ -252,9 +252,9 @@ stat("Relay Latency P50",
      16, 4, unit="ms", steps=((0, "green"), (500, "yellow"), (1000, "red")),
      desc="Median upstream attempt latency, client traffic. Client-facing latency is in the Latency row.")
 stat("Client 5xx %",
-     f'sum(rate(sage_client_requests_total{{{S}, status=~"5.."}}[{RI}])) / sum(rate(sage_client_requests_total{{{S}}}[{RI}])) * 100',
+     f'sum(rate(sage_client_requests_total{{{S}, status=~"5..", origin!="chain"}}[{RI}])) / sum(rate(sage_client_requests_total{{{S}}}[{RI}])) * 100',
      20, 4, unit="percent", decimals=3, steps=((0, "green"), (0.5, "yellow"), (2, "red")),
-     desc="Share of client requests SAGE answered with a 5xx: what clients actually saw, after retries and hedges.")
+     desc="Share of client requests SAGE answered with a 5xx: what clients actually saw, after retries and hedges. A node's own 5xx answer (CometBFT's HTTP 500 for an unknown tx) is the chain answering and is left out.")
 y[0] += 4
 stat("Requests in 24H", statusClass(f'increase(sage_client_requests_total{{{S}}}[24h])'), 0, 12,
      graph="none", decimals=0, legend="{{class}}", desc="Client requests by the status class SAGE answered, last 24h.")
@@ -557,8 +557,8 @@ table(
     "Worst Services (client 5xx)",
     [
         ("Req", f'sum by (service_id) (rate(sage_client_requests_total{{{S}}}[{RI}]))'),
-        ("Err", f'sum by (service_id) (rate(sage_client_requests_total{{{S}, status=~"5.."}}[{RI}]))'),
-        ("Pct", f'sum by (service_id) (rate(sage_client_requests_total{{{S}, status=~"5.."}}[{RI}])) / '
+        ("Err", f'sum by (service_id) (rate(sage_client_requests_total{{{S}, status=~"5..", origin!="chain"}}[{RI}]))'),
+        ("Pct", f'sum by (service_id) (rate(sage_client_requests_total{{{S}, status=~"5..", origin!="chain"}}[{RI}])) / '
                 f'sum by (service_id) (rate(sage_client_requests_total{{{S}}}[{RI}])) * 100 > 0'),
     ],
     {"service_id": 0, "Value #Pct": 1, "Value #Err": 2, "Value #Req": 3},

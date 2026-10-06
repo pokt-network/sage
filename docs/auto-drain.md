@@ -88,7 +88,9 @@ is long enough that one burst does not act. **All** of the following must hold:
 
 6. **Callers are actually failing** (added 2026-09-16): over the same window,
    at least 5% of the service's client-facing answers failed (5xx, 408, 429),
-   over at least 50 of them. Conditions 1–3 say the fallback keeps feeding an
+   over at least 50 of them. A node's own error answer delivered as it was is
+   not a failure, whatever its status: CometBFT answers a GET for an unknown tx
+   with HTTP 500, and that is the chain saying "not found". Conditions 1–3 say the fallback keeps feeding an
    operator that answers nothing; they do not say anyone noticed, because retry
    usually rescues the request on another operator. Of 44 shadow proposals over
    2026-09-15/16 not one sat on a service whose clients were failing above

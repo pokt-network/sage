@@ -46,7 +46,7 @@ type Recorder struct {
 	// clientRequestHook, when set, is told every client-facing status as it is
 	// counted. Wire time only; the auto-drain engine reads it so its gate sees
 	// what callers saw rather than what one attempt did.
-	clientRequestHook atomic.Pointer[func(domain.ServiceID, int)]
+	clientRequestHook atomic.Pointer[func(domain.ServiceID, int, domain.AnswerOrigin)]
 
 	relayTotal             *prometheus.CounterVec
 	clientRequestsTotal    *prometheus.CounterVec
@@ -136,9 +136,9 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "client_requests_total",
-				Help:      "Client-facing relay requests by service and the HTTP status returned to the client. Unlike relay_total (per relay attempt), this is one count per client request and matches what an edge or client sees — a JSON-RPC error is an HTTP 200 here.",
+				Help:      "Client-facing relay requests by service, the HTTP status returned to the client and its origin: chain (a node's answer delivered as it was, error or not — CometBFT answers a GET for an unknown tx with HTTP 500), supplier (a relay a supplier failed) or gateway (answered with no supplier involved: refused before any attempt, or a static route). A failure rate is status=~\"5..\" with origin!=\"chain\". Unlike relay_total (per relay attempt), this is one count per client request and matches what an edge or client sees — a JSON-RPC error is an HTTP 200 here.",
 			},
-			[]string{"service_id", "status"},
+			[]string{"service_id", "status", "origin"},
 		),
 		rpcTypeTotal: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -697,20 +697,21 @@ func (r *Recorder) recordRelayAttempt(
 }
 
 // RecordClientRequest records the client-facing HTTP status of one relay
-// request — one count per request, matching what a client or edge dashboard
-// sees. A JSON-RPC error is HTTP 200 here; only a real HTTP-level failure is
-// 4xx/5xx. Distinct from RecordRelay, which counts each relay ATTEMPT.
-func (r *Recorder) RecordClientRequest(serviceID domain.ServiceID, status int) {
-	r.clientRequestsTotal.WithLabelValues(r.services.serviceValue(serviceID), strconv.Itoa(status)).Inc()
+// request and who produced it — one count per request, matching what a client
+// or edge dashboard sees. A JSON-RPC error is HTTP 200 here; only an
+// HTTP-level answer is 4xx/5xx, and origin says whether that was the chain's.
+// Distinct from RecordRelay, which counts each relay ATTEMPT.
+func (r *Recorder) RecordClientRequest(serviceID domain.ServiceID, status int, origin domain.AnswerOrigin) {
+	r.clientRequestsTotal.WithLabelValues(r.services.serviceValue(serviceID), strconv.Itoa(status), string(origin)).Inc()
 	if fn := r.clientRequestHook.Load(); fn != nil {
-		(*fn)(serviceID, status)
+		(*fn)(serviceID, status, origin)
 	}
 }
 
 // SetClientRequestHook installs a callback run on every client-facing status,
 // after it is counted. Wire time only: it is read on the response path of every
 // request, so it must not block.
-func (r *Recorder) SetClientRequestHook(fn func(domain.ServiceID, int)) {
+func (r *Recorder) SetClientRequestHook(fn func(domain.ServiceID, int, domain.AnswerOrigin)) {
 	if fn == nil {
 		r.clientRequestHook.Store(nil)
 		return

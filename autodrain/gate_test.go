@@ -39,6 +39,33 @@ func TestEngine_ClientGateStopsADrainNobodyNeeds(t *testing.T) {
 	}
 }
 
+// A node's own HTTP 500 — CometBFT's answer to a GET for an unknown tx — is
+// the chain answering. Callers who got it were served, and counting it as a
+// failure opened the gate on services whose answers were all the chain's.
+func TestEngine_ChainAnswersDoNotOpenTheClientGate(t *testing.T) {
+	h := newHarness(t, fakeVouch{opb: true}, true)
+	h.feedTraffic(0, 60)
+	for i := 0; i < 200; i++ {
+		switch {
+		case i < 60:
+			h.e.OnClientResult(sei, 500, domain.OriginChain) // 30%
+		case i < 61:
+			h.e.OnClientResult(sei, 504, domain.OriginSupplier) // 0.5%
+		default:
+			h.e.OnClientResult(sei, 200, domain.OriginChain)
+		}
+	}
+
+	h.e.Evaluate(context.Background())
+
+	if active := h.drains.Active(context.Background(), sei); len(active) != 0 {
+		t.Fatalf("drained a service whose only failures were the chain's answers: %+v", active)
+	}
+	if o := h.outcomes(t); len(o) != 1 || o[0] != "opa.example:"+OutcomeBelowClient {
+		t.Fatalf("events = %v, want the client gate", o)
+	}
+}
+
 // Retry and hedge keep a failing operator off the client error rate, not off
 // the client. An operator answering half of hundreds of attempts is drained
 // even while clients see under 5% failures (mainnet base, 2026-09-26: 51%

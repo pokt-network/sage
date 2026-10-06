@@ -462,7 +462,9 @@ type clientWindow struct{ slots [windowSlots]clientSlot }
 // OnClientResult counts one client-facing answer. This is the gate's evidence
 // and it is deliberately not the relay counters: retry and hedge mean an
 // operator can answer nothing while every caller of that service is served.
-func (e *Engine) OnClientResult(svc domain.ServiceID, status int) {
+// An answer whose origin is the chain is served whatever its status: a node's
+// HTTP 500 for an unknown tx hurt no caller a drain could help.
+func (e *Engine) OnClientResult(svc domain.ServiceID, status int, origin domain.AnswerOrigin) {
 	if svc == "" || !e.counting.Load() {
 		return
 	}
@@ -480,7 +482,7 @@ func (e *Engine) OnClientResult(svc domain.ServiceID, status int) {
 		*s = clientSlot{minute: m}
 	}
 	s.total++
-	if clientFailed(status) {
+	if origin != domain.OriginChain && clientFailed(status) {
 		s.failed++
 	}
 }

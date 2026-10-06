@@ -922,6 +922,7 @@ func TestHandleReady_SessionNotReady(t *testing.T) {
 
 type recordingClientRec struct {
 	statuses   []int
+	origins    []domain.AnswerOrigin
 	degraded   []string
 	rpcTypes   []rpcTypeRecord
 	mismatches []rpcTypeMismatch
@@ -945,8 +946,9 @@ func (r *recordingClientRec) RecordStageTime(_ domain.ServiceID, stage string, d
 	r.stages[stage] += d
 }
 
-func (r *recordingClientRec) RecordClientRequest(_ domain.ServiceID, status int) {
+func (r *recordingClientRec) RecordClientRequest(_ domain.ServiceID, status int, origin domain.AnswerOrigin) {
 	r.statuses = append(r.statuses, status)
+	r.origins = append(r.origins, origin)
 }
 
 func (r *recordingClientRec) RecordDegraded(_ domain.ServiceID, tier string) {
@@ -1005,6 +1007,67 @@ func TestHandleRelay_RecordsClientStatus(t *testing.T) {
 	resp2.Body.Close()
 	if len(rec2.statuses) != 1 || rec2.statuses[0] != 500 {
 		t.Fatalf("a gateway-made failure records the client status 500, got %v", rec2.statuses)
+	}
+}
+
+// Each client status carries who produced it, so a failure rate can leave out
+// the chain's own answers: CometBFT answers a GET /tx for an unknown hash with
+// HTTP 500 (fetch, 2026-10-05: 26% of its client requests were 500s), and that
+// is the node saying "not found", not the gateway or a supplier failing.
+func TestHandleRelay_RecordsAnswerOrigin(t *testing.T) {
+	cometNotFound := []byte(`{"jsonrpc":"2.0","id":-1,"error":{"code":-32603,"message":"Internal error","data":"tx (AB) not found"}}`)
+	cases := []struct {
+		name       string
+		chain      relay.HandlerFunc
+		wantStatus int
+		want       domain.AnswerOrigin
+	}{
+		{"success", func(ctx *relay.Context) error {
+			ctx.Endpoint = "https://a.example"
+			ctx.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"result":"0x1"}`)}
+			ctx.HeuristicResult = &heuristic.AnalysisResult{Reason: heuristic.ReasonSuccess, Attribution: heuristic.AttrClient}
+			return nil
+		}, 200, domain.OriginChain},
+		{"node's 500 graded the chain's", func(ctx *relay.Context) error {
+			ctx.Endpoint = "https://a.example"
+			ctx.Response = &domain.Response{HTTPStatusCode: 500, Body: cometNotFound}
+			ctx.HeuristicResult = &heuristic.AnalysisResult{Reason: "internal_error", Attribution: heuristic.AttrBlockchain}
+			return nil
+		}, 500, domain.OriginChain},
+		{"last answer graded the supplier's", func(ctx *relay.Context) error {
+			ctx.Endpoint = "https://a.example"
+			ctx.Response = &domain.Response{HTTPStatusCode: 503, Body: []byte(`{"error":"unavailable"}`)}
+			ctx.HeuristicResult = &heuristic.AnalysisResult{Reason: "http_5xx", Attribution: heuristic.AttrSupplier}
+			return domain.NewRelayError(domain.ErrEndpoint, "heuristic analysis suggests retry: http_5xx", domain.ErrRetryVerdict, true)
+		}, 503, domain.OriginSupplier},
+		{"every attempt failed", func(ctx *relay.Context) error {
+			ctx.Endpoint = "https://a.example"
+			ctx.Attempts = []string{"a.example:transport", "b.example:transport"}
+			return domain.NewRelayError(domain.ErrTransport, "dial failed", nil, true)
+		}, 500, domain.OriginSupplier},
+		{"refused before any attempt", func(ctx *relay.Context) error {
+			return domain.NewRelayError(domain.ErrValidation, "batch too large", nil, false)
+		}, 400, domain.OriginGateway},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recordingClientRec{}
+			r := New(config.RouterConfig{Port: 0}, tc.chain, &mockSessions{ready: true}, nil, discardLogger())
+			r.SetClientMetrics(rec)
+			srv := httptest.NewServer(r.mux)
+			defer srv.Close()
+			resp, err := http.Post(srv.URL+"/v1", "application/json", strings.NewReader(`{"jsonrpc":"2.0","method":"tx","id":1}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus || len(rec.statuses) != 1 || rec.statuses[0] != tc.wantStatus {
+				t.Fatalf("status = %d, recorded %v, want %d", resp.StatusCode, rec.statuses, tc.wantStatus)
+			}
+			if len(rec.origins) != 1 || rec.origins[0] != tc.want {
+				t.Fatalf("origin = %v, want %s", rec.origins, tc.want)
+			}
+		})
 	}
 }
 
