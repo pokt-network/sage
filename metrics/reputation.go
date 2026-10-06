@@ -472,6 +472,44 @@ func (c *TrustCollector) Collect(ch chan<- prometheus.Metric) {
 	})
 }
 
+// PolicyPenaltyCollector exposes the policy penalties set by hand
+// (reputation.PolicyPenalty) the last refresh charged, with their reason.
+type PolicyPenaltyCollector struct {
+	each    func(yield func(party, reason string, penalty float64))
+	parties *labelPolicy
+	desc    *prometheus.Desc
+}
+
+// NewPolicyPenaltyCollector returns a collector over each, which calls yield
+// once per policy penalty in force.
+func NewPolicyPenaltyCollector(each func(yield func(party, reason string, penalty float64))) *PolicyPenaltyCollector {
+	return &PolicyPenaltyCollector{
+		each:    each,
+		parties: cappedLabel(maxOperatorLabels),
+		desc: prometheus.NewDesc(
+			"sage_party_policy_penalty",
+			"The policy penalty an operator of the gateway set by hand on a party (PUT /admin/reputation/policy/{party}), with the reason given: for conduct SAGE cannot measure, such as reselling a public RPC. Kept apart from sage_party_trust_penalty, which is measured. Charged on services with policy_penalty on, as the largest of the party's penalties. Absent when none is set.",
+			[]string{"party", "reason"}, nil,
+		),
+	}
+}
+
+// Describe implements prometheus.Collector.
+func (c *PolicyPenaltyCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.desc
+}
+
+// Collect implements prometheus.Collector.
+func (c *PolicyPenaltyCollector) Collect(ch chan<- prometheus.Metric) {
+	c.each(func(party, reason string, penalty float64) {
+		p := c.parties.value(party)
+		if p == otherLabel {
+			return
+		}
+		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, penalty, p, reason)
+	})
+}
+
 // penaltySource is the source label of a party penalty.
 func penaltySource(peer bool) string {
 	if peer {

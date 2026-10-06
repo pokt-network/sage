@@ -162,6 +162,12 @@ func (a *AdminAPI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/auto-drain/events", a.handleAutoDrainEvents)
 	mux.HandleFunc("DELETE /admin/reputation/drain/{serviceID}/{domain}", a.handleReleaseDrain)
 
+	// Policy penalties: a party penalty set by hand, with its reason, for
+	// conduct reputation cannot measure (reputation/policy.go).
+	mux.HandleFunc("GET /admin/reputation/policy", a.handleListPolicyPenalties)
+	mux.HandleFunc("PUT /admin/reputation/policy/{party}", a.handleSetPolicyPenalty)
+	mux.HandleFunc("DELETE /admin/reputation/policy/{party}", a.handleDeletePolicyPenalty)
+
 	// Blocked domains: the permanent, global, fleet-wide ban (see package
 	// blocklist). Distinct from a drain, which is per service and expires.
 	mux.HandleFunc("GET /admin/blocked-domains", a.handleListBlockedDomains)

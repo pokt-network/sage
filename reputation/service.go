@@ -178,6 +178,8 @@ type serviceImpl struct {
 	dupGate   atomic.Pointer[func(domain.ServiceID) bool]
 	dupLimits atomic.Pointer[func(domain.ServiceID) (float64, float64)]
 	dups      *opTracker
+	// policyGate turns on charging policy penalties per service (policy.go).
+	policyGate atomic.Pointer[func(domain.ServiceID) bool]
 	// instanceID names this pod in the shared notification counts
 	// (fleetDuplicates); set at wire time, before the refresh loop starts.
 	instanceID string
@@ -619,8 +621,20 @@ func (s *serviceImpl) refreshBaselines() {
 			v.dupPen[opID{svc: p.ServiceID, op: p.Party}] = p.Penalty
 		}
 	}
+	// Policy penalties, set by hand and shared through the store.
+	var prevPolicy []PolicyPenalty
+	if old := s.chronic.Load(); old != nil {
+		prevPolicy = old.policy
+	}
+	v.policy = s.policyPenalties(prevPolicy, now)
+	v.policyPen = map[string]float64{}
+	for _, p := range v.policy {
+		if p.Penalty < 0 {
+			v.policyPen[p.Party] = min(v.policyPen[p.Party], p.Penalty)
+		}
+	}
 	// Party lookups only matter while some party is charged.
-	if len(v.stalePen)+len(v.trustPen)+len(v.dupPen) > 0 {
+	if len(v.stalePen)+len(v.trustPen)+len(v.dupPen)+len(v.policyPen) > 0 {
 		// The flag per service is read here, once a refresh, for every
 		// service with a key; a service with none yet falls back to the
 		// gate on lookup (the penalty reaches a party's first key there).
@@ -628,6 +642,8 @@ func (s *serviceImpl) refreshBaselines() {
 		v.trustOn = map[domain.ServiceID]bool{}
 		v.wsGate = gateOf(&s.partyWSGate)
 		v.wsOn = map[domain.ServiceID]bool{}
+		v.policyGate = gateOf(&s.policyGate)
+		v.policyOn = map[domain.ServiceID]bool{}
 		v.keyParty = make(map[string]string, len(keys))
 		for _, ks := range keys {
 			v.keyParty[ks.id.key] = domain.PartyOfOperator(ks.op.op)
@@ -636,6 +652,9 @@ func (s *serviceImpl) refreshBaselines() {
 			}
 			if _, seen := v.wsOn[ks.id.svc]; !seen && v.wsGate != nil {
 				v.wsOn[ks.id.svc] = v.wsGate(ks.id.svc)
+			}
+			if _, seen := v.policyOn[ks.id.svc]; !seen && v.policyGate != nil {
+				v.policyOn[ks.id.svc] = v.policyGate(ks.id.svc)
 			}
 		}
 	}
@@ -1215,6 +1234,7 @@ func (s *serviceImpl) GetStates(_ context.Context, serviceID domain.ServiceID) (
 			LatencyMS: st.LatencyMS,
 		}
 		view.StalePenalty, view.TrustPenalty = s.chronic.Load().partyPenalties(serviceID, key)
+		view.PolicyPenalty = s.chronic.Load().policyPenalty(serviceID, key)
 		// The rate a young key shows and the rate its operator is charged are
 		// different numbers; a reader comparing keys needs both (operator.go).
 		if r, ok := s.OperatorRate(serviceID, domain.RPCType(rpcOfKey(key)), operatorOfKey(key)); ok {

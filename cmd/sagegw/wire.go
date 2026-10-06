@@ -470,6 +470,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			yield(t.Party, t.StaleServices, t.RefusalServices, t.Penalty, t.Peer())
 		}
 	}))
+	prometheus.MustRegister(metrics.NewPolicyPenaltyCollector(func(yield func(party, reason string, penalty float64)) {
+		for _, p := range repSvc.PartyPolicies() {
+			yield(p.Party, p.Reason, p.Penalty)
+		}
+	}))
 	prometheus.MustRegister(metrics.NewStaleShareCollector(func(yield func(domain.ServiceID, string, float64, float64, bool)) {
 		for _, p := range repSvc.PartyStaleShares() {
 			yield(p.ServiceID, p.Party, p.Share, p.Penalty, p.Peer())
@@ -675,6 +680,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// way (reputation/trust.go).
 	repSvc.SetTrustPenalty(func(serviceID domain.ServiceID) bool {
 		return flags.IsEnabled(context.Background(), featureflag.FlagTrustPenalty, serviceID)
+	})
+	// Policy penalties, set by hand through the admin API (reputation/policy.go).
+	repSvc.SetPolicyPenaltyGate(func(serviceID domain.ServiceID) bool {
+		return flags.IsEnabled(context.Background(), featureflag.FlagPolicyPenalty, serviceID)
 	})
 	// Whether those party penalties also reach websocket keys, on the same
 	// refresh.

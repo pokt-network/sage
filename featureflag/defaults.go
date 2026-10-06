@@ -231,6 +231,14 @@ const (
 	// stale HTTP on most EVM services held no WebSocket traffic anywhere, its
 	// WebSocket never measured. On by default: today's behaviour, the undo.
 	FlagPartyPenaltiesWebsocket = "party_penalties_websocket"
+	// FlagPolicyPenalty charges the policy penalties set by hand through PUT
+	// /admin/reputation/policy/{party}: on every key of the party in the
+	// service, websocket keys where party_penalties_websocket is on, as the
+	// largest of the party's penalties and under the same floor. They are for
+	// conduct SAGE cannot measure, such as reselling a public RPC, whose
+	// answers are fresh and correct. Nothing is charged until one is set, so
+	// on by default; off for a service exempts it without deleting the entry.
+	FlagPolicyPenalty = "policy_penalty"
 	// FlagWSNoAnswerMinorFirst charges a WebSocket supplier's first silent
 	// request (ws_no_answer) as a minor error, and a second on the same
 	// endpoint within ten minutes on this pod as the major one. A WebSocket
@@ -363,6 +371,7 @@ var DefaultFlags = map[string]bool{
 	FlagStateCanary:             false,
 	FlagTrustPenalty:            false,
 	FlagPartyPenaltiesWebsocket: true,
+	FlagPolicyPenalty:           true,
 	FlagWSNoAnswerMinorFirst:    true,
 	FlagWSRateCountsAnswers:     true,
 	FlagWSDrainRebind:           true,

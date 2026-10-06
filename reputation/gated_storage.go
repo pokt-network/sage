@@ -135,6 +135,31 @@ func (s *LeaderOnlyStorage) DeleteNotificationCounts(ctx context.Context, pods .
 	return nil
 }
 
+// PutPolicyPenalty writes through on every pod: an admin call lands on any
+// (PolicyPenaltyStore). ErrNoPolicyStore over a store without them.
+func (s *LeaderOnlyStorage) PutPolicyPenalty(ctx context.Context, p PolicyPenalty) error {
+	if st, ok := s.inner.(PolicyPenaltyStore); ok {
+		return st.PutPolicyPenalty(ctx, p)
+	}
+	return ErrNoPolicyStore
+}
+
+// PolicyPenalties reads through; none over a store without them.
+func (s *LeaderOnlyStorage) PolicyPenalties(ctx context.Context) ([]PolicyPenalty, error) {
+	if st, ok := s.inner.(PolicyPenaltyStore); ok {
+		return st.PolicyPenalties(ctx)
+	}
+	return nil, nil
+}
+
+// DeletePolicyPenalty writes through on every pod.
+func (s *LeaderOnlyStorage) DeletePolicyPenalty(ctx context.Context, party string) (bool, error) {
+	if st, ok := s.inner.(PolicyPenaltyStore); ok {
+		return st.DeletePolicyPenalty(ctx, party)
+	}
+	return false, ErrNoPolicyStore
+}
+
 // GetPartyPenalties reads through.
 func (s *LeaderOnlyStorage) GetPartyPenalties(ctx context.Context) (PartyPenalties, error) {
 	return s.inner.GetPartyPenalties(ctx)

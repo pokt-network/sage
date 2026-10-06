@@ -329,3 +329,47 @@ func (r *RedisStorage) SetPartyPenalties(ctx context.Context, p PartyPenalties) 
 	}
 	return nil
 }
+
+// policyKey holds the policy penalties, one field per party
+// (PolicyPenaltyStore).
+func (r *RedisStorage) policyKey() string {
+	return r.hashKey + "policy"
+}
+
+// PutPolicyPenalty stores a party's policy penalty, replacing its previous one.
+func (r *RedisStorage) PutPolicyPenalty(ctx context.Context, p PolicyPenalty) error {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", r.policyKey(), err)
+	}
+	if err := r.client.HSet(ctx, r.policyKey(), p.Party, string(b)).Err(); err != nil {
+		return fmt.Errorf("redis HSET %s: %w", r.policyKey(), err)
+	}
+	return nil
+}
+
+// PolicyPenalties reads every stored policy penalty; a field that does not
+// decode is skipped.
+func (r *RedisStorage) PolicyPenalties(ctx context.Context) ([]PolicyPenalty, error) {
+	raw, err := r.client.HGetAll(ctx, r.policyKey()).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis HGETALL %s: %w", r.policyKey(), err)
+	}
+	out := make([]PolicyPenalty, 0, len(raw))
+	for _, val := range raw {
+		var p PolicyPenalty
+		if json.Unmarshal([]byte(val), &p) == nil {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// DeletePolicyPenalty removes a party's policy penalty.
+func (r *RedisStorage) DeletePolicyPenalty(ctx context.Context, party string) (bool, error) {
+	n, err := r.client.HDel(ctx, r.policyKey(), party).Result()
+	if err != nil {
+		return false, fmt.Errorf("redis HDEL %s: %w", r.policyKey(), err)
+	}
+	return n > 0, nil
+}

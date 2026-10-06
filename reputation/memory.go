@@ -18,6 +18,7 @@ type MemoryStorage struct {
 	opStats map[string]OperatorStat
 	parties PartyPenalties
 	notes   map[string]NotificationCounts
+	policy  map[string]PolicyPenalty
 }
 
 // NewMemoryStorage creates a new in-memory storage backend.
@@ -147,4 +148,35 @@ func (m *MemoryStorage) DeleteNotificationCounts(_ context.Context, pods ...stri
 		delete(m.notes, pod)
 	}
 	return nil
+}
+
+// PutPolicyPenalty stores a party's policy penalty, replacing its previous one.
+func (m *MemoryStorage) PutPolicyPenalty(_ context.Context, p PolicyPenalty) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.policy == nil {
+		m.policy = make(map[string]PolicyPenalty)
+	}
+	m.policy[p.Party] = p
+	return nil
+}
+
+// PolicyPenalties returns every stored policy penalty.
+func (m *MemoryStorage) PolicyPenalties(_ context.Context) ([]PolicyPenalty, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]PolicyPenalty, 0, len(m.policy))
+	for _, p := range m.policy {
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// DeletePolicyPenalty removes a party's policy penalty.
+func (m *MemoryStorage) DeletePolicyPenalty(_ context.Context, party string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.policy[party]
+	delete(m.policy, party)
+	return ok, nil
 }

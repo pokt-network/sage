@@ -62,11 +62,14 @@ type StateView struct {
 	OperatorRate float64 `json:"operator_rate,omitempty"`
 	// StalePenalty is what stale_share takes off Score for this key's party
 	// (staleshare.go); Score is Additive + Penalty + min(StalePenalty,
-	// TrustPenalty), floored.
+	// TrustPenalty, PolicyPenalty), floored.
 	StalePenalty float64 `json:"stale_penalty,omitempty"`
 	// TrustPenalty is what trust_penalty charges this key's party
 	// (trust.go). Score charges the larger of it and StalePenalty, not both.
 	TrustPenalty float64 `json:"trust_penalty,omitempty"`
+	// PolicyPenalty is the policy penalty set by hand on this key's party
+	// (policy.go), charged as the largest of the party's penalties too.
+	PolicyPenalty float64 `json:"policy_penalty,omitempty"`
 }
 
 // StateLister is the optional read interface the admin API asks a

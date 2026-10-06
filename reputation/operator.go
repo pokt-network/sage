@@ -83,6 +83,14 @@ type chronicView struct {
 	// is measured on WebSocket; dup is every measured party (dupshare.go).
 	dupPen map[opID]float64
 	dup    []PartyDuplicates
+	// policyPen is the policy penalty of each party an operator set one on,
+	// charged in a service where policyOn (read at refresh) or, for a service
+	// with no key at refresh, policyGate says so; policy is every one in
+	// force (policy.go).
+	policyPen  map[string]float64
+	policyOn   map[domain.ServiceID]bool
+	policyGate func(domain.ServiceID) bool
+	policy     []PolicyPenalty
 	// opSeed is, per operator, service and RPC type, the median own score of
 	// its keys where that is below the initial score: where a key of the
 	// operator with no history starts (seed_from_operator, per service in
@@ -159,10 +167,39 @@ func (v *chronicView) websocketCharged(svc domain.ServiceID) bool {
 }
 
 // partyPenalty is what a key's party costs it in a service: the largest of
-// its stale-share, trust and (on a websocket key) repeat-share penalties.
+// its stale-share, trust, policy and (on a websocket key) repeat-share
+// penalties.
 func (v *chronicView) partyPenalty(svc domain.ServiceID, key string) float64 {
 	stale, trust := v.partyPenalties(svc, key)
-	return min(stale, trust, v.duplicatePenalty(svc, key))
+	return min(stale, trust, v.policyPenalty(svc, key), v.duplicatePenalty(svc, key))
+}
+
+// policyPenalty is the policy penalty a key's party carries in a service:
+// where the policy_penalty flag is on and, on a websocket key, where the
+// party penalties reach websocket keys.
+func (v *chronicView) policyPenalty(svc domain.ServiceID, key string) float64 {
+	if v == nil || len(v.policyPen) == 0 {
+		return 0
+	}
+	if rpcOfKey(key) == string(domain.RPCTypeWebSocket) && !v.websocketCharged(svc) {
+		return 0
+	}
+	party, ok := v.keyParty[key]
+	if !ok {
+		party = partyOfKey(key)
+	}
+	pen, ok := v.policyPen[party]
+	if !ok {
+		return 0
+	}
+	on, known := v.policyOn[svc]
+	if !known && v.policyGate != nil {
+		on = v.policyGate(svc)
+	}
+	if !on {
+		return 0
+	}
+	return pen
 }
 
 // partyOfKey is the party a reputation key belongs to.

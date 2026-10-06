@@ -113,6 +113,9 @@ failureThreshold) here.
 | `GET` | `/admin/reputation/drain/{serviceID}` | Lists the live drains for a service. |
 | `GET` | `/admin/auto-drain/events` | Lists the auto-drain engine's decisions, newest first: every drain it set and every one it would have set in shadow mode or chose not to, with the evidence (collapse picks, share, attempts, success rate, the vouched alternative). |
 | `DELETE` | `/admin/reputation/drain/{serviceID}/{domain}` | Releases every RPC-type-scoped drain on one operator for a service. |
+| `GET` | `/admin/reputation/policy` | Lists the policy penalties in force: per party, the penalty, the reason, when it was set and, if it has one, when it lapses. |
+| `PUT` | `/admin/reputation/policy/{party}` | Sets a policy penalty on a party, by hand, for conduct SAGE cannot measure: a party reselling a public RPC answers fresh and correct, and the measured party penalties (stale share, trust) never charge it. |
+| `DELETE` | `/admin/reputation/policy/{party}` | Removes a party's policy penalty; the next reputation refresh, within 30 seconds, stops charging it. |
 | `GET` | `/admin/blocked-domains` | Lists the blocked domains in force: the config base and the admin-set entries, separately, plus whether admin entries are shared across replicas. |
 | `PUT` | `/admin/blocked-domains/{domain}` | Bans a domain on every service, for every RPC type or only the listed ones, without a redeploy. |
 | `DELETE` | `/admin/blocked-domains/{domain}` | Lifts an admin-set ban. |
@@ -344,6 +347,31 @@ Every key that failed only to propagate is still counted as released and its
 error accumulated into one propagation_error string, so the response
 describes the whole operator rather than stopping at the first key Redis
 could not be told about.
+
+### `GET /admin/reputation/policy`
+
+Lists the policy penalties in force: per party,
+the penalty, the reason, when it was set and, if it has one, when it lapses.
+
+### `PUT /admin/reputation/policy/{party}`
+
+Sets a policy penalty on a party, by hand, for
+conduct SAGE cannot measure: a party reselling a public RPC answers fresh
+and correct, and the measured party penalties (stale share, trust) never
+charge it. party is an owner address ("pokt1…"), which reaches every domain
+dedicated to that owner, or an operator domain. Body: {"penalty": -30,
+"reason": "...", "until": "2026-11-01T00:00:00Z"}; penalty between -100 and
+0 exclusive, reason required, until optional (none: until deleted). It
+replaces the party's previous one, is shared through Redis with every
+replica and survives restarts, and is charged from the next reputation
+refresh, within 30 seconds, on services with policy_penalty on: as the
+largest of the party's penalties, never below the selection floor.
+
+### `DELETE /admin/reputation/policy/{party}`
+
+Removes a party's policy penalty; the next
+reputation refresh, within 30 seconds, stops charging it. 404 when the
+party has none.
 
 ### `GET /admin/blocked-domains`
 
