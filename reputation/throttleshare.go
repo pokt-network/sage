@@ -6,25 +6,13 @@ import (
 	"github.com/pokt-network/sage/domain"
 )
 
-// A party that throttles — answers HTTP 429, or its node's own rate limit —
-// is charged for it on every key it has in the service except WebSocket ones
-// (featureflag.FlagThrottleShare), the way dupshare charges repeats.
-//
-// A throttled relay is graded minor, which the chronic rate does not weigh and
-// the next success erases: on mainnet (2026-10-06) keys sending back 3-20% of
-// their first attempts throttled held 90-100, and the largest throttler a
-// fifth of its attempts on one chain. A throttle is honest, and retry rescues
-// the request, but it says the party lacks the capacity its share of the
-// traffic assumes; so the evidence is kept per (service, party) as decayed
-// counts of first attempts and the throttled ones among them, and priced
-// relative to the service's cleanest party: a chain whose public limits
-// throttle everyone charges no one.
-//
-// Only the supplier's backend throttling counts. The relay miner's own
-// refusals (upstream_429: its validation queue or its store saturated, with
-// Retry-After: 1) are its admission control for about a second, and the
-// session cap (over_serviced) is the protocol working; neither is scored as
-// throttling here.
+// A party that throttles relays — an HTTP 429 from its backend or its relay
+// miner, or a node's own rate-limit answer — is charged for the share of its
+// first attempts it throttled, on every key it has in the service except
+// WebSocket ones (featureflag.FlagThrottleShare), priced like dupshare:
+// relative to the service's cleanest party. A throttled relay is graded minor,
+// which the chronic rate does not weigh, so without this a throttling party
+// keeps its rank.
 const (
 	// throttleShareHalfLife ages the counts by the clock, as dupShareHalfLife.
 	throttleShareHalfLife = 30 * time.Minute
@@ -35,14 +23,14 @@ const (
 	throttleSharePenalty = -40.0
 	// DefaultThrottleShareFloor is the excess over the cleanest party charged
 	// nothing, and DefaultThrottleShareFull the excess charged the whole
-	// penalty: the bases of the reputation.throttle_share_* knobs. A steady
-	// 10% excess costs about 25 points, below tier 1.
+	// penalty: the bases of the reputation.throttle_share_* knobs.
 	DefaultThrottleShareFloor = 0.02
 	DefaultThrottleShareFull  = 0.15
-	// reasonHTTP429 and reasonRateLimited are the heuristic's reasons for a
-	// backend's HTTP 429 and a node's own rate-limit answer
-	// (heuristic.Analyze, heuristic.ReasonRateLimited).
+	// reasonHTTP429, reasonUpstream429 and reasonRateLimited are the
+	// heuristic's reasons for an HTTP 429 in the relay's answer, one from the
+	// relay miner itself, and a node's own rate-limit answer.
 	reasonHTTP429     = "http_429"
+	reasonUpstream429 = "upstream_429"
 	reasonRateLimited = "rate_limited"
 )
 
@@ -79,7 +67,8 @@ func (s *serviceImpl) recordThrottle(serviceID domain.ServiceID, endpoint domain
 		return
 	}
 	var throttled float64
-	if signal.Reason == reasonHTTP429 || signal.Reason == reasonRateLimited {
+	switch signal.Reason {
+	case reasonHTTP429, reasonUpstream429, reasonRateLimited:
 		throttled = 1
 	}
 	s.throttles.recordN(opID{svc: serviceID, op: party}, 1, throttled, now)

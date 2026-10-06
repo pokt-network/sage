@@ -164,7 +164,7 @@ var Knobs = []Knob{
 	{
 		Name:        KnobThrottleShareFloor,
 		Kind:        KindFloat,
-		Description: "How far a party's throttle share (first attempts its backend answered HTTP 429 or a rate-limit error) may sit above the service's cleanest party before throttle_share charges every non-WebSocket key it has there (sage_party_throttle_penalty).",
+		Description: "How far a party's throttle share (first attempts answered with an HTTP 429 or a rate-limit error) may sit above the service's cleanest party before throttle_share charges every non-WebSocket key it has there (sage_party_throttle_penalty).",
 		Min:         0,
 		Max:         1,
 		Unit:        "share",

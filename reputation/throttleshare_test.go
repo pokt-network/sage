@@ -67,9 +67,9 @@ func TestThrottleShare_ChargesTheExcessOnHTTPKeys(t *testing.T) {
 	}
 }
 
-// Only the backend's throttling on a fair sample counts: a node's rate-limit
-// answer does, while the relay miner's own admission refusal, a retry or hedge
-// arm, a probe and a WebSocket attempt do not.
+// Throttling counts on a fair sample: an HTTP 429 from the backend or the
+// relay miner and a node's rate-limit answer do, while a retry or hedge arm, a
+// probe and a WebSocket attempt do not.
 func TestThrottleShare_CountsBackendThrottlingOnFirstAttempts(t *testing.T) {
 	s := NewService(NewMemoryStorage(), nil, ServiceConfig{})
 	ep := domain.EndpointAddr("pokt1a-https://r001.busy.example")
@@ -85,7 +85,7 @@ func TestThrottleShare_CountsBackendThrottlingOnFirstAttempts(t *testing.T) {
 	}{
 		{"backend 429", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Reason: reasonHTTP429}, 1, 1},
 		{"node rate limit", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Reason: reasonRateLimited}, 1, 1},
-		{"miner admission refusal", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Reason: "upstream_429"}, 1, 0},
+		{"relay miner 429", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Reason: reasonUpstream429}, 1, 1},
 		{"success", domain.RPCTypeREST, Signal{Type: SignalSuccess, Reason: "relay_ok"}, 1, 0},
 		{"retry or hedge arm", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Reason: reasonHTTP429, Leftover: true}, 0, 0},
 		{"probe", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Reason: reasonHTTP429, Probe: true}, 0, 0},

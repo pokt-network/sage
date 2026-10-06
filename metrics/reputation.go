@@ -416,7 +416,7 @@ func NewThrottleShareCollector(each func(yield func(serviceID domain.ServiceID, 
 		parties: cappedLabel(maxOperatorLabels),
 		shareDesc: prometheus.NewDesc(
 			"sage_party_throttle_share",
-			"Share of a party's first client attempts (not WebSocket) its backend throttled — HTTP 429 or a node's own rate-limit answer — by service and party, over counts halving every 30 minutes, on this replica. Only parties with at least 500 attempts' evidence. The relay miner's own admission refusals and the session cap are not counted. Measured whatever the flags say.",
+			"Share of a party's first client attempts (not WebSocket) that were throttled — an HTTP 429 or a node's own rate-limit answer — by service and party, over counts halving every 30 minutes, on this replica. Only parties with at least 500 attempts' evidence. Measured whatever the flags say.",
 			[]string{"service_id", "party"}, nil,
 		),
 		penDesc: prometheus.NewDesc(
