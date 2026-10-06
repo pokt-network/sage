@@ -180,6 +180,12 @@ type serviceImpl struct {
 	dups      *opTracker
 	// policyGate turns on charging policy penalties per service (policy.go).
 	policyGate atomic.Pointer[func(domain.ServiceID) bool]
+	// throttleGate turns on the throttle-share penalty per service, and
+	// throttleLimits gives its floor and full excess; throttles is the
+	// per-party evidence it prices (throttleshare.go). Not persisted.
+	throttleGate   atomic.Pointer[func(domain.ServiceID) bool]
+	throttleLimits atomic.Pointer[func(domain.ServiceID) (float64, float64)]
+	throttles      *opTracker
 	// instanceID names this pod in the shared notification counts
 	// (fleetDuplicates); set at wire time, before the refresh loop starts.
 	instanceID string
@@ -241,6 +247,8 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	s.refusals.dirty = nil
 	s.dups = newOpTracker(dupShareHalfLife)
 	s.dups.dirty = nil
+	s.throttles = newOpTracker(throttleShareHalfLife)
+	s.throttles.dirty = nil
 	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, nil)))
 	selCfg := cfg.Selector
 	if selCfg == (SelectorConfig{}) {
@@ -606,7 +614,7 @@ func (s *serviceImpl) refreshBaselines() {
 	}
 	// The WebSocket repeat-share term, charged to every websocket key of a
 	// priced party.
-	var prevDup []PartyDuplicates
+	var prevDup []PartyShare
 	if old := s.chronic.Load(); old != nil {
 		prevDup = old.dup
 	}
@@ -614,11 +622,28 @@ func (s *serviceImpl) refreshBaselines() {
 	if lp := s.dupLimits.Load(); lp != nil {
 		dupLimits = *lp
 	}
-	v.dup = partyDuplicates(s.fleetDuplicates(now), gateOf(&s.dupGate), dupLimits, prevDup, now)
+	v.dup = priceShares(s.fleetDuplicates(now), dupRule, gateOf(&s.dupGate), dupLimits, prevDup, now)
 	v.dupPen = map[opID]float64{}
 	for _, p := range v.dup {
 		if p.Penalty < 0 {
 			v.dupPen[opID{svc: p.ServiceID, op: p.Party}] = p.Penalty
+		}
+	}
+	// The throttle-share term, charged to every key but websocket ones of a
+	// priced party.
+	var prevThrottle []PartyShare
+	if old := s.chronic.Load(); old != nil {
+		prevThrottle = old.throttle
+	}
+	var throttleLimits func(domain.ServiceID) (float64, float64)
+	if lp := s.throttleLimits.Load(); lp != nil {
+		throttleLimits = *lp
+	}
+	v.throttle = priceShares(s.throttles.snapshot(now), throttleRule, gateOf(&s.throttleGate), throttleLimits, prevThrottle, now)
+	v.throttlePen = map[opID]float64{}
+	for _, p := range v.throttle {
+		if p.Penalty < 0 {
+			v.throttlePen[opID{svc: p.ServiceID, op: p.Party}] = p.Penalty
 		}
 	}
 	// Policy penalties, set by hand and shared through the store.
@@ -634,7 +659,7 @@ func (s *serviceImpl) refreshBaselines() {
 		}
 	}
 	// Party lookups only matter while some party is charged.
-	if len(v.stalePen)+len(v.trustPen)+len(v.dupPen)+len(v.policyPen) > 0 {
+	if len(v.stalePen)+len(v.trustPen)+len(v.dupPen)+len(v.policyPen)+len(v.throttlePen) > 0 {
 		// The flag per service is read here, once a refresh, for every
 		// service with a key; a service with none yet falls back to the
 		// gate on lookup (the penalty reaches a party's first key there).
@@ -1028,6 +1053,8 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 			s.ops.record(opID{serviceID, op, string(rpcType)}, FailureWeight(signal.Type), ts)
 		}
 	}
+	// Throttling, counted toward the party's share (throttleshare.go).
+	s.recordThrottle(serviceID, endpoint, rpcType, signal, ts)
 	// A refusal worded as a prune is trust evidence against the party
 	// (trust.go), counted outside the shard lock like the operator counters.
 	if signal.Reason == reasonRefusedRecent && !signal.Probe {

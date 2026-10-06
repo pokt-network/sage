@@ -480,6 +480,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			yield(p.ServiceID, p.Party, p.Share, p.Penalty, p.Peer())
 		}
 	}))
+	prometheus.MustRegister(metrics.NewThrottleShareCollector(func(yield func(domain.ServiceID, string, float64, float64)) {
+		for _, p := range repSvc.PartyThrottleShares() {
+			yield(p.ServiceID, p.Party, p.Share, p.Penalty)
+		}
+	}))
 	prometheus.MustRegister(metrics.NewDuplicateShareCollector(func(yield func(domain.ServiceID, string, float64, float64)) {
 		for _, p := range repSvc.PartyDuplicateShares() {
 			yield(p.ServiceID, p.Party, p.Share, p.Penalty)
@@ -762,6 +767,14 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// is in force" rather than only "what has been overridden". Display only —
 	// every reader still passes its own base when resolving.
 	registerTuningBases(tuningStore, cfg)
+	// A party's throttle share, priced on the reputation refresh with the
+	// knobs above (reputation/throttleshare.go).
+	repSvc.SetThrottleShare(func(serviceID domain.ServiceID) bool {
+		return flags.IsEnabled(context.Background(), featureflag.FlagThrottleShare, serviceID)
+	}, func(serviceID domain.ServiceID) (float64, float64) {
+		return tuningStore.Float(tuning.KnobThrottleShareFloor, serviceID, reputation.DefaultThrottleShareFloor),
+			tuningStore.Float(tuning.KnobThrottleShareFull, serviceID, reputation.DefaultThrottleShareFull)
+	})
 	// Readers that keep their own state re-pull on every change (a local
 	// PUT, or a reload from the persistence store). Registered before Start
 	// so the first reload from the store reaches them too.
@@ -1353,6 +1366,8 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobWSDuplicateMajorShare, strconv.FormatFloat(shannon.DuplicateMajorShare, 'f', -1, 64))
 	store.SetBase(tuning.KnobWSDuplicateShareFloor, strconv.FormatFloat(reputation.DefaultDuplicateShareFloor, 'f', -1, 64))
 	store.SetBase(tuning.KnobWSDuplicateShareFull, strconv.FormatFloat(reputation.DefaultDuplicateShareFull, 'f', -1, 64))
+	store.SetBase(tuning.KnobThrottleShareFloor, strconv.FormatFloat(reputation.DefaultThrottleShareFloor, 'f', -1, 64))
+	store.SetBase(tuning.KnobThrottleShareFull, strconv.FormatFloat(reputation.DefaultThrottleShareFull, 'f', -1, 64))
 }
 
 // redisStartupPing bounds the startup check. It only decides what is logged:

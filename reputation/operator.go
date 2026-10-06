@@ -82,7 +82,12 @@ type chronicView struct {
 	// party), charged to websocket keys only and whatever wsOn says, since it
 	// is measured on WebSocket; dup is every measured party (dupshare.go).
 	dupPen map[opID]float64
-	dup    []PartyDuplicates
+	dup    []PartyShare
+	// throttlePen is the throttle-share penalty of each priced (service,
+	// party), charged to every key but websocket ones; throttle is every
+	// measured party (throttleshare.go).
+	throttlePen map[opID]float64
+	throttle    []PartyShare
 	// policyPen is the policy penalty of each party an operator set one on,
 	// charged in a service where policyOn (read at refresh) or, for a service
 	// with no key at refresh, policyGate says so; policy is every one in
@@ -167,11 +172,11 @@ func (v *chronicView) websocketCharged(svc domain.ServiceID) bool {
 }
 
 // partyPenalty is what a key's party costs it in a service: the largest of
-// its stale-share, trust, policy and (on a websocket key) repeat-share
-// penalties.
+// its stale-share, trust, policy, throttle-share and (on a websocket key)
+// repeat-share penalties.
 func (v *chronicView) partyPenalty(svc domain.ServiceID, key string) float64 {
 	stale, trust := v.partyPenalties(svc, key)
-	return min(stale, trust, v.policyPenalty(svc, key), v.duplicatePenalty(svc, key))
+	return min(stale, trust, v.policyPenalty(svc, key), v.throttlePenalty(svc, key), v.duplicatePenalty(svc, key))
 }
 
 // policyPenalty is the policy penalty a key's party carries in a service:

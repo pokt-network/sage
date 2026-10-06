@@ -149,10 +149,10 @@ func (s *serviceImpl) SetDuplicateShare(gate func(domain.ServiceID) bool, limits
 	s.dupLimits.Store(&limits)
 }
 
-// PartyDuplicates is one party's WebSocket repeat share in a service and the
-// penalty it is charged, as of the last refresh. Penalty is 0 where the flag
-// is off.
-type PartyDuplicates struct {
+// PartyShare is one party's share of a kind of bad answer in a service (its
+// WebSocket repeats, its throttled relays) and the penalty it is charged, as
+// of the last refresh. Penalty is 0 where the kind's flag is off.
+type PartyShare struct {
 	ServiceID domain.ServiceID
 	Party     string
 	Share     float64
@@ -161,28 +161,49 @@ type PartyDuplicates struct {
 	pricedAt time.Time
 }
 
-// PartyDuplicateShares reports every measured party, for the metrics
-// collector.
-func (s *serviceImpl) PartyDuplicateShares() []PartyDuplicates {
+// PartyDuplicateShares reports every party measured for WebSocket repeats,
+// for the metrics collector.
+func (s *serviceImpl) PartyDuplicateShares() []PartyShare {
 	if v := s.chronic.Load(); v != nil {
 		return v.dup
 	}
 	return nil
 }
 
-// partyDuplicates measures every party with enough evidence and prices it
-// against its service's cleanest. A service with one measured party charges
-// nothing. A party priced in prev that is no longer measured keeps its penalty
-// for dupShareHold from when it was last priced (flag permitting).
-func partyDuplicates(stats map[opID]OperatorStat, on func(domain.ServiceID) bool, limits func(domain.ServiceID) (float64, float64), prev []PartyDuplicates, now time.Time) []PartyDuplicates {
-	bySvc := map[domain.ServiceID][]PartyDuplicates{}
+// shareRule is how one kind of party share is priced.
+type shareRule struct {
+	// minEvidence is the decayed count a party needs to be measured, or to
+	// set the service's baseline.
+	minEvidence float64
+	// most is the whole penalty, charged from the full excess on.
+	most float64
+	// hold keeps a priced party's penalty once too little evidence remains
+	// to measure it: the penalty moves its traffic away, which starves the
+	// evidence (staleShareHold).
+	hold time.Duration
+	// floor and full are the excess charged nothing and the excess charged
+	// most, where the rule's limits give none.
+	floor, full float64
+}
+
+// dupRule prices WebSocket repeats.
+var dupRule = shareRule{minEvidence: dupShareMinNotes, most: dupSharePenalty, hold: dupShareHold,
+	floor: DefaultDuplicateShareFloor, full: DefaultDuplicateShareFull}
+
+// priceShares measures every party with enough evidence (Attempts the
+// denominator, Failures the bad ones) and prices it against its service's
+// cleanest. A service with one measured party charges nothing. A party priced
+// in prev that is no longer measured keeps its penalty for the rule's hold
+// from when it was last priced (flag permitting).
+func priceShares(stats map[opID]OperatorStat, rule shareRule, on func(domain.ServiceID) bool, limits func(domain.ServiceID) (float64, float64), prev []PartyShare, now time.Time) []PartyShare {
+	bySvc := map[domain.ServiceID][]PartyShare{}
 	for id, st := range stats {
-		if st.Attempts < dupShareMinNotes {
+		if st.Attempts < rule.minEvidence {
 			continue
 		}
-		bySvc[id.svc] = append(bySvc[id.svc], PartyDuplicates{ServiceID: id.svc, Party: id.op, Share: st.Failures / st.Attempts})
+		bySvc[id.svc] = append(bySvc[id.svc], PartyShare{ServiceID: id.svc, Party: id.op, Share: st.Failures / st.Attempts})
 	}
-	var out []PartyDuplicates
+	var out []PartyShare
 	measured := map[opID]bool{}
 	for svc, parties := range bySvc {
 		best := 1.0
@@ -190,13 +211,13 @@ func partyDuplicates(stats map[opID]OperatorStat, on func(domain.ServiceID) bool
 			best = min(best, p.Share)
 		}
 		charged := len(parties) >= 2 && on != nil && on(svc)
-		floor, full := DefaultDuplicateShareFloor, DefaultDuplicateShareFull
+		floor, full := rule.floor, rule.full
 		if charged && limits != nil {
 			floor, full = limits(svc)
 		}
 		for _, p := range parties {
 			if charged {
-				p.Penalty = excessPenalty(p.Share-best, floor, full, dupSharePenalty)
+				p.Penalty = excessPenalty(p.Share-best, floor, full, rule.most)
 				p.pricedAt = now
 			}
 			measured[opID{svc: svc, op: p.Party}] = true
@@ -205,7 +226,7 @@ func partyDuplicates(stats map[opID]OperatorStat, on func(domain.ServiceID) bool
 	}
 	for _, p := range prev {
 		if p.Penalty < 0 && !measured[opID{svc: p.ServiceID, op: p.Party}] &&
-			on != nil && on(p.ServiceID) && now.Sub(p.pricedAt) < dupShareHold {
+			on != nil && on(p.ServiceID) && now.Sub(p.pricedAt) < rule.hold {
 			out = append(out, p)
 		}
 	}

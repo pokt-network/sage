@@ -290,6 +290,17 @@ const (
 	// party_penalties_websocket, which is about penalties measured on HTTP.
 	// Off by default.
 	FlagWSDuplicateShare = "ws_duplicate_share"
+	// FlagThrottleShare charges a party for the share of its first client
+	// attempts its backend throttled (HTTP 429 or a node's own rate-limit
+	// answer), relative to the service's cleanest party, on every key it has
+	// there but WebSocket ones (sage_party_throttle_share): 0 within
+	// reputation.throttle_share_floor, linear to -40 at
+	// reputation.throttle_share_full. A throttled relay is graded minor, which
+	// the chronic rate does not weigh: on mainnet (2026-10-06) keys throttling
+	// 3-20% of their attempts held 90-100. The relay miner's own admission
+	// refusals and the session cap are not counted. Measured whatever this
+	// says. Off by default.
+	FlagThrottleShare = "throttle_share"
 	// FlagSeedFromOperator starts a reputation key with no history at its
 	// operator's standing (the median own score of the operator's other keys
 	// on the same service and RPC type) instead of a clean 100, when that is
@@ -378,6 +389,7 @@ var DefaultFlags = map[string]bool{
 	FlagWSDropDuplicates:        true,
 	FlagHeadAnswersHeight:       true,
 	FlagWSDuplicateShare:        false,
+	FlagThrottleShare:           false,
 	FlagWSDuplicatePenalty:      true,
 	FlagSeedFromOperator:        false,
 	FlagRelativeChronic:         true,

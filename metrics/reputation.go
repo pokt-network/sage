@@ -378,20 +378,21 @@ func (c *StaleShareCollector) Collect(ch chan<- prometheus.Metric) {
 	})
 }
 
-// DuplicateShareCollector exposes each party's WebSocket repeat share and the
-// penalty it is charged (reputation.PartyDuplicates), as the last refresh left
-// them.
-type DuplicateShareCollector struct {
+// PartyShareCollector exposes each party's share of a kind of bad answer and
+// the penalty it is charged (reputation.PartyShare), as the last refresh left
+// them: WebSocket repeats (NewDuplicateShareCollector) or throttled relays
+// (NewThrottleShareCollector).
+type PartyShareCollector struct {
 	each      func(yield func(serviceID domain.ServiceID, party string, share, penalty float64))
 	parties   *labelPolicy
 	shareDesc *prometheus.Desc
 	penDesc   *prometheus.Desc
 }
 
-// NewDuplicateShareCollector builds the collector over each, which yields every
-// measured party.
-func NewDuplicateShareCollector(each func(yield func(serviceID domain.ServiceID, party string, share, penalty float64))) *DuplicateShareCollector {
-	return &DuplicateShareCollector{
+// NewDuplicateShareCollector builds the WebSocket repeat-share collector over
+// each, which yields every measured party.
+func NewDuplicateShareCollector(each func(yield func(serviceID domain.ServiceID, party string, share, penalty float64))) *PartyShareCollector {
+	return &PartyShareCollector{
 		each:    each,
 		parties: cappedLabel(maxOperatorLabels),
 		shareDesc: prometheus.NewDesc(
@@ -407,14 +408,33 @@ func NewDuplicateShareCollector(each func(yield func(serviceID domain.ServiceID,
 	}
 }
 
+// NewThrottleShareCollector builds the throttle-share collector over each,
+// which yields every measured party.
+func NewThrottleShareCollector(each func(yield func(serviceID domain.ServiceID, party string, share, penalty float64))) *PartyShareCollector {
+	return &PartyShareCollector{
+		each:    each,
+		parties: cappedLabel(maxOperatorLabels),
+		shareDesc: prometheus.NewDesc(
+			"sage_party_throttle_share",
+			"Share of a party's first client attempts (not WebSocket) its backend throttled — HTTP 429 or a node's own rate-limit answer — by service and party, over counts halving every 30 minutes, on this replica. Only parties with at least 500 attempts' evidence. The relay miner's own admission refusals and the session cap are not counted. Measured whatever the flags say.",
+			[]string{"service_id", "party"}, nil,
+		),
+		penDesc: prometheus.NewDesc(
+			"sage_party_throttle_penalty",
+			"Points the throttle_share flag takes off every non-WebSocket reputation key of a party: 0 while its throttle share is within reputation.throttle_share_floor of the service's cleanest party, then linear to -40 at reputation.throttle_share_full. 0 where the flag is off or the service has one measured party.",
+			[]string{"service_id", "party"}, nil,
+		),
+	}
+}
+
 // Describe implements prometheus.Collector.
-func (c *DuplicateShareCollector) Describe(ch chan<- *prometheus.Desc) {
+func (c *PartyShareCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.shareDesc
 	ch <- c.penDesc
 }
 
 // Collect implements prometheus.Collector.
-func (c *DuplicateShareCollector) Collect(ch chan<- prometheus.Metric) {
+func (c *PartyShareCollector) Collect(ch chan<- prometheus.Metric) {
 	c.each(func(serviceID domain.ServiceID, party string, share, penalty float64) {
 		sid, p := sanitizeLabel(string(serviceID)), c.parties.value(party)
 		if p == otherLabel {

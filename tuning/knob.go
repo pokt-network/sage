@@ -102,6 +102,12 @@ const (
 	// KnobWSDuplicateShareFull is the excess over the cleanest party charged
 	// the whole ws_duplicate_share penalty.
 	KnobWSDuplicateShareFull = "websocket.duplicate_share_full"
+	// KnobThrottleShareFloor is how far above the service's cleanest party a
+	// party's throttle share may sit before throttle_share charges it.
+	KnobThrottleShareFloor = "reputation.throttle_share_floor"
+	// KnobThrottleShareFull is the excess over the cleanest party charged the
+	// whole throttle_share penalty.
+	KnobThrottleShareFull = "reputation.throttle_share_full"
 )
 
 // Knob describes one overridable setting.
@@ -151,6 +157,22 @@ var Knobs = []Knob{
 		Name:        KnobWSDuplicateShareFull,
 		Kind:        KindFloat,
 		Description: "The repeat-share excess over the service's cleanest party at which ws_duplicate_share charges its whole -40; linear from websocket.duplicate_share_floor.",
+		Min:         0,
+		Max:         1,
+		Unit:        "share",
+	},
+	{
+		Name:        KnobThrottleShareFloor,
+		Kind:        KindFloat,
+		Description: "How far a party's throttle share (first attempts its backend answered HTTP 429 or a rate-limit error) may sit above the service's cleanest party before throttle_share charges every non-WebSocket key it has there (sage_party_throttle_penalty).",
+		Min:         0,
+		Max:         1,
+		Unit:        "share",
+	},
+	{
+		Name:        KnobThrottleShareFull,
+		Kind:        KindFloat,
+		Description: "The throttle-share excess over the service's cleanest party at which throttle_share charges its whole -40; linear from reputation.throttle_share_floor.",
 		Min:         0,
 		Max:         1,
 		Unit:        "share",
