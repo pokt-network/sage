@@ -322,6 +322,7 @@ func (h *harness) firsts(ep domain.EndpointAddr, kind string, n, chain int) {
 func TestEngine_ChainAnswerOutlier(t *testing.T) {
 	for _, act := range []bool{false, true} {
 		h := newHarness(t, fakeVouch{opb: true}, act)
+		_ = h.flags.Set(context.Background(), featureflag.FlagAutoDrainChainAnswers, true)
 		h.firsts(opa, "first", 60, 60)
 		h.firsts(opb, "first", 100, 4)
 		h.clients(200, 0)
@@ -343,6 +344,24 @@ func TestEngine_ChainAnswerOutlier(t *testing.T) {
 				t.Fatalf("drains = %+v, want opa drained naming the chain errors", active)
 			}
 		}
+	}
+}
+
+// With auto_drain live, a chain_answers candidate stays a shadow decision
+// until its own flag is on; the other triggers act.
+func TestEngine_ChainAnswersActOnlyWithTheirFlag(t *testing.T) {
+	h := newHarness(t, fakeVouch{opb: true}, true)
+	h.firsts(opa, "first", 60, 60)
+	h.firsts(opb, "first", 100, 4)
+	h.clients(200, 0)
+	h.e.Evaluate(context.Background())
+
+	evs, _ := h.log.Recent(context.Background(), "", 10)
+	if len(evs) != 1 || evs[0].Trigger != TriggerChainAnswers || evs[0].Outcome != OutcomeShadow {
+		t.Fatalf("events = %+v, want one chain_answers shadow decision", evs)
+	}
+	if active := h.drains.Active(context.Background(), sei); len(active) != 0 {
+		t.Fatalf("drained %+v with auto_drain_chain_answers off", active)
 	}
 }
 

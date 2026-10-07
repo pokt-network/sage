@@ -82,6 +82,10 @@ const (
 	// its decisions without setting a drain, even where auto_drain is on. On by
 	// default, so every instance collects shadow decisions from day one.
 	FlagAutoDrainShadow = "auto_drain_shadow"
+	// FlagAutoDrainChainAnswers lets auto_drain act on a chain_answers
+	// candidate. Off, those stay shadow decisions even where auto_drain is on
+	// and auto_drain_shadow off. Off by default.
+	FlagAutoDrainChainAnswers = "auto_drain_chain_answers"
 	// FlagPenalize408 lets a supplier's HTTP 408 cost it a major error. On by
 	// default since 2026-09-15; the same change was reverted on 2026-09-02
 	// for concentrating traffic, so this is its live undo, globally or per
@@ -365,6 +369,7 @@ var DefaultFlags = map[string]bool{
 	FlagPeerProbeSkip:           true,
 	FlagAutoDrain:               false,
 	FlagAutoDrainShadow:         true,
+	FlagAutoDrainChainAnswers:   false,
 	FlagPenalize408:             true,
 	FlagRESTBodiesAsAnswers:     false,
 	FlagCircuitBreakUpstream:    false,

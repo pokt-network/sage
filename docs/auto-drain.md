@@ -264,6 +264,7 @@ held for every case in §1. Aggregating signals through Redis is not proposed.
 |---|---|---|
 | Master switch | flag `auto_drain` in `featureflag.DefaultFlags` (`featureflag/defaults.go:82`) | **off** |
 | Shadow | flag `auto_drain_shadow`: evaluate, log, count, never `Set` | **on** |
+| Chain answers | flag `auto_drain_chain_answers`: a `chain_answers` candidate acts only with it on; off, it stays a shadow decision | **off** |
 | Per-service opt-out | the existing per-service flag override on `auto_drain`; nothing new | none |
 | Cap | at most 1 live auto drain per (service, rpc_type), and 5 across the fleet | 1 / 5 |
 | Rate limit | at most 1 new auto drain per service per 30 min, and 3 per hour fleet-wide | 30 min / 3 h⁻¹ |

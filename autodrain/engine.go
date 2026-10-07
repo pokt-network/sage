@@ -659,9 +659,13 @@ func (e *Engine) Evaluate(ctx context.Context) {
 		if !act && !shadow {
 			continue
 		}
+		live := act && !shadow
+		if c.event.Trigger == TriggerChainAnswers && !e.d.Flags.IsEnabled(ctx, featureflag.FlagAutoDrainChainAnswers, svc) {
+			live = false
+		}
 		ev := c.event
 		ev.At = now
-		ev.Outcome = e.decide(ctx, c.key, now, act && !shadow, &ev)
+		ev.Outcome = e.decide(ctx, c.key, now, live, &ev)
 		if ev.Outcome != "" {
 			e.emit(ctx, c.key, ev)
 		}
