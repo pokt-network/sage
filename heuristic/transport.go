@@ -104,16 +104,7 @@ func AnalyzeTransportError(err error, requestCtxErr error) AnalysisResult {
 	}
 
 	if isTimeout(err) || errors.Is(requestCtxErr, context.DeadlineExceeded) {
-		return AnalysisResult{
-			ShouldRetry:     true,
-			ShouldPenalize:  true,
-			PenaltySeverity: SeverityMajor,
-			Attribution:     AttrSupplier,
-			Confidence:      0.85,
-			Reason:          "transport_timeout",
-			Details:         "endpoint accepted the connection and did not answer in time",
-			MethodBlocking:  true,
-		}
+		return timedOut("endpoint accepted the connection and did not answer in time")
 	}
 
 	// The relay miner's HTTP layer answered with a status instead of a
@@ -316,6 +307,27 @@ var minerBodyLimitCodes = map[string]map[uint32]bool{
 	"relayer_proxy": {12: true, 13: true},
 }
 
+// minerTimeoutCodes are relay miner reports that its backend did not answer
+// in time (poktroll relayer_proxy 10).
+var minerTimeoutCodes = map[string]map[uint32]bool{
+	"relayer_proxy": {10: true},
+}
+
+// timedOut is the verdict for a host that took the relay and did not answer
+// in time, whether the gateway's deadline or the relay miner's said so.
+func timedOut(details string) AnalysisResult {
+	return AnalysisResult{
+		ShouldRetry:     true,
+		ShouldPenalize:  true,
+		PenaltySeverity: SeverityMajor,
+		Attribution:     AttrSupplier,
+		Confidence:      0.85,
+		Reason:          "transport_timeout",
+		Details:         details,
+		MethodBlocking:  true,
+	}
+}
+
 // minerSessionRejected is the verdict for a miner refusing the session the
 // gateway signed for: retried on another supplier, scored nothing.
 func minerSessionRejected(details string) AnalysisResult {
@@ -345,9 +357,10 @@ func minerFault(details string) AnalysisResult {
 // analyzeMinerError grades a relay miner's own unsigned refusal. Every one is
 // retried elsewhere. Over-servicing (relayer_proxy 7, or its wording) is
 // protocol-correct and scored nothing; a session the miner will not serve is
-// the gateway's choice of session, also scored nothing; a body limit is
-// scored minor and blocks the method on the host; anything else is the
-// supplier's layer failing, minor like its 5xx (upstream_5xx). That includes
+// the gateway's choice of session, also scored nothing; a backend timeout is
+// a timeout (timedOut); a body limit is scored minor and blocks the method on
+// the host; anything else is the supplier's layer failing, minor like its 5xx
+// (upstream_5xx). That includes
 // relayer_proxy 14: SAGE sends every supplier the same bytes, so one that
 // cannot unmarshal them has a path that mangles the body, and the HA miner's
 // report of the same failure (a 400) is scored too.
@@ -357,6 +370,9 @@ func analyzeMinerError(m *domain.MinerError) AnalysisResult {
 	}
 	if minerSessionCodes[m.Codespace][m.Code] {
 		return minerSessionRejected(m.Error())
+	}
+	if minerTimeoutCodes[m.Codespace][m.Code] {
+		return timedOut(m.Error())
 	}
 	if minerBodyLimitCodes[m.Codespace][m.Code] {
 		v := minerFault(m.Error())

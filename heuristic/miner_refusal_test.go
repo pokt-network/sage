@@ -1,6 +1,7 @@
 package heuristic
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -84,5 +85,15 @@ func TestMinerRefusal_NotARefusal(t *testing.T) {
 		if v, ok := MinerRefusal(err); ok {
 			t.Errorf("%v read as a miner refusal: %s", err, v.Reason)
 		}
+	}
+}
+
+// A miner reporting that its backend timed out is graded like the gateway's
+// own timeout.
+func TestMinerRefusal_TimeoutIsATimeout(t *testing.T) {
+	own := AnalyzeTransportError(context.DeadlineExceeded, context.DeadlineExceeded)
+	got := AnalyzeTransportError(fmt.Errorf("relay: %w", minerErr("relayer_proxy", 10)), nil)
+	if got.Reason != own.Reason || got.PenaltySeverity != own.PenaltySeverity || got.MethodBlocking != own.MethodBlocking || !got.ShouldRetry {
+		t.Fatalf("miner timeout %+v, want the gateway timeout's reason, severity and method block: %+v", got, own)
 	}
 }
