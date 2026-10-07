@@ -221,10 +221,19 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 
 // UpdateBlockHeight records a new block height observation from an endpoint.
 func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) {
+	height = reportedHeight(height)
 	p.store.ObserveHeight(endpoint, func(ep *evmEndpoint) {
 		ep.BlockNumber = height
 	})
 	p.Consensus.AddObservation(endpoint, height)
+}
+
+// reportedHeight is the height to store for one an endpoint reported. The
+// store reads 0 as "no height yet", which the height filter lets through; an
+// endpoint that answered 0 is at genesis, which is a height, so it is stored
+// as 1.
+func reportedHeight(h uint64) uint64 {
+	return max(h, 1)
 }
 
 // --- Archival routing ---
@@ -318,6 +327,7 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		if err != nil {
 			return nil, fmt.Errorf("eth_blockNumber: %w", err)
 		}
+		height = reportedHeight(height)
 		p.store.ObserveHeight(endpoint, func(ep *evmEndpoint) {
 			ep.BlockNumber = height
 		})
@@ -491,32 +501,39 @@ func HeadLag(payload domain.Payload, response []byte, at time.Time, consensus *q
 		}
 		return consensus.StateLag(ts, at)
 	}
-	head := answeredHead(payload, response)
-	if head == 0 {
+	head, ok := answeredHead(payload, response)
+	if !ok {
 		return 0, false, false
 	}
 	return consensus.AnswerLag(head, at)
 }
 
 // answeredHead is the head an EVM answer names: eth_blockNumber's, or the
-// number of eth_getBlockByNumber("latest"); 0 for anything else.
-func answeredHead(payload domain.Payload, response []byte) uint64 {
-	var head uint64
+// number of eth_getBlockByNumber("latest"); ok is false for anything else.
+// A node at genesis names 0, a head like any other.
+func answeredHead(payload domain.Payload, response []byte) (uint64, bool) {
 	switch payload.Method() {
 	case "eth_blockNumber":
-		head, _ = ParseBlockNumber(response)
+		head, err := ParseBlockNumber(response)
+		return head, err == nil
 	case "eth_getBlockByNumber":
 		if gjson.GetBytes(payload.Bytes(), "params.0").String() == "latest" {
-			head, _ = parseHexUint64(gjson.GetBytes(response, "result.number").String())
+			n := gjson.GetBytes(response, "result.number")
+			if !n.Exists() {
+				return 0, false
+			}
+			head, err := parseHexUint64(n.String())
+			return head, err == nil
 		}
 	}
-	return head
+	return 0, false
 }
 
 // RecordHead implements qos.HeadRecorder: the head an answer names becomes
 // the answering endpoint's height, without a consensus observation.
 func (p *Plugin) RecordHead(endpoint domain.EndpointAddr, payload domain.Payload, response []byte) {
-	if head := answeredHead(payload, response); head > 0 {
+	if head, ok := answeredHead(payload, response); ok {
+		head = reportedHeight(head)
 		p.store.ObserveHeight(endpoint, func(ep *evmEndpoint) { ep.BlockNumber = head })
 	}
 }

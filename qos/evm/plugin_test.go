@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -1031,5 +1032,40 @@ func TestRecordHead_UpdatesTheEndpointNotTheConsensus(t *testing.T) {
 	}
 	if p.Consensus.PerceivedBlock() != perceived {
 		t.Fatalf("perceived moved from %d to %d; head answers must not feed the consensus", perceived, p.Consensus.PerceivedBlock())
+	}
+}
+
+// A node that answers block 0 is at genesis, not of unknown height: it is
+// filtered like any endpoint far behind, whether the health check or a client
+// answer said so, and its answer is measured against the head.
+func TestSelectEndpoints_GenesisNodeIsFiltered(t *testing.T) {
+	head := []byte(`{"jsonrpc":"2.0","id":1,"result":"0x0"}`)
+	num := domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`), domain.RPCTypeJSONRPC, "eth_blockNumber")
+	for name, report := range map[string]func(p *Plugin, ep domain.EndpointAddr){
+		"health check": func(p *Plugin, ep domain.EndpointAddr) {
+			if _, err := p.ExtractData(ep, num.Bytes(), head); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"client answer": func(p *Plugin, ep domain.EndpointAddr) { p.RecordHead(ep, num, head) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := newTestPlugin(5)
+			p.UpdateBlockHeight("a", 41_276_089)
+			p.UpdateBlockHeight("b", 41_276_089)
+			report(p, "genesis")
+			selected, err := p.SelectEndpoints(domain.EndpointAddrList{"a", "b", "genesis"}, []domain.Payload{num})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.Contains(selected, "genesis") {
+				t.Fatalf("selected %v: a node at block 0 passed as unknown", selected)
+			}
+		})
+	}
+	p := newTestPlugin(5)
+	p.UpdateBlockHeight("a", 1000)
+	if lag, _, ok := p.HeadLag(num, head, time.Now()); !ok || lag != 1000 {
+		t.Errorf("block 0 answer: lag %d ok %v, want 1000 true", lag, ok)
 	}
 }
