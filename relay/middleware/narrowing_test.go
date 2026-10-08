@@ -77,7 +77,7 @@ func TestSelectEndpoint_FilterNeverNarrowsIntoJunk(t *testing.T) {
 		ctx.Endpoints = domain.EndpointAddrList{good, junk}
 		ctx.Plugin = plugin
 		var chosen domain.EndpointAddr
-		mw := SelectEndpoint(&stubRepService{scores: scores}, nil, nil, newFlags())
+		mw := SelectEndpoint(&stubRepService{scores: scores}, nil)
 		if err := mw(relay.HandlerFunc(func(c *relay.Context) error { chosen = c.Endpoint; return nil })).HandleRelay(ctx); err != nil {
 			t.Fatal(err)
 		}

@@ -886,7 +886,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		return middleware.MethodBlocks(blocks, qosReg, proto, flags, repSvc, recorder)
 	})
 	mwReg.Register(relay.MWSelectEndpoint, func() relay.Middleware {
-		return middleware.SelectEndpoint(repSvc, proto, qosReg, flags)
+		return middleware.SelectEndpoint(repSvc, proto)
 	})
 	mwReg.Register(relay.MWScore, func() relay.Middleware { return middleware.Score(flags, repSvc) })
 	mwReg.Register(relay.MWDebugLog, func() relay.Middleware { return middleware.DebugLog(flags, qosReg, proto) })

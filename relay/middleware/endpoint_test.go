@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
-	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/relay/middleware"
 )
@@ -19,10 +18,8 @@ func TestSelectEndpoint_NormalSelection(t *testing.T) {
 	}
 
 	repSvc := &mockRepService{bestEndpoint: "supplier1-https://rpc1.example.com"}
-	registry := qos.NewRegistry()
-	flags := newMockFlags(nil)
 
-	mw := middleware.SelectEndpoint(repSvc, nil, registry, flags)
+	mw := middleware.SelectEndpoint(repSvc, nil)
 
 	req := newPOSTRequest("/v1", "")
 	req.Header.Set("Target-Service-Id", "eth")
@@ -56,13 +53,10 @@ func TestSelectEndpoint_WithPlugin_Filters(t *testing.T) {
 	filtered := domain.EndpointAddrList{"supplier3-https://rpc3.example.com"}
 
 	plugin := &mockPlugin{selectResult: filtered}
-	registry := qos.NewRegistry()
-	_ = registry.Register("eth", plugin)
 
 	repSvc := &mockRepService{}
-	flags := newMockFlags(nil)
 
-	mw := middleware.SelectEndpoint(repSvc, nil, registry, flags)
+	mw := middleware.SelectEndpoint(repSvc, nil)
 
 	req := newPOSTRequest("/v1", "")
 	req.Header.Set("Target-Service-Id", "eth")
@@ -92,13 +86,10 @@ func TestSelectEndpoint_DegradedFallback_PluginError(t *testing.T) {
 	}
 
 	plugin := &mockPlugin{selectErr: errors.New("no synced endpoints")}
-	registry := qos.NewRegistry()
-	_ = registry.Register("eth", plugin)
 
 	repSvc := &mockRepService{}
-	flags := newMockFlags(nil)
 
-	mw := middleware.SelectEndpoint(repSvc, nil, registry, flags)
+	mw := middleware.SelectEndpoint(repSvc, nil)
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -139,13 +130,10 @@ func TestSelectEndpoint_DegradedFallback_PluginReturnsEmpty(t *testing.T) {
 	}
 
 	plugin := &mockPlugin{selectResult: domain.EndpointAddrList{}} // empty result
-	registry := qos.NewRegistry()
-	_ = registry.Register("eth", plugin)
 
 	repSvc := &mockRepService{}
-	flags := newMockFlags(nil)
 
-	mw := middleware.SelectEndpoint(repSvc, nil, registry, flags)
+	mw := middleware.SelectEndpoint(repSvc, nil)
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -170,10 +158,8 @@ func TestSelectEndpoint_DegradedFallback_PluginReturnsEmpty(t *testing.T) {
 // retried it.
 func TestSelectEndpoint_EmptyEndpointsIsAnError(t *testing.T) {
 	repSvc := &mockRepService{}
-	registry := qos.NewRegistry()
-	flags := newMockFlags(nil)
 
-	mw := middleware.SelectEndpoint(repSvc, nil, registry, flags)
+	mw := middleware.SelectEndpoint(repSvc, nil)
 
 	req := newPOSTRequest("/v1", "")
 	ctx := newCtx(req)
@@ -217,7 +203,7 @@ func TestSelectEndpoint_ProbationPickGetsShortDeadline(t *testing.T) {
 		{good, 1.01, 0.95},
 	} {
 		repSvc := &probationRepService{mockRepService{bestEndpoint: tc.pick}, map[domain.EndpointAddr]bool{bad: true}}
-		mw := middleware.SelectEndpoint(repSvc, nil, qos.NewRegistry(), newMockFlags(nil))
+		mw := middleware.SelectEndpoint(repSvc, nil)
 
 		req := newPOSTRequest("/v1", "")
 		c := newCtx(req)

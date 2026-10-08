@@ -815,7 +815,7 @@ func TestHedge_NotSentIntoARuledOutPool(t *testing.T) {
 		ctx := baseContext()
 		ctx.RPCType = domain.RPCTypeJSONRPC
 		ctx.Endpoints = domain.EndpointAddrList{healthy, dead}
-		h := Hedge(flags, hedgeCfg(10*time.Millisecond), hedges, nil)(Metrics(rec)(SelectEndpoint(rep, nil, nil, flags)(send)))
+		h := Hedge(flags, hedgeCfg(10*time.Millisecond), hedges, nil)(Metrics(rec)(SelectEndpoint(rep, nil)(send)))
 		if err := h.HandleRelay(ctx); err != nil {
 			t.Fatal(err)
 		}

@@ -50,7 +50,7 @@ func TestArchival_EveryAttemptThatSaysStateIsGoneIsRemembered(t *testing.T) {
 	cfgFn := func(domain.ServiceID) config.RetryConfig { return config.RetryConfig{Enabled: true, MaxRetries: 4} }
 	chain := middleware.Retry(flags, cfgFn, nil, middleware.RetryOptions{Reputation: rep})(
 		middleware.Score(flags, rep)(
-			middleware.SelectEndpoint(rep, nil, reg, flags)(
+			middleware.SelectEndpoint(rep, nil)(
 				middleware.Heuristic(flags, reg, middleware.HeuristicOptions{})(send))))
 
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x00000000000000000000000000000000000000aa","0x1300000"]}`)

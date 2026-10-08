@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/pokt-network/sage/domain"
-	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/protocol"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
@@ -18,7 +17,7 @@ import (
 // relay. It applies chain-specific QoS filtering via the plugin, falls back
 // gracefully to the full endpoint list when QoS filtering produces no
 // candidates, and then delegates final selection to the reputation service.
-func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.EndpointProvider, registry *qos.Registry, flags featureflag.FlagStore) relay.Middleware {
+func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.EndpointProvider) relay.Middleware {
 	return func(next relay.Handler) relay.Handler {
 		return relay.HandlerFunc(func(ctx *relay.Context) error {
 			// Fetch available endpoints from the protocol layer if not already set.
