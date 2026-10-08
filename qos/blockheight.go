@@ -56,20 +56,20 @@ func saturatingMul(a, b uint64) uint64 {
 
 // ValidateBlockHeight validates a raw block height against the perceived block height.
 // Returns an error if the height is zero or suspiciously far ahead of perceived.
-func ValidateBlockHeight(raw uint64, perceived uint64, syncAllowance uint64) (uint64, error) {
+func ValidateBlockHeight(raw, perceived uint64) error {
 	if raw == 0 {
-		return 0, fmt.Errorf("block height is zero")
+		return fmt.Errorf("block height is zero")
 	}
 
 	// If perceived is zero (cold start), accept any non-zero height.
 	if perceived == 0 {
-		return raw, nil
+		return nil
 	}
 
 	if raw > saturatingAdd(perceived, maxBlockHeightDelta) {
-		return 0, fmt.Errorf("block height %d is %d ahead of perceived %d (max delta %d)",
+		return fmt.Errorf("block height %d is %d ahead of perceived %d (max delta %d)",
 			raw, raw-perceived, perceived, maxBlockHeightDelta)
 	}
 
-	return raw, nil
+	return nil
 }

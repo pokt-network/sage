@@ -43,9 +43,9 @@ type ChainView struct {
 	// none inside the window.
 	Newest time.Time
 	// BlockRate is how many blocks this chain produces per second, and
-	// BlockRateKnown whether that could be derived at all. See
-	// BlockConsensus.BlockRate: a stalled chain has no rate, and it is
-	// reported as unknown rather than as zero.
+	// BlockRateKnown whether that could be derived at all. See blockRate:
+	// a stalled chain has no rate, and it is reported as unknown rather than
+	// as zero.
 	BlockRate      float64
 	BlockRateKnown bool
 

@@ -27,9 +27,7 @@ const hostHeightsMax = 4096
 
 type storedEndpoint[T any] struct {
 	Data T
-	// HeightAt is when the height in Data was last observed; zero until
-	// ObserveHeight is called. Update does not move it: a session change or a
-	// chain-id check carries no new height.
+	// HeightAt is when the height in Data was last observed.
 	HeightAt time.Time
 }
 
@@ -103,18 +101,10 @@ func (s *EndpointStore[T]) Get(addr domain.EndpointAddr) (T, bool) {
 	return ep.Data, true
 }
 
-// Update applies fn to the stored data in-place. If the endpoint does not exist,
-// it is created with the zero value of T before fn is called.
-func (s *EndpointStore[T]) Update(addr domain.EndpointAddr, fn func(*T)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ep := s.endpoints[addr]
-	fn(&ep.Data)
-	s.endpoints[addr] = ep
-}
-
-// ObserveHeight is Update for a new height reading: it also records when the
-// height was observed, which HeightGetter projects from.
+// ObserveHeight applies fn to the stored data in place for a new height
+// reading, creating the endpoint with the zero value of T first if it does not
+// exist, and records when the height was observed, which HeightGetter projects
+// from.
 func (s *EndpointStore[T]) ObserveHeight(addr domain.EndpointAddr, fn func(*T)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

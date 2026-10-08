@@ -2,9 +2,8 @@ package qos
 
 import "github.com/pokt-network/sage/domain"
 
-// FilterFunc returns an error if an endpoint should be excluded.
-// The error describes the reason for exclusion (used for logging/debugging).
-type FilterFunc func(endpoint domain.EndpointAddr) error
+// FilterFunc reports whether an endpoint passes; false excludes it.
+type FilterFunc func(endpoint domain.EndpointAddr) bool
 
 // SelectResult holds the result of endpoint selection.
 type SelectResult struct {
@@ -193,7 +192,7 @@ func applyFilters(endpoints domain.EndpointAddrList, filters []FilterFunc) domai
 	for _, ep := range endpoints {
 		passed := true
 		for _, f := range filters {
-			if err := f(ep); err != nil {
+			if !f(ep) {
 				passed = false
 				break
 			}
@@ -252,19 +251,9 @@ func AllStale(eps domain.EndpointAddrList, getHeight func(domain.EndpointAddr) (
 // BlockHeightFilter returns a FilterFunc that excludes endpoints below the minimum block height.
 // minHeight is typically perceived - syncAllowance.
 func BlockHeightFilter(getHeight func(domain.EndpointAddr) (uint64, bool), minHeight uint64) FilterFunc {
-	return func(endpoint domain.EndpointAddr) error {
+	return func(endpoint domain.EndpointAddr) bool {
 		height, ok := getHeight(endpoint)
-		if !ok {
-			// Unknown endpoint — let through (eventual consistency).
-			return nil
-		}
-		if height < minHeight {
-			return &domain.RelayError{
-				Kind:      domain.ErrCapability,
-				Message:   "endpoint block height too low",
-				Retryable: true,
-			}
-		}
-		return nil
+		// Unknown endpoint — let through (eventual consistency).
+		return !ok || height >= minHeight
 	}
 }

@@ -192,8 +192,8 @@ func TestSelectEndpoints_ArchivalFiltering(t *testing.T) {
 	// Two endpoints; "nonarchival" has told us it does not retain the state.
 	p.UpdateBlockHeight("archival", 1000)
 	p.UpdateBlockHeight("nonarchival", 1000)
-	p.archival.set(hostKey("archival"), true)
-	p.archival.set(hostKey("nonarchival"), false)
+	p.archival.Set(hostKey("archival"), true)
+	p.archival.Set(hostKey("nonarchival"), false)
 
 	addrs := domain.EndpointAddrList{"archival", "nonarchival"}
 	// Archival request: eth_getBalance at a specific historical block.
@@ -616,21 +616,6 @@ func TestExtractData_NoChainIDConfiguredSkipsAssertion(t *testing.T) {
 	}
 }
 
-// The reported chain is recorded even when it is wrong, so an operator can see
-// which chain the endpoint was actually serving rather than only that it failed.
-func TestExtractData_MismatchStillRecordsReportedChainID(t *testing.T) {
-	p := newTestPluginWithChainID("0x1")
-	_, _ = p.ExtractData("supplier1", chainIDRequest, chainIDResponse("0x89"))
-
-	ep, ok := p.store.Get("supplier1")
-	if !ok {
-		t.Fatal("expected endpoint state to be recorded")
-	}
-	if ep.ChainID != "0x89" {
-		t.Errorf("recorded chain ID = %q, want %q", ep.ChainID, "0x89")
-	}
-}
-
 // A malformed chain ID is an extraction failure, not a wrong chain — the two
 // grade differently upstream, so they must stay distinguishable.
 func TestExtractData_MalformedChainIDIsNotWrongChain(t *testing.T) {
@@ -693,7 +678,7 @@ func TestSelectEndpoints_ArchivalUnobservedNotExcluded(t *testing.T) {
 
 	p.UpdateBlockHeight("never-asked", 1000)
 	p.UpdateBlockHeight("known-pruned", 1000)
-	p.archival.set(hostKey("known-pruned"), false)
+	p.archival.Set(hostKey("known-pruned"), false)
 
 	addrs := domain.EndpointAddrList{"never-asked", "known-pruned"}
 	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
@@ -726,8 +711,8 @@ func TestSelectEndpoints_ArchivalObservationExpires(t *testing.T) {
 	fresh := domain.EndpointAddr("s2-https://fresh.example")
 	p.UpdateBlockHeight(stale, 1000)
 	p.UpdateBlockHeight(fresh, 1000)
-	p.archival.setUntil(hostKey(stale), false, time.Now().Add(-time.Minute))
-	p.archival.setUntil(hostKey(fresh), false, time.Now().Add(archivalTTL))
+	p.archival.SetUntil(hostKey(stale), false, time.Now().Add(-time.Minute))
+	p.archival.SetUntil(hostKey(fresh), false, time.Now().Add(archivalTTL))
 
 	addrs := domain.EndpointAddrList{stale, fresh}
 	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
@@ -1002,7 +987,7 @@ func TestSelectEndpoints_RolloverAddressOfStaleHostFiltered(t *testing.T) {
 // isArchivalEndpoint reports whether the endpoint's host is known to serve
 // historical state: an endpoint nothing has observed returns false.
 func isArchivalEndpoint(p *Plugin, endpoint domain.EndpointAddr) bool {
-	archival, known := p.archival.get(hostKey(endpoint))
+	archival, known := p.archival.Get(hostKey(endpoint))
 	return known && archival
 }
 

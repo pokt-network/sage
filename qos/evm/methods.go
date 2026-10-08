@@ -1,7 +1,8 @@
 package evm
 
 import (
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
@@ -40,12 +41,7 @@ var knownMethods = map[string]bool{
 // KnownMethods returns the EVM catalogue, sorted. The cosmos plugin marks
 // all of it on a host that refused one of them.
 func KnownMethods() []string {
-	out := make([]string, 0, len(knownMethods))
-	for m := range knownMethods {
-		out = append(out, m)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(knownMethods))
 }
 
 // KnownMethod reports whether name is in the EVM catalogue. The cosmos plugin

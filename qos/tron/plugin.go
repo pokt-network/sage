@@ -54,7 +54,7 @@ type Plugin struct {
 	// relay miner replays the actual path instead of a bare POST at the
 	// backend's root, and splitting JSON-RPC batch arrays. Only ParseRequest
 	// is ever called on it; it holds no state this plugin reads.
-	passthrough *noop.Plugin
+	passthrough noop.Plugin
 }
 
 // NewPlugin creates a TRON QoS plugin.
@@ -62,12 +62,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Plugin{
-		Plugin: evm.NewPlugin(logger, cfg),
-		// Sync allowance zero: this instance is a parser. Height filtering for
-		// TRON is the embedded EVM plugin's, fed by its own observations.
-		passthrough: noop.NewPlugin(),
-	}
+	return &Plugin{Plugin: evm.NewPlugin(logger, cfg)}
 }
 
 // ParseRequest routes by framing: JSON-RPC and WebSocket to the EVM parser,

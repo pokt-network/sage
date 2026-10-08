@@ -26,7 +26,7 @@ func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 			Periodic: topic == "newHeads",
 		}
 	case "eth_unsubscribe":
-		id, span := qos.JSONRPCFirstParam(data)
+		id, span := qos.JSONRPCPath(data, "params.0")
 		return qos.ClientFrameInfo{Action: qos.SubscriptionUnsubscribe, SubscriptionID: id, SubscriptionIDSpan: span, Method: method}
 	}
 	return qos.ClientFrameInfo{}
@@ -34,23 +34,9 @@ func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 
 // ClassifyEndpointFrame implements qos.SubscriptionClassifier. A subscribe
 // response carries the subscription id as a hex string result; a
-// notification is an eth_subscription call with params.subscription. Ids
-// are raw JSON (quotes included), as the registry requires.
+// notification is an eth_subscription call with params.subscription.
 func (p *Plugin) ClassifyEndpointFrame(data []byte) qos.EndpointFrameInfo {
-	if qos.JSONRPCMethod(data) == "eth_subscription" {
-		id, span := qos.JSONRPCPath(data, "params.subscription")
-		return qos.EndpointFrameInfo{Kind: qos.EndpointFrameNotification, SubscriptionID: id, SubscriptionIDSpan: span}
-	}
-	id := qos.JSONRPCRequestID(data)
-	if id == "" {
-		return qos.EndpointFrameInfo{}
-	}
-	return qos.EndpointFrameInfo{
-		Kind:           qos.EndpointFrameResponse,
-		RequestID:      id,
-		SubscriptionID: qos.JSONRPCResultScalar(data),
-		IsError:        qos.JSONRPCHasError(data),
-	}
+	return qos.JSONRPCEndpointFrame(data, func(method string) bool { return method == "eth_subscription" })
 }
 
 // WebSocketProbe implements qos.WebSocketProber. eth_blockNumber: served by every EVM node over WebSocket, and cheap.

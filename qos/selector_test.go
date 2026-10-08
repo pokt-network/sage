@@ -1,7 +1,6 @@
 package qos
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/pokt-network/sage/domain"
@@ -16,12 +15,7 @@ func TestSelect_NormalFiltering(t *testing.T) {
 
 	// Filter out "b".
 	filters := []FilterFunc{
-		func(ep domain.EndpointAddr) error {
-			if ep == "b" {
-				return fmt.Errorf("excluded")
-			}
-			return nil
-		},
+		func(ep domain.EndpointAddr) bool { return ep != "b" },
 	}
 
 	result := SelectWithKnownHeights(eps, allKnown, filters, nil, nil, nil)
@@ -41,17 +35,12 @@ func TestSelect_TierCascade(t *testing.T) {
 
 	// Tier 1: filter out everything.
 	strictFilters := []FilterFunc{
-		func(_ domain.EndpointAddr) error { return fmt.Errorf("nope") },
+		func(domain.EndpointAddr) bool { return false },
 	}
 
 	// Tier 2 (relaxed): allow "a" only.
 	relaxedFilters := []FilterFunc{
-		func(ep domain.EndpointAddr) error {
-			if ep == "a" {
-				return nil
-			}
-			return fmt.Errorf("nope")
-		},
+		func(ep domain.EndpointAddr) bool { return ep == "a" },
 	}
 
 	result := SelectWithKnownHeights(eps, allKnown, strictFilters, relaxedFilters, nil, nil)
@@ -70,15 +59,10 @@ func TestSelect_FallbackToTier3(t *testing.T) {
 	eps := domain.EndpointAddrList{"a", "b"}
 
 	rejectAll := []FilterFunc{
-		func(_ domain.EndpointAddr) error { return fmt.Errorf("nope") },
+		func(domain.EndpointAddr) bool { return false },
 	}
 	allowA := []FilterFunc{
-		func(ep domain.EndpointAddr) error {
-			if ep == "a" {
-				return nil
-			}
-			return fmt.Errorf("nope")
-		},
+		func(ep domain.EndpointAddr) bool { return ep == "a" },
 	}
 
 	result := SelectWithKnownHeights(eps, allKnown, rejectAll, rejectAll, allowA, nil)
@@ -97,7 +81,7 @@ func TestSelect_FallbackToOriginal(t *testing.T) {
 	eps := domain.EndpointAddrList{"a", "b", "c"}
 
 	rejectAll := []FilterFunc{
-		func(_ domain.EndpointAddr) error { return fmt.Errorf("nope") },
+		func(domain.EndpointAddr) bool { return false },
 	}
 
 	result := SelectWithKnownHeights(eps, allKnown, rejectAll, rejectAll, rejectAll, nil)
@@ -195,7 +179,7 @@ func TestSelect_FallbackRankerNarrowsDegradedSet(t *testing.T) {
 		return h, ok
 	}
 	rejectAll := []FilterFunc{
-		func(_ domain.EndpointAddr) error { return fmt.Errorf("nope") },
+		func(domain.EndpointAddr) bool { return false },
 	}
 
 	// All tiers reject → final fallback. Ranker must narrow to the freshest.
@@ -223,19 +207,19 @@ func TestBlockHeightFilter(t *testing.T) {
 	// Min height = 90: "c" excluded.
 	f := BlockHeightFilter(getHeight, 90)
 
-	if err := f("a"); err != nil {
-		t.Fatalf("a should pass: %v", err)
+	if !f("a") {
+		t.Fatal("a should pass")
 	}
-	if err := f("b"); err != nil {
-		t.Fatalf("b should pass: %v", err)
+	if !f("b") {
+		t.Fatal("b should pass")
 	}
-	if err := f("c"); err == nil {
+	if f("c") {
 		t.Fatal("c should be filtered")
 	}
 
 	// Unknown endpoint should pass.
-	if err := f("unknown"); err != nil {
-		t.Fatalf("unknown should pass: %v", err)
+	if !f("unknown") {
+		t.Fatal("unknown should pass")
 	}
 }
 

@@ -51,7 +51,7 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 	}
 
 	// Tier 2: Protocol-level analysis.
-	if result, done := analyzeTier2(response, rpcType); done {
+	if result, done := analyzeTier2(response); done {
 		return result
 	}
 
@@ -225,12 +225,9 @@ func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (Anal
 			Details:            fmt.Sprintf("HTTP %d client error", statusCode),
 		}, true
 
-	case statusCode >= 200 && statusCode < 300:
-		// 2xx — continue to body analysis; status alone doesn't mean success.
-		return AnalysisResult{}, false
-
 	default:
-		// Unexpected status codes (1xx, 3xx) — no strong signal.
+		// 2xx — continue to body analysis; status alone doesn't mean success.
+		// 1xx, 3xx — no strong signal.
 		return AnalysisResult{}, false
 	}
 }
@@ -329,15 +326,11 @@ func analyzeTier1(body []byte, httpStatusCode int) (AnalysisResult, bool) {
 }
 
 // analyzeTier2 performs JSON-RPC protocol analysis.
-func analyzeTier2(body []byte, rpcType domain.RPCType) (AnalysisResult, bool) {
+func analyzeTier2(body []byte) (AnalysisResult, bool) {
 	analysis, isJSONRPC := parseJSONRPC(body)
 	if !isJSONRPC {
-		// Not JSON-RPC — could be valid REST/CometBFT or genuinely broken.
-		// For CometBFT, non-JSON-RPC responses are expected for some endpoints.
-		if rpcType == domain.RPCTypeCometBFT || rpcType == domain.RPCTypeREST {
-			return AnalysisResult{}, false
-		}
-		// For JSON-RPC type, a non-JSON-RPC body is suspicious but handled by Tier 1/3.
+		// Not JSON-RPC — valid REST/CometBFT, or a broken JSON-RPC body that
+		// Tier 1/3 handles.
 		return AnalysisResult{}, false
 	}
 
@@ -361,19 +354,10 @@ func analyzeTier2(body []byte, rpcType domain.RPCType) (AnalysisResult, bool) {
 		return result, true
 	}
 
-	// result:null without error — for CometBFT this can be normal.
-	if analysis.resultIsNull && !analysis.hasError {
-		if rpcType == domain.RPCTypeCometBFT {
-			return successResult(), true
-		}
-		// For JSON-RPC, result:null is a valid response (e.g., eth_getTransactionReceipt
-		// for a pending tx). Not an error.
-		return successResult(), true
-	}
-
-	// Valid result present, no error — success.
-	if analysis.hasResult && !analysis.hasError {
-		// CometBFT awareness: empty object result {} is valid (e.g., health check).
+	// A result and no error — success. result:null counts: it is a valid
+	// answer (eth_getTransactionReceipt for a pending tx), as is an empty
+	// object (a CometBFT health check).
+	if analysis.hasResult {
 		return successResult(), true
 	}
 

@@ -6,55 +6,40 @@ import (
 )
 
 func TestValidateBlockHeight_Zero(t *testing.T) {
-	_, err := ValidateBlockHeight(0, 100, 5)
-	if err == nil {
+	if err := ValidateBlockHeight(0, 100); err == nil {
 		t.Fatal("expected error for zero height")
 	}
 }
 
 func TestValidateBlockHeight_Normal(t *testing.T) {
-	h, err := ValidateBlockHeight(100, 105, 5)
-	if err != nil {
+	if err := ValidateBlockHeight(100, 105); err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if h != 100 {
-		t.Fatalf("expected 100, got %d", h)
 	}
 }
 
 func TestValidateBlockHeight_TooHigh(t *testing.T) {
-	_, err := ValidateBlockHeight(2_000_000, 100, 5)
-	if err == nil {
+	if err := ValidateBlockHeight(2_000_000, 100); err == nil {
 		t.Fatal("expected error for height too far ahead")
 	}
 }
 
 func TestValidateBlockHeight_ExactDelta(t *testing.T) {
 	// Exactly at the delta boundary should pass.
-	h, err := ValidateBlockHeight(100+maxBlockHeightDelta, 100, 5)
-	if err != nil {
+	if err := ValidateBlockHeight(100+maxBlockHeightDelta, 100); err != nil {
 		t.Fatalf("unexpected error at exact delta: %v", err)
-	}
-	if h != 100+maxBlockHeightDelta {
-		t.Fatalf("unexpected height: %d", h)
 	}
 }
 
 func TestValidateBlockHeight_OneOverDelta(t *testing.T) {
-	_, err := ValidateBlockHeight(100+maxBlockHeightDelta+1, 100, 5)
-	if err == nil {
+	if err := ValidateBlockHeight(100+maxBlockHeightDelta+1, 100); err == nil {
 		t.Fatal("expected error for one over delta")
 	}
 }
 
 func TestValidateBlockHeight_PerceivedZero(t *testing.T) {
 	// Cold start: perceived is 0, any non-zero height should pass.
-	h, err := ValidateBlockHeight(999999, 0, 5)
-	if err != nil {
+	if err := ValidateBlockHeight(999999, 0); err != nil {
 		t.Fatalf("unexpected error during cold start: %v", err)
-	}
-	if h != 999999 {
-		t.Fatalf("expected 999999, got %d", h)
 	}
 }
 
@@ -83,12 +68,8 @@ func TestIsPlausibleBlockHeight(t *testing.T) {
 // a floor and rejecting every honest height.
 func TestValidateBlockHeight_NoWrapNearMaxUint64(t *testing.T) {
 	perceived := uint64(math.MaxUint64 - 10)
-	h, err := ValidateBlockHeight(perceived, perceived, 5)
-	if err != nil {
+	if err := ValidateBlockHeight(perceived, perceived); err != nil {
 		t.Fatalf("a height equal to perceived must validate: %v", err)
-	}
-	if h != perceived {
-		t.Errorf("height = %d, want %d", h, perceived)
 	}
 }
 

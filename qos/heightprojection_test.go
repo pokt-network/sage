@@ -3,8 +3,6 @@ package qos
 import (
 	"testing"
 	"time"
-
-	"github.com/pokt-network/sage/domain"
 )
 
 func TestHeightProjection_Project(t *testing.T) {
@@ -54,36 +52,14 @@ func TestHeightGetter_JudgesReadingsAtTheHeadsMoment(t *testing.T) {
 	filter := BlockHeightFilter(HeightGetter(store, func(e ep) uint64 { return e.height }, projection), MinAllowedHeight(1000, 50))
 	raw := BlockHeightFilter(HeightGetter(store, func(e ep) uint64 { return e.height }, HeightProjection{}), MinAllowedHeight(1000, 50))
 
-	if raw("pokt1a-https://fresh.example.com") == nil {
+	if raw("pokt1a-https://fresh.example.com") {
 		t.Fatal("precondition: raw, the endpoint read a minute ago looks 120 blocks behind")
 	}
-	if err := filter("pokt1a-https://fresh.example.com"); err != nil {
-		t.Errorf("projected 880 + 120 = 1000 passes an allowance of 50, got %v", err)
+	if !filter("pokt1a-https://fresh.example.com") {
+		t.Error("projected 880 + 120 = 1000 passes an allowance of 50")
 	}
-	if filter("pokt1b-https://lagging.example.com") == nil {
+	if filter("pokt1b-https://lagging.example.com") {
 		t.Error("projected 700 + 120 = 820 is still 180 behind and must be filtered")
-	}
-}
-
-// Update without a height, as a chain-id check does, must not make an old
-// height reading look fresh.
-func TestEndpointStore_UpdateKeepsTheHeightTime(t *testing.T) {
-	type ep struct{ height, other uint64 }
-	store := NewEndpointStore[ep]()
-	addr := domain.EndpointAddr("pokt1a-https://a.example.com")
-	store.ObserveHeight(addr, func(e *ep) { e.height = 5 })
-	store.mu.Lock()
-	e := store.endpoints[addr]
-	old := time.Now().Add(-time.Minute)
-	e.HeightAt = old
-	store.endpoints[addr] = e
-	store.mu.Unlock()
-
-	store.Update(addr, func(e *ep) { e.other = 1 })
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-	if got := store.endpoints[addr].HeightAt; !got.Equal(old) {
-		t.Errorf("HeightAt moved to %v on an update with no height", got)
 	}
 }
 

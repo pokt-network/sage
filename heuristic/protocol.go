@@ -31,8 +31,6 @@ type jsonRPCAnalysis struct {
 	// classifier that reads `message` alone learns nothing from a CometBFT
 	// node.
 	errorData string
-	hasID     bool
-	idValue   string
 }
 
 // errorText is the text a classifier should match wordings against: the
@@ -85,12 +83,6 @@ func parseJSONRPC(body []byte) (jsonRPCAnalysis, bool) {
 		analysis.errorCode = errorField.Get("code").Int()
 		analysis.errorMessage = errorField.Get("message").String()
 		analysis.errorData = errorField.Get("data").String()
-	}
-
-	idField := parsed.Get("id")
-	if idField.Exists() {
-		analysis.hasID = true
-		analysis.idValue = idField.Raw
 	}
 
 	return analysis, true

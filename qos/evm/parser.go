@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/tidwall/gjson"
@@ -36,7 +37,7 @@ func parseRequest(body []byte, rpcType domain.RPCType) ([]domain.Payload, error)
 	}
 
 	// Detect batch vs single.
-	trimmed := trimLeftSpace(body)
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		return parseBatch(body, rpcType)
 	}
@@ -117,12 +118,4 @@ func extractMethod(body []byte) (string, error) {
 	}
 
 	return name, nil
-}
-
-// trimLeftSpace returns a slice of b with leading whitespace removed.
-func trimLeftSpace(b []byte) []byte {
-	for len(b) > 0 && (b[0] == ' ' || b[0] == '\t' || b[0] == '\n' || b[0] == '\r') {
-		b = b[1:]
-	}
-	return b
 }

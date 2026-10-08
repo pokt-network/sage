@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -48,65 +47,6 @@ const prunedTTL = time.Hour
 // maxPrunedHosts bounds the memory. Hosts come from staked URLs, so the set
 // is small in practice; the cap is for a session churn nobody planned for.
 const maxPrunedHosts = 4096
-
-type prunedEntry struct {
-	lowest uint64
-	expiry time.Time
-}
-
-// prunedMemory remembers, per host, the lowest height the node reported
-// holding. Safe for concurrent use.
-type prunedMemory struct {
-	mu      sync.RWMutex
-	entries map[string]prunedEntry
-	ttl     time.Duration
-	max     int
-	now     func() time.Time
-}
-
-func newPrunedMemory() *prunedMemory {
-	return &prunedMemory{
-		entries: make(map[string]prunedEntry),
-		ttl:     prunedTTL,
-		max:     maxPrunedHosts,
-		now:     time.Now,
-	}
-}
-
-// set records that host reported lowest as its lowest held height.
-func (m *prunedMemory) set(host string, lowest uint64) {
-	if host == "" || lowest == 0 {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, known := m.entries[host]; !known && len(m.entries) >= m.max {
-		// Clear wholesale rather than evict: the memory rebuilds at one
-		// relay per host, and a map this size means something upstream is
-		// producing hosts, not that the memory is worth preserving.
-		m.entries = make(map[string]prunedEntry)
-	}
-	m.entries[host] = prunedEntry{lowest: lowest, expiry: m.now().Add(m.ttl)}
-}
-
-// lowest returns the host's remembered lowest height, if the observation has
-// not aged out.
-func (m *prunedMemory) lowest(host string) (uint64, bool) {
-	m.mu.RLock()
-	e, ok := m.entries[host]
-	m.mu.RUnlock()
-	if !ok || !m.now().Before(e.expiry) {
-		return 0, false
-	}
-	return e.lowest, true
-}
-
-// reset forgets everything.
-func (m *prunedMemory) reset() {
-	m.mu.Lock()
-	m.entries = make(map[string]prunedEntry)
-	m.mu.Unlock()
-}
 
 // lowestHeightRe matches CometBFT's pruned-height wording, whichever field
 // carries it: the JSON-RPC -32603 `data` on the RPC face, the gRPC-gateway

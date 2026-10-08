@@ -4,7 +4,6 @@ package heuristic
 type indicator struct {
 	pattern        string
 	attribution    ErrorAttribution
-	shouldRetry    bool
 	severity       string
 	reason         string
 	methodBlocking bool
@@ -18,53 +17,53 @@ type indicator struct {
 // tier scans a body that never parsed. A wording added there belongs here too.
 var indicators = []indicator{
 	// Blockchain-attributed: the chain itself is having issues.
-	{pattern: "missing trie node", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "missing_trie_node"},
-	{pattern: "node is unhealthy", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "node_unhealthy"},
-	{pattern: "block not found", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "block_not_found"},
-	{pattern: "header not found", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "header_not_found"},
-	{pattern: "state not available", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "state_not_available"},
-	{pattern: "pruned state", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "pruned_state"},
+	{pattern: "missing trie node", attribution: AttrBlockchain, severity: SeverityNone, reason: "missing_trie_node"},
+	{pattern: "node is unhealthy", attribution: AttrBlockchain, severity: SeverityNone, reason: "node_unhealthy"},
+	{pattern: "block not found", attribution: AttrBlockchain, severity: SeverityNone, reason: "block_not_found"},
+	{pattern: "header not found", attribution: AttrBlockchain, severity: SeverityNone, reason: "header_not_found"},
+	{pattern: "state not available", attribution: AttrBlockchain, severity: SeverityNone, reason: "state_not_available"},
+	{pattern: "pruned state", attribution: AttrBlockchain, severity: SeverityNone, reason: "pruned_state"},
 	// geth's path-based state scheme (PBSS) words a pruned-state miss as
 	// "metadata is not found, <block>" — no "prune" and no "trie" in it, so
 	// every pattern above misses it and an honest answer reads as a fault.
-	{pattern: "metadata is not found", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "pbss_pruned_state"},
+	{pattern: "metadata is not found", attribution: AttrBlockchain, severity: SeverityNone, reason: "pbss_pruned_state"},
 	// Archival/capability-limitation variants: the supplier correctly reports it
 	// can't serve historical/pruned state. Retry on an archival supplier, but do
 	// NOT penalize or circuit-break — punishing a non-archival supplier for a
 	// capability mismatch is wrong.
-	{pattern: "historical state", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "historical_state"},
-	{pattern: "state has been pruned", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "state_pruned"},
-	{pattern: "block has been pruned", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "block_pruned"},
-	{pattern: "has been pruned", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "pruned"},
-	{pattern: "is pruned", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "pruned"},
-	{pattern: "no state available for block", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "state_not_available"},
-	{pattern: "no state found for block", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "state_not_available"},
-	{pattern: "height is not available", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "height_not_available"},
+	{pattern: "historical state", attribution: AttrBlockchain, severity: SeverityNone, reason: "historical_state"},
+	{pattern: "state has been pruned", attribution: AttrBlockchain, severity: SeverityNone, reason: "state_pruned"},
+	{pattern: "block has been pruned", attribution: AttrBlockchain, severity: SeverityNone, reason: "block_pruned"},
+	{pattern: "has been pruned", attribution: AttrBlockchain, severity: SeverityNone, reason: "pruned"},
+	{pattern: "is pruned", attribution: AttrBlockchain, severity: SeverityNone, reason: "pruned"},
+	{pattern: "no state available for block", attribution: AttrBlockchain, severity: SeverityNone, reason: "state_not_available"},
+	{pattern: "no state found for block", attribution: AttrBlockchain, severity: SeverityNone, reason: "state_not_available"},
+	{pattern: "height is not available", attribution: AttrBlockchain, severity: SeverityNone, reason: "height_not_available"},
 	// CometBFT's pruned-height wording puts the number between the words:
 	// "height 27782 is not available, lowest height is 25052001". The tail is
 	// the stable part.
-	{pattern: "lowest height is", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "height_not_available"},
-	{pattern: "haven't been fully indexed", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "not_indexed"},
-	{pattern: "not been fully indexed", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "not_indexed"},
+	{pattern: "lowest height is", attribution: AttrBlockchain, severity: SeverityNone, reason: "height_not_available"},
+	{pattern: "haven't been fully indexed", attribution: AttrBlockchain, severity: SeverityNone, reason: "not_indexed"},
+	{pattern: "not been fully indexed", attribution: AttrBlockchain, severity: SeverityNone, reason: "not_indexed"},
 	// Capability limitation (e.g., Tron lite fullnodes that don't expose an API).
 	// These two report the endpoint cannot serve the METHOD, not just this
 	// block, so they set methodBlocking.
-	{pattern: "lite fullnode", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "lite_fullnode", methodBlocking: true},
-	{pattern: "api is not supported", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "api_not_supported", methodBlocking: true},
+	{pattern: "lite fullnode", attribution: AttrBlockchain, severity: SeverityNone, reason: "lite_fullnode", methodBlocking: true},
+	{pattern: "api is not supported", attribution: AttrBlockchain, severity: SeverityNone, reason: "api_not_supported", methodBlocking: true},
 	// Solana node started without a secondary account index for this program
 	// (-32010). Configuration, not a fault; another operator has the index.
-	{pattern: "excluded from account secondary indexes", attribution: AttrBlockchain, shouldRetry: true, severity: SeverityNone, reason: "account_index_excluded"},
+	{pattern: "excluded from account secondary indexes", attribution: AttrBlockchain, severity: SeverityNone, reason: "account_index_excluded"},
 
 	// Supplier-attributed: the supplier's infrastructure is broken.
-	{pattern: "connection refused", attribution: AttrSupplier, shouldRetry: true, severity: SeverityCritical, reason: "connection_refused"},
-	{pattern: "connection reset", attribution: AttrSupplier, shouldRetry: true, severity: SeverityCritical, reason: "connection_reset"},
-	{pattern: "timeout", attribution: AttrSupplier, shouldRetry: true, severity: SeverityMajor, reason: "timeout"},
-	{pattern: "bad gateway", attribution: AttrSupplier, shouldRetry: true, severity: SeverityCritical, reason: "bad_gateway"},
-	{pattern: "service unavailable", attribution: AttrSupplier, shouldRetry: true, severity: SeverityCritical, reason: "service_unavailable"},
-	{pattern: "gateway timeout", attribution: AttrSupplier, shouldRetry: true, severity: SeverityCritical, reason: "gateway_timeout"},
-	{pattern: "502 bad gateway", attribution: AttrSupplier, shouldRetry: true, severity: SeverityCritical, reason: "bad_gateway_502"},
-	{pattern: "503 service unavailable", attribution: AttrSupplier, shouldRetry: true, severity: SeverityCritical, reason: "service_unavailable_503"},
-	{pattern: "504 gateway timeout", attribution: AttrSupplier, shouldRetry: true, severity: SeverityCritical, reason: "gateway_timeout_504"},
+	{pattern: "connection refused", attribution: AttrSupplier, severity: SeverityCritical, reason: "connection_refused"},
+	{pattern: "connection reset", attribution: AttrSupplier, severity: SeverityCritical, reason: "connection_reset"},
+	{pattern: "timeout", attribution: AttrSupplier, severity: SeverityMajor, reason: "timeout"},
+	{pattern: "bad gateway", attribution: AttrSupplier, severity: SeverityCritical, reason: "bad_gateway"},
+	{pattern: "service unavailable", attribution: AttrSupplier, severity: SeverityCritical, reason: "service_unavailable"},
+	{pattern: "gateway timeout", attribution: AttrSupplier, severity: SeverityCritical, reason: "gateway_timeout"},
+	{pattern: "502 bad gateway", attribution: AttrSupplier, severity: SeverityCritical, reason: "bad_gateway_502"},
+	{pattern: "503 service unavailable", attribution: AttrSupplier, severity: SeverityCritical, reason: "service_unavailable_503"},
+	{pattern: "504 gateway timeout", attribution: AttrSupplier, severity: SeverityCritical, reason: "gateway_timeout_504"},
 }
 
 // matchIndicator scans the response body for Tier 3 indicator patterns.
@@ -83,7 +82,7 @@ func matchIndicator(body []byte) *AnalysisResult {
 	for _, ind := range indicators {
 		if containsFold(searchArea, ind.pattern) {
 			result := AnalysisResult{
-				ShouldRetry:        ind.shouldRetry,
+				ShouldRetry:        true, // every indicator is retried; attribution decides blame
 				ShouldCircuitBreak: ind.severity == SeverityCritical || ind.severity == SeverityFatal,
 				ShouldPenalize:     ind.attribution == AttrSupplier,
 				PenaltySeverity:    ind.severity,

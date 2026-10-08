@@ -33,7 +33,7 @@ type BlockConsensus struct {
 
 	// rateSamples is a short history of (perceived height, when) used to derive
 	// how fast this chain produces blocks. Under mu, appended only when the
-	// perceived height moves. See BlockRate.
+	// perceived height moves. See blockRate.
 	rateSamples []rateSample
 
 	externalFloor atomic.Uint64 // from external block sources
@@ -408,25 +408,6 @@ func (bc *BlockConsensus) recordRateSampleLocked(perceived uint64, now time.Time
 	bc.rateSamples = append(bc.rateSamples, rateSample{height: perceived, at: now, opened: now})
 }
 
-// BlockRate reports how many blocks this chain produces per second, derived
-// from how far the perceived height has moved over how long, and whether that
-// is known at all.
-//
-// It is derived rather than configured because a per-chain block-time table is
-// a set of values that drift and duplicate what the consensus is already
-// watching. Two samples of a moving chain are enough, and the answer
-// self-corrects when a chain changes its cadence.
-//
-// Not known, and reported as such rather than guessed: fewer than two samples,
-// no elapsed time between them, or a height that has not advanced. A stalled
-// chain has no rate, and inventing one would turn a stalled chain into a
-// confident wrong number in every metric derived from it.
-func (bc *BlockConsensus) BlockRate() (float64, bool) {
-	bc.mu.RLock()
-	defer bc.mu.RUnlock()
-	return blockRate(bc.rateSamples)
-}
-
 // HeightProjection advances a stored height reading to the moment the
 // perceived head last moved, at the chain's own block rate. Take one per
 // selection with Projection; the zero value projects nothing.
@@ -583,6 +564,19 @@ func (bc *BlockConsensus) StateLag(blockTime, at time.Time) (lag uint64, stale, 
 	return lag, trail > blockTimes+staleStateSlack, true
 }
 
+// blockRate reports how many blocks the chain produces per second, derived
+// from how far the perceived height has moved over how long, and whether that
+// is known at all.
+//
+// It is derived rather than configured because a per-chain block-time table is
+// a set of values that drift and duplicate what the consensus is already
+// watching. Two samples of a moving chain are enough, and the answer
+// self-corrects when a chain changes its cadence.
+//
+// Not known, and reported as such rather than guessed: fewer than two samples,
+// no elapsed time between them, or a height that has not advanced. A stalled
+// chain has no rate, and inventing one would turn a stalled chain into a
+// confident wrong number in every metric derived from it.
 func blockRate(samples []rateSample) (float64, bool) {
 	if len(samples) < 2 {
 		return 0, false

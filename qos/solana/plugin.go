@@ -159,8 +159,7 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		return &qos.ExtractedData{}, nil
 	}
 
-	_, err = qos.ValidateBlockHeight(height, p.Consensus.PerceivedBlock(), p.SyncAllowance())
-	if err != nil {
+	if err := qos.ValidateBlockHeight(height, p.Consensus.PerceivedBlock()); err != nil {
 		return nil, fmt.Errorf("solana: invalid block height from endpoint %s: %w", endpoint, err)
 	}
 

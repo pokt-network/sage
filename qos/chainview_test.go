@@ -143,19 +143,25 @@ func (stubPlugin) SelectEndpoints(eps domain.EndpointAddrList, _ []domain.Payloa
 	return eps, nil
 }
 
+// rateOf is the block rate bc's chain view reports.
+func rateOf(bc *BlockConsensus) (float64, bool) {
+	v := bc.ChainView()
+	return v.BlockRate, v.BlockRateKnown
+}
+
 // The block rate is derived, not configured, so it has to come out of movement
 // and be honestly absent when there is none.
 func TestBlockRate(t *testing.T) {
 	t.Run("unknown with no movement", func(t *testing.T) {
 		bc := newTestConsensus(t)
-		if _, ok := bc.BlockRate(); ok {
+		if _, ok := rateOf(bc); ok {
 			t.Error("reported a rate with no observations")
 		}
 		// A chain observed repeatedly at one height is stalled, not slow.
 		for range 5 {
 			bc.AddObservation("supA-https://a.example.com", 1000)
 		}
-		if rate, ok := bc.BlockRate(); ok {
+		if rate, ok := rateOf(bc); ok {
 			t.Errorf("reported %v blocks/s for a chain that has not moved", rate)
 		}
 	})
@@ -171,7 +177,7 @@ func TestBlockRate(t *testing.T) {
 		}
 		bc.mu.Unlock()
 
-		rate, ok := bc.BlockRate()
+		rate, ok := rateOf(bc)
 		if !ok {
 			t.Fatal("no rate from two moving samples")
 		}
@@ -214,13 +220,13 @@ func TestBlockRate(t *testing.T) {
 			{height: 1010, at: time.Now()},
 		}
 		bc.mu.Unlock()
-		if _, ok := bc.BlockRate(); !ok {
+		if _, ok := rateOf(bc); !ok {
 			t.Fatal("precondition: no rate to discard")
 		}
 
 		bc.Reset()
 
-		if rate, ok := bc.BlockRate(); ok {
+		if rate, ok := rateOf(bc); ok {
 			t.Errorf("rate %v survived a reset; a poisoned chain's cadence must not outlive its heights", rate)
 		}
 	})

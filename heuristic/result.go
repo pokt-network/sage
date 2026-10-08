@@ -29,8 +29,6 @@ func (a ErrorAttribution) String() string {
 		return "blockchain"
 	case AttrClient:
 		return "client"
-	case AttrUnknown:
-		return "unknown"
 	default:
 		return "unknown"
 	}

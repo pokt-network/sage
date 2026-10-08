@@ -259,7 +259,7 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		}
 		return &qos.ExtractedData{}, nil
 	}
-	if _, err := qos.ValidateBlockHeight(height, p.Consensus.PerceivedBlock(), p.SyncAllowance()); err != nil {
+	if err := qos.ValidateBlockHeight(height, p.Consensus.PerceivedBlock()); err != nil {
 		return nil, fmt.Errorf("%s: invalid block height from endpoint %s: %w", p.chain.Name, endpoint, err)
 	}
 	return &qos.ExtractedData{BlockHeight: &height}, nil

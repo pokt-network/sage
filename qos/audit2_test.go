@@ -64,7 +64,7 @@ func TestAudit2_ReplayBurstDoesNotInflateBlockRate(t *testing.T) {
 	for h := uint64(1000); h <= 1020; h++ {
 		bc.AddObservation(domain.EndpointAddr("s1-https://a.example.com"), h)
 	}
-	if rate, ok := bc.BlockRate(); ok && rate > 100 {
+	if rate, ok := rateOf(bc); ok && rate > 100 {
 		t.Fatalf("block rate after a replay burst of 21 eth heights = %.0f blocks/s; want unknown or <= 100 (eth is ~0.083)", rate)
 	}
 }

@@ -17,11 +17,9 @@ import (
 
 // evmEndpoint holds per-endpoint state observed from health checks and relays.
 //
-// Archival retention lives in archivalMemory, per host, not here: see
-// archival.go.
+// Archival retention lives in Plugin.archival, per host, not here.
 type evmEndpoint struct {
 	BlockNumber uint64
-	ChainID     string
 }
 
 // archivalTTL is how long one archival observation is trusted.
@@ -37,6 +35,18 @@ type evmEndpoint struct {
 // evidence outlived the stronger by 16x; a comment claiming they matched was
 // what held the invariant, and it did not.
 const archivalTTL = 1 * time.Hour
+
+// maxArchivalHosts bounds the archival memory; hosts come from staked URLs.
+const maxArchivalHosts = 4096
+
+// hostKey is the archival memory's key for an address: its host, or the whole
+// address when it carries none (tests and mocks use bare names).
+func hostKey(addr domain.EndpointAddr) string {
+	if h := addr.Domain(); h != "" {
+		return h
+	}
+	return string(addr)
+}
 
 // coalescableMethods are read-only EVM methods safe for request coalescing.
 var coalescableMethods = map[string]bool{
@@ -80,7 +90,7 @@ type Plugin struct {
 	expectedChainID string
 	stateCanary     func() bool
 	// archival remembers, per host, who served or refused historical state.
-	archival *archivalMemory
+	archival *qos.HostMemory[bool]
 }
 
 // Config carries the per-service settings an EVM plugin needs.
@@ -136,7 +146,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		store:           qos.NewEndpointStore[evmEndpoint](),
 		expectedChainID: cfg.ExpectedChainID,
 		stateCanary:     cfg.StateCanary,
-		archival:        newArchivalMemory(),
+		archival:        qos.NewHostMemory[bool](archivalTTL, maxArchivalHosts),
 	}
 	p.Consensus = qos.NewBlockConsensus(logger, cfg.SyncAllowance)
 	p.SetSyncAllowance(cfg.SyncAllowance)
@@ -166,9 +176,9 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 
 	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, p.Consensus.Projection())
 
-	archivalFilter := func(addr domain.EndpointAddr) error {
+	archivalFilter := func(addr domain.EndpointAddr) bool {
 		if !needsArchival {
-			return nil
+			return true
 		}
 		// Only a fresh negative observation excludes an endpoint. Archival
 		// status is inferred from traffic that happened to name a historical
@@ -176,18 +186,8 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		// proof of archival before serving an archival request would exclude
 		// every one of them, exhausting all three tiers on every such request
 		// and handing back the unfiltered list anyway.
-		archival, known := p.archival.get(hostKey(addr))
-		if !known {
-			return nil
-		}
-		if !archival {
-			return &domain.RelayError{
-				Kind:      domain.ErrCapability,
-				Message:   "endpoint does not retain historical state",
-				Retryable: true,
-			}
-		}
-		return nil
+		archival, known := p.archival.Get(hostKey(addr))
+		return !known || archival
 	}
 
 	minHeight := qos.MinAllowedHeight(perceived, p.SyncAllowance())
@@ -268,11 +268,11 @@ func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, re
 
 	switch classifyArchivalResponse(response) {
 	case archivalServed:
-		p.archival.set(hostKey(endpoint), true)
+		p.archival.Set(hostKey(endpoint), true)
 		return true, true
 
 	case archivalMissing:
-		p.archival.set(hostKey(endpoint), false)
+		p.archival.Set(hostKey(endpoint), false)
 		return false, true
 
 	default:
@@ -339,11 +339,6 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		if err != nil {
 			return nil, fmt.Errorf("eth_chainId: %w", err)
 		}
-		// Record what the endpoint actually reported before asserting, so a
-		// mismatch is visible in endpoint state and not only in the error.
-		p.store.Update(endpoint, func(ep *evmEndpoint) {
-			ep.ChainID = chainID
-		})
 		if err := p.assertChainID(endpoint, chainID); err != nil {
 			return nil, err
 		}
@@ -429,45 +424,26 @@ func (p *Plugin) CacheTTL(method string, params []byte, response []byte) time.Du
 
 	case "eth_getBlockByNumber":
 		// Only cache if referencing a specific (historical) block, not "latest" etc.
-		result := gjson.ParseBytes(params)
-		if result.IsArray() {
-			arr := result.Array()
-			if len(arr) > 0 && arr[0].Type == gjson.String {
-				blockParam := arr[0].String()
-				if !recentStateBlockTags[blockParam] {
-					if _, err := parseHexUint64(blockParam); err == nil {
-						return 10 * time.Minute
-					}
-				}
+		if r := gjson.ParseBytes(params); r.IsArray() {
+			if arr := r.Array(); len(arr) > 0 && isExplicitBlockNumber(arr[0]) {
+				return 10 * time.Minute
 			}
 		}
-		return 0
-
-	case "eth_blockNumber":
-		return 0
-
-	case "eth_sendRawTransaction",
-		"eth_sendTransaction",
-		"eth_signTransaction",
-		"eth_sign",
-		"personal_sign":
-		return 0
 	}
-
 	return 0
 }
 
 // --- qos.StateResetter ---
 
 // ResetState discards the block consensus and every per-endpoint observation
-// (block height, chain ID, archival marks) this plugin has learned. It is the
+// (block height, archival marks) this plugin has learned. It is the
 // admin chain-state reset: nothing else about the plugin's configuration
 // changes, and the next health-check cycle and the next relays repopulate
 // both from scratch.
 func (p *Plugin) ResetState() {
 	p.Consensus.Reset()
 	p.store.Clear()
-	p.archival.reset()
+	p.archival.Reset()
 }
 
 // AllStale reports whether every endpoint in eps is known to sit below the

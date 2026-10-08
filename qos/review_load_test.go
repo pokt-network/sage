@@ -43,7 +43,7 @@ func TestReviewLoad_FastChainRateAfterBootIsLow(t *testing.T) {
 	base := time.Now()
 	last := moveFast(bc, base, 1000, 1005) // t = 0 .. 2.0s
 
-	rate, ok := bc.BlockRate()
+	rate, ok := rateOf(bc)
 	if !ok {
 		t.Fatal("precondition: two samples give a rate")
 	}
@@ -68,7 +68,7 @@ func TestReviewLoad_FastChainHeadAtIsTheBucketStart(t *testing.T) {
 	const first, last = uint64(1000), uint64(1000 + 5*25 + 4)
 	lastAt := moveFast(bc, base, first, last)
 
-	rate, _ := bc.BlockRate()
+	rate, _ := rateOf(bc)
 	lag, _, _ := bc.AnswerLag(last, lastAt)
 	if lag > 1 {
 		t.Errorf("an answer naming the head (%d) at the instant it moved reads %d blocks behind (rate %.2f, true %.1f); want 0",

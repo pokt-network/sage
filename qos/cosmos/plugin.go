@@ -29,7 +29,6 @@ import (
 type cosmosEndpoint struct {
 	BlockHeight uint64
 	RPCType     domain.RPCType
-	ChainID     string
 }
 
 // Plugin is the Cosmos QoS plugin. It implements:
@@ -55,7 +54,7 @@ type Plugin struct {
 
 	store *qos.EndpointStore[cosmosEndpoint]
 	// pruned remembers, per host, the lowest height the node holds; see pruned.go.
-	pruned *prunedMemory
+	pruned *qos.HostMemory[uint64]
 }
 
 // Config carries the per-service settings a Cosmos plugin needs.
@@ -145,7 +144,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		evmHeight:         cfg.EVMHeight,
 		stateCanary:       cfg.StateCanary,
 		store:             qos.NewEndpointStore[cosmosEndpoint](),
-		pruned:            newPrunedMemory(),
+		pruned:            qos.NewHostMemory[uint64](prunedTTL, maxPrunedHosts),
 	}
 	p.Consensus = qos.NewBlockConsensus(logger, cfg.SyncAllowance)
 	p.SetSyncAllowance(cfg.SyncAllowance)
@@ -209,20 +208,16 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	// RPC type filter — only applied when we have an explicit type to match.
 	var rpcTypeFilter qos.FilterFunc
 	if requestedRPCType != "" && requestedRPCType != domain.RPCTypeUnknown {
-		rpcTypeFilter = func(addr domain.EndpointAddr) error {
+		rpcTypeFilter = func(addr domain.EndpointAddr) bool {
 			ep, ok := p.store.Get(addr)
 			if !ok {
 				// Unknown endpoint — let through.
-				return nil
+				return true
 			}
 			if ep.RPCType != "" && ep.RPCType != requestedRPCType {
-				return &domain.RelayError{
-					Kind:      domain.ErrCapability,
-					Message:   fmt.Sprintf("cosmos: endpoint RPC type %q does not match requested %q", ep.RPCType, requestedRPCType),
-					Retryable: true,
-				}
+				return false
 			}
-			return nil
+			return true
 		}
 	}
 
@@ -245,16 +240,9 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	if len(payloads) > 0 {
 		if height, ok := requestedHeight(payloads[0]); ok {
 			heightFiltered = true
-			heightFilter := func(addr domain.EndpointAddr) error {
-				lowest, known := p.pruned.lowest(addr.Domain())
-				if !known || lowest <= height {
-					return nil
-				}
-				return &domain.RelayError{
-					Kind:      domain.ErrCapability,
-					Message:   fmt.Sprintf("cosmos: host pruned below height %d (lowest %d)", height, lowest),
-					Retryable: true,
-				}
+			heightFilter := func(addr domain.EndpointAddr) bool {
+				lowest, known := p.pruned.Get(addr.Domain())
+				return !known || lowest <= height
 			}
 			baseFilters = append(baseFilters, heightFilter)
 			relaxedFilters = append(relaxedFilters, heightFilter)
@@ -421,15 +409,12 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 	// per host so SelectEndpoints stops sending old heights there. The
 	// request is a client's, so the probe is free.
 	if lowest, ok := prunedLowestHeight(response); ok {
-		p.pruned.set(endpoint.Domain(), lowest)
+		p.pruned.Set(endpoint.Domain(), lowest)
 		p.logger.Debug("cosmos: host reports pruned history", "endpoint", endpoint, "lowest_height", lowest)
 	}
 
 	chainID, hasChainID := parseChainID(response)
 	if hasChainID {
-		p.store.Update(endpoint, func(ep *cosmosEndpoint) {
-			ep.ChainID = chainID
-		})
 		if err := p.assertChainID(endpoint, chainID); err != nil {
 			return nil, err
 		}
@@ -477,14 +462,14 @@ func (p *Plugin) assertChainID(endpoint domain.EndpointAddr, reported string) er
 // --- qos.StateResetter ---
 
 // ResetState discards the block consensus and every per-endpoint observation
-// (block height, chain ID) this plugin has learned. It is the admin
+// (block height, pruned marks) this plugin has learned. It is the admin
 // chain-state reset: nothing else about the plugin's configuration changes,
 // and the next health-check cycle and the next relays repopulate both from
 // scratch.
 func (p *Plugin) ResetState() {
 	p.Consensus.Reset()
 	p.store.Clear()
-	p.pruned.reset()
+	p.pruned.Reset()
 }
 
 // evmHeights reports whether this chain's EVM face reports the Cosmos height.

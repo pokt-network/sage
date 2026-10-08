@@ -2,7 +2,6 @@ package cosmos
 
 import (
 	"testing"
-	"time"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -73,41 +72,6 @@ func TestPrunedLowestHeight(t *testing.T) {
 		if got != tc.want || ok != tc.ok {
 			t.Errorf("%s: got (%d, %v), want (%d, %v)", tc.name, got, ok, tc.want, tc.ok)
 		}
-	}
-}
-
-func TestPrunedMemory_ExpiresAndBounds(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
-	m := newPrunedMemory()
-	m.now = func() time.Time { return now }
-	m.ttl = time.Hour
-	m.max = 2
-
-	m.set("a", 100)
-	if got, ok := m.lowest("a"); !ok || got != 100 {
-		t.Fatalf("lowest(a) = %d,%v want 100,true", got, ok)
-	}
-	now = now.Add(time.Hour + time.Second)
-	if _, ok := m.lowest("a"); ok {
-		t.Fatal("an hour-old observation must have aged out")
-	}
-
-	m.set("a", 100)
-	m.set("b", 200)
-	m.set("c", 300) // past the cap: wholesale clear, then c alone
-	if _, ok := m.lowest("a"); ok {
-		t.Fatal("cap exceeded should clear the memory")
-	}
-	if got, ok := m.lowest("c"); !ok || got != 300 {
-		t.Fatalf("lowest(c) = %d,%v want 300,true", got, ok)
-	}
-	m.set("", 5)
-	m.set("d", 0)
-	if _, ok := m.lowest(""); ok {
-		t.Fatal("empty host must not be stored")
-	}
-	if _, ok := m.lowest("d"); ok {
-		t.Fatal("zero height must not be stored")
 	}
 }
 

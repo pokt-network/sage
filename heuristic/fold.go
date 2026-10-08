@@ -1,16 +1,14 @@
 package heuristic
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // ContainsAnyOf reports whether s contains any of substrs. It does not fold
 // case: callers matching the lowercase pattern tables lowercase s first.
 func ContainsAnyOf(s string, substrs []string) bool {
-	for _, sub := range substrs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(substrs, func(sub string) bool { return strings.Contains(s, sub) })
 }
 
 // containsFold reports whether haystack contains needle using ASCII

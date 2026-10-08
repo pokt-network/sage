@@ -15,7 +15,7 @@ func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 	method := qos.JSONRPCMethod(data)
 	switch {
 	case strings.HasSuffix(method, "Unsubscribe"):
-		id, span := qos.JSONRPCFirstParam(data)
+		id, span := qos.JSONRPCPath(data, "params.0")
 		return qos.ClientFrameInfo{Action: qos.SubscriptionUnsubscribe, SubscriptionID: id, SubscriptionIDSpan: span, Method: method}
 	case strings.HasSuffix(method, "Subscribe"):
 		// Each Solana feed has its own method, so the method is the topic.
@@ -37,20 +37,7 @@ func (p *Plugin) ClassifyClientFrame(data []byte) qos.ClientFrameInfo {
 // response carries the integer subscription id as its result; a notification
 // is a "<x>Notification" call with params.subscription.
 func (p *Plugin) ClassifyEndpointFrame(data []byte) qos.EndpointFrameInfo {
-	if method := qos.JSONRPCMethod(data); strings.HasSuffix(method, "Notification") {
-		id, span := qos.JSONRPCPath(data, "params.subscription")
-		return qos.EndpointFrameInfo{Kind: qos.EndpointFrameNotification, SubscriptionID: id, SubscriptionIDSpan: span}
-	}
-	id := qos.JSONRPCRequestID(data)
-	if id == "" {
-		return qos.EndpointFrameInfo{}
-	}
-	return qos.EndpointFrameInfo{
-		Kind:           qos.EndpointFrameResponse,
-		RequestID:      id,
-		SubscriptionID: qos.JSONRPCResultScalar(data),
-		IsError:        qos.JSONRPCHasError(data),
-	}
+	return qos.JSONRPCEndpointFrame(data, func(method string) bool { return strings.HasSuffix(method, "Notification") })
 }
 
 // WebSocketProbe implements qos.WebSocketProber. getSlot: served over the pub/sub socket by the Solana RPC, and cheap.

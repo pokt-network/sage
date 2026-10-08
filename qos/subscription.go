@@ -1,8 +1,10 @@
 package qos
 
 import (
+	"bytes"
 	"fmt"
 	"hash/maphash"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -832,11 +834,7 @@ func (r *SubscriptionRegistry) Active() []Subscription {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]Subscription, 0, len(r.active))
-	for _, s := range r.active {
-		out = append(out, s)
-	}
-	return out
+	return slices.AppendSeq(make([]Subscription, 0, len(r.active)), maps.Values(r.active))
 }
 
 // Heartbeat reports whether the connection holds a periodic subscription and,
@@ -930,18 +928,33 @@ func JSONRPCResultScalar(data []byte) string {
 	return rawScalar(gjson.GetBytes(data, "result"))
 }
 
-// JSONRPCFirstParam returns raw params[0] when it is a string or a number,
-// or "", and where it sits.
-func JSONRPCFirstParam(data []byte) (string, Span) {
-	p := gjson.GetBytes(data, "params.0")
-	return rawScalar(p), SpanOf(p)
-}
-
 // JSONRPCPath returns the raw scalar at path and where it sits, or "" and a
 // zero span.
 func JSONRPCPath(data []byte, path string) (string, Span) {
 	p := gjson.GetBytes(data, path)
 	return rawScalar(p), SpanOf(p)
+}
+
+// JSONRPCEndpointFrame classifies an endpoint frame of a JSON-RPC pub/sub API
+// whose notifications are calls carrying params.subscription (EVM, Solana):
+// a notification when isNotification holds for the frame's method, otherwise
+// a response, whose scalar result is the subscription id a subscribe opens.
+// Ids are raw JSON (quotes included), as the registry requires.
+func JSONRPCEndpointFrame(data []byte, isNotification func(method string) bool) EndpointFrameInfo {
+	if isNotification(JSONRPCMethod(data)) {
+		id, span := JSONRPCPath(data, "params.subscription")
+		return EndpointFrameInfo{Kind: EndpointFrameNotification, SubscriptionID: id, SubscriptionIDSpan: span}
+	}
+	id := JSONRPCRequestID(data)
+	if id == "" {
+		return EndpointFrameInfo{}
+	}
+	return EndpointFrameInfo{
+		Kind:           EndpointFrameResponse,
+		RequestID:      id,
+		SubscriptionID: JSONRPCResultScalar(data),
+		IsError:        JSONRPCHasError(data),
+	}
 }
 
 // SpanOf is where a gjson result sits in the frame it was read from.
@@ -962,14 +975,6 @@ func rawScalar(res gjson.Result) string {
 
 // isJSONArray reports whether a frame is a JSON array: a batch.
 func isJSONArray(data []byte) bool {
-	for _, c := range data {
-		switch c {
-		case ' ', '\t', '\r', '\n':
-			continue
-		case '[':
-			return true
-		}
-		return false
-	}
-	return false
+	t := bytes.TrimLeft(data, " \t\r\n")
+	return len(t) > 0 && t[0] == '['
 }

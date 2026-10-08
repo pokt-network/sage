@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,12 +92,7 @@ func CanaryCheck(now time.Time) qos.HealthCheck {
 
 // isCanary reports whether a request is one of the canary bodies.
 func isCanary(request []byte) bool {
-	for _, b := range canaryBodies {
-		if bytes.Equal(request, b) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(canaryBodies, func(b []byte) bool { return bytes.Equal(request, b) })
 }
 
 // canaryTimestamp reads the block timestamp a canary answer carries: the
