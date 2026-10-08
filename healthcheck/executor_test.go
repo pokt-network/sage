@@ -675,8 +675,6 @@ func (p *heightPlugin) UpdateBlockHeight(ep domain.EndpointAddr, height uint64) 
 
 func (p *heightPlugin) PerceivedBlockHeight() uint64 { return p.height }
 
-func (p *heightPlugin) StartSync(_ context.Context) {}
-
 // sharedBackendEndpoints: three registrations in front of one backend, plus one
 // in front of another. Four suppliers, two machines.
 func sharedBackendEndpoints() domain.EndpointAddrList {

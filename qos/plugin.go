@@ -42,7 +42,6 @@ type Plugin interface {
 type BlockHeightTracker interface {
 	UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64)
 	PerceivedBlockHeight() uint64
-	StartSync(ctx context.Context)
 }
 
 // RPCTypeClassifier is implemented by a plugin whose chain fronts several

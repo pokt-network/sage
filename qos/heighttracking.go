@@ -1,7 +1,6 @@
 package qos
 
 import (
-	"context"
 	"sync/atomic"
 	"time"
 
@@ -35,10 +34,6 @@ func (h *HeightTracking) SetExternalFloor(height uint64) { h.Consensus.SetExtern
 
 // PerceivedBlockHeight returns the consensus head.
 func (h *HeightTracking) PerceivedBlockHeight() uint64 { return h.Consensus.PerceivedBlock() }
-
-// StartSync is a no-op: health checks and client traffic drive height
-// updates. A plugin with background work defines its own.
-func (h *HeightTracking) StartSync(_ context.Context) {}
 
 // ChainView reports what this service currently believes about its chain, for
 // the metrics exporter (ChainViewer).

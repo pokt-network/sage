@@ -21,17 +21,8 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/pokt-network/sage/domain"
-	"github.com/pokt-network/sage/internal/safego"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/qos/evm"
-)
-
-const (
-	// staleSweepInterval is how often the endpoint store is swept for stale entries.
-	staleSweepInterval = 5 * time.Minute
-
-	// endpointStaleTTL is how long an endpoint can go unseen before being swept.
-	endpointStaleTTL = 10 * time.Minute
 )
 
 // cosmosEndpoint holds per-endpoint state tracked by the Cosmos plugin.
@@ -153,7 +144,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		expectedChainID:   cfg.ExpectedChainID,
 		evmHeight:         cfg.EVMHeight,
 		stateCanary:       cfg.StateCanary,
-		store:             qos.NewEndpointStore[cosmosEndpoint](logger),
+		store:             qos.NewEndpointStore[cosmosEndpoint](),
 		pruned:            newPrunedMemory(),
 	}
 	p.Consensus = qos.NewBlockConsensus(logger, cfg.SyncAllowance)
@@ -304,27 +295,6 @@ func (p *Plugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint64) 
 		ep.BlockHeight = height
 	})
 	p.Consensus.AddObservation(endpoint, height)
-}
-
-// StartSync starts background goroutines for the plugin (stale endpoint sweeping).
-func (p *Plugin) StartSync(ctx context.Context) {
-	safego.GoCtx(ctx, p.logger, "qos.cosmos.sweep", p.sweepLoop)
-}
-
-func (p *Plugin) sweepLoop(ctx context.Context) {
-	ticker := time.NewTicker(staleSweepInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			removed := p.store.SweepStale(endpointStaleTTL)
-			if len(removed) > 0 {
-				p.logger.Info("cosmos: swept stale endpoints", "count", len(removed))
-			}
-		}
-	}
 }
 
 // --- qos.HealthChecker --- //

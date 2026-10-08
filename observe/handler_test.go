@@ -44,7 +44,6 @@ func (f *fakePlugin) UpdateBlockHeight(endpoint domain.EndpointAddr, height uint
 }
 
 func (f *fakePlugin) PerceivedBlockHeight() uint64 { return 0 }
-func (f *fakePlugin) StartSync(_ context.Context)  {}
 
 // fakePluginNoExtract implements only qos.Plugin (no DataExtractor).
 type fakePluginNoExtract struct{}

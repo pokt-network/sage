@@ -1,7 +1,6 @@
 package qos
 
 import (
-	"log/slog"
 	"testing"
 	"time"
 
@@ -14,7 +13,7 @@ type epData struct {
 }
 
 func newTestStore() *EndpointStore[epData] {
-	return NewEndpointStore[epData](slog.Default())
+	return NewEndpointStore[epData]()
 }
 
 func TestEndpointStore_Get(t *testing.T) {
@@ -63,47 +62,13 @@ func TestEndpointStore_Update(t *testing.T) {
 	}
 }
 
-func TestEndpointStore_SweepStale(t *testing.T) {
-	s := newTestStore()
-	a1 := domain.EndpointAddr("pokt1-https://node1.com")
-	a2 := domain.EndpointAddr("pokt2-https://node2.com")
-
-	s.Update(a1, func(d *epData) { *d = epData{BlockHeight: 100} })
-	s.Update(a2, func(d *epData) { *d = epData{BlockHeight: 200} })
-
-	// Nothing stale yet (both just set).
-	removed := s.SweepStale(time.Hour)
-	if len(removed) != 0 {
-		t.Fatalf("expected 0 removed, got %d", len(removed))
-	}
-
-	// Force staleness by using a very short TTL.
-	time.Sleep(2 * time.Millisecond)
-	removed = s.SweepStale(time.Millisecond)
-	if len(removed) != 2 {
-		t.Fatalf("expected 2 removed, got %d", len(removed))
-	}
-	if len(s.endpoints) != 0 {
-		t.Fatalf("expected 0 remaining, got %d", len(s.endpoints))
-	}
-}
-
-func TestEndpointStore_NilLogger(t *testing.T) {
-	// Should not panic with nil logger.
-	s := NewEndpointStore[int](nil)
-	s.Update(domain.EndpointAddr("x"), func(d *int) { *d = 42 })
-	if len(s.endpoints) != 1 {
-		t.Fatal("expected count 1")
-	}
-}
-
 // The three plugins used to write this closure themselves and disagreed about
 // a stored height of 0: two let the endpoint through as unjudgeable, one
 // filtered it out as hopelessly stale. Pinning the answer here is the point of
 // having one implementation.
 func TestHeightGetter(t *testing.T) {
 	type ep struct{ height uint64 }
-	store := NewEndpointStore[ep](nil)
+	store := NewEndpointStore[ep]()
 
 	store.Update("pokt1a-https://a.example.com", func(e *ep) { e.height = 500 })
 	store.Update("pokt1zero-https://zero.example.com", func(e *ep) { e.height = 0 })
@@ -146,7 +111,7 @@ func TestEndpointStore_Clear(t *testing.T) {
 // is recent. Its own reading, once it has one, wins.
 func TestHeightGetter_FallsBackToHostReading(t *testing.T) {
 	type data struct{ H uint64 }
-	s := NewEndpointStore[data](nil)
+	s := NewEndpointStore[data]()
 	get := HeightGetter(s, func(d data) uint64 { return d.H }, HeightProjection{})
 
 	s.ObserveHeight("old-https://n1.behind.net", func(d *data) { d.H = 900 })

@@ -23,7 +23,6 @@ func (f *fullPlugin) SelectEndpoints(ep domain.EndpointAddrList, _ []domain.Payl
 
 func (f *fullPlugin) UpdateBlockHeight(_ domain.EndpointAddr, _ uint64) {}
 func (f *fullPlugin) PerceivedBlockHeight() uint64                      { return 0 }
-func (f *fullPlugin) StartSync(_ context.Context)                       {}
 func (f *fullPlugin) HealthChecks() []HealthCheck                       { return nil }
 func (f *fullPlugin) ExtractData(_ domain.EndpointAddr, _, _ []byte) (*ExtractedData, error) {
 	return nil, nil

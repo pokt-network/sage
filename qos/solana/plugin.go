@@ -68,7 +68,7 @@ func NewPlugin(logger *slog.Logger, syncAllowance uint64) *Plugin {
 	}
 	p := &Plugin{
 		logger: logger,
-		store:  qos.NewEndpointStore[solanaEndpoint](logger),
+		store:  qos.NewEndpointStore[solanaEndpoint](),
 	}
 	p.Consensus = qos.NewBlockConsensus(logger, syncAllowance)
 	p.SetSyncAllowance(syncAllowance)

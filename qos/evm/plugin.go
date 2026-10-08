@@ -133,7 +133,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 	}
 	p := &Plugin{
 		logger:          logger,
-		store:           qos.NewEndpointStore[evmEndpoint](logger),
+		store:           qos.NewEndpointStore[evmEndpoint](),
 		expectedChainID: cfg.ExpectedChainID,
 		stateCanary:     cfg.StateCanary,
 		archival:        newArchivalMemory(),

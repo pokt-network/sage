@@ -1,7 +1,6 @@
 package qos
 
 import (
-	"log/slog"
 	"sync"
 	"time"
 
@@ -15,8 +14,7 @@ type EndpointStore[T any] struct {
 	endpoints map[domain.EndpointAddr]storedEndpoint[T]
 	// hosts is the latest height reading per host, for a registration that
 	// has none yet (see HeightGetter).
-	hosts  map[string]storedEndpoint[T]
-	logger *slog.Logger
+	hosts map[string]storedEndpoint[T]
 }
 
 // hostHeightMaxAge is how old a host's reading may be and still stand in for
@@ -28,23 +26,18 @@ const hostHeightMaxAge = 10 * time.Minute
 const hostHeightsMax = 4096
 
 type storedEndpoint[T any] struct {
-	Data     T
-	LastSeen time.Time
+	Data T
 	// HeightAt is when the height in Data was last observed; zero until
-	// ObserveHeight is called. Not LastSeen, which a session change or a
-	// chain-id check also moves without a new height.
+	// ObserveHeight is called. Update does not move it: a session change or a
+	// chain-id check carries no new height.
 	HeightAt time.Time
 }
 
 // NewEndpointStore creates an empty EndpointStore.
-func NewEndpointStore[T any](logger *slog.Logger) *EndpointStore[T] {
-	if logger == nil {
-		logger = slog.Default()
-	}
+func NewEndpointStore[T any]() *EndpointStore[T] {
 	return &EndpointStore[T]{
 		endpoints: make(map[domain.EndpointAddr]storedEndpoint[T]),
 		hosts:     make(map[string]storedEndpoint[T]),
-		logger:    logger,
 	}
 }
 
@@ -115,12 +108,8 @@ func (s *EndpointStore[T]) Get(addr domain.EndpointAddr) (T, bool) {
 func (s *EndpointStore[T]) Update(addr domain.EndpointAddr, fn func(*T)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ep, ok := s.endpoints[addr]
-	if !ok {
-		ep = storedEndpoint[T]{LastSeen: time.Now()}
-	}
+	ep := s.endpoints[addr]
 	fn(&ep.Data)
-	ep.LastSeen = time.Now()
 	s.endpoints[addr] = ep
 }
 
@@ -130,12 +119,8 @@ func (s *EndpointStore[T]) ObserveHeight(addr domain.EndpointAddr, fn func(*T)) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	ep, ok := s.endpoints[addr]
-	if !ok {
-		ep = storedEndpoint[T]{}
-	}
+	ep := s.endpoints[addr]
 	fn(&ep.Data)
-	ep.LastSeen = now
 	ep.HeightAt = now
 	s.endpoints[addr] = ep
 	if host := addr.Domain(); host != "" {
@@ -144,24 +129,6 @@ func (s *EndpointStore[T]) ObserveHeight(addr domain.EndpointAddr, fn func(*T)) 
 		}
 		s.hosts[host] = ep
 	}
-}
-
-// SweepStale removes endpoints not seen within the given TTL and returns their addresses.
-func (s *EndpointStore[T]) SweepStale(ttl time.Duration) []domain.EndpointAddr {
-	cutoff := time.Now().Add(-ttl)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var removed []domain.EndpointAddr
-	for addr, ep := range s.endpoints {
-		if ep.LastSeen.Before(cutoff) {
-			delete(s.endpoints, addr)
-			removed = append(removed, addr)
-		}
-	}
-	if len(removed) > 0 {
-		s.logger.Info("swept stale endpoints", "count", len(removed))
-	}
-	return removed
 }
 
 // Clear removes every stored endpoint. It exists for an operator-triggered

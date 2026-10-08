@@ -470,15 +470,6 @@ func TestUpdateBlockHeight_UpdatesPerceivedHeight(t *testing.T) {
 	}
 }
 
-// --- StartSync smoke test --- //
-
-func TestStartSync_DoesNotPanic(t *testing.T) {
-	p := newPlugin(10)
-	ctx, cancel := context.WithCancel(context.Background())
-	p.StartSync(ctx)
-	cancel() // trigger context cancellation
-}
-
 // --- Verify interface satisfaction --- //
 
 func TestInterfaceSatisfaction(t *testing.T) {

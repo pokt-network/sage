@@ -38,7 +38,7 @@ func TestHeightProjection_Project(t *testing.T) {
 // at the same moment still fails.
 func TestHeightGetter_JudgesReadingsAtTheHeadsMoment(t *testing.T) {
 	type ep struct{ height uint64 }
-	store := NewEndpointStore[ep](nil)
+	store := NewEndpointStore[ep]()
 	store.ObserveHeight("pokt1a-https://fresh.example.com", func(e *ep) { e.height = 880 })
 	store.ObserveHeight("pokt1b-https://lagging.example.com", func(e *ep) { e.height = 700 })
 	// Both were read 60 s before the head, at 2 blocks a second.
@@ -69,7 +69,7 @@ func TestHeightGetter_JudgesReadingsAtTheHeadsMoment(t *testing.T) {
 // height reading look fresh.
 func TestEndpointStore_UpdateKeepsTheHeightTime(t *testing.T) {
 	type ep struct{ height, other uint64 }
-	store := NewEndpointStore[ep](nil)
+	store := NewEndpointStore[ep]()
 	addr := domain.EndpointAddr("pokt1a-https://a.example.com")
 	store.ObserveHeight(addr, func(e *ep) { e.height = 5 })
 	store.mu.Lock()

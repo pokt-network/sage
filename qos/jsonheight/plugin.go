@@ -99,7 +99,7 @@ func NewPlugin(logger *slog.Logger, chain Chain, syncAllowance uint64) *Plugin {
 	p := &Plugin{
 		chain:  chain,
 		logger: logger,
-		store:  qos.NewEndpointStore[endpointState](logger),
+		store:  qos.NewEndpointStore[endpointState](),
 	}
 	p.Consensus = qos.NewBlockConsensus(logger, syncAllowance)
 	p.SetSyncAllowance(syncAllowance)
