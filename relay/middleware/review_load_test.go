@@ -43,9 +43,10 @@ func BenchmarkReviewLoad_CoalescingKeyBefore(b *testing.B) {
 }
 
 func BenchmarkReviewLoad_CoalescingKeyAfter(b *testing.B) {
+	ps := []domain.Payload{reviewPayload}
 	b.ReportAllocs()
 	for b.Loop() {
-		reviewSink = coalescingKey("eth", reviewPayload)
+		reviewSink = cacheKey("eth", ps)
 	}
 }
 

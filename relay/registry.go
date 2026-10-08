@@ -3,6 +3,7 @@ package relay
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -102,10 +103,5 @@ func (r *MiddlewareRegistry) BuildChain(order []string) (Handler, error) {
 
 // RegisteredNames returns the registered middleware names, sorted.
 func (r *MiddlewareRegistry) RegisteredNames() []string {
-	names := make([]string, 0, len(r.factories))
-	for name := range r.factories {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
+	return slices.Sorted(maps.Keys(r.factories))
 }

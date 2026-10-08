@@ -47,15 +47,10 @@ func CircuitBreak(
 			// SelectEndpoint (which sits inside Retry/Hedge), so without this
 			// the very first attempt would see an empty list and skip the
 			// broken-domain filter entirely. SelectEndpoint skips its own
-			// fetch when the list is already populated.
-			if len(ctx.Endpoints) == 0 && endpointProvider != nil {
-				eps, err := endpointProvider.AvailableEndpoints(ctx.Ctx, ctx.ServiceID, ctx.RPCType)
-				if err == nil {
-					ctx.Endpoints = eps
-				}
-				// On error, leave the list empty — SelectEndpoint retries the
-				// fetch and surfaces the error.
-			}
+			// fetch when the list is already populated. On error the list
+			// stays empty — SelectEndpoint retries the fetch and surfaces the
+			// error.
+			fillEndpoints(ctx, endpointProvider)
 
 			// Pre-relay: remove endpoints whose domain is broken — unless that
 			// removes every one. With the whole pool broken the request fails

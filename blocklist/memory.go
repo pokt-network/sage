@@ -2,6 +2,8 @@ package blocklist
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"sync"
 )
 
@@ -37,9 +39,5 @@ func (b *MemoryBackend) Delete(_ context.Context, domain string) error {
 func (b *MemoryBackend) Load(_ context.Context) ([]Entry, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	out := make([]Entry, 0, len(b.entries))
-	for _, e := range b.entries {
-		out = append(out, e)
-	}
-	return out, nil
+	return slices.Collect(maps.Values(b.entries)), nil
 }

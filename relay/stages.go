@@ -107,11 +107,7 @@ func (s *StageTimes) Exclusive() map[string]time.Duration {
 	defer s.mu.Unlock()
 	out := make(map[string]time.Duration, len(s.total))
 	for name, t := range s.total {
-		d := t - s.inner[name]
-		if d < 0 {
-			d = 0
-		}
-		out[name] = d
+		out[name] = max(t-s.inner[name], 0)
 	}
 	return out
 }

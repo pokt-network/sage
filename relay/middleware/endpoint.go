@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -130,15 +131,9 @@ var errHedgeRuledOut = errors.New("hedge: every endpoint left for it is ruled ou
 // score yet: an unproven host is not a dead one.
 func allRuledOut(repSvc reputation.Service, ctx *relay.Context, eps domain.EndpointAddrList) bool {
 	c, ok := repSvc.(reputation.RuledOutChecker)
-	if !ok {
-		return false
-	}
-	for _, ep := range eps {
-		if !c.RuledOut(ctx.ServiceID, ep, ctx.RPCType) {
-			return false
-		}
-	}
-	return true
+	return ok && !slices.ContainsFunc(eps, func(ep domain.EndpointAddr) bool {
+		return !c.RuledOut(ctx.ServiceID, ep, ctx.RPCType)
+	})
 }
 
 // narrowsIntoStale reports whether narrowing full to narrowed leaves only

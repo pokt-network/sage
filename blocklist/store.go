@@ -160,9 +160,6 @@ func (m *Manager) Set(ctx context.Context, e Entry) error {
 	}
 	m.mu.Unlock()
 
-	if m.backend == nil {
-		return nil
-	}
 	if err := m.backend.Save(ctx, e); err != nil {
 		return fmt.Errorf("%w: %v", ErrPropagation, err)
 	}
@@ -188,9 +185,6 @@ func (m *Manager) Release(ctx context.Context, domain string) error {
 	}
 	m.mu.Unlock()
 
-	if m.backend == nil {
-		return nil
-	}
 	if err := m.backend.Delete(ctx, domain); err != nil {
 		return fmt.Errorf("%w: %v", ErrPropagation, err)
 	}
@@ -224,11 +218,6 @@ func (m *Manager) Len() int {
 // reload replaces the admin entries with the backend's and re-applies when
 // they differ. A backend read failure keeps what is here.
 func (m *Manager) reload(ctx context.Context) error {
-	if m.backend == nil {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return m.applyLocked()
-	}
 	loaded, err := m.backend.Load(ctx)
 	if err != nil {
 		return err

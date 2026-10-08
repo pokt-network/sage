@@ -300,12 +300,9 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					// a vouched endpoint, or does not happen: the node's own
 					// answer is delivered, or SAGE's 429 when it sent none.
 					if limiterVerdict(pendingCause) {
-						other := make(domain.EndpointAddrList, 0, len(available))
-						for _, ep := range available {
-							if !triedOperators[ep.Operator()] {
-								other = append(other, ep)
-							}
-						}
+						other := filterEndpoints(available, func(ep domain.EndpointAddr) bool {
+							return !triedOperators[ep.Operator()]
+						})
 						if len(other) == 0 || !anyVouched(o.Reputation, ctx, other) || narrowsIntoStale(ctx, other, available) {
 							retriedFor, limited = pendingCause, true
 							return lastErr

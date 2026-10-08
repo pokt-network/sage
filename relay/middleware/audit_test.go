@@ -109,11 +109,9 @@ func TestAudit_CacheAndCoalescingKeysIgnoreRoute(t *testing.T) {
 		{"different verbs", domain.NewPayload(nil, domain.RPCTypeREST, "").WithHTTP("/eth/v1/node/health", http.MethodGet),
 			domain.NewPayload(nil, domain.RPCTypeREST, "").WithHTTP("/eth/v1/node/health", http.MethodHead)},
 	} {
+		// Singleflight keys on cacheKey too.
 		if cacheKey("tron", []domain.Payload{tc.a}) == cacheKey("tron", []domain.Payload{tc.b}) {
-			t.Errorf("%s: one cache key", tc.name)
-		}
-		if coalescingKey("tron", tc.a) == coalescingKey("tron", tc.b) {
-			t.Errorf("%s: one singleflight key", tc.name)
+			t.Errorf("%s: one cache and singleflight key", tc.name)
 		}
 	}
 

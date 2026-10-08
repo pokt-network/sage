@@ -99,11 +99,7 @@ func (s *ScoreSink) Add(ep domain.EndpointAddr, rpc domain.RPCType, sig reputati
 		return
 	}
 	if severityRank(sig.Type) > severityRank(cur.Type) {
-		latency := cur.Latency
-		if sig.Latency > latency {
-			latency = sig.Latency
-		}
-		sig.Latency = latency
+		sig.Latency = max(sig.Latency, cur.Latency)
 		s.worst[k] = sig
 		return
 	}

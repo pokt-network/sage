@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/url"
+	"slices"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
@@ -85,15 +86,10 @@ func MethodBlocks(
 			// in the chain; a filter that applied only to a list someone else
 			// happened to fetch would silently stop applying the moment an
 			// admin flipped circuit_breaker off. SelectEndpoint skips its own
-			// fetch when the list is already populated.
-			if len(ctx.Endpoints) == 0 && endpointProvider != nil {
-				eps, err := endpointProvider.AvailableEndpoints(ctx.Ctx, ctx.ServiceID, ctx.RPCType)
-				if err == nil {
-					ctx.Endpoints = eps
-				}
-				// On error, leave the list empty — SelectEndpoint retries the
-				// fetch and surfaces the error.
-			}
+			// fetch when the list is already populated. On error the list
+			// stays empty — SelectEndpoint retries the fetch and surfaces the
+			// error.
+			fillEndpoints(ctx, endpointProvider)
 
 			open := func(ep domain.EndpointAddr) bool {
 				return !store.Blocked(serviceID, dialedHost(endpointProvider, ctx.ServiceID, ep, ctx.RPCType), method)
@@ -178,12 +174,9 @@ func anyVouched(repSvc reputation.Service, ctx *relay.Context, eps domain.Endpoi
 	if repSvc == nil {
 		return true
 	}
-	for _, ep := range eps {
-		if repSvc.Vouched(ctx.Ctx, ctx.ServiceID, ep, ctx.RPCType) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(eps, func(ep domain.EndpointAddr) bool {
+		return repSvc.Vouched(ctx.Ctx, ctx.ServiceID, ep, ctx.RPCType)
+	})
 }
 
 // keepsVouchedCapacity reports whether narrowing full to narrowed keeps

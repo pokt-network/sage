@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -19,7 +21,6 @@ const (
 	defaultMinTTL    = 1 * time.Minute
 	defaultMaxTTL    = 30 * time.Minute
 	defaultKeyPrefix = "sage:circuit:"
-	escalationFactor = 2
 )
 
 // Failure-rate gate defaults.
@@ -192,6 +193,7 @@ func (b *Breaker) SetOutcomeHook(fn func(serviceID, domain, outcome string)) {
 func New(opts ...Option) *Breaker {
 	b := &Breaker{
 		broken:               make(map[string]map[string]BrokenState),
+		brokenLocally:        make(map[string]map[string]time.Time),
 		keyPrefix:            defaultKeyPrefix,
 		cacheTTL:             defaultCacheTTL,
 		lastRefresh:          make(map[string]time.Time),
@@ -217,19 +219,9 @@ func (b *Breaker) IsBroken(serviceID, domain string) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	domains, ok := b.broken[serviceID]
-	if !ok {
-		return false
-	}
-	state, ok := domains[domain]
-	if !ok {
-		return false
-	}
-	if state.IsExpired() {
-		// Expired entries are cleaned up lazily; not broken.
-		return false
-	}
-	return true
+	// Expired entries are cleaned up lazily; not broken.
+	state, ok := b.broken[serviceID][domain]
+	return ok && !state.IsExpired()
 }
 
 // RecordSuccess reports a successful relay against a domain. It forms the
@@ -342,11 +334,9 @@ func (b *Breaker) MarkBroken(serviceID, domain, reason string) bool {
 	// Batch sub-relays and hedge arms fail concurrently, so one incident
 	// produces many of these. Do not escalate, do not extend the expiry.
 	b.mu.RLock()
-	if domains, ok := b.broken[serviceID]; ok {
-		if existing, exists := domains[domain]; exists && existing.Expiry.After(now) {
-			b.mu.RUnlock()
-			return false
-		}
+	if existing, exists := b.broken[serviceID][domain]; exists && existing.Expiry.After(now) {
+		b.mu.RUnlock()
+		return false
 	}
 	b.mu.RUnlock()
 
@@ -372,9 +362,6 @@ func (b *Breaker) MarkBroken(serviceID, domain, reason string) bool {
 		b.broken[serviceID] = make(map[string]BrokenState)
 	}
 	b.broken[serviceID][domain] = state
-	if b.brokenLocally == nil {
-		b.brokenLocally = make(map[string]map[string]time.Time)
-	}
 	if b.brokenLocally[serviceID] == nil {
 		b.brokenLocally[serviceID] = make(map[string]time.Time)
 	}
@@ -450,28 +437,14 @@ func (b *Breaker) GetBroken(serviceID string) map[string]BrokenState {
 // at scrape time and always be current: breaks expire lazily, with no event to
 // hang a pushed gauge off.
 func (b *Breaker) BrokenDomains(serviceID string) []string {
-	broken := b.GetBroken(serviceID)
-	if len(broken) == 0 {
-		return nil
-	}
-	domains := make([]string, 0, len(broken))
-	for d := range broken {
-		domains = append(domains, d)
-	}
-	return domains
+	return slices.Collect(maps.Keys(b.GetBroken(serviceID)))
 }
 
 // escalateTTL returns the TTL for the next break based on hit count.
-// Escalation: 1m → 2m → 4m → 8m → 16m → 30m (cap).
+// Escalation: 1m → 2m → 4m → 8m → 16m → 30m (cap). The shift stops at 5
+// doublings, already past the cap, so a large count cannot overflow.
 func (b *Breaker) escalateTTL(hitCount int) time.Duration {
-	ttl := defaultMinTTL
-	for i := 0; i < hitCount; i++ {
-		ttl *= escalationFactor
-		if ttl >= defaultMaxTTL {
-			return defaultMaxTTL
-		}
-	}
-	return ttl
+	return min(defaultMinTTL<<min(max(hitCount, 0), 5), defaultMaxTTL)
 }
 
 // redisKey returns the Redis key for a service's circuit breaker state.
@@ -576,11 +549,7 @@ func (b *Breaker) mergeRedisEntries(serviceID string, entries map[string]string,
 			continue
 		}
 		// Merge: keep the entry with the later expiry.
-		if existing, ok := b.broken[serviceID][domain]; ok {
-			if state.Expiry.After(existing.Expiry) {
-				b.broken[serviceID][domain] = state
-			}
-		} else {
+		if existing, ok := b.broken[serviceID][domain]; !ok || state.Expiry.After(existing.Expiry) {
 			b.broken[serviceID][domain] = state
 		}
 	}

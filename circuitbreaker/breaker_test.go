@@ -60,47 +60,23 @@ func TestBreaker_Expiry(t *testing.T) {
 
 func TestBreaker_EscalatingTTL(t *testing.T) {
 	b := New()
-
-	// First mark: 1m TTL.
-	ttl0 := b.escalateTTL(0)
-	if ttl0 != 1*time.Minute {
-		t.Errorf("hit 0: TTL = %v, want 1m", ttl0)
-	}
-
-	// Second mark: 2m TTL.
-	ttl1 := b.escalateTTL(1)
-	if ttl1 != 2*time.Minute {
-		t.Errorf("hit 1: TTL = %v, want 2m", ttl1)
-	}
-
-	// Third: 4m.
-	ttl2 := b.escalateTTL(2)
-	if ttl2 != 4*time.Minute {
-		t.Errorf("hit 2: TTL = %v, want 4m", ttl2)
-	}
-
-	// Fourth: 8m.
-	ttl3 := b.escalateTTL(3)
-	if ttl3 != 8*time.Minute {
-		t.Errorf("hit 3: TTL = %v, want 8m", ttl3)
-	}
-
-	// Fifth: 16m.
-	ttl4 := b.escalateTTL(4)
-	if ttl4 != 16*time.Minute {
-		t.Errorf("hit 4: TTL = %v, want 16m", ttl4)
-	}
-
-	// Sixth: 30m cap.
-	ttl5 := b.escalateTTL(5)
-	if ttl5 != 30*time.Minute {
-		t.Errorf("hit 5: TTL = %v, want 30m (cap)", ttl5)
-	}
-
-	// Beyond cap stays at 30m.
-	ttl10 := b.escalateTTL(10)
-	if ttl10 != 30*time.Minute {
-		t.Errorf("hit 10: TTL = %v, want 30m (cap)", ttl10)
+	for hitCount, want := range map[int]time.Duration{
+		-1: 1 * time.Minute,
+		0:  1 * time.Minute,
+		1:  2 * time.Minute,
+		2:  4 * time.Minute,
+		3:  8 * time.Minute,
+		4:  16 * time.Minute,
+		5:  30 * time.Minute, // cap
+		6:  30 * time.Minute,
+		7:  30 * time.Minute,
+		8:  30 * time.Minute,
+		9:  30 * time.Minute,
+		10: 30 * time.Minute,
+	} {
+		if got := b.escalateTTL(hitCount); got != want {
+			t.Errorf("hit %d: TTL = %v, want %v", hitCount, got, want)
+		}
 	}
 }
 

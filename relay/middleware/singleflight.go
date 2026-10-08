@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"crypto/sha256"
 	"sync"
 
 	"golang.org/x/sync/singleflight"
@@ -63,7 +62,9 @@ func Singleflight(flags featureflag.FlagStore, rec SingleflightRecorder) relay.M
 				return next.HandleRelay(ctx)
 			}
 
-			key := coalescingKey(ctx.ServiceID, ctx.Payloads[0])
+			// The response cache's key: the service and the payload's
+			// request identity (writeRequestKey).
+			key := cacheKey(ctx.ServiceID, ctx.Payloads)
 			group := groupFor(ctx.ServiceID)
 
 			// ranRelay is set to true inside the Do closure to distinguish the
@@ -123,17 +124,4 @@ type flight struct {
 	verdict    *heuristic.AnalysisResult
 	err        error
 	leaderGone bool
-}
-
-// coalescingKey builds a stable string key for singleflight deduplication:
-// the raw sha256 of the service and the payload's request identity
-// (writeRequestKey), the same identity the response cache keys on. The key
-// is only a map key inside singleflight (never displayed), so hex encoding
-// would just double its size.
-func coalescingKey(serviceID domain.ServiceID, p domain.Payload) string {
-	h := sha256.New()
-	_, _ = h.Write([]byte(serviceID))
-	writeRequestKey(h, p)
-	var sum [sha256.Size]byte
-	return string(h.Sum(sum[:0]))
 }

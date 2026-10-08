@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -91,13 +92,7 @@ func remoteIP(ctx *relay.Context) string {
 // prioritize returns a copy of list with preferred moved to the front.
 // If preferred is not in the list, the original order is preserved.
 func prioritize(list domain.EndpointAddrList, preferred domain.EndpointAddr) domain.EndpointAddrList {
-	idx := -1
-	for i, ep := range list {
-		if ep == preferred {
-			idx = i
-			break
-		}
-	}
+	idx := slices.Index(list, preferred)
 	if idx <= 0 {
 		// Not found, or already at front — no change needed.
 		return list

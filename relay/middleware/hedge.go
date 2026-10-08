@@ -280,11 +280,7 @@ func armContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if !ok {
 		return context.WithCancel(detached)
 	}
-	grace := time.Until(dl)
-	if grace < 0 {
-		grace = 0
-	}
-	return context.WithDeadline(detached, dl.Add(grace))
+	return context.WithDeadline(detached, dl.Add(max(time.Until(dl), 0)))
 }
 
 // mergeContext copies the result fields from src into dst so callers see
