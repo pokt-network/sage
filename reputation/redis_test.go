@@ -7,13 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewRedisStorage_NilClient(t *testing.T) {
-	_, err := NewRedisStorage(nil, "test:hash")
-	if err == nil {
-		t.Fatal("expected error for nil client")
-	}
-}
-
 func TestRedisStorage_DecodeLegacyFloat(t *testing.T) {
 	st, err := decodeState("87.5")
 	require.NoError(t, err)

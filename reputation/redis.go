@@ -46,15 +46,8 @@ type RedisStorage struct {
 // NewRedisStorage creates a new Redis storage backend.
 // The hashKey parameter determines the Redis HASH key used for all states
 // (e.g., "path:reputation:scores").
-// Returns an error if client is nil.
-func NewRedisStorage(client RedisClient, hashKey string) (*RedisStorage, error) {
-	if client == nil {
-		return nil, errors.New("redis client must not be nil")
-	}
-	return &RedisStorage{
-		client:  client,
-		hashKey: hashKey,
-	}, nil
+func NewRedisStorage(client RedisClient, hashKey string) *RedisStorage {
+	return &RedisStorage{client: client, hashKey: hashKey}
 }
 
 // encodeState is the hash field value: JSON, so a field can grow without a

@@ -112,8 +112,7 @@ func (f *fakeHash) HScan(_ context.Context, _ string, cursor uint64, _ string, _
 func TestRedisStorage_DeleteStale(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	fake := &fakeHash{fields: map[string]string{}, pageSize: 3}
-	r, err := NewRedisStorage(fake, "sage:reputation:")
-	require.NoError(t, err)
+	r := NewRedisStorage(fake, "sage:reputation:")
 	ctx := context.Background()
 
 	// Seven fields across three HSCAN pages: stamped-fresh, stamped-stale,
@@ -143,8 +142,7 @@ func TestRedisStorage_DeleteStale(t *testing.T) {
 
 func TestRedisStorage_DeleteStale_EmptyHash(t *testing.T) {
 	fake := &fakeHash{fields: map[string]string{}, pageSize: 10}
-	r, err := NewRedisStorage(fake, "h")
-	require.NoError(t, err)
+	r := NewRedisStorage(fake, "h")
 	n, err := r.DeleteStale(context.Background(), time.Now())
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)

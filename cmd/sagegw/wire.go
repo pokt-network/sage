@@ -292,15 +292,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 
 	// 3. Reputation
 	timeline := reputation.NewTimeline(100)
-	var repStorage reputation.Storage
-	repStorage = reputation.NewMemoryStorage()
+	var repStorage reputation.Storage = reputation.NewMemoryStorage()
 	if redisClient != nil {
-		var err error
-		repStorage, err = reputation.NewRedisStorage(redisClient, cfg.Redis.Key("reputation:"))
-		if err != nil {
-			logger.Warn("Redis reputation storage failed, using memory", "error", err)
-			repStorage = reputation.NewMemoryStorage()
-		}
+		repStorage = reputation.NewRedisStorage(redisClient, cfg.Redis.Key("reputation:"))
 	}
 	initialScore := 100.0
 	if cfg.Gateway.Reputation.InitialScore > 0 {
@@ -706,10 +700,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	// (reputation/peerparties.go). Read under the peer's default key name, as
 	// its probe stream and drains are.
 	if peer := cfg.Gateway.HealthChecks.PeerProbeStream; peer.Enabled && peer.Parties && redisClient != nil {
-		peerRep, err := reputation.NewRedisStorage(peerRedisClient(cfg, peer.DB), config.DefaultRedisKeyPrefix+"reputation:")
-		if err != nil {
-			return nil, fmt.Errorf("peer parties: %w", err)
-		}
+		peerRep := reputation.NewRedisStorage(peerRedisClient(cfg, peer.DB), config.DefaultRedisKeyPrefix+"reputation:")
 		repSvc.SetPeerParties(peerRep.GetPartyPenalties)
 		app.StartupNotes = append(app.StartupNotes, fmt.Sprintf(
 			"reputation: borrowing the priced parties of the peer instance in Redis db %d as a floor (peer_probe_stream.parties)", peer.DB))
