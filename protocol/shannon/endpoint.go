@@ -108,12 +108,6 @@ var rpcTypeMapping = map[sharedtypes.RPCType]domain.RPCType{
 	sharedtypes.RPCType_GRPC:      domain.RPCTypeGRPC,
 }
 
-// toDomainRPCType converts a poktroll RPCType to a domain RPCType.
-func toDomainRPCType(rt sharedtypes.RPCType) (domain.RPCType, bool) {
-	dt, ok := rpcTypeMapping[rt]
-	return dt, ok
-}
-
 // endpointsFromSession extracts all endpoints from a session, grouped by supplier address.
 // Returns a map from EndpointAddr to *endpoint for efficient lookup.
 func endpointsFromSession(session *sessiontypes.Session) map[domain.EndpointAddr]*endpoint {
@@ -148,7 +142,7 @@ func endpointsFromSession(session *sessiontypes.Session) map[domain.EndpointAddr
 		}
 
 		for _, se := range supplierEndpoints {
-			domainRPC, ok := toDomainRPCType(se.RPCType())
+			domainRPC, ok := rpcTypeMapping[se.RPCType()]
 			if !ok {
 				continue
 			}

@@ -99,7 +99,7 @@ type Protocol struct {
 	// blockedSuppliers and endpointPolicy are operator selection constraints
 	// applied alongside the blacklist/drain/domain-ban in endpoints().
 	blockedSuppliers blockedSupplierTable
-	endpointPolicy   endpointPolicy
+	endpointPolicy   config.EndpointPolicy
 	logger           *slog.Logger
 }
 
@@ -158,7 +158,7 @@ func New(cfg config.Config, logger *slog.Logger) (*Protocol, error) {
 		rpcFallbacks:     buildRPCFallbacks(cfg.Gateway.AllServices()),
 		debugLimits:      newDebugLimits(),
 		blockedSuppliers: buildBlockedSuppliers(cfg.Gateway.AllServices()),
-		endpointPolicy:   newEndpointPolicy(cfg.Gateway.EndpointPolicy),
+		endpointPolicy:   cfg.Gateway.EndpointPolicy,
 		logger:           logger.With("component", "shannon_protocol"),
 	}
 	p.blockedDomains.Store(blockedDomains)
@@ -667,7 +667,7 @@ func (p *Protocol) endpoints(ctx context.Context, serviceID domain.ServiceID, rp
 				supplierBlocked++
 				continue
 			}
-			if p.endpointPolicy.rejects(url) {
+			if policyRejects(p.endpointPolicy, url) {
 				policyRejected++
 				continue
 			}

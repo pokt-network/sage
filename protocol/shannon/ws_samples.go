@@ -1,7 +1,8 @@
 package shannon
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -140,18 +141,13 @@ func (s *wsNotificationSamples) snapshot(serviceID domain.ServiceID) []WSNotific
 			keys = append(keys, k)
 		}
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := keys[i], keys[j]
-		if a.service != b.service {
-			return a.service < b.service
-		}
-		if a.operator != b.operator {
-			return a.operator < b.operator
-		}
-		if a.owner != b.owner {
-			return a.owner < b.owner
-		}
-		return a.topic < b.topic
+	slices.SortFunc(keys, func(a, b wsSampleKey) int {
+		return cmp.Or(
+			strings.Compare(a.service, b.service),
+			strings.Compare(a.operator, b.operator),
+			strings.Compare(a.owner, b.owner),
+			strings.Compare(a.topic, b.topic),
+		)
 	})
 	out := []WSNotificationSample{}
 	for _, k := range keys {

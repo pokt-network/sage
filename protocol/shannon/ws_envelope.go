@@ -1,6 +1,7 @@
 package shannon
 
 import (
+	"bytes"
 	"errors"
 
 	sdktypes "github.com/pokt-network/shannon-sdk/types"
@@ -69,15 +70,6 @@ func extractEndpointFrameBody(payload []byte) ([]byte, int) {
 // leading whitespace a backend may send. A frame that does is data, and is
 // never decoded as anything else.
 func looksLikeJSONFrame(payload []byte) bool {
-	for _, b := range payload {
-		switch b {
-		case ' ', '\t', '\r', '\n':
-			continue
-		case '{', '[':
-			return true
-		default:
-			return false
-		}
-	}
-	return false
+	p := bytes.TrimLeft(payload, " \t\r\n")
+	return len(p) > 0 && (p[0] == '{' || p[0] == '[')
 }

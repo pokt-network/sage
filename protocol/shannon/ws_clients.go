@@ -1,7 +1,10 @@
 package shannon
 
 import (
+	"cmp"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -384,11 +387,8 @@ func (l *wsClientLedger) snapshot(serviceID domain.ServiceID, limit int, onlySho
 		}
 		out.Clients = append(out.Clients, *r)
 	}
-	sort.Slice(out.Clients, func(i, j int) bool {
-		if out.Clients[i].Frames != out.Clients[j].Frames {
-			return out.Clients[i].Frames > out.Clients[j].Frames
-		}
-		return out.Clients[i].ClientIP < out.Clients[j].ClientIP
+	slices.SortFunc(out.Clients, func(a, b WSClientReport) int {
+		return cmp.Or(cmp.Compare(b.Frames, a.Frames), strings.Compare(a.ClientIP, b.ClientIP))
 	})
 	if len(out.Clients) > limit {
 		out.Clients = out.Clients[:limit]

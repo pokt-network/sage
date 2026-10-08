@@ -63,7 +63,7 @@ func TestAvailableEndpoints_EndpointPolicy(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p, _ := policyTestProtocol(t, tc.url)
-			p.endpointPolicy = newEndpointPolicy(tc.policy)
+			p.endpointPolicy = tc.policy
 			got, _ := p.AvailableEndpoints(context.Background(), "eth", domain.RPCTypeJSONRPC)
 			if (len(got) == 1) != tc.allowed {
 				t.Errorf("url %q policy %+v: available=%d, want allowed=%v", tc.url, tc.policy, len(got), tc.allowed)

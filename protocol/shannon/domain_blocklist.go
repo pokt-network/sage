@@ -1,9 +1,10 @@
 package shannon
 
 import (
+	"cmp"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -252,11 +253,8 @@ func (b *domainBlocklist) entries() [][2]string {
 			out = append(out, [2]string{host, string(rpcType)})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i][0] != out[j][0] {
-			return out[i][0] < out[j][0]
-		}
-		return out[i][1] < out[j][1]
+	slices.SortFunc(out, func(a, b [2]string) int {
+		return cmp.Or(strings.Compare(a[0], b[0]), strings.Compare(a[1], b[1]))
 	})
 	return out
 }

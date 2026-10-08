@@ -5,8 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -153,13 +154,8 @@ func (p *Protocol) resolveDebugTarget(ctx context.Context, serviceID domain.Serv
 		}
 	}
 	if len(matches) == 0 {
-		ops := make([]string, 0, len(present))
-		for op := range present {
-			ops = append(ops, op)
-		}
-		sort.Strings(ops)
 		return "", nil, fmt.Errorf("%w: %q on %s %s; operators in the session: %s",
-			protocol.ErrDebugTargetNotFound, target, serviceID, rpcType, strings.Join(ops, ", "))
+			protocol.ErrDebugTargetNotFound, target, serviceID, rpcType, strings.Join(slices.Sorted(maps.Keys(present)), ", "))
 	}
 	// The endpoint is kept from the match, not looked up again: a session
 	// rotating in between would leave it nil.

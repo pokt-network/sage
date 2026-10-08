@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -131,11 +132,7 @@ func (p *wsMessageProcessor) countTopic(topic string) {
 func (p *wsMessageProcessor) topicCounts() map[string]int64 {
 	p.topicMu.Lock()
 	defer p.topicMu.Unlock()
-	out := make(map[string]int64, len(p.topics))
-	for t, n := range p.topics {
-		out[t] = n
-	}
-	return out
+	return maps.Clone(p.topics)
 }
 
 // newWSMessageProcessor creates a processor ready to be handed to

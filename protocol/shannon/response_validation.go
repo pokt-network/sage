@@ -65,9 +65,6 @@ func isSignatureError(err error) bool {
 // supplier's operator account has never signed a transaction, so nothing it
 // returns can be verified, which is its problem to fix and ours to route around.
 func isSupplierValidationError(err error) bool {
-	if err == nil {
-		return false
-	}
 	return errors.Is(err, sdk.ErrRelayResponseValidationUnmarshal) ||
 		errors.Is(err, sdk.ErrRelayResponseValidationBasicValidation) ||
 		errors.Is(err, sdk.ErrRelayResponseValidationNilSupplierPubKey) ||
@@ -81,9 +78,6 @@ func isSupplierValidationError(err error) bool {
 // A signature mismatch qualifies: the cached answer may be the "no key onchain"
 // one taken before the supplier's first transaction.
 func isPubKeyRelatedError(err error) bool {
-	if err == nil {
-		return false
-	}
 	return errors.Is(err, sdk.ErrRelayResponseValidationGetPubKey) ||
 		errors.Is(err, sdk.ErrRelayResponseValidationNilSupplierPubKey) ||
 		isSignatureError(err)
@@ -92,8 +86,6 @@ func isPubKeyRelatedError(err error) bool {
 // blacklistReason maps a validation failure to its metric label.
 func blacklistReason(err error) string {
 	switch {
-	case err == nil:
-		return blacklistReasonUnknown
 	case errors.Is(err, sdk.ErrRelayResponseValidationUnmarshal):
 		return blacklistReasonUnmarshal
 	case errors.Is(err, sdk.ErrRelayResponseValidationBasicValidation):
@@ -212,7 +204,7 @@ func (p *Protocol) trackRelayMinerError(
 	supplierAddr string,
 	resp *servicetypes.RelayResponse,
 ) {
-	minerErr := relayMinerError(resp)
+	minerErr := resp.GetRelayMinerError()
 	if minerErr == nil {
 		return
 	}
@@ -230,25 +222,12 @@ func (p *Protocol) trackRelayMinerError(
 	)
 }
 
-// relayMinerError extracts the miner's own error report from a relay response.
-//
-// The relay miner reports its failures in this field rather than as a transport
-// error, and fills it in on responses that then fail validation — so it must be
-// read before branching on the validation error, or it is lost. Returns nil when
-// there is nothing to report.
-func relayMinerError(resp *servicetypes.RelayResponse) *servicetypes.RelayMinerError {
-	if resp == nil {
-		return nil
-	}
-	return resp.RelayMinerError
-}
-
 // unsignedMinerError returns the miner's own error report when a response
 // failed only for want of what a relay has (basic validation: the signature
 // above all) and carries one: the miner refusing, not a response to verify.
 // Nil otherwise, including for a signed response with a report attached.
 func unsignedMinerError(resp *servicetypes.RelayResponse, err error) *domain.MinerError {
-	m := relayMinerError(resp)
+	m := resp.GetRelayMinerError()
 	if m == nil || !errors.Is(err, sdk.ErrRelayResponseValidationBasicValidation) {
 		return nil
 	}

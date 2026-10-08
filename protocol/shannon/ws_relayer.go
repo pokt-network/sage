@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -750,8 +749,8 @@ func relayMinerHeaders(serviceID domain.ServiceID, appAddr string) http.Header {
 	h := http.Header{}
 	h.Set("Target-Service-Id", string(serviceID))
 	h.Set("App-Address", appAddr)
-	if st, ok := rpcTypeToShared[domain.RPCTypeWebSocket]; ok {
-		h.Set("Rpc-Type", strconv.Itoa(int(st)))
+	if v := rpcTypeHeaderValue(domain.RPCTypeWebSocket); v != "" {
+		h.Set("Rpc-Type", v)
 	}
 	return h
 }

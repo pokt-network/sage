@@ -41,24 +41,15 @@ func (t blockedSupplierTable) blocked(serviceID domain.ServiceID, supplier strin
 	return ok
 }
 
-// endpointPolicy is the gateway-wide endpoint URL policy (config
-// endpoint_policy). The zero value permits everything.
-type endpointPolicy struct {
-	requireHTTPS  bool
-	requireDomain bool
-}
-
-func newEndpointPolicy(c config.EndpointPolicy) endpointPolicy {
-	return endpointPolicy{requireHTTPS: c.RequireHTTPS, requireDomain: c.RequireDomain}
-}
-
-// rejects reports whether the URL violates the policy: a plaintext scheme when
-// HTTPS is required, or a raw-IP host when a domain is required.
-func (p endpointPolicy) rejects(url string) bool {
-	if p.requireHTTPS && !isSecureURL(url) {
+// policyRejects reports whether the URL violates the gateway-wide endpoint URL
+// policy (config endpoint_policy): a plaintext scheme when HTTPS is required,
+// or a raw-IP host when a domain is required. The zero policy permits
+// everything.
+func policyRejects(p config.EndpointPolicy, url string) bool {
+	if p.RequireHTTPS && !isSecureURL(url) {
 		return true
 	}
-	if p.requireDomain && isRawIPHost(hostOf(url)) {
+	if p.RequireDomain && isRawIPHost(hostOf(url)) {
 		return true
 	}
 	return false
