@@ -138,16 +138,6 @@ func (s *RedisStore) hashOr() string {
 	return s.hash
 }
 
-// WithCacheTTL sets how often the refresh loop re-reads Redis. It is also the
-// worst-case lag before a change made on another replica takes effect here.
-func WithCacheTTL(d time.Duration) RedisOption {
-	return func(s *RedisStore) {
-		if d > 0 {
-			s.cacheTTL = d
-		}
-	}
-}
-
 // WithLogger sets the logger the refresh loop reports Redis failures through.
 // A nil logger falls back to slog.Default.
 func WithLogger(l *slog.Logger) RedisOption {
@@ -355,20 +345,6 @@ func (s *RedisStore) finishWrite(ctx context.Context, e Entry, gen uint64, write
 		}
 	}
 	return live, keep
-}
-
-// pendingCount reports how many drains are still local-only. Test-facing, and
-// the natural hook for a future gauge.
-func (s *RedisStore) pendingCount() int {
-	s.keysMu.Lock()
-	defer s.keysMu.Unlock()
-	n := 0
-	for _, st := range s.keys {
-		if st.pending {
-			n++
-		}
-	}
-	return n
 }
 
 // Release removes the drain locally and in Redis. A Redis failure returns an

@@ -44,19 +44,6 @@ func (b *blacklist) BlacklistSupplier(serviceID domain.ServiceID, addr string) {
 	b.blocked[blacklistKey{serviceID, addr}] = now.Add(b.duration)
 }
 
-// UnblacklistSupplier removes a supplier from the blacklist.
-// Returns true if the supplier was present and removed.
-func (b *blacklist) UnblacklistSupplier(serviceID domain.ServiceID, addr string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	key := blacklistKey{serviceID, addr}
-	if _, exists := b.blocked[key]; exists {
-		delete(b.blocked, key)
-		return true
-	}
-	return false
-}
-
 // IsBlacklisted returns true if the supplier is currently blacklisted for the service.
 // Expired entries are treated as not blacklisted.
 func (b *blacklist) IsBlacklisted(serviceID domain.ServiceID, addr string) bool {

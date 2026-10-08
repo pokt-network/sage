@@ -731,7 +731,8 @@ func TestRedisStore_StartRefreshesImmediately(t *testing.T) {
 	// A TTL far longer than the test: only an immediate first refresh can make
 	// this pass. A pod that boots into a fleet with a live drain must not route
 	// to the benched operator for a whole cache TTL first.
-	s := NewRedisStore(fake, WithCacheTTL(time.Hour))
+	s := NewRedisStore(fake)
+	s.cacheTTL = time.Hour
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -741,7 +742,8 @@ func TestRedisStore_StartRefreshesImmediately(t *testing.T) {
 
 func TestRedisStore_StartKeepsRefreshingOnTheTicker(t *testing.T) {
 	fake := newFakeRedis()
-	s := NewRedisStore(fake, WithCacheTTL(2*time.Millisecond))
+	s := NewRedisStore(fake)
+	s.cacheTTL = 2 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -881,4 +883,17 @@ func TestRedisStore_ReleaseDuringRefreshIsNotResurrected(t *testing.T) {
 	if s.Drained("eth", "gone.example", domain.RPCTypeJSONRPC) {
 		t.Fatal("a drain released while the refresh was in flight was resurrected by the replace")
 	}
+}
+
+// pendingCount reports how many drains are still local-only.
+func (s *RedisStore) pendingCount() int {
+	s.keysMu.Lock()
+	defer s.keysMu.Unlock()
+	n := 0
+	for _, st := range s.keys {
+		if st.pending {
+			n++
+		}
+	}
+	return n
 }

@@ -144,18 +144,6 @@ protocol:
 	}
 }
 
-func TestRetryConfig(t *testing.T) {
-	r := RetryConfig{MaxRetries: 3, HedgeDelay: 100}
-	if !r.IsEnabled() {
-		t.Error("should be enabled")
-	}
-
-	r2 := RetryConfig{}
-	if r2.IsEnabled() {
-		t.Error("zero value should be disabled")
-	}
-}
-
 func TestServiceConfig_EffectiveRetry(t *testing.T) {
 	defaults := ServiceDefaults{
 		Retry: RetryConfig{MaxRetries: 3, HedgeDelay: 100, RetryOn5xx: true},

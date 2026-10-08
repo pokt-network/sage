@@ -158,7 +158,8 @@ func TestObserve_NonJSONRPC_FingerprintsOnVerbPathAndBody(t *testing.T) {
 }
 
 func TestObserve_MaxFingerprints_BoundsDistinctAndCountsOverflow(t *testing.T) {
-	s := New(WithRate(1), WithMaxFingerprints(10))
+	s := New(WithRate(1))
+	s.maxFingerprints = 10
 
 	for i := 0; i < 50; i++ {
 		addr := fmt.Sprintf("0x%040x", i)
@@ -173,7 +174,8 @@ func TestObserve_MaxFingerprints_BoundsDistinctAndCountsOverflow(t *testing.T) {
 }
 
 func TestObserve_WindowRoll_PreviousHoldsOldCounts(t *testing.T) {
-	s := New(WithRate(1), WithWindow(20*time.Millisecond))
+	s := New(WithRate(1))
+	s.window = 20 * time.Millisecond
 
 	for i := 0; i < 5; i++ {
 		s.Observe(svc, []domain.Payload{jsonRPCPayload(t, "eth_blockNumber", []any{}, i)})
@@ -273,7 +275,8 @@ func TestObserve_Concurrent(t *testing.T) {
 }
 
 func TestObserve_MethodTable_BoundedByMaxFingerprints(t *testing.T) {
-	s := New(WithRate(1), WithMaxFingerprints(10))
+	s := New(WithRate(1))
+	s.maxFingerprints = 10
 
 	for i := 0; i < 50; i++ {
 		method := fmt.Sprintf("custom_method_%d", i)
@@ -354,7 +357,8 @@ func TestObserve_NonJSONRPC_HashIsCappedAtHashBytes(t *testing.T) {
 // ago as if it were current. Absent is the honest answer.
 func TestPreviousWindow_StopsReportingAStaleWindow(t *testing.T) {
 	const window = 50 * time.Millisecond
-	s := New(WithRate(1), WithWindow(window))
+	s := New(WithRate(1))
+	s.window = window
 
 	if _, _, ok := s.PreviousWindow(svc); ok {
 		t.Fatal("an unobserved service must have no previous window")

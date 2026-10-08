@@ -494,12 +494,6 @@ type RetryConfig struct {
 	MaxLatency time.Duration `yaml:"max_latency"`
 }
 
-// IsEnabled returns true if retries are configured and not switched off.
-func (c RetryConfig) IsEnabled() bool { return c.MaxRetries > 0 && !c.disabled }
-
-// Disabled reports whether the YAML turned retries off with `enabled: false`.
-func (c RetryConfig) Disabled() bool { return c.disabled }
-
 // disable records an explicit `enabled: false` from the YAML.
 func (c *RetryConfig) disable() {
 	c.disabled = true
@@ -1005,16 +999,6 @@ type ObservationPipelineConfig struct {
 	// rather than blocking: the pipeline is best-effort by design, and must
 	// never apply back-pressure to relays.
 	QueueSize int `yaml:"queue_size"`
-}
-
-// GetServiceConfig returns the config for a specific service ID, or nil.
-func (u *UnifiedServicesConfig) GetServiceConfig(id string) *ServiceConfig {
-	for i := range u.Services {
-		if u.Services[i].ID == id {
-			return &u.Services[i]
-		}
-	}
-	return nil
 }
 
 // EffectiveRetry returns the retry config for a service, falling back to

@@ -15,7 +15,6 @@ import (
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
-	sdk "github.com/pokt-network/shannon-sdk"
 	sdktypes "github.com/pokt-network/shannon-sdk/types"
 
 	"github.com/pokt-network/sage/config"
@@ -40,7 +39,6 @@ type fullNodeIface interface {
 	GetCurrentBlockHeight(ctx context.Context) (int64, error)
 	GetSharedParams(ctx context.Context) (*sharedtypes.Params, error)
 	ValidateRelayResponse(supplierAddr string, responseBz []byte) (*servicetypes.RelayResponse, error)
-	AccountClient() *sdk.AccountClient
 }
 
 // relaySignerIface is the signing interface, enabling mock injection in tests.

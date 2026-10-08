@@ -12,7 +12,6 @@ import (
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
-	sdk "github.com/pokt-network/shannon-sdk"
 
 	"github.com/pokt-network/sage/domain"
 )
@@ -49,10 +48,6 @@ func (m *stubFullNode) GetSharedParams(_ context.Context) (*sharedtypes.Params, 
 
 func (m *stubFullNode) ValidateRelayResponse(_ string, _ []byte) (*servicetypes.RelayResponse, error) {
 	return &servicetypes.RelayResponse{}, nil
-}
-
-func (m *stubFullNode) AccountClient() *sdk.AccountClient {
-	return nil
 }
 
 // buildTestSession creates a minimal session with one supplier endpoint.

@@ -31,7 +31,7 @@ func TestRetryEnabledFalse_TurnsRetriesOffAndSaysSo(t *testing.T) {
     hedge_delay: 100ms
 `)
 	eff := cfg.Gateway.EffectiveDefaults().Retry
-	if eff.IsEnabled() || eff.MaxRetries != 0 {
+	if eff.MaxRetries != 0 {
 		t.Fatalf("retries still on: %+v; PATH honours enabled: false and so must this", eff)
 	}
 	if eff.HedgeDelay != 100*time.Millisecond {
@@ -47,7 +47,7 @@ func TestRetryEnabledAbsent_MeansOnWhenMaxRetriesSet(t *testing.T) {
   retry_config:
     max_retries: 2
 `)
-	if !cfg.Gateway.EffectiveDefaults().Retry.IsEnabled() {
+	if cfg.Gateway.EffectiveDefaults().Retry.MaxRetries == 0 {
 		t.Fatal("an absent enabled key means on, as on PATH")
 	}
 	if len(cfg.Warnings) != 0 {
@@ -67,7 +67,7 @@ func TestRetryEnabledFalse_PerServiceSticksOverDefaults(t *testing.T) {
 `)
 	defaults := cfg.Gateway.EffectiveDefaults()
 	eth := cfg.Gateway.GetServiceConfig("eth").EffectiveRetry(defaults)
-	if eth.IsEnabled() {
+	if eth.MaxRetries != 0 {
 		t.Fatalf("eth: %+v; a service that turned retries off must not inherit the defaults' count", eth)
 	}
 	poly := cfg.Gateway.GetServiceConfig("poly").EffectiveRetry(defaults)

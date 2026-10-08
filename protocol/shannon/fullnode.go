@@ -24,7 +24,6 @@ import (
 type FullNode struct {
 	sessionClient *sdk.SessionClient
 	blockClient   *sdk.BlockClient
-	accountClient *sdk.AccountClient
 	appClient     *sdk.ApplicationClient
 	sharedClient  *sdk.SharedClient
 	// pubKeys serves supplier public keys for response verification from
@@ -68,7 +67,6 @@ func NewFullNode(cfg config.FullNodeConfig, logger *slog.Logger) (*FullNode, err
 	return &FullNode{
 		sessionClient: sessionClient,
 		blockClient:   blockClient,
-		accountClient: accountClient,
 		appClient:     appClient,
 		sharedClient:  sharedClient,
 		pubKeys:       newPubKeyCache(accountClient, logger),
@@ -152,11 +150,6 @@ func (fn *FullNode) ValidateRelayResponse(supplierAddr string, responseBz []byte
 		"original_error", err,
 	)
 	return retryResp, nil
-}
-
-// AccountClient returns the account client, used for relay request signing.
-func (fn *FullNode) AccountClient() *sdk.AccountClient {
-	return fn.accountClient
 }
 
 // connectGRPC establishes a gRPC connection based on the provided config.

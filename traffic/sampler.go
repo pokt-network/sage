@@ -54,25 +54,6 @@ func WithRate(n int) Option {
 	}
 }
 
-// WithWindow sets the fixed window length. d <= 0 is ignored.
-func WithWindow(d time.Duration) Option {
-	return func(s *Sampler) {
-		if d > 0 {
-			s.window = d
-		}
-	}
-}
-
-// WithMaxFingerprints sets the maximum number of distinct fingerprints kept
-// per service per window. n <= 0 is ignored.
-func WithMaxFingerprints(n int) Option {
-	return func(s *Sampler) {
-		if n > 0 {
-			s.maxFingerprints = n
-		}
-	}
-}
-
 // Sampler tracks request-shape diversity per service. See the package doc for
 // the fingerprint, window and sampling rules. The zero value is not usable;
 // construct with New.

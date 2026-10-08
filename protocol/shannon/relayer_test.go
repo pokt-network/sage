@@ -14,7 +14,6 @@ import (
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
-	sdk "github.com/pokt-network/shannon-sdk"
 	sdktypes "github.com/pokt-network/shannon-sdk/types"
 	"google.golang.org/protobuf/proto"
 
@@ -56,10 +55,6 @@ func (m *mockRelayFullNode) GetSharedParams(_ context.Context) (*sharedtypes.Par
 
 func (m *mockRelayFullNode) ValidateRelayResponse(_ string, _ []byte) (*servicetypes.RelayResponse, error) {
 	return m.validateResponse, m.validateErr
-}
-
-func (m *mockRelayFullNode) AccountClient() *sdk.AccountClient {
-	return nil
 }
 
 // mockSigner always signs by returning the request unchanged.

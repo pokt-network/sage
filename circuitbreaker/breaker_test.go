@@ -280,16 +280,10 @@ func TestBrokenState_IsExpired(t *testing.T) {
 }
 
 func TestBreaker_Options(t *testing.T) {
-	b := New(
-		WithKeyPrefix("custom:prefix:"),
-		WithCacheTTL(10*time.Second),
-	)
+	b := New(WithKeyPrefix("custom:prefix:"))
 
 	if b.keyPrefix != "custom:prefix:" {
 		t.Errorf("keyPrefix = %q, want custom:prefix:", b.keyPrefix)
-	}
-	if b.cacheTTL != 10*time.Second {
-		t.Errorf("cacheTTL = %v, want 10s", b.cacheTTL)
 	}
 }
 
@@ -412,7 +406,8 @@ func TestBreaker_ClearResetsRateGate(t *testing.T) {
 // is dropped — unless this replica broke it within cacheTTL, when its own
 // write may still be in flight.
 func TestMergeRedisEntries_DropsWhatAnotherReplicaCleared(t *testing.T) {
-	b := New(WithCacheTTL(10 * time.Second))
+	b := New()
+	b.cacheTTL = 10 * time.Second
 	now := time.Now()
 	b.broken["eth"] = map[string]BrokenState{
 		"stale.example":  {Expiry: now.Add(time.Hour), Reason: "cleared elsewhere"},

@@ -169,13 +169,6 @@ func WithKeyPrefix(prefix string) Option {
 	}
 }
 
-// WithCacheTTL sets how long to cache Redis reads before refreshing.
-func WithCacheTTL(ttl time.Duration) Option {
-	return func(b *Breaker) {
-		b.cacheTTL = ttl
-	}
-}
-
 // WithFailureRateGate overrides the failure-rate gate that guards MarkBroken.
 // minFailures <= 1 combined with threshold <= 0 restores first-error breaking.
 func WithFailureRateGate(window time.Duration, minFailures int, threshold float64) Option {
@@ -183,14 +176,6 @@ func WithFailureRateGate(window time.Duration, minFailures int, threshold float6
 		b.failureWindow = window
 		b.minFailures = minFailures
 		b.failureRateThreshold = threshold
-	}
-}
-
-// WithEscalationMemory sets how long a domain's break history survives after
-// the break itself expires, for the purpose of TTL escalation.
-func WithEscalationMemory(d time.Duration) Option {
-	return func(b *Breaker) {
-		b.escalationMemory = d
 	}
 }
 

@@ -23,30 +23,6 @@ func TestBlacklist_AddAndCheck(t *testing.T) {
 	}
 }
 
-func TestBlacklist_Remove(t *testing.T) {
-	bl := newBlacklist()
-	svcID := domain.ServiceID("eth")
-	addr := "pokt1supplier"
-
-	bl.BlacklistSupplier(svcID, addr)
-	removed := bl.UnblacklistSupplier(svcID, addr)
-
-	if !removed {
-		t.Error("UnblacklistSupplier should return true when entry existed")
-	}
-	if bl.IsBlacklisted(svcID, addr) {
-		t.Error("should not be blacklisted after removal")
-	}
-}
-
-func TestBlacklist_RemoveNonExistent(t *testing.T) {
-	bl := newBlacklist()
-	removed := bl.UnblacklistSupplier("eth", "pokt1unknown")
-	if removed {
-		t.Error("UnblacklistSupplier should return false for non-existent entry")
-	}
-}
-
 func TestBlacklist_Expiry(t *testing.T) {
 	bl := newBlacklist()
 	bl.duration = 1 * time.Millisecond

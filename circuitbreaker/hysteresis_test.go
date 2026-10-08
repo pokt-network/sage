@@ -110,7 +110,8 @@ func TestBreaker_ZeroSuccessDomainStillRebreaks(t *testing.T) {
 // the domain is judged as a first offender on the plain threshold again —
 // and, consistently, its next break is not escalated either.
 func TestBreaker_RebreakMarginLapsesWithEscalationMemory(t *testing.T) {
-	b := oneWindowBreaker(WithEscalationMemory(20 * time.Millisecond))
+	b := oneWindowBreaker()
+	b.escalationMemory = 20 * time.Millisecond
 	const domain = "marginal.example.com"
 
 	if !driveAtRate(b, "solana", domain, 200, 21) {
