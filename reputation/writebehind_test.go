@@ -133,15 +133,9 @@ type slowStorage struct {
 	last   map[string]State
 }
 
-func (s *slowStorage) GetState(context.Context, string) (State, error) {
-	return State{}, ErrStateNotFound
-}
-
-func (s *slowStorage) GetStates(context.Context, string) (map[string]State, error) {
+func (s *slowStorage) GetStates(context.Context) (map[string]State, error) {
 	return map[string]State{}, nil
 }
-
-func (s *slowStorage) DeleteState(context.Context, string) error { return nil }
 
 func (s *slowStorage) SetState(_ context.Context, _ string, _ State) error {
 	time.Sleep(s.rtt)
@@ -182,16 +176,8 @@ type unbatchedStorage struct {
 	inner          *slowStorage
 }
 
-func (u unbatchedStorage) GetState(ctx context.Context, key string) (State, error) {
-	return u.inner.GetState(ctx, key)
-}
-
-func (u unbatchedStorage) GetStates(ctx context.Context, prefix string) (map[string]State, error) {
-	return u.inner.GetStates(ctx, prefix)
-}
-
-func (u unbatchedStorage) DeleteState(ctx context.Context, key string) error {
-	return u.inner.DeleteState(ctx, key)
+func (u unbatchedStorage) GetStates(ctx context.Context) (map[string]State, error) {
+	return u.inner.GetStates(ctx)
 }
 
 func (u unbatchedStorage) SetState(ctx context.Context, key string, st State) error {

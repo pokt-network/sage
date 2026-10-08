@@ -93,9 +93,10 @@ func TestService_AsyncWriteToStorage(t *testing.T) {
 	svc.Stop()
 
 	key := scoreKey(svcID, svc.keyOf(ep, domain.RPCTypeJSONRPC))
-	st, err := store.GetState(ctx, key)
-	if err != nil {
-		t.Fatalf("expected state in storage after Stop, got error: %v", err)
+	all, _ := store.GetStates(ctx)
+	st, ok := all[key]
+	if !ok {
+		t.Fatal("expected state in storage after Stop")
 	}
 	if st.Score != 97 { // 100 - 3
 		t.Errorf("stored score = %f, want 97", st.Score)

@@ -16,15 +16,10 @@ import (
 // while the process runs, and a score that changes in the store mid-life
 // reaches nobody.
 type Storage interface {
-	// GetState retrieves the state for the given key. Returns
-	// ErrStateNotFound if the key does not exist.
-	GetState(ctx context.Context, key string) (State, error)
 	// SetState stores the state for the given key.
 	SetState(ctx context.Context, key string, st State) error
-	// GetStates retrieves all states whose keys begin with the given prefix.
-	GetStates(ctx context.Context, prefix string) (map[string]State, error)
-	// DeleteState removes the state for the given key.
-	DeleteState(ctx context.Context, key string) error
+	// GetStates retrieves every stored state.
+	GetStates(ctx context.Context) (map[string]State, error)
 
 	// GetOperatorStats returns every stored operator stat, keyed by
 	// OperatorField. Operator evidence is adopted at Hydrate like the

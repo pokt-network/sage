@@ -15,15 +15,15 @@ func TestLeaderOnlyStorage_DropsFollowerWrites(t *testing.T) {
 	if err := s.SetState(context.Background(), "k", State{Score: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := inner.GetState(context.Background(), "k"); err == nil {
+	if all, _ := inner.GetStates(context.Background()); len(all) != 0 {
 		t.Fatal("a follower's write must not reach the store")
 	}
 	leader = true
 	if err := s.SetState(context.Background(), "k", State{Score: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if st, err := inner.GetState(context.Background(), "k"); err != nil || st.Score != 2 {
-		t.Fatalf("leader's write missing: %+v %v", st, err)
+	if all, _ := inner.GetStates(context.Background()); all["k"].Score != 2 {
+		t.Fatalf("leader's write missing: %+v", all)
 	}
 }
 
@@ -46,7 +46,7 @@ func TestResetScore_WritesThroughOnAFollower(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc.Stop() // drains the write queue
-	states, err := inner.GetStates(ctx, "")
+	states, err := inner.GetStates(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

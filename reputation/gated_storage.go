@@ -28,11 +28,6 @@ func NewLeaderOnlyStorage(inner Storage, isLeader func() bool) *LeaderOnlyStorag
 // to skip holding writes that would be discarded.
 func (s *LeaderOnlyStorage) IsLeader() bool { return s.isLeader == nil || s.isLeader() }
 
-// GetState reads through.
-func (s *LeaderOnlyStorage) GetState(ctx context.Context, key string) (State, error) {
-	return s.inner.GetState(ctx, key)
-}
-
 // SetState writes through on the leader and drops the write elsewhere.
 func (s *LeaderOnlyStorage) SetState(ctx context.Context, key string, st State) error {
 	if s.isLeader != nil && !s.isLeader() {
@@ -68,16 +63,8 @@ func (s *LeaderOnlyStorage) ForceSetState(ctx context.Context, key string, st St
 }
 
 // GetStates reads through.
-func (s *LeaderOnlyStorage) GetStates(ctx context.Context, prefix string) (map[string]State, error) {
-	return s.inner.GetStates(ctx, prefix)
-}
-
-// DeleteState deletes through on the leader and drops the delete elsewhere.
-func (s *LeaderOnlyStorage) DeleteState(ctx context.Context, key string) error {
-	if s.isLeader != nil && !s.isLeader() {
-		return nil
-	}
-	return s.inner.DeleteState(ctx, key)
+func (s *LeaderOnlyStorage) GetStates(ctx context.Context) (map[string]State, error) {
+	return s.inner.GetStates(ctx)
 }
 
 var _ Storage = (*LeaderOnlyStorage)(nil)

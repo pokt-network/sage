@@ -23,12 +23,11 @@ func TestMemoryStorage_DeleteStale(t *testing.T) {
 	n, err := m.DeleteStale(ctx, now.Add(-time.Hour))
 	require.NoError(t, err)
 	assert.Equal(t, 2, n)
-	_, err = m.GetState(ctx, "eth:fresh")
-	assert.NoError(t, err, "fresh key must survive")
-	_, err = m.GetState(ctx, "eth:old")
-	assert.ErrorIs(t, err, ErrStateNotFound)
-	_, err = m.GetState(ctx, "eth:unstamped")
-	assert.ErrorIs(t, err, ErrStateNotFound, "a field with no stamp predates the stamp and is stale")
+	left, err := m.GetStates(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, left, "eth:fresh", "fresh key must survive")
+	assert.NotContains(t, left, "eth:old")
+	assert.NotContains(t, left, "eth:unstamped", "a field with no stamp predates the stamp and is stale")
 }
 
 // fakeHash is the hash subset of a Redis client, enough to drive DeleteStale
@@ -132,7 +131,7 @@ func TestRedisStorage_DeleteStale(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 5, n)
 
-	left, err := r.GetStates(ctx, "eth:")
+	left, err := r.GetStates(ctx)
 	require.NoError(t, err)
 	keys := make([]string, 0, len(left))
 	for k := range left {
@@ -208,7 +207,7 @@ func TestService_StampsWritesAndSweepsStorage(t *testing.T) {
 	var states map[string]State
 	require.Eventually(t, func() bool {
 		var err error
-		states, err = store.GetStates(context.Background(), "eth:")
+		states, err = store.GetStates(context.Background())
 		return err == nil && len(states) == 1
 	}, 3*time.Second, 10*time.Millisecond, "a just-written key must reach storage and survive a sweep at 1h TTL")
 	for _, st := range states {

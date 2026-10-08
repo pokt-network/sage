@@ -69,7 +69,7 @@ type HydrateResult struct {
 //
 // A storage error is returned, not fatal: the caller logs it and runs cold.
 func (s *serviceImpl) Hydrate(ctx context.Context) (HydrateResult, error) {
-	states, err := s.storage.GetStates(ctx, "")
+	states, err := s.storage.GetStates(ctx)
 	if err != nil {
 		return HydrateResult{}, err
 	}

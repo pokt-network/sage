@@ -118,22 +118,6 @@ func (r *RedisStorage) SetOperatorStat(ctx context.Context, field string, st Ope
 	return nil
 }
 
-// GetState retrieves the state for the given key from the Redis HASH.
-func (r *RedisStorage) GetState(ctx context.Context, key string) (State, error) {
-	val, err := r.client.HGet(ctx, r.hashKey, key).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return State{}, ErrStateNotFound
-		}
-		return State{}, fmt.Errorf("redis HGet %s: %w", key, err)
-	}
-	st, err := decodeState(val)
-	if err != nil {
-		return State{}, fmt.Errorf("decode state for %s: %w", key, err)
-	}
-	return st, nil
-}
-
 // SetState stores the state for the given key in the Redis HASH.
 func (r *RedisStorage) SetState(ctx context.Context, key string, st State) error {
 	err := r.client.HSet(ctx, r.hashKey, key, encodeState(st)).Err()
@@ -163,21 +147,15 @@ func (r *RedisStorage) SetStates(ctx context.Context, states map[string]State) e
 	return nil
 }
 
-// GetStates retrieves all states from the Redis HASH whose field names begin
-// with the given prefix. Fields that fail to decode are skipped.
-func (r *RedisStorage) GetStates(ctx context.Context, prefix string) (map[string]State, error) {
+// GetStates retrieves every state in the Redis HASH. Fields that fail to
+// decode are skipped.
+func (r *RedisStorage) GetStates(ctx context.Context) (map[string]State, error) {
 	all, err := r.client.HGetAll(ctx, r.hashKey).Result()
 	if err != nil {
 		return nil, fmt.Errorf("redis HGetAll: %w", err)
 	}
 	result := make(map[string]State)
 	for field, val := range all {
-		if len(prefix) > 0 && len(field) < len(prefix) {
-			continue
-		}
-		if len(prefix) > 0 && field[:len(prefix)] != prefix {
-			continue
-		}
 		st, parseErr := decodeState(val)
 		if parseErr != nil {
 			continue
@@ -185,15 +163,6 @@ func (r *RedisStorage) GetStates(ctx context.Context, prefix string) (map[string
 		result[field] = st
 	}
 	return result, nil
-}
-
-// DeleteState removes the state for the given key from the Redis HASH.
-func (r *RedisStorage) DeleteState(ctx context.Context, key string) error {
-	err := r.client.HDel(ctx, r.hashKey, key).Err()
-	if err != nil {
-		return fmt.Errorf("redis HDel %s: %w", key, err)
-	}
-	return nil
 }
 
 // DeleteStale implements StaleDeleter: one HSCAN pass over the hash, deleting
