@@ -138,7 +138,7 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 			// pass-through is for lookups the chain could not serve, and a
 			// head, a chain id or a health check is never one.
 			if (result.Reason == "internal_error" || result.Reason == "server_error") &&
-				len(ctx.Payloads) == 1 && methodClassOf(ctx.Payloads[0].Method()) == "light" &&
+				len(ctx.Payloads) == 1 && methodClassOf(pluginOf(registry, ctx), ctx.Payloads[0]) == domain.MethodClassLight &&
 				flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagLightMethodErrors, ctx.ServiceID) {
 				result = heuristic.LightMethodError(result)
 			}

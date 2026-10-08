@@ -28,13 +28,6 @@ const (
 	DefaultClassShareFull  = 0.30
 )
 
-// Method classes, by what a method costs a node to answer.
-const (
-	ClassLight    = "light"
-	ClassStandard = "standard"
-	ClassHeavy    = "heavy"
-)
-
 // classRule prices a class's failures.
 var classRule = shareRule{minEvidence: classShareMinAttempts, most: classSharePenalty, hold: classShareHalfLife,
 	floor: DefaultClassShareFloor, full: DefaultClassShareFull}

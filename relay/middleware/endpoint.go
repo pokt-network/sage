@@ -178,5 +178,5 @@ func requestClass(ctx *relay.Context) string {
 	if len(ctx.Payloads) != 1 {
 		return ""
 	}
-	return methodClassOf(ctx.Payloads[0].Method())
+	return methodClassOf(ctx.Plugin, ctx.Payloads[0])
 }

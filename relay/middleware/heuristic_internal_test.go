@@ -7,6 +7,8 @@ import (
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/heuristic"
+	"github.com/pokt-network/sage/qos/cosmos"
+	"github.com/pokt-network/sage/qos/solana"
 	"github.com/pokt-network/sage/relay"
 )
 
@@ -67,6 +69,7 @@ func TestHeuristic_LightMethodErrorIsTheSuppliers(t *testing.T) {
 	ctxFor := func(method string) *relay.Context {
 		ctx := baseContext()
 		ctx.RPCType = domain.RPCTypeJSONRPC
+		ctx.Plugin = solana.NewPlugin(nil, 0)
 		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"`+method+`"}`), domain.RPCTypeJSONRPC, method)}
 		return ctx
 	}
@@ -118,6 +121,7 @@ func TestHeuristic_CometBFT500FromTheMinerIsTheNodesAnswer(t *testing.T) {
 	run := func(method string) (*relay.Context, error) {
 		ctx := baseContext()
 		ctx.RPCType = domain.RPCTypeCometBFT
+		ctx.Plugin = cosmos.NewPlugin(nil, cosmos.Config{})
 		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{}`), domain.RPCTypeCometBFT, method)}
 		err := Heuristic(newFlags("heuristic", "light_method_errors"), nil, HeuristicOptions{})(relay.HandlerFunc(func(c *relay.Context) error {
 			c.Endpoint = c.Endpoints[0]

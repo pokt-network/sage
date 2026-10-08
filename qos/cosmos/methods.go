@@ -164,3 +164,29 @@ func (p *Plugin) MethodFamily(method string) []string {
 // evmFaceProbes are the methods any EVM node answers, so a refusal of one is
 // evidence of no EVM at all rather than of one missing method.
 var evmFaceProbes = map[string]bool{"eth_blockNumber": true, "eth_chainId": true}
+
+// lightMethods and heavyMethods sort the CometBFT methods by what one costs a
+// node to answer; everything else is standard (MethodClass).
+var (
+	lightMethods = map[string]bool{"status": true, "health": true, "abci_info": true}
+	heavyMethods = map[string]bool{"abci_query": true, "tx_search": true, "block_results": true}
+)
+
+var _ qos.MethodClassifier = (*Plugin)(nil)
+
+// MethodClass implements qos.MethodClassifier: a CometBFT method by name, or
+// by path for a GET (/status is status), and the EVM face's methods as the
+// EVM plugin classes them.
+func (p *Plugin) MethodClass(payload domain.Payload) string {
+	m := payload.Method()
+	if m == "" {
+		m = strings.TrimPrefix(payload.Path(), "/")
+	}
+	switch {
+	case lightMethods[m]:
+		return domain.MethodClassLight
+	case heavyMethods[m]:
+		return domain.MethodClassHeavy
+	}
+	return evm.MethodClass(m)
+}

@@ -104,3 +104,23 @@ minimumLedgerSlot
 requestAirdrop
 sendTransaction
 simulateTransaction`
+
+// Every classed method is in the catalogue; the rest is standard.
+func TestMethodClass(t *testing.T) {
+	for _, set := range []map[string]bool{lightMethods, heavyMethods} {
+		for m := range set {
+			if !knownMethods[m] {
+				t.Errorf("classed method %s is not in the catalogue", m)
+			}
+		}
+	}
+	p := &Plugin{}
+	for method, want := range map[string]string{
+		"getSlot": domain.MethodClassLight, "getProgramAccounts": domain.MethodClassHeavy,
+		"getAccountInfo": domain.MethodClassStandard,
+	} {
+		if got := p.MethodClass(domain.NewPayload(nil, domain.RPCTypeJSONRPC, method)); got != want {
+			t.Errorf("%s: %s, want %s", method, got, want)
+		}
+	}
+}

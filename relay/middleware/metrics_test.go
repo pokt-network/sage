@@ -13,6 +13,7 @@ import (
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
+	"github.com/pokt-network/sage/qos/evm"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/reputation"
 )
@@ -269,6 +270,7 @@ func TestMetrics_RecordsOperatorAttemptPerAttempt(t *testing.T) {
 		})
 		ctx := baseContext()
 		ctx.ServiceID = "eth"
+		ctx.Plugin = evm.NewPlugin(nil, evm.Config{})
 		ctx.AttemptKind = o.kind
 		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{}`), domain.RPCTypeJSONRPC, o.method)}
 		_ = Metrics(rec)(inner).HandleRelay(ctx)

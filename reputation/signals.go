@@ -37,9 +37,9 @@ type Signal struct {
 	// Detail is the verdict's own explanation (the block a refusal named,
 	// the node's message), kept on the timeline event and nowhere else.
 	Detail string
-	// Class is the request's method class (ClassLight, ClassStandard,
-	// ClassHeavy), "" when it has none: what the class share counts the
-	// attempt toward (classshare.go).
+	// Class is the request's method class (domain.MethodClassLight,
+	// MethodClassStandard, MethodClassHeavy), "" when it has none: what the
+	// class share counts the attempt toward (classshare.go).
 	Class string
 	// Weight is how many successful attempts a success stands for in the
 	// failure rate: a WebSocket connection records one success per 30 s for

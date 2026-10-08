@@ -3,6 +3,7 @@ package evm
 import (
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
@@ -59,4 +60,36 @@ func (p *Plugin) NormalizeMethod(payload domain.Payload) string {
 		return m
 	}
 	return qos.MethodOther
+}
+
+// lightMethods and heavyMethods sort the catalogue by what a method costs a
+// node to answer; everything else is standard (MethodClass).
+var (
+	lightMethods = map[string]bool{
+		"eth_blockNumber": true, "eth_chainId": true, "net_version": true, "eth_gasPrice": true,
+		"eth_maxPriorityFeePerGas": true, "eth_syncing": true, "web3_clientVersion": true,
+	}
+	heavyMethods = map[string]bool{
+		"eth_getLogs": true, "eth_call": true, "eth_estimateGas": true, "eth_getBlockReceipts": true,
+		"eth_getProof": true,
+	}
+)
+
+// MethodClass is what an EVM method costs a node to answer: light, heavy (log
+// scans, calls, traces), or standard.
+func MethodClass(method string) string {
+	switch {
+	case lightMethods[method]:
+		return domain.MethodClassLight
+	case heavyMethods[method], strings.HasPrefix(method, "debug_"), strings.HasPrefix(method, "trace_"):
+		return domain.MethodClassHeavy
+	}
+	return domain.MethodClassStandard
+}
+
+var _ qos.MethodClassifier = (*Plugin)(nil)
+
+// MethodClass implements qos.MethodClassifier.
+func (p *Plugin) MethodClass(payload domain.Payload) string {
+	return MethodClass(payload.Method())
 }

@@ -195,6 +195,15 @@ type MethodNormalizer interface {
 	NormalizeMethod(payload domain.Payload) string
 }
 
+// MethodClassifier is implemented by plugins that can say what a payload's
+// method costs a node to answer: domain.MethodClassLight, MethodClassStandard
+// or MethodClassHeavy. It keys per-class failure shares and the per-class
+// attempt metric, so a party that answers only the cheap calls is told apart
+// from one that answers all of them. Without it every method is standard.
+type MethodClassifier interface {
+	MethodClass(payload domain.Payload) string
+}
+
 // CoalescenceClassifier is implemented by plugins that support request coalescing.
 type CoalescenceClassifier interface {
 	IsCoalescable(method string) bool

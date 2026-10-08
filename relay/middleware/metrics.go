@@ -3,14 +3,12 @@ package middleware
 import (
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
-	"github.com/pokt-network/sage/reputation"
 )
 
 // MetricsRecorder is the interface that metrics backends must implement.
@@ -37,34 +35,16 @@ type MetricsRecorder interface {
 	RecordOperatorAttempt(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution, kind, methodClass string, latency time.Duration)
 }
 
-// methodClassOf sorts a method into what it costs a node to answer: light
-// (a head, a chain id, a health check), heavy (log scans, calls, traces,
-// program-account scans), or standard. An operator that answers the light ones
-// and stalls the heavy ones looks healthy on a success rate that mixes them;
-// split by class, on first attempts only, it does not.
-func methodClassOf(method string) string {
-	switch {
-	case lightMethods[method]:
-		return reputation.ClassLight
-	case heavyMethods[method],
-		strings.HasPrefix(method, "debug_"), strings.HasPrefix(method, "trace_"):
-		return reputation.ClassHeavy
+// methodClassOf is what the service's plugin says a payload's method costs a
+// node to answer (qos.MethodClassifier), standard where it has no say. An
+// operator that answers the light ones and stalls the heavy ones looks healthy
+// on a success rate that mixes them; split by class, on first attempts only,
+// it does not.
+func methodClassOf(p qos.Plugin, payload domain.Payload) string {
+	if c, ok := p.(qos.MethodClassifier); ok {
+		return c.MethodClass(payload)
 	}
-	return reputation.ClassStandard
-}
-
-var lightMethods = map[string]bool{
-	"eth_blockNumber": true, "eth_chainId": true, "net_version": true, "eth_gasPrice": true,
-	"eth_maxPriorityFeePerGas": true, "eth_syncing": true, "web3_clientVersion": true,
-	"getSlot": true, "getBlockHeight": true, "getHealth": true, "getLatestBlockhash": true,
-	"status": true, "health": true, "abci_info": true,
-}
-
-var heavyMethods = map[string]bool{
-	"eth_getLogs": true, "eth_call": true, "eth_estimateGas": true, "eth_getBlockReceipts": true,
-	"eth_getProof": true, "getProgramAccounts": true, "getSignaturesForAddress": true,
-	"getMultipleAccounts": true, "getBlock": true, "abci_query": true, "tx_search": true,
-	"block_results": true,
+	return domain.MethodClassStandard
 }
 
 // AttemptHook is told every attempt Metrics records against an operator:
@@ -137,13 +117,13 @@ func Metrics(recorder MetricsRecorder, opts ...MetricsOption) relay.Middleware {
 				if kind == "" {
 					kind = relay.AttemptFirst
 				}
-				method := ""
+				class := domain.MethodClassStandard
 				if len(ctx.Payloads) > 0 {
-					method = ctx.Payloads[0].Method()
+					class = methodClassOf(ctx.Plugin, ctx.Payloads[0])
 				}
 				attribution := attemptAttribution(ctx.HeuristicResult, err)
 				recorder.RecordOperatorAttempt(ctx.ServiceID, ctx.RPCType, ctx.Endpoint,
-					attribution, kind, methodClassOf(method), latency)
+					attribution, kind, class, latency)
 				if o.attemptHook != nil {
 					o.attemptHook(ctx.ServiceID, ctx.RPCType, ctx.Endpoint, attribution, kind, cataloguedMethod(ctx))
 				}

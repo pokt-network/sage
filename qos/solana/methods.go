@@ -36,3 +36,25 @@ func (p *Plugin) NormalizeMethod(payload domain.Payload) string {
 	}
 	return qos.MethodOther
 }
+
+// lightMethods and heavyMethods sort the catalogue by what a method costs a
+// node to answer; everything else is standard (MethodClass).
+var (
+	lightMethods = map[string]bool{"getSlot": true, "getBlockHeight": true, "getHealth": true, "getLatestBlockhash": true}
+	heavyMethods = map[string]bool{
+		"getProgramAccounts": true, "getSignaturesForAddress": true, "getMultipleAccounts": true, "getBlock": true,
+	}
+)
+
+var _ qos.MethodClassifier = (*Plugin)(nil)
+
+// MethodClass implements qos.MethodClassifier.
+func (p *Plugin) MethodClass(payload domain.Payload) string {
+	switch m := payload.Method(); {
+	case lightMethods[m]:
+		return domain.MethodClassLight
+	case heavyMethods[m]:
+		return domain.MethodClassHeavy
+	}
+	return domain.MethodClassStandard
+}

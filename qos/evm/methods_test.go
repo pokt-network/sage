@@ -109,3 +109,28 @@ trace_replayTransaction
 trace_transaction
 web3_clientVersion
 web3_sha3`
+
+// Every classed method is in the catalogue, and the classes are what the
+// per-class shares and metrics key on.
+func TestMethodClass(t *testing.T) {
+	for m := range lightMethods {
+		if !knownMethods[m] {
+			t.Errorf("light method %s is not in the catalogue", m)
+		}
+	}
+	for m := range heavyMethods {
+		if !knownMethods[m] {
+			t.Errorf("heavy method %s is not in the catalogue", m)
+		}
+	}
+	p := &Plugin{}
+	for method, want := range map[string]string{
+		"eth_blockNumber": domain.MethodClassLight, "eth_getLogs": domain.MethodClassHeavy,
+		"debug_traceTransaction": domain.MethodClassHeavy, "eth_getBalance": domain.MethodClassStandard,
+		"made_up": domain.MethodClassStandard,
+	} {
+		if got := p.MethodClass(domain.NewPayload(nil, domain.RPCTypeJSONRPC, method)); got != want {
+			t.Errorf("%s: %s, want %s", method, got, want)
+		}
+	}
+}

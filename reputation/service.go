@@ -256,7 +256,7 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	s.throttles = newOpTracker(throttleShareHalfLife)
 	s.throttles.dirty = nil
 	s.classes = map[string]*opTracker{}
-	for _, class := range []string{ClassLight, ClassStandard, ClassHeavy} {
+	for _, class := range []string{domain.MethodClassLight, domain.MethodClassStandard, domain.MethodClassHeavy} {
 		t := newOpTracker(classShareHalfLife)
 		t.dirty = nil
 		s.classes[class] = t

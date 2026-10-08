@@ -26,10 +26,10 @@ func TestClassShare_ChargesOnlyTheFailingClass(t *testing.T) {
 		return Signal{Type: typ, Reason: "x", Class: class, Timestamp: time.Now()}
 	}
 	for i := 0; i < 400; i++ {
-		_ = s.RecordSignal(ctx, "sol", failing, domain.RPCTypeJSONRPC, sig(SignalSuccess, ClassLight))
-		_ = s.RecordSignal(ctx, "sol", failing, domain.RPCTypeJSONRPC, sig(SignalMajorError, ClassHeavy))
-		_ = s.RecordSignal(ctx, "sol", solid, domain.RPCTypeJSONRPC, sig(SignalSuccess, ClassLight))
-		_ = s.RecordSignal(ctx, "sol", solid, domain.RPCTypeJSONRPC, sig(SignalSuccess, ClassHeavy))
+		_ = s.RecordSignal(ctx, "sol", failing, domain.RPCTypeJSONRPC, sig(SignalSuccess, domain.MethodClassLight))
+		_ = s.RecordSignal(ctx, "sol", failing, domain.RPCTypeJSONRPC, sig(SignalMajorError, domain.MethodClassHeavy))
+		_ = s.RecordSignal(ctx, "sol", solid, domain.RPCTypeJSONRPC, sig(SignalSuccess, domain.MethodClassLight))
+		_ = s.RecordSignal(ctx, "sol", solid, domain.RPCTypeJSONRPC, sig(SignalSuccess, domain.MethodClassHeavy))
 	}
 	s.refreshBaselines()
 
@@ -44,16 +44,16 @@ func TestClassShare_ChargesOnlyTheFailingClass(t *testing.T) {
 	if got := score(other, domain.RPCTypeJSONRPC, ""); got != 100 {
 		t.Errorf("no class: %.1f, want 100", got)
 	}
-	if got := score(other, domain.RPCTypeJSONRPC, ClassLight); got != 100 {
+	if got := score(other, domain.RPCTypeJSONRPC, domain.MethodClassLight); got != 100 {
 		t.Errorf("light, which the party answers: %.1f, want 100", got)
 	}
-	if got := score(other, domain.RPCTypeJSONRPC, ClassHeavy); got != 60 {
+	if got := score(other, domain.RPCTypeJSONRPC, domain.MethodClassHeavy); got != 60 {
 		t.Errorf("heavy, which the party fails: %.1f, want 60", got)
 	}
-	if got := score(other, domain.RPCTypeWebSocket, ClassHeavy); got != 100 {
+	if got := score(other, domain.RPCTypeWebSocket, domain.MethodClassHeavy); got != 100 {
 		t.Errorf("its WebSocket key: %.1f, want 100", got)
 	}
-	if got := score(solid, domain.RPCTypeJSONRPC, ClassHeavy); got != 100 {
+	if got := score(solid, domain.RPCTypeJSONRPC, domain.MethodClassHeavy); got != 100 {
 		t.Errorf("the party answering heavy calls: %.1f, want 100", got)
 	}
 	// Tier 2 is still tried on a small share of picks; the rest of the heavy
@@ -70,7 +70,7 @@ func TestClassShare_ChargesOnlyTheFailingClass(t *testing.T) {
 		}
 		return n
 	}
-	if n := picks(ClassHeavy); n < 340 {
+	if n := picks(domain.MethodClassHeavy); n < 340 {
 		t.Errorf("heavy: %d of 400 picks to the clean party, want at least 340", n)
 	}
 	if n := picks(""); n > 300 {
@@ -78,7 +78,7 @@ func TestClassShare_ChargesOnlyTheFailingClass(t *testing.T) {
 	}
 
 	shares := map[string]float64{}
-	for _, p := range s.PartyClassShares()[ClassHeavy] {
+	for _, p := range s.PartyClassShares()[domain.MethodClassHeavy] {
 		shares[p.Party] = p.Share
 	}
 	if math.Abs(shares[failing.Party()]-0.5) > 0.001 || shares[solid.Party()] != 0 {
@@ -87,7 +87,7 @@ func TestClassShare_ChargesOnlyTheFailingClass(t *testing.T) {
 
 	on = false
 	s.refreshBaselines()
-	if got := score(other, domain.RPCTypeJSONRPC, ClassHeavy); got != 100 {
+	if got := score(other, domain.RPCTypeJSONRPC, domain.MethodClassHeavy); got != 100 {
 		t.Errorf("flag off: %.1f, want 100", got)
 	}
 }
@@ -107,18 +107,18 @@ func TestClassShare_CountsFirstClassedAttempts(t *testing.T) {
 		sig            Signal
 		attempt, fails float64
 	}{
-		{"timeout", domain.RPCTypeJSONRPC, Signal{Type: SignalMajorError, Class: ClassHeavy}, 1, 0.5},
-		{"critical", domain.RPCTypeJSONRPC, Signal{Type: SignalCriticalError, Class: ClassHeavy}, 1, 1},
-		{"throttle", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Class: ClassHeavy}, 1, 0},
-		{"success", domain.RPCTypeJSONRPC, Signal{Type: SignalSuccess, Class: ClassHeavy}, 1, 0},
-		{"retry or hedge arm", domain.RPCTypeJSONRPC, Signal{Type: SignalMajorError, Class: ClassHeavy, Leftover: true}, 0, 0},
-		{"probe", domain.RPCTypeJSONRPC, Signal{Type: SignalMajorError, Class: ClassHeavy, Probe: true}, 0, 0},
-		{"websocket", domain.RPCTypeWebSocket, Signal{Type: SignalMajorError, Class: ClassHeavy}, 0, 0},
+		{"timeout", domain.RPCTypeJSONRPC, Signal{Type: SignalMajorError, Class: domain.MethodClassHeavy}, 1, 0.5},
+		{"critical", domain.RPCTypeJSONRPC, Signal{Type: SignalCriticalError, Class: domain.MethodClassHeavy}, 1, 1},
+		{"throttle", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Class: domain.MethodClassHeavy}, 1, 0},
+		{"success", domain.RPCTypeJSONRPC, Signal{Type: SignalSuccess, Class: domain.MethodClassHeavy}, 1, 0},
+		{"retry or hedge arm", domain.RPCTypeJSONRPC, Signal{Type: SignalMajorError, Class: domain.MethodClassHeavy, Leftover: true}, 0, 0},
+		{"probe", domain.RPCTypeJSONRPC, Signal{Type: SignalMajorError, Class: domain.MethodClassHeavy, Probe: true}, 0, 0},
+		{"websocket", domain.RPCTypeWebSocket, Signal{Type: SignalMajorError, Class: domain.MethodClassHeavy}, 0, 0},
 		{"unclassed", domain.RPCTypeJSONRPC, Signal{Type: SignalMajorError}, 0, 0},
 	} {
-		before, _ := s.classes[ClassHeavy].get(id, now)
+		before, _ := s.classes[domain.MethodClassHeavy].get(id, now)
 		s.recordClass("sol", ep, c.rpc, c.sig, now)
-		after, _ := s.classes[ClassHeavy].get(id, now)
+		after, _ := s.classes[domain.MethodClassHeavy].get(id, now)
 		if d := after.Attempts - before.Attempts; math.Abs(d-c.attempt) > 1e-9 {
 			t.Errorf("%s: counted %.0f attempts, want %.0f", c.name, d, c.attempt)
 		}

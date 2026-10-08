@@ -117,3 +117,22 @@ const knownRESTTemplatesGolden = `/cosmos/auth/v1beta1/account_info/:var
 /ibc/apps/transfer/v1/denom_traces/:var
 /ibc/core/channel/v1/channels
 /ibc/core/client/v1/client_states`
+
+// CometBFT methods class by name or GET path; the EVM face classes as EVM.
+func TestMethodClass(t *testing.T) {
+	p := &Plugin{}
+	for _, c := range []struct {
+		payload domain.Payload
+		want    string
+	}{
+		{domain.NewPayload(nil, domain.RPCTypeCometBFT, "status"), domain.MethodClassLight},
+		{domain.NewPayload(nil, domain.RPCTypeCometBFT, "").WithHTTP("/status", "GET"), domain.MethodClassLight},
+		{domain.NewPayload(nil, domain.RPCTypeCometBFT, "tx_search"), domain.MethodClassHeavy},
+		{domain.NewPayload(nil, domain.RPCTypeJSONRPC, "eth_call"), domain.MethodClassHeavy},
+		{domain.NewPayload(nil, domain.RPCTypeREST, "").WithHTTP("/cosmos/bank/v1beta1/supply", "GET"), domain.MethodClassStandard},
+	} {
+		if got := p.MethodClass(c.payload); got != c.want {
+			t.Errorf("%q %q: %s, want %s", c.payload.Method(), c.payload.Path(), got, c.want)
+		}
+	}
+}
