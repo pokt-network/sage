@@ -24,10 +24,6 @@ import (
 // this build has no WebSocket relayer wired.
 func (a *AdminAPI) handleWebSocketRebind(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 	if a.wsRebinder == nil {
 		writeJSONError(w, http.StatusNotImplemented, "websocket rebind is not available in this build")
 		return

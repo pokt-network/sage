@@ -83,10 +83,6 @@ func (a *AdminAPI) handleGetRequestSample(w http.ResponseWriter, req *http.Reque
 	}
 
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 
 	previous, err := parseRequestSampleWindow(req.URL.Query().Get("window"))
 	if err != nil {

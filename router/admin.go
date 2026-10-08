@@ -245,10 +245,6 @@ func (a *AdminAPI) handleListFlags(w http.ResponseWriter, req *http.Request) {
 // DELETE semantics via the flag store, not by setting the global.
 func (a *AdminAPI) handleSetFlag(w http.ResponseWriter, req *http.Request) {
 	flag := req.PathValue("flag")
-	if flag == "" {
-		writeJSONError(w, http.StatusBadRequest, "flag name is required")
-		return
-	}
 
 	var body struct {
 		Enabled bool `json:"enabled"`
@@ -277,10 +273,6 @@ func (a *AdminAPI) handleSetFlag(w http.ResponseWriter, req *http.Request) {
 // than a default.
 func (a *AdminAPI) handleDeleteFlag(w http.ResponseWriter, req *http.Request) {
 	flag := req.PathValue("flag")
-	if flag == "" {
-		writeJSONError(w, http.StatusBadRequest, "flag name is required")
-		return
-	}
 	if err := a.flags.Delete(req.Context(), flag, ""); err != nil {
 		a.logger.Error("admin: delete flag", "flag", flag, "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "failed to delete flag")
@@ -300,10 +292,6 @@ func (a *AdminAPI) handleDeleteFlag(w http.ResponseWriter, req *http.Request) {
 func (a *AdminAPI) handleSetFlagForService(w http.ResponseWriter, req *http.Request) {
 	flag := req.PathValue("flag")
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
-	if flag == "" || serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "flag and serviceID are required")
-		return
-	}
 
 	var body struct {
 		Enabled bool `json:"enabled"`
@@ -332,10 +320,6 @@ func (a *AdminAPI) handleSetFlagForService(w http.ResponseWriter, req *http.Requ
 func (a *AdminAPI) handleDeleteFlagForService(w http.ResponseWriter, req *http.Request) {
 	flag := req.PathValue("flag")
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
-	if flag == "" || serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "flag and serviceID are required")
-		return
-	}
 	if err := a.flags.Delete(req.Context(), flag, serviceID); err != nil {
 		a.logger.Error("admin: delete flag for service", "flag", flag, "service", serviceID, "error", err)
 		writeJSONError(w, http.StatusInternalServerError, "failed to delete flag override")
@@ -366,10 +350,6 @@ func (a *AdminAPI) handleDeleteFlagForService(w http.ResponseWriter, req *http.R
 // keys to numeric scores.
 func (a *AdminAPI) handleGetReputation(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 
 	if lister, ok := a.repService.(reputation.StateLister); ok {
 		states, err := lister.GetStates(req.Context(), serviceID)
@@ -404,10 +384,6 @@ func (a *AdminAPI) handleGetReputation(w http.ResponseWriter, req *http.Request)
 func (a *AdminAPI) handleResetOperator(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
 	operator := req.PathValue("operator")
-	if serviceID == "" || operator == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID and operator are required")
-		return
-	}
 	r, ok := a.repService.(reputation.OperatorResetter)
 	if !ok {
 		writeJSONError(w, http.StatusNotImplemented, "operator reset is not available in this build")
@@ -437,8 +413,8 @@ func (a *AdminAPI) handleResetOperator(w http.ResponseWriter, req *http.Request)
 func (a *AdminAPI) handleResetReputation(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
 	endpoint := domain.EndpointAddr(req.PathValue("endpoint"))
-	if serviceID == "" || endpoint == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID and endpoint are required")
+	if endpoint == "" {
+		writeJSONError(w, http.StatusBadRequest, "endpoint is required")
 		return
 	}
 
@@ -492,10 +468,6 @@ func resetPersistenceNote(persisted bool) string {
 // history, not for all time — and it is per instance, not shared through Redis.
 func (a *AdminAPI) handleGetTimeline(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 
 	events := a.timeline.GetAll(serviceID + ":")
 	if events == nil {
@@ -510,8 +482,8 @@ func (a *AdminAPI) handleGetTimeline(w http.ResponseWriter, req *http.Request) {
 func (a *AdminAPI) handleGetTimelineEndpoint(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
 	endpoint := req.PathValue("endpoint")
-	if serviceID == "" || endpoint == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID and endpoint are required")
+	if endpoint == "" {
+		writeJSONError(w, http.StatusBadRequest, "endpoint is required")
 		return
 	}
 
@@ -533,10 +505,6 @@ func (a *AdminAPI) handleGetTimelineEndpoint(w http.ResponseWriter, req *http.Re
 // offender rather than a first offence.
 func (a *AdminAPI) handleClearCircuitBreaker(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 
 	count := a.breaker.Clear(serviceID)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -555,10 +523,6 @@ func (a *AdminAPI) handleClearCircuitBreaker(w http.ResponseWriter, req *http.Re
 // scrape time.
 func (a *AdminAPI) handleGetCircuitBreaker(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 
 	broken := a.breaker.GetBroken(serviceID)
 	if broken == nil {
@@ -575,10 +539,6 @@ func (a *AdminAPI) handleGetCircuitBreaker(w http.ResponseWriter, req *http.Requ
 // is blocked. The same state is exported as the sage_method_blocks metric.
 func (a *AdminAPI) handleGetMethodBlocks(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 	blocks := []methodblock.Block{}
 	if a.blocks != nil {
 		if active := a.blocks.Active(serviceID); active != nil {
@@ -593,10 +553,6 @@ func (a *AdminAPI) handleGetMethodBlocks(w http.ResponseWriter, req *http.Reques
 // the marks, so the next mark is a first mark.
 func (a *AdminAPI) handleClearMethodBlocks(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 	cleared := 0
 	if a.blocks != nil {
 		cleared = a.blocks.Clear(serviceID)

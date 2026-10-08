@@ -54,10 +54,6 @@ type drainResponse struct {
 // regardless, and 500 would describe a local state that did not happen.
 func (a *AdminAPI) handleSetDrain(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 
 	var body drainRequest
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -169,10 +165,6 @@ func (a *AdminAPI) handleSetDrain(w http.ResponseWriter, req *http.Request) {
 // empty array, never null.
 func (a *AdminAPI) handleGetDrains(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 	if a.drains == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "no drain store is configured")
 		return

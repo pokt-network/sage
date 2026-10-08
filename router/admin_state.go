@@ -15,10 +15,6 @@ import (
 // no way to ask which endpoint did it.
 func (a *AdminAPI) handleGetChainState(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 	plugin := a.qosRegistry.Get(serviceID)
 	if plugin == nil {
 		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("service %q is not registered", serviceID))
@@ -55,10 +51,6 @@ func (a *AdminAPI) handleGetChainState(w http.ResponseWriter, req *http.Request)
 // is nothing to reset and no looser store to silently no-op against.
 func (a *AdminAPI) handleClearChainState(w http.ResponseWriter, req *http.Request) {
 	serviceID := domain.ServiceID(req.PathValue("serviceID"))
-	if serviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "serviceID is required")
-		return
-	}
 
 	plugin := a.qosRegistry.Get(serviceID)
 	if plugin == nil {

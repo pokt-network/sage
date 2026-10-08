@@ -75,10 +75,6 @@ func (a *AdminAPI) handleSetTuningForService(w http.ResponseWriter, req *http.Re
 // believing the 900.
 func (a *AdminAPI) setTuning(w http.ResponseWriter, req *http.Request, serviceID domain.ServiceID) {
 	knob := req.PathValue("knob")
-	if knob == "" {
-		writeJSONError(w, http.StatusBadRequest, "knob name is required")
-		return
-	}
 
 	var body struct {
 		Value string `json:"value"`
@@ -124,10 +120,6 @@ func (a *AdminAPI) handleClearTuningForService(w http.ResponseWriter, req *http.
 // never set is not an error — the caller asked for a state and got it.
 func (a *AdminAPI) clearTuning(w http.ResponseWriter, req *http.Request, serviceID domain.ServiceID) {
 	knob := req.PathValue("knob")
-	if knob == "" {
-		writeJSONError(w, http.StatusBadRequest, "knob name is required")
-		return
-	}
 	if _, ok := tuning.Lookup(knob); !ok {
 		writeJSONError(w, http.StatusBadRequest, "unknown knob "+knob)
 		return
