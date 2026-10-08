@@ -9,16 +9,13 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/internal/safego"
 )
 
-// QueueConfig controls the async observation worker pool.
-type QueueConfig struct {
-	Enabled     bool    `yaml:"enabled"`
-	SampleRate  float64 `yaml:"sample_rate"` // 0.0-1.0, fraction of relays deep-parsed
-	WorkerCount int     `yaml:"worker_count"`
-	QueueSize   int     `yaml:"queue_size"`
-}
+// QueueConfig controls the async observation worker pool: the
+// observation_pipeline section of the gateway config.
+type QueueConfig = config.ObservationPipelineConfig
 
 // Handler processes a single observation asynchronously.
 type Handler interface {

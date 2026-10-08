@@ -556,12 +556,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 
 	// 7. Observation pipeline
 	obsHandler := observe.NewDefaultHandler(qosReg, logger)
-	obsQueue := observe.NewQueue(observe.QueueConfig{
-		Enabled:     cfg.Gateway.ObservationPipeline.Enabled,
-		SampleRate:  cfg.Gateway.ObservationPipeline.SampleRate,
-		WorkerCount: cfg.Gateway.ObservationPipeline.WorkerCount,
-		QueueSize:   cfg.Gateway.ObservationPipeline.QueueSize,
-	}, obsHandler, logger)
+	obsQueue := observe.NewQueue(cfg.Gateway.ObservationPipeline, obsHandler, logger)
 	obsQueue.Start(ctx)
 	app.ObsQueue = obsQueue
 
