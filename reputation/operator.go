@@ -88,6 +88,12 @@ type chronicView struct {
 	// measured party (throttleshare.go).
 	throttlePen map[opID]float64
 	throttle    []PartyShare
+	// classPen is, per method class, the class-share penalty of each priced
+	// (service, party), charged only when selecting for a request of that
+	// class and never to websocket keys; classes is every measured party per
+	// class (classshare.go).
+	classPen map[string]map[opID]float64
+	classes  map[string][]PartyShare
 	// policyPen is the policy penalty of each party an operator set one on,
 	// charged in a service where policyOn (read at refresh) or, for a service
 	// with no key at refresh, policyGate says so; policy is every one in

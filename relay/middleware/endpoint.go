@@ -79,8 +79,14 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 				return errHedgeRuledOut
 			}
 
-			// Select the best endpoint by reputation.
-			ctx.Endpoint = repSvc.SelectBest(ctx.Ctx, ctx.ServiceID, candidates, ctx.RPCType)
+			// Select the best endpoint by reputation, ranked for the
+			// request's method class. Only this call carries the class:
+			// the vouched and ruled-out checks are about the key.
+			selectCtx := ctx.Ctx
+			if class := requestClass(ctx); class != "" {
+				selectCtx = reputation.WithMethodClass(ctx.Ctx, class)
+			}
+			ctx.Endpoint = repSvc.SelectBest(selectCtx, ctx.ServiceID, candidates, ctx.RPCType)
 
 			// Publish the choice for any goroutine watching this relay from
 			// outside it — today only Hedge, which needs the primary arm's
@@ -165,3 +171,12 @@ func fillEndpoints(ctx *relay.Context, p protocol.EndpointProvider) {
 // probationBudgetShare is the fraction (1/n) of an attempt's remaining
 // deadline a probation first try may use.
 const probationBudgetShare = 4
+
+// requestClass is the method class of a single-payload request, "" for a
+// batch: a batch's sub-relays are classed one by one.
+func requestClass(ctx *relay.Context) string {
+	if len(ctx.Payloads) != 1 {
+		return ""
+	}
+	return methodClassOf(ctx.Payloads[0].Method())
+}

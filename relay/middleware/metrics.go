@@ -10,6 +10,7 @@ import (
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
+	"github.com/pokt-network/sage/reputation"
 )
 
 // MetricsRecorder is the interface that metrics backends must implement.
@@ -44,12 +45,12 @@ type MetricsRecorder interface {
 func methodClassOf(method string) string {
 	switch {
 	case lightMethods[method]:
-		return "light"
+		return reputation.ClassLight
 	case heavyMethods[method],
 		strings.HasPrefix(method, "debug_"), strings.HasPrefix(method, "trace_"):
-		return "heavy"
+		return reputation.ClassHeavy
 	}
-	return "standard"
+	return reputation.ClassStandard
 }
 
 var lightMethods = map[string]bool{

@@ -445,6 +445,54 @@ func (c *PartyShareCollector) Collect(ch chan<- prometheus.Metric) {
 	})
 }
 
+// ClassShareCollector exposes each party's failure share per method class and
+// the penalty class_share charges it there (reputation.PartyShare per class),
+// as the last refresh left them. A party good only on light calls shows as a
+// low light share beside a high standard or heavy one.
+type ClassShareCollector struct {
+	each      func(yield func(serviceID domain.ServiceID, party, class string, share, penalty float64))
+	parties   *labelPolicy
+	shareDesc *prometheus.Desc
+	penDesc   *prometheus.Desc
+}
+
+// NewClassShareCollector builds the class-share collector over each, which
+// yields every party measured in a class.
+func NewClassShareCollector(each func(yield func(serviceID domain.ServiceID, party, class string, share, penalty float64))) *ClassShareCollector {
+	return &ClassShareCollector{
+		each:    each,
+		parties: cappedLabel(maxOperatorLabels),
+		shareDesc: prometheus.NewDesc(
+			"sage_party_class_share",
+			"Share of a party's first client attempts (not WebSocket) in a method class (light, standard, heavy) that failed, weighted as the chronic rate weighs them, by service, party and class, over counts halving every 30 minutes, on this replica. Only parties with at least 200 attempts' evidence in the class. Measured whatever the flags say.",
+			[]string{"service_id", "party", "class"}, nil,
+		),
+		penDesc: prometheus.NewDesc(
+			"sage_party_class_penalty",
+			"Points the class_share flag takes off a party's non-WebSocket keys when selecting for a request of the class: 0 while its class share is within reputation.class_share_floor of the service's cleanest party in the class, then linear to -40 at reputation.class_share_full. 0 where the flag is off or the class has one measured party.",
+			[]string{"service_id", "party", "class"}, nil,
+		),
+	}
+}
+
+// Describe implements prometheus.Collector.
+func (c *ClassShareCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.shareDesc
+	ch <- c.penDesc
+}
+
+// Collect implements prometheus.Collector.
+func (c *ClassShareCollector) Collect(ch chan<- prometheus.Metric) {
+	c.each(func(serviceID domain.ServiceID, party, class string, share, penalty float64) {
+		sid, p := sanitizeLabel(string(serviceID)), c.parties.value(party)
+		if p == otherLabel {
+			return
+		}
+		ch <- prometheus.MustNewConstMetric(c.shareDesc, prometheus.GaugeValue, share, sid, p, class)
+		ch <- prometheus.MustNewConstMetric(c.penDesc, prometheus.GaugeValue, penalty, sid, p, class)
+	})
+}
+
 // TrustCollector exposes each party's trust evidence and the trust penalty in
 // force (reputation.PartyTrust), as the last refresh left them.
 type TrustCollector struct {

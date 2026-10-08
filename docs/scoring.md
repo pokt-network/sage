@@ -603,6 +603,20 @@ timeout, and a host that keeps timing out still pays every second and
 reaches 0 in the same order of time it did. Only timeouts: a 5xx is an answer,
 and N answers are N pieces of evidence.
 
+#### A score per key, a share per method class
+
+A key's score mixes every method it answers, and cheap calls (a head, a health
+check) are most of any key's traffic. A party that answers those and fails the
+calls that cost a node something keeps the score its cheap traffic earns, and
+keeps getting the expensive calls. `class_share` keeps each party's failure
+share per method class (light, standard, heavy) on first attempts, priced
+against the service's cleanest party in that class like the other shares, and
+charges it only when selecting for a request of that class, as one more party
+penalty (the largest charged, never stacked). It moves a party down for the
+class it fails; it cannot create capacity a whole pool lacks in that class.
+`sage_party_class_share` is measured with the flag off, so who is good only on
+simple calls is visible before anything is charged.
+
 ### 7.4 Probe-only endpoints: selectable at full score
 
 Beta: probes and traffic agreed on every host — the live one passed every probe

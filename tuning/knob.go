@@ -108,6 +108,13 @@ const (
 	// KnobThrottleShareFull is the excess over the cleanest party charged the
 	// whole throttle_share penalty.
 	KnobThrottleShareFull = "reputation.throttle_share_full"
+	// KnobClassShareFloor is how far above the service's cleanest party in a
+	// method class a party's failure share there may sit before class_share
+	// charges it.
+	KnobClassShareFloor = "reputation.class_share_floor"
+	// KnobClassShareFull is the excess over the cleanest party charged the
+	// whole class_share penalty.
+	KnobClassShareFull = "reputation.class_share_full"
 )
 
 // Knob describes one overridable setting.
@@ -173,6 +180,22 @@ var Knobs = []Knob{
 		Name:        KnobThrottleShareFull,
 		Kind:        KindFloat,
 		Description: "The throttle-share excess over the service's cleanest party at which throttle_share charges its whole -40; linear from reputation.throttle_share_floor.",
+		Min:         0,
+		Max:         1,
+		Unit:        "share",
+	},
+	{
+		Name:        KnobClassShareFloor,
+		Kind:        KindFloat,
+		Description: "How far a party's failure share in a method class (light, standard, heavy) may sit above the service's cleanest party in that class before class_share charges its keys when selecting for that class (sage_party_class_penalty).",
+		Min:         0,
+		Max:         1,
+		Unit:        "share",
+	},
+	{
+		Name:        KnobClassShareFull,
+		Kind:        KindFloat,
+		Description: "The class-share excess over the service's cleanest party at which class_share charges its whole -40; linear from reputation.class_share_floor.",
 		Min:         0,
 		Max:         1,
 		Unit:        "share",

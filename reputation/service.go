@@ -186,6 +186,12 @@ type serviceImpl struct {
 	throttleGate   atomic.Pointer[func(domain.ServiceID) bool]
 	throttleLimits atomic.Pointer[func(domain.ServiceID) (float64, float64)]
 	throttles      *opTracker
+	// classGate and classLimits are the class-share counterparts, and
+	// classes holds each method class's per-party evidence (classshare.go).
+	// Not persisted.
+	classGate   atomic.Pointer[func(domain.ServiceID) bool]
+	classLimits atomic.Pointer[func(domain.ServiceID) (float64, float64)]
+	classes     map[string]*opTracker
 	// instanceID names this pod in the shared notification counts
 	// (fleetDuplicates); set at wire time, before the refresh loop starts.
 	instanceID string
@@ -249,6 +255,12 @@ func NewService(storage Storage, timeline *Timeline, cfg ServiceConfig) *service
 	s.dups.dirty = nil
 	s.throttles = newOpTracker(throttleShareHalfLife)
 	s.throttles.dirty = nil
+	s.classes = map[string]*opTracker{}
+	for _, class := range []string{ClassLight, ClassStandard, ClassHeavy} {
+		t := newOpTracker(classShareHalfLife)
+		t.dirty = nil
+		s.classes[class] = t
+	}
 	s.setKeyFn(memoize(keyFnFor(cfg.KeyGranularity, nil)))
 	selCfg := cfg.Selector
 	if selCfg == (SelectorConfig{}) {
@@ -299,6 +311,13 @@ func (s *serviceImpl) Retune(impacts SignalImpacts, rate RateConfig, sel Selecto
 // the pool-collapse fallback while the term ranked nobody above anybody.
 func (s *serviceImpl) effectiveFor(serviceID domain.ServiceID, key string, st State) float64 {
 	return s.scoreWith(serviceID, key, st, s.chronic.Load().partyPenalty(serviceID, key))
+}
+
+// effectiveForClass is effectiveFor for a request of a method class: the
+// class's penalty joins the party's, the larger of them charged.
+func (s *serviceImpl) effectiveForClass(serviceID domain.ServiceID, key string, st State, class string) float64 {
+	v := s.chronic.Load()
+	return s.scoreWith(serviceID, key, st, min(v.partyPenalty(serviceID, key), v.classPenalty(serviceID, key, class)))
 }
 
 // scoreWith is effectiveFor with the party penalty given rather than looked
@@ -658,8 +677,10 @@ func (s *serviceImpl) refreshBaselines() {
 			v.policyPen[p.Party] = min(v.policyPen[p.Party], p.Penalty)
 		}
 	}
+	// The class-share terms, charged per request class (classshare.go).
+	s.priceClasses(&v, s.chronic.Load(), now)
 	// Party lookups only matter while some party is charged.
-	if len(v.stalePen)+len(v.trustPen)+len(v.dupPen)+len(v.policyPen)+len(v.throttlePen) > 0 {
+	if len(v.stalePen)+len(v.trustPen)+len(v.dupPen)+len(v.policyPen)+len(v.throttlePen)+len(v.classPen) > 0 {
 		// The flag per service is read here, once a refresh, for every
 		// service with a key; a service with none yet falls back to the
 		// gate on lookup (the penalty reaches a party's first key there).
@@ -800,7 +821,7 @@ func (s *serviceImpl) shard(key string) *scoreShard {
 // It reads from the in-memory cache under a read lock; unseen endpoints are
 // returned as the configured initial score so new endpoints are not filtered
 // out on the first request. Zero allocations — runs per endpoint per relay.
-func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (float64, bool) {
+func (s *serviceImpl) scoreForSelector(ctx context.Context, serviceID domain.ServiceID, ep domain.EndpointAddr, rpcType domain.RPCType) (float64, bool) {
 	key := s.keyOf(ep, rpcType)
 	sh := s.shard(key)
 	sh.mu.RLock()
@@ -812,7 +833,12 @@ func (s *serviceImpl) scoreForSelector(_ context.Context, serviceID domain.Servi
 		// the initial score, uncharged, until its first signal.
 		st = State{Score: s.initialScore(serviceID, key)}
 	}
-	return s.effectiveFor(serviceID, key, st), true
+	// The class is read only while some class is charged: the lookup runs
+	// per candidate per relay.
+	if v := s.chronic.Load(); v == nil || len(v.classPen) == 0 {
+		return s.effectiveFor(serviceID, key, st), true
+	}
+	return s.effectiveForClass(serviceID, key, st, MethodClassFrom(ctx)), true
 }
 
 // latencyForSelector is the LatencyFn the selector's tie-break reads: the
@@ -1055,6 +1081,7 @@ func (s *serviceImpl) RecordSignal(_ context.Context, serviceID domain.ServiceID
 	}
 	// Throttling, counted toward the party's share (throttleshare.go).
 	s.recordThrottle(serviceID, endpoint, rpcType, signal, ts)
+	s.recordClass(serviceID, endpoint, rpcType, signal, ts)
 	// A refusal worded as a prune is trust evidence against the party
 	// (trust.go), counted outside the shard lock like the operator counters.
 	if signal.Reason == reasonRefusedRecent && !signal.Probe {

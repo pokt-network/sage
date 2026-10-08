@@ -302,6 +302,14 @@ const (
 	// reputation.throttle_share_full. Measured whatever this says. Off by
 	// default.
 	FlagThrottleShare = "throttle_share"
+	// FlagClassShare charges a party for its share of failed first attempts
+	// in a method class (light, standard, heavy), relative to the service's
+	// cleanest party in that class, when selecting for a request of that
+	// class only (sage_party_class_share): 0 within
+	// reputation.class_share_floor, linear to -40 at
+	// reputation.class_share_full. Measured whatever this says. Off by
+	// default.
+	FlagClassShare = "class_share"
 	// FlagSeedFromOperator starts a reputation key with no history at its
 	// operator's standing (the median own score of the operator's other keys
 	// on the same service and RPC type) instead of a clean 100, when that is
@@ -392,6 +400,7 @@ var DefaultFlags = map[string]bool{
 	FlagHeadAnswersHeight:       true,
 	FlagWSDuplicateShare:        false,
 	FlagThrottleShare:           false,
+	FlagClassShare:              false,
 	FlagWSDuplicatePenalty:      true,
 	FlagSeedFromOperator:        false,
 	FlagRelativeChronic:         true,
