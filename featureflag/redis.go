@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/pokt-network/sage/internal/safego"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -74,10 +75,7 @@ func NewRedisStore(client RedisClient, prefix string, overrides map[string]bool)
 		cacheTTL: defaultCacheTTL,
 	}
 	s.snapshot.Store(&map[string]bool{})
-	copied := make(map[string]bool, len(overrides))
-	for flag, enabled := range overrides {
-		copied[flag] = enabled
-	}
+	copied := maps.Clone(overrides)
 	s.defaults.Store(&copied)
 	return s
 }
@@ -258,12 +256,8 @@ func (s *RedisStore) DeleteGlobal(ctx context.Context, flag string) error {
 		if _, present := (*current)[flag]; !present {
 			break
 		}
-		next := make(map[string]bool, len(*current))
-		for name, enabled := range *current {
-			if name != flag {
-				next[name] = enabled
-			}
-		}
+		next := maps.Clone(*current)
+		delete(next, flag)
 		if s.defaults.CompareAndSwap(current, &next) {
 			break
 		}
@@ -304,10 +298,7 @@ func (s *RedisStore) set(ctx context.Context, key string, enabled bool) error {
 func (s *RedisStore) updateSnapshot(key string, value *bool) {
 	for {
 		cur := s.snapshot.Load()
-		next := make(map[string]bool, len(*cur)+1)
-		for k, v := range *cur {
-			next[k] = v
-		}
+		next := maps.Clone(*cur)
 		if value == nil {
 			delete(next, key)
 		} else {

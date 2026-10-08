@@ -771,18 +771,10 @@ func (r *Recorder) RecordInvalidResult(serviceID domain.ServiceID, party, method
 // RecordSelectionTier counts one endpoint selection by its height tier. Tiers
 // outside 1-3 (an empty candidate list) are not counted.
 func (r *Recorder) RecordSelectionTier(serviceID domain.ServiceID, tier int) {
-	var label string
-	switch tier {
-	case 1:
-		label = "1"
-	case 2:
-		label = "2"
-	case 3:
-		label = "3"
-	default:
+	if tier < 1 || tier > 3 {
 		return
 	}
-	r.selectionTiers.WithLabelValues(r.services.serviceValue(serviceID), label).Inc()
+	r.selectionTiers.WithLabelValues(r.services.serviceValue(serviceID), strconv.Itoa(tier)).Inc()
 }
 
 // RecordQuorum counts one quorum request by outcome. Satisfies

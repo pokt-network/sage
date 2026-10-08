@@ -67,22 +67,8 @@ type pkgDoc struct {
 // half of the output and they do not survive into the type system, so
 // reflection could produce a list of keys but never an explanation of one.
 func parseStructs(dir string) (*pkgDoc, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", dir, err)
-	}
-
-	fset := token.NewFileSet()
 	out := &pkgDoc{structs: map[string]*structDoc{}, named: map[string]ast.Expr{}}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments)
-		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", name, err)
-		}
+	err := parseDir(dir, func(_ string, file *ast.File) {
 		for _, decl := range file.Decls {
 			gen, ok := decl.(*ast.GenDecl)
 			if !ok || gen.Tok != token.TYPE {
@@ -113,8 +99,34 @@ func parseStructs(dir string) (*pkgDoc, error) {
 				}
 			}
 		}
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// parseDir parses every non-test .go file in dir, with comments, in directory
+// order, and hands each to visit with its file name.
+func parseDir(dir string, visit func(name string, file *ast.File)) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", dir, err)
+	}
+
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", name, err)
+		}
+		visit(name, file)
+	}
+	return nil
 }
 
 // collectFields extracts the yaml-tagged fields of a struct in declaration

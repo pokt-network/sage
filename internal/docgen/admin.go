@@ -3,10 +3,6 @@ package docgen
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
-	"go/token"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -70,25 +66,10 @@ type routeDoc struct {
 // route added without a doc comment on its handler shows up in the reference as
 // undocumented instead of not showing up at all.
 func GenerateAdminAPIReference(routerDir string) (string, error) {
-	entries, err := os.ReadDir(routerDir)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", routerDir, err)
-	}
-
-	fset := token.NewFileSet()
 	handlerDocs := make(map[string]string)
 	var routes []routeDoc
 
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, filepath.Join(routerDir, name), nil, parser.ParseComments)
-		if err != nil {
-			return "", fmt.Errorf("parse %s: %w", name, err)
-		}
-
+	err := parseDir(routerDir, func(name string, file *ast.File) {
 		group := "Gateway"
 		if strings.Contains(name, "admin") {
 			group = "Admin"
@@ -129,6 +110,9 @@ func GenerateAdminAPIReference(routerDir string) (string, error) {
 			})
 			return true
 		})
+	})
+	if err != nil {
+		return "", err
 	}
 
 	for i := range routes {

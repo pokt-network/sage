@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"time"
 
 	"github.com/pokt-network/sage/reputation"
@@ -234,18 +235,10 @@ func (g *GatewayConfig) EffectiveDefaults() ServiceDefaults {
 // whatever it governs, and that decision is not undone by a lower layer.
 func mergeRetry(a, b RetryConfig) RetryConfig {
 	out := a
-	if out.MaxRetries == 0 {
-		out.MaxRetries = b.MaxRetries
-	}
-	if out.HedgeDelay == 0 {
-		out.HedgeDelay = b.HedgeDelay
-	}
-	if out.HedgeMaxBatchSize == 0 {
-		out.HedgeMaxBatchSize = b.HedgeMaxBatchSize
-	}
-	if out.MaxLatency == 0 {
-		out.MaxLatency = b.MaxLatency
-	}
+	out.MaxRetries = cmp.Or(out.MaxRetries, b.MaxRetries)
+	out.HedgeDelay = cmp.Or(out.HedgeDelay, b.HedgeDelay)
+	out.HedgeMaxBatchSize = cmp.Or(out.HedgeMaxBatchSize, b.HedgeMaxBatchSize)
+	out.MaxLatency = cmp.Or(out.MaxLatency, b.MaxLatency)
 	if out.disabled {
 		out.MaxRetries = 0
 	} else if b.disabled && a.MaxRetries == 0 {
@@ -258,9 +251,7 @@ func mergeRetry(a, b RetryConfig) RetryConfig {
 
 // mergeTimeout overlays a on b the same way.
 func mergeTimeout(a, b TimeoutConfig) TimeoutConfig {
-	if a.RelayTimeout == 0 {
-		a.RelayTimeout = b.RelayTimeout
-	}
+	a.RelayTimeout = cmp.Or(a.RelayTimeout, b.RelayTimeout)
 	return a
 }
 
@@ -429,10 +420,7 @@ const DefaultHedgeMaxBatchSize = 10
 // under this config: zero takes DefaultHedgeMaxBatchSize, negative hedges
 // every size. A single request (n <= 1) is always hedged.
 func (c RetryConfig) HedgesBatchOf(n int) bool {
-	limit := c.HedgeMaxBatchSize
-	if limit == 0 {
-		limit = DefaultHedgeMaxBatchSize
-	}
+	limit := cmp.Or(c.HedgeMaxBatchSize, DefaultHedgeMaxBatchSize)
 	return limit < 0 || n <= limit
 }
 
@@ -1009,9 +997,5 @@ func (s *ServiceConfig) EffectiveRetry(defaults ServiceDefaults) RetryConfig {
 
 // EffectiveTimeout returns the timeout config, falling back to defaults.
 func (s *ServiceConfig) EffectiveTimeout(defaults ServiceDefaults) TimeoutConfig {
-	t := s.Timeout
-	if t.RelayTimeout == 0 {
-		t.RelayTimeout = defaults.Timeout.RelayTimeout
-	}
-	return t
+	return mergeTimeout(s.Timeout, defaults.Timeout)
 }

@@ -177,7 +177,6 @@ func UnimplementedKeys(tree any) []string {
 // finding is one registered key seen at one place in the tree.
 type finding struct {
 	path   string
-	key    string
 	reason string
 }
 
@@ -259,7 +258,7 @@ func walkRegistry(node any, path, parent string, registry []inertField, found *[
 				childPath = path + "." + key
 			}
 			if reason, ok := matchField(registry, parent, key); ok {
-				*found = append(*found, finding{path: childPath, key: key, reason: reason})
+				*found = append(*found, finding{path: childPath, reason: reason})
 				// Do not descend: a block-level entry has already said what
 				// every key inside it would say.
 				continue
@@ -272,12 +271,6 @@ func walkRegistry(node any, path, parent string, registry []inertField, found *[
 			walkRegistry(child, fmt.Sprintf("%s[%d]", path, i), parent, registry, found)
 		}
 	}
-}
-
-// matchInert reports whether (parent, key) is registered. An entry with an
-// empty Parent matches whatever holds it.
-func matchInert(parent, key string) (string, bool) {
-	return matchField(inertFields, parent, key)
 }
 
 // matchField reports whether (parent, key) appears in a registry. An entry with
@@ -298,5 +291,5 @@ func matchField(registry []inertField, parent, key string) (string, bool) {
 // parsed-but-inert, and why. The config reference generator reads it so the
 // docs say what the startup log says.
 func InertReason(parent, key string) (string, bool) {
-	return matchInert(parent, key)
+	return matchField(inertFields, parent, key)
 }

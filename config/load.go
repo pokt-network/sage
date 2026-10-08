@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/pokt-network/sage/domain"
 )
 
 // LoadFromFile loads configuration from a YAML file.
@@ -157,35 +160,21 @@ func ownedAppKeyWarnings(g GatewayConfig) []string {
 
 func applyDefaults(cfg *Config) {
 	// Router defaults
-	if cfg.Router.Port == 0 {
-		cfg.Router.Port = 3069
-	}
+	cfg.Router.Port = cmp.Or(cfg.Router.Port, 3069)
 	// PATH's server defaults; see RouterConfig. The router applies the same
 	// ones for a RouterConfig built without this, but this is where a loaded
 	// file gets them, and the 30/30/120 that used to be here would have made
 	// the router's defaults unreachable from a config file.
-	if cfg.Router.ReadTimeout == 0 {
-		cfg.Router.ReadTimeout = 60 * time.Second
-	}
-	if cfg.Router.WriteTimeout == 0 {
-		cfg.Router.WriteTimeout = 120 * time.Second
-	}
-	if cfg.Router.IdleTimeout == 0 {
-		cfg.Router.IdleTimeout = 180 * time.Second
-	}
+	cfg.Router.ReadTimeout = cmp.Or(cfg.Router.ReadTimeout, 60*time.Second)
+	cfg.Router.WriteTimeout = cmp.Or(cfg.Router.WriteTimeout, 120*time.Second)
+	cfg.Router.IdleTimeout = cmp.Or(cfg.Router.IdleTimeout, 180*time.Second)
 
 	// Redis defaults
-	if cfg.Redis.PoolSize == 0 {
-		cfg.Redis.PoolSize = 10
-	}
-	if cfg.Redis.DialTimeout == 0 {
-		cfg.Redis.DialTimeout = 5 * time.Second
-	}
+	cfg.Redis.PoolSize = cmp.Or(cfg.Redis.PoolSize, 10)
+	cfg.Redis.DialTimeout = cmp.Or(cfg.Redis.DialTimeout, 5*time.Second)
 
 	// Metrics defaults
-	if cfg.Metrics.PrometheusAddr == "" {
-		cfg.Metrics.PrometheusAddr = ":9090"
-	}
+	cfg.Metrics.PrometheusAddr = cmp.Or(cfg.Metrics.PrometheusAddr, ":9090")
 	// PprofAddr is deliberately NOT defaulted. /debug/pprof serves heap dumps,
 	// which contain whatever is in memory — including signing keys — so the
 	// sensible default for the zero value is off, not ":6060" on every
@@ -195,46 +184,26 @@ func applyDefaults(cfg *Config) {
 	// how flags are toggled at runtime, so defaulting it off would retire a
 	// feature. Loopback keeps it working while making "unconfigured" mean
 	// "unreachable from outside this host". See DefaultAdminAddr.
-	if cfg.Admin.Addr == "" {
-		cfg.Admin.Addr = DefaultAdminAddr
-	}
+	cfg.Admin.Addr = cmp.Or(cfg.Admin.Addr, DefaultAdminAddr)
 
 	// Logger defaults
-	if cfg.Logger.Level == "" {
-		cfg.Logger.Level = "info"
-	}
+	cfg.Logger.Level = cmp.Or(cfg.Logger.Level, "info")
 
 	// Concurrency defaults
-	if cfg.Concurrency.MaxConcurrentRelays == 0 {
-		cfg.Concurrency.MaxConcurrentRelays = 10000
-	}
-	if cfg.Concurrency.MaxBatchPayloads == 0 {
-		cfg.Concurrency.MaxBatchPayloads = 5500
-	}
-	if cfg.Concurrency.MaxBatchConcurrency == 0 {
-		cfg.Concurrency.MaxBatchConcurrency = 32
-	}
-	if cfg.Concurrency.MaxBatchWindow == 0 {
-		cfg.Concurrency.MaxBatchWindow = 32
-	}
-	if cfg.Concurrency.BatchRejectMessage == "" {
-		cfg.Concurrency.BatchRejectMessage = DefaultBatchRejectMessage
-	}
+	cfg.Concurrency.MaxConcurrentRelays = cmp.Or(cfg.Concurrency.MaxConcurrentRelays, 10000)
+	cfg.Concurrency.MaxBatchPayloads = cmp.Or(cfg.Concurrency.MaxBatchPayloads, 5500)
+	cfg.Concurrency.MaxBatchConcurrency = cmp.Or(cfg.Concurrency.MaxBatchConcurrency, 32)
+	cfg.Concurrency.MaxBatchWindow = cmp.Or(cfg.Concurrency.MaxBatchWindow, 32)
+	cfg.Concurrency.BatchRejectMessage = cmp.Or(cfg.Concurrency.BatchRejectMessage, DefaultBatchRejectMessage)
 
 	// Feature flags need no defaulting here: cfg.FeatureFlags carries only what
 	// YAML set, and the stores fall back to featureflag.DefaultFlags for anything
 	// absent (including an entirely omitted section, which parses to a nil map).
 
 	// Observation pipeline defaults
-	if cfg.Gateway.ObservationPipeline.SampleRate == 0 {
-		cfg.Gateway.ObservationPipeline.SampleRate = 0.1
-	}
-	if cfg.Gateway.ObservationPipeline.WorkerCount == 0 {
-		cfg.Gateway.ObservationPipeline.WorkerCount = 4
-	}
-	if cfg.Gateway.ObservationPipeline.QueueSize == 0 {
-		cfg.Gateway.ObservationPipeline.QueueSize = 1000
-	}
+	cfg.Gateway.ObservationPipeline.SampleRate = cmp.Or(cfg.Gateway.ObservationPipeline.SampleRate, 0.1)
+	cfg.Gateway.ObservationPipeline.WorkerCount = cmp.Or(cfg.Gateway.ObservationPipeline.WorkerCount, 4)
+	cfg.Gateway.ObservationPipeline.QueueSize = cmp.Or(cfg.Gateway.ObservationPipeline.QueueSize, 1000)
 }
 
 func validate(cfg *Config) error {
@@ -325,11 +294,6 @@ func dropRemovedMiddleware(g *GatewayConfig) []string {
 	return warnings
 }
 
-// knownRPCTypes is what a config may name where an RPC type is expected.
-var knownRPCTypes = map[string]bool{
-	"json_rpc": true, "rest": true, "comet_bft": true, "websocket": true, "grpc": true,
-}
-
 // validateRPCTypeFallbacks refuses a fallback that cannot be followed: an
 // unknown type on either side, or a type mapped onto itself. Either would be a
 // mapping the protocol silently never applies, which reads as "the fallback is
@@ -337,10 +301,10 @@ var knownRPCTypes = map[string]bool{
 func validateRPCTypeFallbacks(services []ServiceConfig) error {
 	for _, svc := range services {
 		for from, to := range svc.RPCTypeFallbacks {
-			if !knownRPCTypes[from] {
+			if !slices.Contains(domain.AllRPCTypes(), domain.RPCType(from)) {
 				return fmt.Errorf("service %q rpc_type_fallbacks: unknown rpc type %q", svc.ID, from)
 			}
-			if !knownRPCTypes[to] {
+			if !slices.Contains(domain.AllRPCTypes(), domain.RPCType(to)) {
 				return fmt.Errorf("service %q rpc_type_fallbacks: %s falls back to unknown rpc type %q", svc.ID, from, to)
 			}
 			if from == to {
@@ -441,13 +405,11 @@ func reputationWarnings(r ReputationConfig) []string {
 	return out
 }
 
-// logLevels is what logger_config.level, EnvLogLevel and PUT /admin/log-level
-// accept. "warning" is kept because cmd/sagegw's parser has always taken it.
-var logLevels = map[string]bool{"debug": true, "info": true, "warn": true, "warning": true, "error": true}
-
 // ParseLogLevel maps a configured level name to its slog.Level. ok is false
 // for a name that is not a level; the returned level is then info, which is
-// what an unrecognised name has always meant here.
+// what an unrecognised name has always meant here. Its names are what
+// logger_config.level, EnvLogLevel and PUT /admin/log-level accept; "warning"
+// is kept because cmd/sagegw's parser has always taken it.
 func ParseLogLevel(level string) (lvl slog.Level, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "debug":
@@ -472,7 +434,7 @@ func applyLogLevelEnv(cfg *Config, env string) []string {
 	if env == "" {
 		return nil
 	}
-	if !logLevels[env] {
+	if _, ok := ParseLogLevel(env); !ok {
 		return []string{fmt.Sprintf("%s=%q is not a log level (debug, info, warn, error); ignored, logger_config.level %q stands", EnvLogLevel, env, cfg.Logger.Level)}
 	}
 	if env == cfg.Logger.Level {

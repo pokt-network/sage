@@ -2,6 +2,7 @@ package featureflag
 
 import (
 	"context"
+	"maps"
 	"sync"
 
 	"github.com/pokt-network/sage/domain"
@@ -18,9 +19,7 @@ type MemoryStore struct {
 // NewMemoryStore creates a new in-memory flag store seeded with the given defaults.
 func NewMemoryStore(defaults map[string]bool) *MemoryStore {
 	global := make(map[string]bool, len(defaults))
-	for k, v := range defaults {
-		global[k] = v
-	}
+	maps.Copy(global, defaults)
 	return &MemoryStore{
 		global:           global,
 		serviceOverrides: make(map[string]map[domain.ServiceID]bool),
@@ -100,9 +99,7 @@ func (s *MemoryStore) GetAll(_ context.Context) (map[string]FlagState, error) {
 		if st.ServiceOverrides == nil {
 			st.ServiceOverrides = make(map[domain.ServiceID]bool, len(overrides))
 		}
-		for svc, val := range overrides {
-			st.ServiceOverrides[svc] = val
-		}
+		maps.Copy(st.ServiceOverrides, overrides)
 		result[flag] = st
 	}
 
@@ -142,9 +139,6 @@ func (s *MemoryStore) Delete(_ context.Context, flag string, serviceID domain.Se
 // so one delete covers both sources — unlike RedisStore, which keeps them in
 // separate layers and has to drop each. See FlagStore.DeleteGlobal for why the
 // per-service overrides must survive.
-func (s *MemoryStore) DeleteGlobal(_ context.Context, flag string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.global, flag)
-	return nil
+func (s *MemoryStore) DeleteGlobal(ctx context.Context, flag string) error {
+	return s.Delete(ctx, flag, "")
 }

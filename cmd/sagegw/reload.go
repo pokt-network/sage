@@ -352,13 +352,7 @@ func (a *App) applyFlags(ctx context.Context, old, next config.FeatureFlags) []s
 
 	var warnings []string
 
-	names := make([]string, 0, len(next))
-	for name := range next {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(next)) {
 		if !featureflag.IsKnownFlag(name) {
 			warnings = append(warnings,
 				fmt.Sprintf("feature flag %q ignored: SAGE has no such flag, and setting it has no effect", name))
@@ -583,12 +577,7 @@ func (d *configDiff) diffServices(prefix string, old, next []config.ServiceConfi
 	oldByID := servicesByID(old)
 	nextByID := servicesByID(next)
 
-	ids := slices.Sorted(maps.Keys(nextByID))
-
-	if len(oldByID) != len(nextByID) {
-		d.restart(prefix)
-	}
-	for _, id := range ids {
+	for _, id := range slices.Sorted(maps.Keys(nextByID)) {
 		before, existed := oldByID[id]
 		if !existed {
 			d.restart(prefix)

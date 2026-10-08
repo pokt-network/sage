@@ -3,10 +3,7 @@ package docgen
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,22 +41,8 @@ type metricDoc struct {
 // series that have been touched, so a counter nobody has incremented yet — the
 // interesting ones, usually — would be missing from its own documentation.
 func GenerateMetricsReference(metricsDir string) (string, error) {
-	entries, err := os.ReadDir(metricsDir)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", metricsDir, err)
-	}
-
-	fset := token.NewFileSet()
 	var metrics []metricDoc
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, filepath.Join(metricsDir, name), nil, parser.ParseComments)
-		if err != nil {
-			return "", fmt.Errorf("parse %s: %w", name, err)
-		}
+	err := parseDir(metricsDir, func(_ string, file *ast.File) {
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -73,6 +56,9 @@ func GenerateMetricsReference(metricsDir string) (string, error) {
 			}
 			return true
 		})
+	})
+	if err != nil {
+		return "", err
 	}
 
 	sort.Slice(metrics, func(i, j int) bool { return metrics[i].name < metrics[j].name })

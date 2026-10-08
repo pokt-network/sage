@@ -1,8 +1,10 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -33,19 +35,13 @@ type StaticRoute struct {
 
 // EffectiveStatusCode is StatusCode with its zero value resolved to 200.
 func (r StaticRoute) EffectiveStatusCode() int {
-	if r.StatusCode == 0 {
-		return http.StatusOK
-	}
-	return r.StatusCode
+	return cmp.Or(r.StatusCode, http.StatusOK)
 }
 
 // EffectiveContentType is ContentType with its zero value resolved to plain
 // text.
 func (r StaticRoute) EffectiveContentType() string {
-	if r.ContentType == "" {
-		return "text/plain; charset=utf-8"
-	}
-	return r.ContentType
+	return cmp.Or(r.ContentType, "text/plain; charset=utf-8")
 }
 
 // StaticRouteFor returns the static route answering path and method for a
@@ -59,21 +55,12 @@ func (g *GatewayConfig) StaticRouteFor(serviceID, path, method string) (StaticRo
 	}
 	for _, routes := range [][]StaticRoute{svc.StaticRoutes, g.Defaults.StaticRoutes, g.UnifiedServices.Defaults.StaticRoutes} {
 		for _, rt := range routes {
-			if rt.Path == path && (len(rt.Methods) == 0 || containsFold(rt.Methods, method)) {
+			if rt.Path == path && (len(rt.Methods) == 0 || slices.ContainsFunc(rt.Methods, func(m string) bool { return strings.EqualFold(m, method) })) {
 				return rt, true
 			}
 		}
 	}
 	return StaticRoute{}, false
-}
-
-func containsFold(list []string, s string) bool {
-	for _, v := range list {
-		if strings.EqualFold(v, s) {
-			return true
-		}
-	}
-	return false
 }
 
 // validateStaticRoutes refuses a route set that is malformed or where two

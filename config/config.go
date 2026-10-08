@@ -4,6 +4,7 @@
 package config
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net"
@@ -227,10 +228,7 @@ const DefaultRedisKeyPrefix = "sage:"
 // part that identifies the family ("reputation:", "drain", ...); callers pass
 // the same name a release without the prefix hard-coded after "sage:".
 func (c RedisConfig) Key(name string) string {
-	if c.KeyPrefix == "" {
-		return DefaultRedisKeyPrefix + name
-	}
-	return c.KeyPrefix + name
+	return cmp.Or(c.KeyPrefix, DefaultRedisKeyPrefix) + name
 }
 
 // RouterConfig controls the HTTP server.
@@ -545,10 +543,7 @@ const DefaultMaxConcurrentWSConnections = 10000
 // YAML skips the whole default block. Resolving here means a config that sets
 // only, say, a sample rate still gets the connection cap.
 func (c WebSocketConfig) EffectiveMaxConcurrentConnections() int {
-	if c.MaxConcurrentConnections == 0 {
-		return DefaultMaxConcurrentWSConnections
-	}
-	return c.MaxConcurrentConnections
+	return cmp.Or(c.MaxConcurrentConnections, DefaultMaxConcurrentWSConnections)
 }
 
 // Default sample rates for the WebSocket observation pipeline.

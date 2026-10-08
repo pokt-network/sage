@@ -375,7 +375,7 @@ func TestUnimplementedKeys_ParentScoped(t *testing.T) {
 // tell an operator two different stories about it.
 func TestRegistriesDoNotOverlap(t *testing.T) {
 	for _, u := range unimplementedFields {
-		if reason, ok := matchInert(u.Parent, u.Key); ok {
+		if reason, ok := InertReason(u.Parent, u.Key); ok {
 			t.Errorf("%s.%s is in both registries; inert says %q", u.Parent, u.Key, reason)
 		}
 	}
