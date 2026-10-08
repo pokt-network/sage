@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -695,13 +696,7 @@ func (e *Engine) reconcile(ctx context.Context, now time.Time) {
 		}
 	}
 	cut := now.Add(-time.Hour)
-	kept := e.recent[:0]
-	for _, t := range e.recent {
-		if t.After(cut) {
-			kept = append(kept, t)
-		}
-	}
-	e.recent = kept
+	e.recent = slices.DeleteFunc(e.recent, func(t time.Time) bool { return !t.After(cut) })
 }
 
 // find returns the live drain covering k: the scoped entry, or an unscoped

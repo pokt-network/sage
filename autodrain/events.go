@@ -52,9 +52,6 @@ func (m *MemoryLog) Recent(_ context.Context, svc domain.ServiceID, limit int) (
 	return out, nil
 }
 
-// StreamKey is the Redis stream the decisions are appended to.
-const StreamKey = "sage:auto_drain:events"
-
 // RedisClient is the subset of redis.Cmdable the Redis log uses.
 type RedisClient interface {
 	XAdd(ctx context.Context, a *redis.XAddArgs) *redis.StringCmd
@@ -67,17 +64,8 @@ var _ RedisClient = (*redis.Client)(nil)
 // restart or a leader change and read the same from every replica.
 type RedisLog struct {
 	Client RedisClient
-	// Stream names the Redis stream the decisions go to. Empty means
-	// StreamKey, the literal every release before the prefix used.
+	// Stream names the Redis stream the decisions go to.
 	Stream string
-}
-
-// stream is the configured stream name, or the historical default.
-func (r RedisLog) stream() string {
-	if r.Stream == "" {
-		return StreamKey
-	}
-	return r.Stream
 }
 
 // Append adds ev to the stream, trimmed to about maxEvents entries.
@@ -87,7 +75,7 @@ func (r RedisLog) Append(ctx context.Context, ev Event) error {
 		return err
 	}
 	return r.Client.XAdd(ctx, &redis.XAddArgs{
-		Stream: r.stream(),
+		Stream: r.Stream,
 		MaxLen: maxEvents,
 		Approx: true,
 		Values: map[string]any{"event": string(b)},
@@ -97,7 +85,7 @@ func (r RedisLog) Append(ctx context.Context, ev Event) error {
 // Recent reads newest first. A service filter scans the whole capped stream,
 // which is maxEvents entries at most.
 func (r RedisLog) Recent(ctx context.Context, svc domain.ServiceID, limit int) ([]Event, error) {
-	msgs, err := r.Client.XRevRangeN(ctx, r.stream(), "+", "-", maxEvents).Result()
+	msgs, err := r.Client.XRevRangeN(ctx, r.Stream, "+", "-", maxEvents).Result()
 	if err != nil {
 		return nil, err
 	}

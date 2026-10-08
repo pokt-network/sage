@@ -2,6 +2,8 @@ package reputation
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -112,10 +114,7 @@ func (s *serviceImpl) Hydrate(ctx context.Context) (HydrateResult, error) {
 	// selection rather than after gathering its own evidence (partystore.go).
 	result.Parties = s.adoptPartyPenalties(ctx)
 
-	result.Services = make([]domain.ServiceID, 0, len(seen))
-	for svc := range seen {
-		result.Services = append(result.Services, svc)
-	}
+	result.Services = slices.Collect(maps.Keys(seen))
 	return result, nil
 }
 

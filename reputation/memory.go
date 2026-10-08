@@ -3,6 +3,7 @@ package reputation
 import (
 	"context"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 )
@@ -29,11 +30,7 @@ func NewMemoryStorage() *MemoryStorage {
 func (m *MemoryStorage) GetOperatorStats(_ context.Context) (map[string]OperatorStat, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make(map[string]OperatorStat, len(m.opStats))
-	for k, v := range m.opStats {
-		out[k] = v
-	}
-	return out, nil
+	return maps.Clone(m.opStats), nil
 }
 
 // SetOperatorStat stores one operator stat.
@@ -104,11 +101,7 @@ func (m *MemoryStorage) PutNotificationCounts(_ context.Context, pod string, c N
 func (m *MemoryStorage) NotificationCounts(_ context.Context) (map[string]NotificationCounts, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make(map[string]NotificationCounts, len(m.notes))
-	for pod, c := range m.notes {
-		out[pod] = c
-	}
-	return out, nil
+	return maps.Clone(m.notes), nil
 }
 
 // DeleteNotificationCounts drops the named pods' counts.
@@ -136,11 +129,7 @@ func (m *MemoryStorage) PutPolicyPenalty(_ context.Context, p PolicyPenalty) err
 func (m *MemoryStorage) PolicyPenalties(_ context.Context) ([]PolicyPenalty, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]PolicyPenalty, 0, len(m.policy))
-	for _, p := range m.policy {
-		out = append(out, p)
-	}
-	return out, nil
+	return slices.AppendSeq(make([]PolicyPenalty, 0, len(m.policy)), maps.Values(m.policy)), nil
 }
 
 // DeletePolicyPenalty removes a party's policy penalty.

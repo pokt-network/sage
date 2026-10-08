@@ -3,6 +3,7 @@ package reputation
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -104,14 +105,9 @@ func (s *serviceImpl) ListPolicyPenalties(ctx context.Context) ([]PolicyPenalty,
 	if err != nil {
 		return nil, err
 	}
+	// In place: the store allocates all for this call.
 	now := time.Now()
-	out := all[:0]
-	for _, p := range all {
-		if p.Active(now) {
-			out = append(out, p)
-		}
-	}
-	return out, nil
+	return slices.DeleteFunc(all, func(p PolicyPenalty) bool { return !p.Active(now) }), nil
 }
 
 // PartyPolicies reports the policy penalties the last refresh charged, for the
@@ -138,11 +134,5 @@ func (s *serviceImpl) policyPenalties(prev []PolicyPenalty, now time.Time) []Pol
 	if err != nil {
 		return prev
 	}
-	var out []PolicyPenalty
-	for _, p := range all {
-		if p.Active(now) {
-			out = append(out, p)
-		}
-	}
-	return out
+	return slices.DeleteFunc(all, func(p PolicyPenalty) bool { return !p.Active(now) })
 }

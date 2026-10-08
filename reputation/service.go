@@ -1324,7 +1324,7 @@ func (s *serviceImpl) SelectSpread(ctx context.Context, serviceID domain.Service
 	// This runs on the WebSocket open path, not per relay, so narrowing the
 	// list is affordable here in a way it would not be in Select.
 	if s.selector.capActive(ctx, serviceID) {
-		if operator, _, ok := cappedPick(*s.selector.operatorCap.Load(), candidates, nil); ok {
+		if operator, _, ok := cappedPickWeighted(*s.selector.operatorCap.Load(), candidates, nil, nil); ok {
 			withinOperator := make(domain.EndpointAddrList, 0, len(candidates))
 			for _, ep := range candidates {
 				if ep.Operator() == operator {

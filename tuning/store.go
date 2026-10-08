@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -344,10 +345,7 @@ func (s *Store) All() map[string]KnobState {
 		if !ok {
 			state = KnobState{Knob: Knob{Name: name}}
 		}
-		state.ServiceOverrides = make(map[domain.ServiceID]Override, len(overrides))
-		for serviceID, o := range overrides {
-			state.ServiceOverrides[serviceID] = o
-		}
+		state.ServiceOverrides = maps.Clone(overrides)
 		out[name] = state
 	}
 	return out
@@ -369,11 +367,7 @@ func (s *Store) ServiceOverrides(name string) map[domain.ServiceID]Override {
 	if len(byService) == 0 {
 		return nil
 	}
-	out := make(map[domain.ServiceID]Override, len(byService))
-	for id, o := range byService {
-		out[id] = o
-	}
-	return out
+	return maps.Clone(byService)
 }
 
 // SetBase records what the config file says a knob is, so a reader of the
@@ -454,10 +448,7 @@ func (s *Store) EffectiveFor(name string) (Effective, bool) {
 		eff.Overridden = true
 	}
 	if byService := s.service[name]; len(byService) > 0 {
-		eff.ServiceOverrides = make(map[domain.ServiceID]Override, len(byService))
-		for id, o := range byService {
-			eff.ServiceOverrides[id] = o
-		}
+		eff.ServiceOverrides = maps.Clone(byService)
 	}
 	services := map[domain.ServiceID]bool{}
 	for id := range s.serviceBase[name] {

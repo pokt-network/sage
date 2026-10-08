@@ -757,31 +757,6 @@ func TestRedisStore_StartKeepsRefreshingOnTheTicker(t *testing.T) {
 	waitDrained(t, s, "other.example", "Start's refresh loop never picked up a peer's drain")
 }
 
-func TestRedisStore_NilClientIsAPlainMemoryStore(t *testing.T) {
-	s := NewRedisStore(nil)
-	ctx := context.Background()
-	k := Key{ServiceID: "eth", Operator: "slow.example", RPCType: domain.RPCTypeJSONRPC}
-
-	if err := s.Set(ctx, Entry{Key: k, Until: time.Now().Add(time.Minute)}); err != nil {
-		t.Fatalf("Set with nil client: %v", err)
-	}
-	if !s.Drained("eth", "slow.example", domain.RPCTypeJSONRPC) {
-		t.Fatal("nil client must still drain locally")
-	}
-	if err := s.Release(ctx, k); err != nil {
-		t.Fatalf("Release with nil client: %v", err)
-	}
-	if s.Drained("eth", "slow.example", domain.RPCTypeJSONRPC) {
-		t.Fatal("nil client must still release locally")
-	}
-
-	// Start must be a no-op rather than a ticker calling into a nil client.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	s.Start(ctx)
-	s.refresh(ctx)
-}
-
 func TestRedisStore_SetInThePastReleases(t *testing.T) {
 	fake := newFakeRedis()
 	s := NewRedisStore(fake)
@@ -821,10 +796,6 @@ func TestRedisStore_KeyRoundTrip(t *testing.T) {
 			t.Errorf("parseRedisField(%q) must reject a malformed key", bad)
 		}
 	}
-}
-
-func TestRedisStore_SatisfiesStore(t *testing.T) {
-	var _ Store = NewRedisStore(nil)
 }
 
 // A Set that lands after a refresh took its snapshot and before it replaced the

@@ -153,10 +153,8 @@ func FollowPeer(prefix string) RedisOption {
 	return func(s *RedisStore) { s.follow = prefix }
 }
 
-// NewRedisStore returns a Redis-backed drain store. A nil client is allowed and
-// degrades the store to a plain MemoryStore — Redis is optional here as
-// everywhere on the hot path, and a gateway that cannot reach it must still be
-// able to bench an operator on itself.
+// NewRedisStore returns a Redis-backed drain store. client must not be nil: a
+// gateway without Redis uses a plain MemoryStore instead.
 func NewRedisStore(client RedisClient, opts ...RedisOption) *RedisStore {
 	s := &RedisStore{
 		MemoryStore: NewMemoryStore(),
@@ -170,18 +168,15 @@ func NewRedisStore(client RedisClient, opts ...RedisOption) *RedisStore {
 	return s
 }
 
-// Start runs the refresh loop until ctx is done. It is a no-op without a
-// client. Each tick runs under safego.Run so one failed refresh does not stop
-// the loop and leave every replica frozen on a stale view.
+// Start runs the refresh loop until ctx is done. Each tick runs under
+// safego.Run so one failed refresh does not stop the loop and leave every
+// replica frozen on a stale view.
 //
 // The first refresh happens immediately rather than one tick in: a replica that
 // has just booted into a fleet with a live drain would otherwise route to the
 // benched operator for a full cache TTL, which is exactly the window a rollout
 // puts every new pod through.
 func (s *RedisStore) Start(ctx context.Context) {
-	if s.client == nil {
-		return
-	}
 	safego.GoCtx(ctx, s.logger, "drain.refresh", func(ctx context.Context) {
 		safego.Run(s.logger, "drain.refresh", func() { s.refresh(ctx) })
 
@@ -210,9 +205,6 @@ func (s *RedisStore) Set(ctx context.Context, e Entry) error {
 	e.Operator = strings.ToLower(e.Operator)
 	if err := s.MemoryStore.Set(ctx, e); err != nil {
 		return err
-	}
-	if s.client == nil {
-		return nil
 	}
 
 	if time.Until(e.Until) <= 0 {
@@ -361,9 +353,6 @@ func (s *RedisStore) Release(ctx context.Context, k Key) error {
 	// drain the admin just lifted, and one that did not mark the key released
 	// would let a retry already on the wire land afterwards and win.
 	s.beginRelease(k)
-	if s.client == nil {
-		return nil
-	}
 	return s.del(ctx, k)
 }
 
@@ -392,10 +381,6 @@ func (s *RedisStore) del(ctx context.Context, k Key) error {
 // ever set; the delete is best-effort, because a field that stays is only
 // skipped again next tick.
 func (s *RedisStore) refresh(ctx context.Context) {
-	if s.client == nil {
-		return
-	}
-
 	// Taken before the read: anything Set locally after this instant is newer
 	// than the snapshot and must survive the replace below.
 	began := time.Now()

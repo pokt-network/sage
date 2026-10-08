@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"time"
 
@@ -89,33 +91,43 @@ func (r *RedisStorage) operatorHashKey() string {
 	return r.hashKey + "operators"
 }
 
-// GetOperatorStats reads every stored operator stat.
-func (r *RedisStorage) GetOperatorStats(ctx context.Context) (map[string]OperatorStat, error) {
-	all, err := r.client.HGetAll(ctx, r.operatorHashKey()).Result()
+// hsetJSON writes v, JSON-encoded, to one field of the hash key.
+func (r *RedisStorage) hsetJSON(ctx context.Context, key, field string, v any) error {
+	b, err := json.Marshal(v)
 	if err != nil {
-		return nil, fmt.Errorf("redis HGetAll %s: %w", r.operatorHashKey(), err)
+		return fmt.Errorf("encode %s %s: %w", key, field, err)
 	}
-	out := make(map[string]OperatorStat, len(all))
-	for field, val := range all {
-		var st OperatorStat
-		if err := json.Unmarshal([]byte(val), &st); err != nil {
-			continue // a field we cannot read is skipped, like a bad state
+	if err := r.client.HSet(ctx, key, field, string(b)).Err(); err != nil {
+		return fmt.Errorf("redis HSET %s %s: %w", key, field, err)
+	}
+	return nil
+}
+
+// hgetAllJSON reads every field of the hash key as a JSON-encoded T. A field
+// that does not decode is skipped, like a bad state.
+func hgetAllJSON[T any](ctx context.Context, c RedisClient, key string) (map[string]T, error) {
+	raw, err := c.HGetAll(ctx, key).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis HGETALL %s: %w", key, err)
+	}
+	out := make(map[string]T, len(raw))
+	for field, val := range raw {
+		var v T
+		if json.Unmarshal([]byte(val), &v) == nil {
+			out[field] = v
 		}
-		out[field] = st
 	}
 	return out, nil
 }
 
+// GetOperatorStats reads every stored operator stat.
+func (r *RedisStorage) GetOperatorStats(ctx context.Context) (map[string]OperatorStat, error) {
+	return hgetAllJSON[OperatorStat](ctx, r.client, r.operatorHashKey())
+}
+
 // SetOperatorStat writes one operator stat.
 func (r *RedisStorage) SetOperatorStat(ctx context.Context, field string, st OperatorStat) error {
-	b, err := json.Marshal(st)
-	if err != nil {
-		return fmt.Errorf("encode operator stat %s: %w", field, err)
-	}
-	if err := r.client.HSet(ctx, r.operatorHashKey(), field, string(b)).Err(); err != nil {
-		return fmt.Errorf("redis HSet %s: %w", field, err)
-	}
-	return nil
+	return r.hsetJSON(ctx, r.operatorHashKey(), field, st)
 }
 
 // SetState stores the state for the given key in the Redis HASH.
@@ -249,31 +261,13 @@ func (r *RedisStorage) notesKey() string {
 
 // PutNotificationCounts replaces one pod's notification counts.
 func (r *RedisStorage) PutNotificationCounts(ctx context.Context, pod string, c NotificationCounts) error {
-	b, err := json.Marshal(c)
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", r.notesKey(), err)
-	}
-	if err := r.client.HSet(ctx, r.notesKey(), pod, string(b)).Err(); err != nil {
-		return fmt.Errorf("redis HSET %s: %w", r.notesKey(), err)
-	}
-	return nil
+	return r.hsetJSON(ctx, r.notesKey(), pod, c)
 }
 
 // NotificationCounts reads every pod's notification counts; a field that does
 // not decode is skipped.
 func (r *RedisStorage) NotificationCounts(ctx context.Context) (map[string]NotificationCounts, error) {
-	raw, err := r.client.HGetAll(ctx, r.notesKey()).Result()
-	if err != nil {
-		return nil, fmt.Errorf("redis HGETALL %s: %w", r.notesKey(), err)
-	}
-	out := make(map[string]NotificationCounts, len(raw))
-	for pod, val := range raw {
-		var c NotificationCounts
-		if json.Unmarshal([]byte(val), &c) == nil {
-			out[pod] = c
-		}
-	}
-	return out, nil
+	return hgetAllJSON[NotificationCounts](ctx, r.client, r.notesKey())
 }
 
 // DeleteNotificationCounts drops the named pods' counts.
@@ -289,14 +283,7 @@ func (r *RedisStorage) DeleteNotificationCounts(ctx context.Context, pods ...str
 
 // SetPartyPenalties replaces the stored priced parties.
 func (r *RedisStorage) SetPartyPenalties(ctx context.Context, p PartyPenalties) error {
-	b, err := json.Marshal(p)
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", r.partiesKey(), err)
-	}
-	if err := r.client.HSet(ctx, r.partiesKey(), partiesField, string(b)).Err(); err != nil {
-		return fmt.Errorf("redis HSET %s: %w", r.partiesKey(), err)
-	}
-	return nil
+	return r.hsetJSON(ctx, r.partiesKey(), partiesField, p)
 }
 
 // policyKey holds the policy penalties, one field per party
@@ -307,31 +294,17 @@ func (r *RedisStorage) policyKey() string {
 
 // PutPolicyPenalty stores a party's policy penalty, replacing its previous one.
 func (r *RedisStorage) PutPolicyPenalty(ctx context.Context, p PolicyPenalty) error {
-	b, err := json.Marshal(p)
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", r.policyKey(), err)
-	}
-	if err := r.client.HSet(ctx, r.policyKey(), p.Party, string(b)).Err(); err != nil {
-		return fmt.Errorf("redis HSET %s: %w", r.policyKey(), err)
-	}
-	return nil
+	return r.hsetJSON(ctx, r.policyKey(), p.Party, p)
 }
 
 // PolicyPenalties reads every stored policy penalty; a field that does not
 // decode is skipped.
 func (r *RedisStorage) PolicyPenalties(ctx context.Context) ([]PolicyPenalty, error) {
-	raw, err := r.client.HGetAll(ctx, r.policyKey()).Result()
+	byParty, err := hgetAllJSON[PolicyPenalty](ctx, r.client, r.policyKey())
 	if err != nil {
-		return nil, fmt.Errorf("redis HGETALL %s: %w", r.policyKey(), err)
+		return nil, err
 	}
-	out := make([]PolicyPenalty, 0, len(raw))
-	for _, val := range raw {
-		var p PolicyPenalty
-		if json.Unmarshal([]byte(val), &p) == nil {
-			out = append(out, p)
-		}
-	}
-	return out, nil
+	return slices.AppendSeq(make([]PolicyPenalty, 0, len(byParty)), maps.Values(byParty)), nil
 }
 
 // DeletePolicyPenalty removes a party's policy penalty.

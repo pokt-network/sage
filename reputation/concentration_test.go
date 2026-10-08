@@ -28,9 +28,9 @@ func shares(t *testing.T, cfg OperatorCapConfig, candidates domain.EndpointAddrL
 	t.Helper()
 	hits := map[string]int{}
 	for i := 0; i < draws; i++ {
-		_, ep, ok := cappedPick(cfg, candidates, nil)
+		_, ep, ok := cappedPickWeighted(cfg, candidates, nil, nil)
 		if !ok {
-			t.Fatalf("cappedPick reported it could not apply on a %d-endpoint pool", len(candidates))
+			t.Fatalf("cappedPickWeighted reported it could not apply on a %d-endpoint pool", len(candidates))
 		}
 		hits[ep.Operator()]++
 	}
@@ -129,7 +129,7 @@ func TestCappedPick_TwoOperatorPoolsUseTheLooserCap(t *testing.T) {
 // there would mean serving a fraction of requests from nowhere.
 func TestCappedPick_SingleOperatorPoolIsNotCapped(t *testing.T) {
 	candidates := pool(5)
-	if _, _, ok := cappedPick(OperatorCapConfig{}, candidates, nil); ok {
+	if _, _, ok := cappedPickWeighted(OperatorCapConfig{}, candidates, nil, nil); ok {
 		t.Error("cap should not apply to a single-operator pool")
 	}
 }
@@ -137,13 +137,13 @@ func TestCappedPick_SingleOperatorPoolIsNotCapped(t *testing.T) {
 func TestCappedPick_DisabledAndDegenerateInputs(t *testing.T) {
 	candidates := pool(5, 5)
 
-	if _, _, ok := cappedPick(OperatorCapConfig{MaxShare: -1}, candidates, nil); ok {
+	if _, _, ok := cappedPickWeighted(OperatorCapConfig{MaxShare: -1}, candidates, nil, nil); ok {
 		t.Error("a negative MaxShare must disable the cap")
 	}
-	if _, _, ok := cappedPick(OperatorCapConfig{}, nil, nil); ok {
+	if _, _, ok := cappedPickWeighted(OperatorCapConfig{}, nil, nil, nil); ok {
 		t.Error("an empty pool cannot be capped")
 	}
-	if _, _, ok := cappedPick(OperatorCapConfig{}, candidates[:1], nil); ok {
+	if _, _, ok := cappedPickWeighted(OperatorCapConfig{}, candidates[:1], nil, nil); ok {
 		t.Error("a one-endpoint pool cannot be capped")
 	}
 }
@@ -156,9 +156,9 @@ func TestCappedPick_KeepPredicateRestrictsThePool(t *testing.T) {
 	only := map[domain.EndpointAddr]bool{candidates[0]: true, candidates[5]: true}
 
 	for i := 0; i < 200; i++ {
-		_, ep, ok := cappedPick(OperatorCapConfig{}, candidates, func(i int) bool {
+		_, ep, ok := cappedPickWeighted(OperatorCapConfig{}, candidates, func(i int) bool {
 			return keepIdx[i]
-		})
+		}, nil)
 		if !ok {
 			t.Fatal("cap should apply across the two kept endpoints")
 		}

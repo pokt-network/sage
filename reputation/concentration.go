@@ -132,9 +132,9 @@ func getTierBuf(n int) *[]int8 {
 
 func putTierBuf(p *[]int8) { tierBufPool.Put(p) }
 
-// cappedPick chooses an operator with probability proportional to its capped
-// weight and returns both the operator and a uniformly-sampled endpoint of
-// that operator.
+// cappedPickWeighted chooses an operator with probability proportional to its
+// capped weight and returns both the operator and an endpoint of that
+// operator.
 //
 // ok is false when the cap cannot apply — a disabled config, an empty list, or
 // a pool holding fewer than two operators — and the caller should fall back to
@@ -146,20 +146,13 @@ func putTierBuf(p *[]int8) { tierBufPool.Put(p) }
 // rather than across the whole session. It takes an index rather than an
 // address so the caller can answer from a classification it already computed,
 // instead of scoring every endpoint a second time on the hot path.
-func cappedPick(
-	cfg OperatorCapConfig,
-	candidates domain.EndpointAddrList,
-	keep func(i int) bool,
-) (operator string, pick domain.EndpointAddr, ok bool) {
-	return cappedPickWeighted(cfg, candidates, keep, nil)
-}
-
-// cappedPickWeighted is cappedPick with a per-candidate weight: an
-// operator's entitlement is its members' summed weight over the total, and
-// the member picked within the operator is drawn by weight. nil weight is
-// one per member, which is cappedPick. The latency tie-break passes
-// 1/latency, so a fast operator earns share across operators up to the same
-// cap, instead of the cap fixing shares by endpoint count first.
+//
+// weight is per candidate: an operator's entitlement is its members' summed
+// weight over the total, and the member picked within the operator is drawn
+// by weight. nil weight is one per member, so the endpoint is sampled
+// uniformly. The latency tie-break passes 1/latency, so a fast operator earns
+// share across operators up to the same cap, instead of the cap fixing shares
+// by endpoint count first.
 func cappedPickWeighted(
 	cfg OperatorCapConfig,
 	candidates domain.EndpointAddrList,

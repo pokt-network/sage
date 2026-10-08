@@ -2,6 +2,7 @@ package reputation
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/pokt-network/sage/domain"
@@ -60,7 +61,7 @@ func mergePeerParties(stale []PartyStale, trust []PartyTrust, peer PartyPenaltie
 		if ps.Penalty >= 0 || now.Sub(pricedAt) >= staleShareHold || !served(ps.Service) || staleOn == nil || !staleOn(ps.Service) {
 			continue
 		}
-		i := indexStale(stale, ps.Service, ps.Party)
+		i := slices.IndexFunc(stale, func(p PartyStale) bool { return p.ServiceID == ps.Service && p.Party == ps.Party })
 		switch {
 		case i < 0:
 			stale = append(stale, PartyStale{ServiceID: ps.Service, Party: ps.Party, Penalty: ps.Penalty, pricedAt: pricedAt, held: true, peer: true})
@@ -75,7 +76,7 @@ func mergePeerParties(stale []PartyStale, trust []PartyTrust, peer PartyPenaltie
 		if !now.Before(until) {
 			continue
 		}
-		i := indexTrust(trust, pt.Party)
+		i := slices.IndexFunc(trust, func(t PartyTrust) bool { return t.Party == pt.Party })
 		switch {
 		case i < 0:
 			trust = append(trust, PartyTrust{Party: pt.Party, Penalty: trustPenalty, until: until, peer: true})
@@ -87,22 +88,4 @@ func mergePeerParties(stale []PartyStale, trust []PartyTrust, peer PartyPenaltie
 		}
 	}
 	return stale, trust
-}
-
-func indexStale(stale []PartyStale, svc domain.ServiceID, party string) int {
-	for i, p := range stale {
-		if p.ServiceID == svc && p.Party == party {
-			return i
-		}
-	}
-	return -1
-}
-
-func indexTrust(trust []PartyTrust, party string) int {
-	for i, t := range trust {
-		if t.Party == party {
-			return i
-		}
-	}
-	return -1
 }

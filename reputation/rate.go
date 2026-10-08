@@ -96,11 +96,7 @@ func (c RateConfig) Penalty(rate float64) float64 {
 	if rate <= c.FullRate {
 		return penaltyAtFull * math.Log10(rate/c.OnsetRate) / span
 	}
-	p := penaltyAtFull + (penaltyCap-penaltyAtFull)*math.Log10(rate/c.FullRate)
-	if p < penaltyCap {
-		return penaltyCap
-	}
-	return p
+	return max(penaltyAtFull+(penaltyCap-penaltyAtFull)*math.Log10(rate/c.FullRate), penaltyCap)
 }
 
 // FailureWeight is what one signal contributes to the failure rate: a
