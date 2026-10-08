@@ -3,7 +3,6 @@
 package metrics
 
 import (
-	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/internal/safego"
@@ -1140,12 +1138,6 @@ func (r *Recorder) RecordStageTime(serviceID domain.ServiceID, stage string, d t
 // one poll of a service's external block sources that produced no height.
 func (r *Recorder) RecordExternalSourceFailure(serviceID domain.ServiceID) {
 	r.externalSourceFails.WithLabelValues(r.services.serviceValue(serviceID)).Inc()
-}
-
-// ServeHTTP returns a standard Prometheus HTTP handler suitable for mounting
-// at /metrics.
-func (r *Recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	promhttp.Handler().ServeHTTP(w, req)
 }
 
 // NewWarmGauges exposes the health-check warm gate, the half of readiness that

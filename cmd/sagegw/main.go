@@ -20,6 +20,7 @@ import (
 	"github.com/pokt-network/sage/override"
 	"github.com/pokt-network/sage/reload"
 	"github.com/pokt-network/sage/router"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
@@ -198,7 +199,7 @@ func main() {
 	if cfg.Metrics.PrometheusAddr != "" && app.Metrics != nil {
 		safego.Go(logger, "server.metrics", func() {
 			mux := http.NewServeMux()
-			mux.Handle("/metrics", app.Metrics)
+			mux.Handle("/metrics", promhttp.Handler())
 			logger.Info("metrics listening", "addr", cfg.Metrics.PrometheusAddr, "path", "/metrics")
 			if err := http.ListenAndServe(cfg.Metrics.PrometheusAddr, mux); err != nil {
 				logger.Warn("metrics server stopped", "error", err)

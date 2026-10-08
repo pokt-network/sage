@@ -306,7 +306,7 @@ func TestServeHTTP_Returns200(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	promhttp.Handler().ServeHTTP(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -330,7 +330,7 @@ func TestServeHTTP_BodyContainsSageMetrics(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
-	rec.ServeHTTP(w, req)
+	promhttp.Handler().ServeHTTP(w, req)
 
 	body := w.Body.String()
 	if !strings.Contains(body, "sage_relay_total") {
@@ -482,10 +482,10 @@ func TestAllServiceLabelledMetricsAreBounded(t *testing.T) {
 // mux carries /debug/pprof — serving both from one listener would publish heap
 // dumps to whoever scrapes metrics, which is PATH's audit C6.
 func TestRecorder_MetricsMuxDoesNotCarryPprof(t *testing.T) {
-	r := newIsolatedRecorder(t, "eth")
+	newIsolatedRecorder(t, "eth")
 
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", r)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
