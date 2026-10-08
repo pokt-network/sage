@@ -1,7 +1,9 @@
 package healthcheck
 
 import (
+	"cmp"
 	"context"
+	"maps"
 	"slices"
 	"time"
 
@@ -77,10 +79,7 @@ func (e *Executor) applyPeerResult(ctx context.Context, r ProbeResult) {
 	if r.TransportError != "" {
 		return
 	}
-	rpcType := r.RPCType
-	if rpcType == "" {
-		rpcType = domain.RPCTypeJSONRPC
-	}
+	rpcType := cmp.Or(r.RPCType, domain.RPCTypeJSONRPC)
 	eps, err := e.probeEndpoints(ctx, r.ServiceID, rpcType)
 	if err != nil {
 		return
@@ -169,10 +168,6 @@ func (e *Executor) prunePeerSeen(now time.Time) {
 	}
 	cutoff := now.Add(-maxBaselineAge)
 	e.peerMu.Lock()
-	for k, at := range e.peerSeen {
-		if at.Before(cutoff) {
-			delete(e.peerSeen, k)
-		}
-	}
+	maps.DeleteFunc(e.peerSeen, func(_ probeKey, at time.Time) bool { return at.Before(cutoff) })
 	e.peerMu.Unlock()
 }

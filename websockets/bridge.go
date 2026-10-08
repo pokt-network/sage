@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -155,14 +156,8 @@ const rebindWindow = 10 * time.Minute
 func (b *Bridge) recentLosses(now time.Time) int {
 	b.lossMu.Lock()
 	defer b.lossMu.Unlock()
-	keep := b.losses[:0]
-	for _, t := range b.losses {
-		if now.Sub(t) < rebindWindow {
-			keep = append(keep, t)
-		}
-	}
-	b.losses = keep
-	return len(keep)
+	b.losses = slices.DeleteFunc(b.losses, func(t time.Time) bool { return now.Sub(t) >= rebindWindow })
+	return len(b.losses)
 }
 
 // BridgeOption tunes a bridge at StartBridge.

@@ -115,7 +115,7 @@ func (a *AdminAPI) handleSetDrain(w http.ResponseWriter, req *http.Request) {
 				// drain is still in force on the instance that just lifted it.
 				// The same reasoning as setting a drain, in the other
 				// direction.
-				if !isPropagationError(err) {
+				if !errors.Is(err, drain.ErrPropagation) {
 					a.logger.Error("admin: release drain", "service", serviceID, "domain", targetDomain, "error", err)
 					writeJSONError(w, http.StatusInternalServerError, "failed to release drain")
 					return
@@ -123,7 +123,7 @@ func (a *AdminAPI) handleSetDrain(w http.ResponseWriter, req *http.Request) {
 				resp.PropagationError = err.Error()
 			}
 		}
-		resp.ActiveDrains = activeDrainEntries(a.drains.Active(ctx, serviceID))
+		resp.ActiveDrains = orEmpty(a.drains.Active(ctx, serviceID))
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -141,7 +141,7 @@ func (a *AdminAPI) handleSetDrain(w http.ResponseWriter, req *http.Request) {
 	if !body.DryRun {
 		entry := drain.Entry{Key: key, Until: until, Reason: body.Reason}
 		if err := a.drains.Set(ctx, entry); err != nil {
-			if !isPropagationError(err) {
+			if !errors.Is(err, drain.ErrPropagation) {
 				a.logger.Error("admin: set drain", "service", serviceID, "domain", targetDomain, "error", err)
 				writeJSONError(w, http.StatusInternalServerError, "failed to set drain")
 				return
@@ -157,7 +157,7 @@ func (a *AdminAPI) handleSetDrain(w http.ResponseWriter, req *http.Request) {
 		)
 	}
 
-	resp.ActiveDrains = activeDrainEntries(a.drains.Active(ctx, serviceID))
+	resp.ActiveDrains = orEmpty(a.drains.Active(ctx, serviceID))
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -169,7 +169,7 @@ func (a *AdminAPI) handleGetDrains(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "no drain store is configured")
 		return
 	}
-	entries := activeDrainEntries(a.drains.Active(req.Context(), serviceID))
+	entries := orEmpty(a.drains.Active(req.Context(), serviceID))
 	writeJSON(w, http.StatusOK, entries)
 }
 
@@ -201,7 +201,7 @@ func (a *AdminAPI) handleReleaseDrain(w http.ResponseWriter, req *http.Request) 
 		}
 		if err := a.drains.Release(ctx, e.Key); err != nil {
 			a.logger.Error("admin: release drain", "service", serviceID, "domain", targetDomain, "rpc_type", e.RPCType, "error", err)
-			if !isPropagationError(err) {
+			if !errors.Is(err, drain.ErrPropagation) {
 				writeJSONError(w, http.StatusInternalServerError, "failed to release drain")
 				return
 			}
@@ -218,7 +218,7 @@ func (a *AdminAPI) handleReleaseDrain(w http.ResponseWriter, req *http.Request) 
 		"service_id":    string(serviceID),
 		"domain":        targetDomain,
 		"released":      released,
-		"active_drains": activeDrainEntries(a.drains.Active(ctx, serviceID)),
+		"active_drains": orEmpty(a.drains.Active(ctx, serviceID)),
 	}
 	if len(propagation) > 0 {
 		resp["propagation_error"] = strings.Join(propagation, "; ")
@@ -230,13 +230,8 @@ func (a *AdminAPI) handleReleaseDrain(w http.ResponseWriter, req *http.Request) 
 // rpcType when scoped or over every RPC type when not. Endpoints seen under
 // more than one RPC type are counted once.
 func (a *AdminAPI) matchedEndpoints(ctx context.Context, serviceID domain.ServiceID, targetDomain string, rpcType domain.RPCType) int {
-	seen := map[domain.EndpointAddr]bool{}
 	matched := 0
 	for addr := range a.registeredEndpoints(ctx, serviceID, rpcType) {
-		if seen[addr] {
-			continue
-		}
-		seen[addr] = true
 		// Lowercased to compare like for like: targetDomain already is, and
 		// shannon's own drain check lowercases the operator it derives from
 		// the URL. A host with an uppercase letter would otherwise be drained
@@ -258,16 +253,20 @@ type registeredEndpointLister interface {
 	RegisteredEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) (domain.EndpointAddrList, error)
 }
 
-// registeredEndpoints is liveEndpoints before exclusions, when the provider
-// can say; otherwise it is liveEndpoints. The dry-run match count reads this
-// so that an operator already drained, banned or blacklisted still counts —
-// zero would say "no such operator" when the truth is "already out".
+// registeredEndpoints yields the distinct endpoints registered for serviceID
+// over rpcType, or over every RPC type when rpcType is unscoped (""): before
+// exclusions when the provider can say, otherwise the available ones. The
+// dry-run match count reads this so that an operator already drained, banned
+// or blacklisted still counts — zero would say "no such operator" when the
+// truth is "already out".
 func (a *AdminAPI) registeredEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) map[domain.EndpointAddr]struct{} {
-	lister, ok := a.endpoints.(registeredEndpointLister)
-	if !ok {
-		return a.liveEndpoints(ctx, serviceID, rpcType)
+	if lister, ok := a.endpoints.(registeredEndpointLister); ok {
+		return unionEndpoints(ctx, serviceID, rpcType, lister.RegisteredEndpoints)
 	}
-	return unionEndpoints(ctx, serviceID, rpcType, lister.RegisteredEndpoints)
+	if a.endpoints == nil {
+		return map[domain.EndpointAddr]struct{}{}
+	}
+	return unionEndpoints(ctx, serviceID, rpcType, a.endpoints.AvailableEndpoints)
 }
 
 // lastOperatorStanding reports whether draining targetDomain would leave some
@@ -302,15 +301,6 @@ func (a *AdminAPI) lastOperatorStanding(ctx context.Context, serviceID domain.Se
 		}
 	}
 	return false
-}
-
-// liveEndpoints yields the distinct endpoints available for serviceID over
-// rpcType, or over every RPC type when rpcType is unscoped ("").
-func (a *AdminAPI) liveEndpoints(ctx context.Context, serviceID domain.ServiceID, rpcType domain.RPCType) map[domain.EndpointAddr]struct{} {
-	if a.endpoints == nil {
-		return map[domain.EndpointAddr]struct{}{}
-	}
-	return unionEndpoints(ctx, serviceID, rpcType, a.endpoints.AvailableEndpoints)
 }
 
 // unionEndpoints collects the distinct endpoints list returns for serviceID
@@ -348,18 +338,4 @@ func describeRPCScope(rpcType domain.RPCType) string {
 		return "every RPC type"
 	}
 	return string(rpcType)
-}
-
-// activeDrainEntries normalises a nil slice to an empty one so JSON encodes
-// [] rather than null.
-func activeDrainEntries(entries []drain.Entry) []drain.Entry {
-	if entries == nil {
-		return []drain.Entry{}
-	}
-	return entries
-}
-
-// isPropagationError reports whether err wraps drain.ErrPropagation.
-func isPropagationError(err error) bool {
-	return errors.Is(err, drain.ErrPropagation)
 }

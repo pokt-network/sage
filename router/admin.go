@@ -431,9 +431,7 @@ func (a *AdminAPI) handleResetReputation(w http.ResponseWriter, req *http.Reques
 		writeJSONError(w, http.StatusInternalServerError, "failed to reset score")
 		return
 	}
-	if keys == nil {
-		keys = []string{}
-	}
+	keys = orEmpty(keys)
 	// Reputation state is per replica: announce the reset so the other pods
 	// repeat it (WatchReputationResets), through the same matching.
 	persisted := a.publishReputationReset(req.Context(), serviceID, string(endpoint))
@@ -469,11 +467,7 @@ func resetPersistenceNote(persisted bool) string {
 func (a *AdminAPI) handleGetTimeline(w http.ResponseWriter, req *http.Request) {
 	serviceID := req.PathValue("serviceID")
 
-	events := a.timeline.GetAll(serviceID + ":")
-	if events == nil {
-		events = []reputation.TimelineEvent{}
-	}
-	writeJSON(w, http.StatusOK, events)
+	writeJSON(w, http.StatusOK, orEmpty(a.timeline.GetAll(serviceID+":")))
 }
 
 // handleGetTimelineEndpoint returns the reputation events for a single
@@ -487,12 +481,7 @@ func (a *AdminAPI) handleGetTimelineEndpoint(w http.ResponseWriter, req *http.Re
 		return
 	}
 
-	key := serviceID + ":" + endpoint
-	events := a.timeline.Get(key)
-	if events == nil {
-		events = []reputation.TimelineEvent{}
-	}
-	writeJSON(w, http.StatusOK, events)
+	writeJSON(w, http.StatusOK, orEmpty(a.timeline.Get(serviceID+":"+endpoint)))
 }
 
 // --- Circuit breaker handlers ---

@@ -4,6 +4,7 @@
 package healthcheck
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -617,7 +618,9 @@ func (e *Executor) runOnce(ctx context.Context) {
 					defer safego.Recover(e.logger, "healthcheck.endpoint")
 					defer e.wg.Done()
 					defer func() { <-sem }()
-					e.checkEndpoint(ctx, serviceID, probe, group.endpoints, plugin, due, configured)
+					for _, check := range due {
+						e.sendCheck(ctx, serviceID, probe, group.endpoints, check)
+					}
 				}()
 			}
 		}
@@ -747,10 +750,7 @@ func checksByRPCType(checks []qos.HealthCheck) map[domain.RPCType][]qos.HealthCh
 	}
 	out := make(map[domain.RPCType][]qos.HealthCheck, 2)
 	for _, check := range checks {
-		rpcType := check.Payload.RPCType()
-		if rpcType == "" {
-			rpcType = domain.RPCTypeJSONRPC
-		}
+		rpcType := cmp.Or(check.Payload.RPCType(), domain.RPCTypeJSONRPC)
 		out[rpcType] = append(out[rpcType], check)
 	}
 	return out
@@ -824,27 +824,6 @@ func (e *Executor) dialedURL(serviceID domain.ServiceID, ep domain.EndpointAddr,
 	return ep.URL()
 }
 
-// checkEndpoint runs all health checks against probe and applies the results to
-// every endpoint sharing its backend (probe included).
-//
-// configured is the cycle's own snapshot of the operator-declared rules,
-// threaded down rather than re-read: the checks being run came from it, so
-// grading their failures against a set that has since been swapped would
-// penalise an endpoint by a rule that is no longer in the file.
-func (e *Executor) checkEndpoint(
-	ctx context.Context,
-	serviceID domain.ServiceID,
-	probe domain.EndpointAddr,
-	siblings domain.EndpointAddrList,
-	plugin qos.Plugin,
-	checks []qos.HealthCheck,
-	configured *ConfiguredChecks,
-) {
-	for _, check := range checks {
-		e.sendCheck(ctx, serviceID, probe, siblings, plugin, check, configured)
-	}
-}
-
 // checkSignal grades a health check that came back with an HTTP response.
 //
 // HTTP status alone is not enough to say a check passed. An endpoint can answer
@@ -895,13 +874,8 @@ func (e *Executor) sendCheck(
 	serviceID domain.ServiceID,
 	ep domain.EndpointAddr,
 	siblings domain.EndpointAddrList,
-	plugin qos.Plugin,
 	check qos.HealthCheck,
-	configured *ConfiguredChecks,
 ) {
-	_ = plugin
-	_ = configured
-
 	// Bound the probe on its own, not on the relay timeout it would otherwise
 	// inherit. See probeTimeout: a hung backend costs one worker for the whole
 	// relay timeout, and with a small pool that is a large fraction of the
@@ -1089,26 +1063,30 @@ func (e *Executor) Warm() bool {
 // Essential probe asked for.
 var errProbeAnsweredNothing = errors.New("probe answered without the fact it asked for")
 
-// isEssentialCheck reports whether the named check is one the plugin marked
-// Essential. Plugins declare a handful of checks, so the scan is cheap.
-func (e *Executor) isEssentialCheck(plugin qos.Plugin, name string) bool {
+// pluginCheck returns the plugin's own check with the given name. Plugins
+// declare a handful of checks, each under a distinct name, so the scan is
+// cheap and the first match is the only one.
+func pluginCheck(plugin qos.Plugin, name string) (qos.HealthCheck, bool) {
 	for _, c := range pluginChecks(plugin) {
 		if c.Name == name {
-			return c.Essential
+			return c, true
 		}
 	}
-	return false
+	return qos.HealthCheck{}, false
+}
+
+// isEssentialCheck reports whether the named check is one the plugin marked
+// Essential.
+func (e *Executor) isEssentialCheck(plugin qos.Plugin, name string) bool {
+	c, _ := pluginCheck(plugin, name)
+	return c.Essential
 }
 
 // isHeadCheck reports whether the named check is one the plugin marked
 // GradesHead.
 func (e *Executor) isHeadCheck(plugin qos.Plugin, name string) bool {
-	for _, c := range pluginChecks(plugin) {
-		if c.Name == name {
-			return c.GradesHead
-		}
-	}
-	return false
+	c, _ := pluginCheck(plugin, name)
+	return c.GradesHead
 }
 
 // gradeHead hands a check marked GradesHead to the plugin's head-lag reader,
@@ -1116,29 +1094,27 @@ func (e *Executor) isHeadCheck(plugin qos.Plugin, name string) bool {
 // here later), and the reading to the head-lag hook. It reports whether the
 // check is one that grades the head.
 func (e *Executor) gradeHead(plugin qos.Plugin, r ProbeResult) bool {
-	for _, c := range pluginChecks(plugin) {
-		if c.Name != r.Check || !c.GradesHead {
-			continue
-		}
-		reader, ok := plugin.(qos.HeadLagReader)
-		if e.headLag == nil || !ok {
-			return true
-		}
-		// Graded when the answer arrived: ProbedAt is when the probe was
-		// sent, and a slow answer is that much older.
-		at := r.ProbedAt.Add(time.Duration(r.LatencyMS) * time.Millisecond)
-		if r.ProbedAt.IsZero() {
-			at = time.Now()
-		}
-		// The check's own payload carries the path and verb a REST canary is
-		// recognised by; the probe result keeps only the body.
-		payload := domain.NewPayload(r.Request, r.RPCType, c.Payload.Method()).WithHTTP(c.Payload.Path(), c.Payload.HTTPMethod())
-		if lag, stale, ok := reader.HeadLag(payload, r.Body, at); ok {
-			e.headLag(r.ServiceID, r.Endpoint.Party(), r.Check, lag, stale)
-		}
+	c, _ := pluginCheck(plugin, r.Check)
+	if !c.GradesHead {
+		return false
+	}
+	reader, ok := plugin.(qos.HeadLagReader)
+	if e.headLag == nil || !ok {
 		return true
 	}
-	return false
+	// Graded when the answer arrived: ProbedAt is when the probe was
+	// sent, and a slow answer is that much older.
+	at := r.ProbedAt.Add(time.Duration(r.LatencyMS) * time.Millisecond)
+	if r.ProbedAt.IsZero() {
+		at = time.Now()
+	}
+	// The check's own payload carries the path and verb a REST canary is
+	// recognised by; the probe result keeps only the body.
+	payload := domain.NewPayload(r.Request, r.RPCType, c.Payload.Method()).WithHTTP(c.Payload.Path(), c.Payload.HTTPMethod())
+	if lag, stale, ok := reader.HeadLag(payload, r.Body, at); ok {
+		e.headLag(r.ServiceID, r.Endpoint.Party(), r.Check, lag, stale)
+	}
+	return true
 }
 
 // pluginChecks returns a plugin's own health checks, or none for a plugin

@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,13 +21,6 @@ import (
 
 	"github.com/pokt-network/sage/internal/safego"
 )
-
-// ExternalBlockHeight pairs a service with its latest known block height from
-// an external (ground-truth) source.
-type ExternalBlockHeight struct {
-	ServiceID domain.ServiceID
-	Height    uint64
-}
 
 // ExternalBlockFetcher periodically queries external block height sources and
 // emits results on a channel.
@@ -100,10 +94,11 @@ func NewExternalBlockFetcher(
 	}
 }
 
-// Start launches a background poll loop and returns the output channel. The
-// channel is closed when ctx is cancelled.
-func (f *ExternalBlockFetcher) Start(ctx context.Context) <-chan ExternalBlockHeight {
-	ch := make(chan ExternalBlockHeight, 8)
+// Start launches a background poll loop and returns the channel the service's
+// latest external block heights arrive on. The channel is closed when ctx is
+// cancelled.
+func (f *ExternalBlockFetcher) Start(ctx context.Context) <-chan uint64 {
+	ch := make(chan uint64, 8)
 
 	// Determine the shortest non-zero interval across all sources; default 30s.
 	interval := 30 * time.Second
@@ -133,7 +128,7 @@ func (f *ExternalBlockFetcher) Start(ctx context.Context) <-chan ExternalBlockHe
 }
 
 // emit runs fetchMax and sends the result on ch (non-blocking drop on full).
-func (f *ExternalBlockFetcher) emit(ctx context.Context, ch chan<- ExternalBlockHeight) {
+func (f *ExternalBlockFetcher) emit(ctx context.Context, ch chan<- uint64) {
 	height, err := f.fetchMax(ctx)
 	now := time.Now()
 	f.stateMu.Lock()
@@ -172,9 +167,8 @@ func (f *ExternalBlockFetcher) emit(ctx context.Context, ch chan<- ExternalBlock
 			"height", height,
 		)
 	}
-	ebh := ExternalBlockHeight{ServiceID: f.serviceID, Height: height}
 	select {
-	case ch <- ebh:
+	case ch <- height:
 	default:
 		f.logger.Warn("external block fetcher: channel full, dropping result",
 			"service_id", f.serviceID,
@@ -241,9 +235,7 @@ func (f *ExternalBlockFetcher) fetchOne(ctx context.Context, src config.External
 		// CometBFT's JSON-RPC face; `status` carries sync_info.latest_block_height,
 		// which the parser reads. The type was documented and not handled
 		// until 2026-09-13.
-		if src.Method == "" {
-			src.Method = "status"
-		}
+		src.Method = cmp.Or(src.Method, "status")
 		return f.fetchJSONRPC(ctx, src)
 	case "rest":
 		return f.fetchREST(ctx, src)
@@ -254,10 +246,7 @@ func (f *ExternalBlockFetcher) fetchOne(ctx context.Context, src config.External
 
 // fetchJSONRPC sends eth_blockNumber (or src.Method) to the URL and parses the result.
 func (f *ExternalBlockFetcher) fetchJSONRPC(ctx context.Context, src config.ExternalBlockSource) (uint64, error) {
-	method := src.Method
-	if method == "" {
-		method = "eth_blockNumber"
-	}
+	method := cmp.Or(src.Method, "eth_blockNumber")
 	body, _ := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
@@ -270,21 +259,7 @@ func (f *ExternalBlockFetcher) fetchJSONRPC(ctx context.Context, src config.Exte
 		return 0, fmt.Errorf("fetchJSONRPC: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := f.client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("fetchJSONRPC: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("fetchJSONRPC: read body: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("fetchJSONRPC: HTTP %d: %s", resp.StatusCode, truncate(respBody, 120))
-	}
-	return parseHeightFromBytes(respBody)
+	return f.fetch(req, "fetchJSONRPC")
 }
 
 // fetchREST sends a GET to URL+Path and parses the response.
@@ -297,22 +272,27 @@ func (f *ExternalBlockFetcher) fetchREST(ctx context.Context, src config.Externa
 	if err != nil {
 		return 0, fmt.Errorf("fetchREST: build request: %w", err)
 	}
+	return f.fetch(req, "fetchREST")
+}
 
+// fetch sends req and parses a block height from its 2xx body. Errors are
+// prefixed with name, the source type's fetcher.
+func (f *ExternalBlockFetcher) fetch(req *http.Request, name string) (uint64, error) {
 	resp, err := f.client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("fetchREST: %w", err)
+		return 0, fmt.Errorf("%s: %w", name, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("fetchREST: read body: %w", err)
+		return 0, fmt.Errorf("%s: read body: %w", name, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Named by status rather than parsed: an HTML 405 or 401 page read
 		// as "cannot find block height in JSON: <!DOCTYPE html>…" says what
 		// happened only to someone who already knows.
-		return 0, fmt.Errorf("fetchREST: HTTP %d: %s", resp.StatusCode, truncate(respBody, 120))
+		return 0, fmt.Errorf("%s: HTTP %d: %s", name, resp.StatusCode, truncate(respBody, 120))
 	}
 	return parseHeightFromBytes(respBody)
 }
@@ -362,25 +342,17 @@ func parseHeightFromBytes(data []byte) (uint64, error) {
 // parseHeightFromResult handles the JSON-RPC "result" field which may be a
 // string, number, or nested object.
 func parseHeightFromResult(result gjson.Result) (uint64, error) {
-	switch result.Type {
-	case gjson.String:
-		return parseHeightString(result.String())
-	case gjson.Number:
-		f := result.Float()
-		if f < 0 {
-			return 0, fmt.Errorf("negative block height: %v", f)
-		}
-		return uint64(f), nil
-	case gjson.JSON:
-		// Nested object — try common sub-paths. blockHeight is Solana's
-		// getEpochInfo, the field the solana plugin itself reads (absoluteSlot
-		// is deliberately not accepted there either).
-		for _, path := range []string{"sync_info.latest_block_height", "height", "blockHeight"} {
-			v := gjson.Get(result.Raw, path)
-			if v.Exists() {
-				if h, err := parseHeightValue(v); err == nil {
-					return h, nil
-				}
+	if result.Type != gjson.JSON {
+		return parseHeightValue(result)
+	}
+	// Nested object — try common sub-paths. blockHeight is Solana's
+	// getEpochInfo, the field the solana plugin itself reads (absoluteSlot
+	// is deliberately not accepted there either).
+	for _, path := range []string{"sync_info.latest_block_height", "height", "blockHeight"} {
+		v := gjson.Get(result.Raw, path)
+		if v.Exists() {
+			if h, err := parseHeightValue(v); err == nil {
+				return h, nil
 			}
 		}
 	}

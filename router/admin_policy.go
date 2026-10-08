@@ -40,10 +40,7 @@ func (a *AdminAPI) handleListPolicyPenalties(w http.ResponseWriter, req *http.Re
 		writeJSONError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	if list == nil {
-		list = []reputation.PolicyPenalty{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"policy_penalties": list})
+	writeJSON(w, http.StatusOK, map[string]any{"policy_penalties": orEmpty(list)})
 }
 
 // handleSetPolicyPenalty sets a policy penalty on a party, by hand, for

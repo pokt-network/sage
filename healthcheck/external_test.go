@@ -114,12 +114,9 @@ func TestExternalBlockFetcher_JSONRPC(t *testing.T) {
 
 	ch := fetcher.Start(ctx)
 	select {
-	case ebh := <-ch:
-		if ebh.Height != 100 {
-			t.Errorf("expected height 100, got %d", ebh.Height)
-		}
-		if ebh.ServiceID != "eth" {
-			t.Errorf("expected serviceID eth, got %q", ebh.ServiceID)
+	case h := <-ch:
+		if h != 100 {
+			t.Errorf("expected height 100, got %d", h)
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for external block height")
@@ -151,9 +148,9 @@ func TestExternalBlockFetcher_REST(t *testing.T) {
 
 	ch := fetcher.Start(ctx)
 	select {
-	case ebh := <-ch:
-		if ebh.Height != 42 {
-			t.Errorf("expected height 42, got %d", ebh.Height)
+	case h := <-ch:
+		if h != 42 {
+			t.Errorf("expected height 42, got %d", h)
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for external block height")
@@ -278,7 +275,7 @@ func TestExternalBlockFetcher_FailureCountedAndStateChangeLogged(t *testing.T) {
 	f := NewExternalBlockFetcher("bitway", []config.ExternalBlockSource{{URL: server.URL, Type: "json_rpc"}}, logger)
 	counter := &countingFailures{}
 	f.SetFailureRecorder(counter)
-	ch := make(chan ExternalBlockHeight, 8)
+	ch := make(chan uint64, 8)
 
 	f.emit(context.Background(), ch)
 	f.emit(context.Background(), ch)
@@ -297,8 +294,8 @@ func TestExternalBlockFetcher_FailureCountedAndStateChangeLogged(t *testing.T) {
 	f.emit(context.Background(), ch)
 	select {
 	case h := <-ch:
-		if h.Height != 100 {
-			t.Fatalf("height = %d, want 100 after recovery", h.Height)
+		if h != 100 {
+			t.Fatalf("height = %d, want 100 after recovery", h)
 		}
 	default:
 		t.Fatal("no height emitted after the source recovered")

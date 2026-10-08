@@ -633,7 +633,7 @@ func TestSendCheck_AppliesTheProbeDeadline(t *testing.T) {
 	e.warm.Store(true)
 	e.SetProbeTimeout(50 * time.Millisecond)
 
-	e.sendCheck(context.Background(), "eth", "supA-https://a.example.com", nil, nil, skipTestCheck(), nil)
+	e.sendCheck(context.Background(), "eth", "supA-https://a.example.com", nil, skipTestCheck())
 
 	if !relayer.called {
 		t.Fatal("probe was never sent")

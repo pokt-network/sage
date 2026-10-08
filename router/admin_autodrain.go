@@ -42,8 +42,5 @@ func (a *AdminAPI) handleAutoDrainEvents(w http.ResponseWriter, req *http.Reques
 		writeJSONError(w, http.StatusBadGateway, "reading the decision log: "+err.Error())
 		return
 	}
-	if events == nil {
-		events = []autodrain.Event{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	writeJSON(w, http.StatusOK, map[string]any{"events": orEmpty(events)})
 }

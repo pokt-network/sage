@@ -1,6 +1,7 @@
 package router
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,10 +56,7 @@ func (a *AdminAPI) handleDebugRelay(w http.ResponseWriter, req *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "service_id and target are required")
 		return
 	}
-	rpcType := domain.RPCType(body.RPCType)
-	if rpcType == "" {
-		rpcType = domain.RPCTypeJSONRPC
-	}
+	rpcType := cmp.Or(domain.RPCType(body.RPCType), domain.RPCTypeJSONRPC)
 	res, err := a.debugRelay(req.Context(), domain.ServiceID(body.ServiceID), body.Target, rpcType, body.Payload)
 	writeDebugResult(w, res, err)
 }

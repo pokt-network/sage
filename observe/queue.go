@@ -41,13 +41,7 @@ type Queue struct {
 // SetSampleRate changes the fraction of client relays observed, clamped to
 // [0, 1]. Probes are always observed.
 func (q *Queue) SetSampleRate(rate float64) {
-	if rate < 0 {
-		rate = 0
-	}
-	if rate > 1 {
-		rate = 1
-	}
-	q.sampleRate.Store(math.Float64bits(rate))
+	q.sampleRate.Store(math.Float64bits(min(max(rate, 0), 1)))
 }
 
 // SampleRate returns the live sampling fraction.
@@ -62,9 +56,6 @@ func NewQueue(cfg QueueConfig, handler Handler, logger *slog.Logger) *Queue {
 		cfg.QueueSize = 256
 	}
 	if cfg.SampleRate <= 0 {
-		cfg.SampleRate = 1.0
-	}
-	if cfg.SampleRate > 1.0 {
 		cfg.SampleRate = 1.0
 	}
 	q := &Queue{
@@ -144,17 +135,7 @@ func (q *Queue) worker(ctx context.Context) {
 // and crash the whole process. Recover so a single bad observation can never
 // take down request serving — the observation pipeline is best-effort.
 func (q *Queue) handle(ctx context.Context, obs Observation) {
-	if q.handler == nil {
-		return
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			q.logger.Error("recovered from panic while handling observation; dropping it",
-				"panic", r,
-				"service_id", obs.ServiceID,
-			)
-		}
-	}()
+	defer safego.Recover(q.logger, "observe.handle")
 	if err := q.handler.HandleObservation(ctx, obs); err != nil {
 		level := slog.LevelError
 		if errors.Is(err, ErrExtract) {

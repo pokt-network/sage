@@ -326,7 +326,7 @@ func (m *ExternalSourceManager) restartLocked(serviceID domain.ServiceID, ms *ma
 	setter := ms.setter
 	safego.Go(m.logger, "external.blockheight.floor", func() {
 		for h := range heights {
-			setter.SetExternalFloor(h.Height)
+			setter.SetExternalFloor(h)
 		}
 	})
 	ms.fetcher = fetcher

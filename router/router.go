@@ -451,10 +451,7 @@ func (r *Router) handleRelay(w http.ResponseWriter, req *http.Request) {
 	}
 	if ctx.Response != nil {
 		origin = answerOrigin(ctx)
-		status := ctx.Response.HTTPStatusCode
-		if status == 0 {
-			status = http.StatusOK
-		}
+		status := cmp.Or(ctx.Response.HTTPStatusCode, http.StatusOK)
 		// Emitted here, not where the degradation happens: SelectEndpoint runs
 		// inside the batch and hedge fan-outs, so it cannot know whether the
 		// attempt it degraded is the one being answered with. By now every merge
@@ -600,25 +597,31 @@ func encodeGRPCWebTrailers(code int, message string) []byte {
 // body and returns the error; this then renders as a no-op rather than
 // concatenating a second JSON object onto the first. When nothing in the chain
 // wrote — a deep failure like a send error — this is the write that answers the
-// client.
+// client. Writing to the raw w bypassed that guard, which is the bug this
+// exists to close; it also means an error in shadow mode is suppressed, since
+// the guard's shadow check is honoured too.
 func (r *Router) writeRelayError(rw relay.ResponseWriter, ctx *relay.Context, err error) {
-	status := statusForError(err)
 	// domain.ClientMessage, not err.Error(): the cause chain carries the
 	// operator's own infrastructure (a dial failure names the fullnode's
 	// host and port), and this gateway authenticates no one. The chain is
 	// already in the log line above, which is where it is useful.
 	message := domain.ClientMessage(err)
 
+	var v any = jsonErrorBody{Error: message}
 	if ctx.RPCType == domain.RPCTypeJSONRPC || isJSONRPCRequest(ctx) {
 		var id json.RawMessage = []byte("null")
 		if len(ctx.Payloads) > 0 {
 			id = ctx.Payloads[0].JSONRPCID()
 		}
-		renderJSONRPCError(rw, status, -32603, message, id)
+		v = jsonRPCError{JSONRPC: "2.0", Error: jsonRPCErrBody{Code: -32603, Message: message}, ID: id}
+	}
+	body, mErr := json.Marshal(v)
+	if mErr != nil {
 		return
 	}
-
-	renderJSONError(rw, status, message)
+	rw.SetHeader("Content-Type", "application/json")
+	rw.SetStatusCode(statusForError(err))
+	_ = rw.Write(body)
 }
 
 // recordRPCType records how one request's RPC type was settled and whether

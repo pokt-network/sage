@@ -61,15 +61,9 @@ func (a *AdminAPI) handleListBlockedDomains(w http.ResponseWriter, _ *http.Reque
 		return
 	}
 	resp := blockedDomainsListResponse{
-		Config: a.blocklist.Base(),
-		Admin:  a.blocklist.Entries(),
+		Config: orEmpty(a.blocklist.Base()),
+		Admin:  orEmpty(a.blocklist.Entries()),
 		Shared: a.blocklist.Shared(),
-	}
-	if resp.Config == nil {
-		resp.Config = []config.BlockedDomain{}
-	}
-	if resp.Admin == nil {
-		resp.Admin = []blocklist.Entry{}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

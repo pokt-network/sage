@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
 	"strings"
@@ -98,15 +99,8 @@ func buildCheck(serviceID string, check config.HealthCheck) (qos.HealthCheck, er
 			"service %q health check %q: %w, so it is skipped", serviceID, check.Name, err)
 	}
 
-	method := strings.ToUpper(check.Method)
-	if method == "" {
-		method = http.MethodPost
-	}
-
-	path := check.Path
-	if path == "" {
-		path = "/"
-	}
+	method := cmp.Or(strings.ToUpper(check.Method), http.MethodPost)
+	path := cmp.Or(check.Path, "/")
 
 	// The name is namespaced so two services can both define "eth_blockNumber"
 	// without their reputation signals colliding in the signal map.

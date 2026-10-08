@@ -117,14 +117,9 @@ func (a *AdminAPI) handleGetRequestSample(w http.ResponseWriter, req *http.Reque
 		summary = traffic.Summary{ServiceID: string(serviceID), PerMethod: map[string]traffic.MethodStats{}}
 	}
 
-	top := a.sampler.Top(serviceID, previous, topN)
-	if top == nil {
-		top = []traffic.Fingerprint{}
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"summary": summary,
-		"top":     top,
+		"top":     orEmpty(a.sampler.Top(serviceID, previous, topN)),
 	})
 }
 
@@ -155,8 +150,5 @@ func parseRequestSampleTop(raw string) (int, error) {
 	if err != nil || n < 1 {
 		return 0, fmt.Errorf("invalid top %q: must be a positive integer", raw)
 	}
-	if n > requestSampleTopCap {
-		n = requestSampleTopCap
-	}
-	return n, nil
+	return min(n, requestSampleTopCap), nil
 }

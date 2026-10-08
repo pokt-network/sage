@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -50,12 +51,9 @@ type LeaderElector struct {
 // nothing. Mainnet spent at least four hours in exactly that state on
 // 2026-09-18.
 func NewLeaderElector(redisClient *redis.Client, logger *slog.Logger, key string) *LeaderElector {
-	if key == "" {
-		key = leaderKey
-	}
 	return &LeaderElector{
 		redis:  redisClient,
-		key:    key,
+		key:    cmp.Or(key, leaderKey),
 		id:     instanceID(),
 		ttl:    leaderTTL,
 		logger: logger,
