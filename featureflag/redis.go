@@ -7,7 +7,6 @@ import (
 	"github.com/pokt-network/sage/internal/safego"
 	"log/slog"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,13 +27,7 @@ type RedisClient interface {
 	Scan(ctx context.Context, cursor uint64, match string, count int64) *redis.ScanCmd
 }
 
-type cacheEntry struct {
-	value     bool
-	found     bool // false: key absent in Redis (negative entry) — fall back to defaults
-	expiresAt time.Time
-}
-
-// RedisStore is a Redis-backed FlagStore with a local cache.
+// RedisStore is a Redis-backed FlagStore read from a polled snapshot.
 type RedisStore struct {
 	// prefix namespaces this store's keys, e.g. "sage:flags:".
 	prefix   string
@@ -47,18 +40,16 @@ type RedisStore struct {
 	// A pointer swapped whole rather than a plain map because a config reload
 	// removes entries from it (see DeleteGlobal) while relays are reading it.
 	// Copy-on-write keeps the read side free of locking, which matters: this
-	// is consulted on every flag check that misses the cache.
+	// is consulted on every flag check that misses the snapshot.
 	defaults atomic.Pointer[map[string]bool]
 
-	mu    sync.RWMutex
-	cache map[string]cacheEntry
-
 	// snapshot is every flag key in Redis, refreshed in the background by
-	// Start. While it is set the hot path never touches Redis: IsEnabled is
-	// two map lookups. Before Start, or without a client, the per-key cache
-	// below stands in.
+	// Start, and never nil: empty from construction, so before Start or
+	// without a client the flags are this replica's own writes, the config's
+	// and the defaults. The hot path never touches Redis: IsEnabled is two
+	// map lookups.
 	//
-	// The per-key cache alone was the relay path's largest fixed cost on the
+	// A per-key cache alone was the relay path's largest fixed cost on the
 	// 2026-09-14 canary: its 5-second TTL expired between requests on every
 	// service below 0.2 req/s, so a dozen flag-gated middlewares each paid a
 	// Redis round trip per relay — a flat ~1 ms per stage, ~13 ms per
@@ -81,8 +72,8 @@ func NewRedisStore(client RedisClient, prefix string, overrides map[string]bool)
 		prefix:   prefix,
 		client:   client,
 		cacheTTL: defaultCacheTTL,
-		cache:    make(map[string]cacheEntry),
 	}
+	s.snapshot.Store(&map[string]bool{})
 	copied := make(map[string]bool, len(overrides))
 	for flag, enabled := range overrides {
 		copied[flag] = enabled
@@ -104,20 +95,19 @@ func (s *RedisStore) configOverride(flag string) (bool, bool) {
 // IsEnabled resolves a flag in precedence order: the per-service key in Redis,
 // the global key in Redis, the config overrides, then compiled DefaultFlags.
 //
-// Reads go through the local cache, which caches misses and Redis errors as
-// well as hits — so an unreachable Redis degrades to defaults for one cache
-// TTL rather than putting a round trip on every relay. A nil client is the same
-// path, permanently. Redis is optional here as everywhere on the hot path.
-func (s *RedisStore) IsEnabled(ctx context.Context, flag string, serviceID domain.ServiceID) bool {
+// Reads come from the snapshot, never from Redis, so an unreachable Redis
+// leaves the last snapshot in place rather than putting a round trip on every
+// relay. Redis is optional here as everywhere on the hot path.
+func (s *RedisStore) IsEnabled(_ context.Context, flag string, serviceID domain.ServiceID) bool {
 	// Try per-service override first.
 	if serviceID != "" {
-		if val, ok := s.get(ctx, s.serviceKey(flag, serviceID)); ok {
+		if val, ok := s.get(s.serviceKey(flag, serviceID)); ok {
 			return val
 		}
 	}
 
 	// Try global.
-	if val, ok := s.get(ctx, s.globalKey(flag)); ok {
+	if val, ok := s.get(s.globalKey(flag)); ok {
 		return val
 	}
 
@@ -129,8 +119,8 @@ func (s *RedisStore) IsEnabled(ctx context.Context, flag string, serviceID domai
 }
 
 // Set changes a flag globally across every instance sharing this Redis. The
-// local cache is updated first, so the calling instance sees the change even if
-// the write fails; peers pick it up within their own cache TTL.
+// local snapshot is updated first, so the calling instance sees the change even
+// if the write fails; peers pick it up on their next refresh.
 func (s *RedisStore) Set(ctx context.Context, flag string, enabled bool) error {
 	return s.set(ctx, s.globalKey(flag), enabled)
 }
@@ -144,7 +134,7 @@ func (s *RedisStore) SetForService(ctx context.Context, flag string, serviceID d
 // GetAll returns the effective state of every known flag, layering the Redis
 // keys onto the config overrides and DefaultFlags.
 //
-// Unlike IsEnabled this bypasses the cache and scans Redis, so it reflects
+// Unlike IsEnabled this bypasses the snapshot and scans Redis, so it reflects
 // what peers have set right now — it is an admin read, not a hot path. On a
 // scan error it returns the defaults it has along with the error rather than
 // nothing, so the caller can still show something useful.
@@ -246,9 +236,6 @@ func (s *RedisStore) Delete(ctx context.Context, flag string, serviceID domain.S
 		key = s.globalKey(flag)
 	}
 
-	s.mu.Lock()
-	delete(s.cache, key)
-	s.mu.Unlock()
 	s.updateSnapshot(key, nil)
 
 	if s.client == nil {
@@ -283,9 +270,6 @@ func (s *RedisStore) DeleteGlobal(ctx context.Context, flag string) error {
 	}
 
 	key := s.globalKey(flag)
-	s.mu.Lock()
-	delete(s.cache, key)
-	s.mu.Unlock()
 	s.updateSnapshot(key, nil)
 
 	if s.client == nil {
@@ -294,47 +278,10 @@ func (s *RedisStore) DeleteGlobal(ctx context.Context, flag string) error {
 	return s.client.Del(ctx, key).Err()
 }
 
-// get reads from cache first, then Redis. Returns (value, found).
-func (s *RedisStore) get(ctx context.Context, key string) (bool, bool) {
-	// The polled snapshot answers without Redis once Start has run.
-	if snap := s.snapshot.Load(); snap != nil {
-		v, ok := (*snap)[key]
-		return v, ok
-	}
-
-	// Check cache.
-	s.mu.RLock()
-	if entry, ok := s.cache[key]; ok && time.Now().Before(entry.expiresAt) {
-		s.mu.RUnlock()
-		return entry.value, entry.found
-	}
-	s.mu.RUnlock()
-
-	if s.client == nil {
-		return false, false
-	}
-
-	// Read from Redis.
-	val, err := s.client.Get(ctx, key).Result()
-	if err != nil {
-		// Cache the miss (and errors) too: IsEnabled probes two keys per flag
-		// and a dozen flag-gated middlewares sit on the relay path, so an
-		// uncached miss means Redis round trips on every relay. A Redis outage
-		// degrades to defaults for one TTL instead of stalling the hot path.
-		s.mu.Lock()
-		s.cache[key] = cacheEntry{expiresAt: time.Now().Add(s.cacheTTL)}
-		s.mu.Unlock()
-		return false, false
-	}
-
-	enabled := val == "1"
-
-	// Update cache.
-	s.mu.Lock()
-	s.cache[key] = cacheEntry{value: enabled, found: true, expiresAt: time.Now().Add(s.cacheTTL)}
-	s.mu.Unlock()
-
-	return enabled, true
+// get reads one key from the snapshot. Returns (value, found).
+func (s *RedisStore) get(key string) (bool, bool) {
+	v, ok := (*s.snapshot.Load())[key]
+	return v, ok
 }
 
 func (s *RedisStore) set(ctx context.Context, key string, enabled bool) error {
@@ -343,9 +290,6 @@ func (s *RedisStore) set(ctx context.Context, key string, enabled bool) error {
 		val = "1"
 	}
 
-	s.mu.Lock()
-	s.cache[key] = cacheEntry{value: enabled, found: true, expiresAt: time.Now().Add(s.cacheTTL)}
-	s.mu.Unlock()
 	s.updateSnapshot(key, &enabled)
 
 	if s.client == nil {
@@ -360,9 +304,6 @@ func (s *RedisStore) set(ctx context.Context, key string, enabled bool) error {
 func (s *RedisStore) updateSnapshot(key string, value *bool) {
 	for {
 		cur := s.snapshot.Load()
-		if cur == nil {
-			return
-		}
 		next := make(map[string]bool, len(*cur)+1)
 		for k, v := range *cur {
 			next[k] = v
@@ -383,16 +324,13 @@ func (s *RedisStore) updateSnapshot(key string, value *bool) {
 // that fails keeps the previous snapshot, so a Redis outage freezes the
 // flags at their last known state rather than stalling relays.
 //
-// A first refresh that fails leaves an empty snapshot: the flags are the
-// config's and the defaults until Redis answers. With no snapshot every flag
-// read on the relay path would ask Redis itself, a dial per uncached key
-// against a Redis that is not there.
+// A first refresh that fails leaves the snapshot empty: the flags are the
+// config's and the defaults until Redis answers.
 func (s *RedisStore) Start(ctx context.Context) {
 	if s.client == nil {
 		return
 	}
 	s.refresh(ctx)
-	s.snapshot.CompareAndSwap(nil, &map[string]bool{})
 	safego.Go(slog.Default(), "featureflag.refresh", func() {
 		t := time.NewTicker(s.cacheTTL)
 		defer t.Stop()

@@ -95,12 +95,12 @@ func TestRedisStore_NilClient_SetAndGet(t *testing.T) {
 	store := NewRedisStore(nil, testPrefix, nil)
 	ctx := context.Background()
 
-	// Set should not error with nil client (caches locally).
+	// Set should not error with nil client (kept in the local snapshot).
 	if err := store.Set(ctx, FlagDebugLog, true); err != nil {
 		t.Fatal(err)
 	}
 	if !store.IsEnabled(ctx, FlagDebugLog, "eth") {
-		t.Error("expected debug_log enabled from local cache")
+		t.Error("expected debug_log enabled from the local snapshot")
 	}
 }
 
