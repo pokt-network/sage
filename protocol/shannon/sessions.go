@@ -35,23 +35,25 @@ type sessionManager struct {
 	// rollover — so unlike sessionCache it accumulates, and must be evicted.
 	// See evictStaleEndpointsOnRollover.
 	endpointCache sync.Map // sessionID (string) → cachedEndpoints
-	// byAddr indexes every cached endpoint by address, whatever its service,
-	// for ReputationURLFor, whose key function carries no service: written
-	// when a session's endpoints are extracted, cleared with them on
-	// rollover. An address is supplier plus public URL, so two services
-	// share one when the supplier stakes one URL for both, and the last write
-	// wins: the address's own URL is the same either way, but another face's
-	// may not be (sage_reputation_key_mismatch_total). Anything that must
-	// name the host a service dials uses byServiceAddr.
-	byAddr sync.Map // domain.EndpointAddr → *endpoint
+	// byFace indexes every cached endpoint by address and each RPC type it
+	// stakes, whatever its service, for ReputationURLFor, whose key function
+	// carries no service: written when a session's endpoints are extracted,
+	// cleared with them on rollover. An address is supplier plus public URL,
+	// so two services share one when the supplier stakes one URL for both,
+	// and the last write wins: the address's own URL is the same either way,
+	// but another face's may not be (sage_reputation_key_mismatch_total).
+	// Keyed by type so a service that does not stake a face cannot hide it
+	// from one that does. Anything that must name the host a service dials
+	// uses byServiceAddr.
+	byFace sync.Map // addrFace → *endpoint
 	// byServiceAddr indexes the same endpoints by service and address, for
 	// whatever acts on the endpoint's session: an endpoint carries the session
 	// it came from, and one service's session signs nothing for another. On
 	// mainnet (2026-10-03) one operator staked a single WebSocket URL for 51
-	// services; through byAddr the recovery probe for bsc picked up an
-	// endpoint from another service's session, signed for an application not
-	// staked for bsc, and the relay miner refused every upgrade, so the
-	// operator's WebSocket keys never recovered.
+	// services; through the any-service index the recovery probe for bsc
+	// picked up an endpoint from another service's session, signed for an
+	// application not staked for bsc, and the relay miner refused every
+	// upgrade, so the operator's WebSocket keys never recovered.
 	byServiceAddr      sync.Map // serviceAddr → *endpoint
 	configuredServices map[domain.ServiceID]struct{}
 	logger             *slog.Logger
@@ -259,8 +261,11 @@ func (sm *sessionManager) evictStaleEndpointsOnRollover(sessionEnd uint64) {
 			for addr, ep := range entry.endpoints {
 				// Only drop the index entries this session wrote; a newer
 				// session may have re-indexed the same address.
-				if cur, ok := sm.byAddr.Load(addr); ok && cur == ep {
-					sm.byAddr.Delete(addr)
+				for rt := range ep.urls {
+					k := addrFace{addr, rt}
+					if cur, ok := sm.byFace.Load(k); ok && cur == ep {
+						sm.byFace.Delete(k)
+					}
 				}
 				k := serviceAddr{ep.serviceID(), addr}
 				if cur, ok := sm.byServiceAddr.Load(k); ok && cur == ep {
@@ -543,7 +548,9 @@ func (sm *sessionManager) getOrCreateEndpoints(session *sessiontypes.Session) ma
 		cachedEndpoints{endpoints: endpoints, sessionEnd: sessionEnd})
 	if !loaded {
 		for addr, ep := range endpoints {
-			sm.byAddr.Store(addr, ep)
+			for rt := range ep.urls {
+				sm.byFace.Store(addrFace{addr, rt}, ep)
+			}
 			sm.byServiceAddr.Store(serviceAddr{ep.serviceID(), addr}, ep)
 			domain.RecordOwner(ep.supplierAddr, ep.ownerAddr, addr.Operator())
 		}
@@ -634,14 +641,20 @@ func (sm *sessionManager) lookupEndpoint(serviceID domain.ServiceID, addr domain
 }
 
 // lookupAnyEndpoint returns the cached endpoint for an address from a current
-// session of any service, for what does not depend on the session: the URL
-// it stakes; see byAddr.
-func (sm *sessionManager) lookupAnyEndpoint(addr domain.EndpointAddr) (*endpoint, bool) {
-	v, ok := sm.byAddr.Load(addr)
+// session of any service that stakes rpcType, for what does not depend on the
+// session: the URL it stakes; see byFace.
+func (sm *sessionManager) lookupAnyEndpoint(addr domain.EndpointAddr, rpcType domain.RPCType) (*endpoint, bool) {
+	v, ok := sm.byFace.Load(addrFace{addr, rpcType})
 	if !ok {
 		return nil, false
 	}
 	return v.(*endpoint), true
+}
+
+// addrFace keys byFace.
+type addrFace struct {
+	addr    domain.EndpointAddr
+	rpcType domain.RPCType
 }
 
 // serviceAddr keys byServiceAddr.

@@ -23,7 +23,7 @@ func newTestLogger() *slog.Logger {
 // 100-110) with one supplier staking endpoints, one URL per RPC type.
 //
 // It expresses the two stake shapes the single-URL fixtures cannot, and that
-// the any-service byAddr index got wrong: call it once per service with the
+// the any-service index got wrong: call it once per service with the
 // same supplier and URL for "one supplier, one URL, many services" (the
 // endpoint address is the same in every session), or give the types
 // different hosts for an operator that stakes one host per RPC type (the

@@ -189,7 +189,7 @@ func TestReviewLoad_SameSessionEveryWSDialFetches(t *testing.T) {
 // The health-check grouping (healthcheck/executor.go dialedURL), the peer
 // coverage key (healthcheck/peer.go backendKey) and the breaker and method
 // block host (relay/middleware dialedHost) all ask EndpointURLFor, which has
-// no service: it reads byAddr, where the last session extracted wins. Two
+// no service: it reads byFace, where the last session extracted wins. Two
 // suppliers whose REST faces are rest-a and rest-b in eth, and one shared
 // host in bsc, read as one REST backend for eth once bsc was extracted last:
 // eth's REST check probes them as one group and charges both with one probe,

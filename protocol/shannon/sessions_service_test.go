@@ -34,7 +34,7 @@ func TestLookupEndpoint_SameAddressAcrossServices(t *testing.T) {
 			t.Fatalf("lookup for %s returned the %s session's endpoint", svc, got)
 		}
 	}
-	if _, ok := sm.lookupAnyEndpoint(addr); !ok {
+	if _, ok := sm.lookupAnyEndpoint(addr, domain.RPCTypeJSONRPC); !ok {
 		t.Fatal("any-service lookup lost the address")
 	}
 }

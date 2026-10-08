@@ -52,3 +52,27 @@ func TestCheckKeyURL_CountsAKeyNamingAnotherHost(t *testing.T) {
 		t.Fatalf("a matching key was counted: %v", m.mismatches)
 	}
 }
+
+// One supplier, one JSON-RPC URL, two services, a WebSocket face in only one:
+// the service without it, extracted last, must not hide the face, or the
+// WebSocket key falls back to the JSON-RPC host and the face is scored under
+// two keys.
+func TestReputationURLFor_FaceStakedInOneServiceOnly(t *testing.T) {
+	sm := newSessionManager(nil, map[domain.ServiceID]struct{}{"eth": {}, "bsc": {}}, newTestLogger())
+	sm.getOrCreateEndpoints(buildMultiServiceSession("eth", "pokt1shared", map[sharedtypes.RPCType]string{
+		sharedtypes.RPCType_JSON_RPC:  "https://rm.example.com",
+		sharedtypes.RPCType_WEBSOCKET: "wss://ws.example.com",
+	}))
+	sm.getOrCreateEndpoints(buildMultiServiceSession("bsc", "pokt1shared", map[sharedtypes.RPCType]string{
+		sharedtypes.RPCType_JSON_RPC: "https://rm.example.com",
+	}))
+
+	p := &Protocol{sessions: sm, metrics: noopSupplierMetrics{}}
+	addr := domain.EndpointAddr("pokt1shared-https://rm.example.com")
+	if got, ok := p.ReputationURLFor(addr, domain.RPCTypeWebSocket); !ok || got != "wss://ws.example.com" {
+		t.Errorf("WebSocket face = %q, %v; want wss://ws.example.com", got, ok)
+	}
+	if got, ok := p.ReputationURLFor(addr, domain.RPCTypeJSONRPC); !ok || got != "https://rm.example.com" {
+		t.Errorf("JSON-RPC face = %q, %v; want https://rm.example.com", got, ok)
+	}
+}

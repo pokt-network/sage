@@ -773,7 +773,7 @@ func (p *Protocol) EndpointURLFor(serviceID domain.ServiceID, endpoint domain.En
 // that names another service's host, sage_reputation_key_mismatch_total
 // counts it (checkKeyURL).
 func (p *Protocol) ReputationURLFor(endpoint domain.EndpointAddr, rpcType domain.RPCType) (string, bool) {
-	ep, ok := p.sessions.lookupAnyEndpoint(endpoint)
+	ep, ok := p.sessions.lookupAnyEndpoint(endpoint, rpcType)
 	return faceURL(ep, ok, rpcType)
 }
 
