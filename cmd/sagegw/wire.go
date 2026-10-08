@@ -369,7 +369,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		var blOpts []blocklist.Option
 		if redisClient != nil {
 			backend = blocklist.NewRedisBackend(redisClient, cfg.Redis.Key("blocked_domains"))
-			blOpts = append(blOpts, blocklist.WithPollInterval(blocklistPollInterval), blocklist.WithShared(true))
+			blOpts = append(blOpts, blocklist.WithPollInterval(blocklistPollInterval))
 		}
 		blocked := blocklist.New(shannonProto, backend, cfg.Gateway.BlockedDomains, blOpts...)
 		if err := blocked.Start(ctx); err != nil {

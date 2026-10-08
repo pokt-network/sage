@@ -58,8 +58,6 @@ type Manager struct {
 	mu      sync.Mutex
 	base    []config.BlockedDomain
 	entries map[string]Entry
-	// shared is true when the backend is reachable by other replicas.
-	shared bool
 }
 
 // Option configures a Manager.
@@ -68,11 +66,6 @@ type Option func(*Manager)
 // WithPollInterval sets how often the backend is re-read for peers' changes.
 func WithPollInterval(d time.Duration) Option {
 	return func(m *Manager) { m.pollInterval = d }
-}
-
-// WithShared marks the backend as fleet-wide, for the admin API's benefit.
-func WithShared(shared bool) Option {
-	return func(m *Manager) { m.shared = shared }
 }
 
 // New returns a Manager over apply and backend, with base as the config
@@ -205,8 +198,9 @@ func (m *Manager) Base() []config.BlockedDomain {
 	return append([]config.BlockedDomain(nil), m.base...)
 }
 
-// Shared reports whether admin entries reach other replicas.
-func (m *Manager) Shared() bool { return m.shared }
+// Shared reports whether admin entries reach other replicas: only a backend
+// polled for peers' writes has any.
+func (m *Manager) Shared() bool { return m.pollInterval > 0 }
 
 // Len returns the number of admin-set entries.
 func (m *Manager) Len() int {
