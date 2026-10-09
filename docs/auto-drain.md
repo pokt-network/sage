@@ -131,6 +131,17 @@ is long enough that one burst does not act. **All** of the following must hold:
    about 60,000 hedge arms a day on poly-zkevm, each a paid relay that left its
    request unhedged.
 
+   **Pool-wide guard.** A candidate past the gate must also stand out from the
+   pool's other operators measured on the same window: its failure must be at
+   least `autodrain.peer_ratio` times their median, on the measure that raised
+   it (the operator rate for the second trigger, first-attempt failure
+   otherwise). A slowdown every operator shares fails callers too, so the gate
+   lets it through, and a drain would only move one operator's load onto peers
+   failing the same way. Such a candidate is recorded as `pool_wide` with the
+   peer medians on the event. Chain answers are compared with the peers
+   already and are exempt; a knob value of 0 turns the guard off for a
+   service.
+
 **Second trigger — the operator the collapse share cannot see.** Conditions 2
 and 3 are blind to an operator that spreads one service over many keys: its
 picks never concentrate and it answers most requests, while each key's failure
@@ -299,7 +310,7 @@ control".
 
 - `sage_auto_drain_total{service_id, rpc_type, outcome}`, where outcome is one
   of `drained`, `shadow`, `suppressed`, `rate_limited`, `capped`,
-  `no_vouched_alternative` or `last_operator`. It is a closed set. Operator is
+  `no_vouched_alternative`, `pool_wide` or `last_operator`. It is a closed set. Operator is
   not a label: the existing drain gauge (`metrics.NewDrainCollector`,
   `wire.go:458`) already names the live drains by domain.
 - One `Warn` log per decision other than `shadow`. It carries the full

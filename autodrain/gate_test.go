@@ -263,7 +263,11 @@ func TestEngine_TwoOperatorPoolNeverDrainsBoth(t *testing.T) {
 		h.clients(200, 40)
 	}
 
+	// Both fail alike, which the pool-wide guard holds back; it is off here
+	// so the cap is what is tested.
+	noGuard := func(domain.ServiceID) float64 { return 0 }
 	h := newHarnessWith(t, vouch, true, rates)
+	h.e.SetPeerRatio(noGuard)
 	bothFailing(h)
 	h.e.Evaluate(context.Background())
 
@@ -275,6 +279,7 @@ func TestEngine_TwoOperatorPoolNeverDrainsBoth(t *testing.T) {
 	// A fresh instance on the same store — a pod restart, or the leader moving
 	// mid-incident — must not drain the operator the first one left alone.
 	next := newHarnessOn(t, h.drains, vouch, true, rates)
+	next.e.SetPeerRatio(noGuard)
 	bothFailing(next)
 	next.e.Evaluate(context.Background())
 

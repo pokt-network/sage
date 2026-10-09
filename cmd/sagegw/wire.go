@@ -768,6 +768,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		return tuningStore.Float(tuning.KnobThrottleShareFloor, serviceID, reputation.DefaultThrottleShareFloor),
 			tuningStore.Float(tuning.KnobThrottleShareFull, serviceID, reputation.DefaultThrottleShareFull)
 	})
+	// The auto-drain pool-wide guard's ratio (autodrain/engine.go).
+	if autoDrain != nil {
+		autoDrain.SetPeerRatio(func(serviceID domain.ServiceID) float64 {
+			return tuningStore.Float(tuning.KnobAutoDrainPeerRatio, serviceID, autodrain.DefaultPeerRatio)
+		})
+	}
 	// A party's failure share per method class, priced the same way
 	// (reputation/classshare.go).
 	repSvc.SetClassShare(func(serviceID domain.ServiceID) bool {
@@ -1371,6 +1377,7 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobThrottleShareFull, strconv.FormatFloat(reputation.DefaultThrottleShareFull, 'f', -1, 64))
 	store.SetBase(tuning.KnobClassShareFloor, strconv.FormatFloat(reputation.DefaultClassShareFloor, 'f', -1, 64))
 	store.SetBase(tuning.KnobClassShareFull, strconv.FormatFloat(reputation.DefaultClassShareFull, 'f', -1, 64))
+	store.SetBase(tuning.KnobAutoDrainPeerRatio, strconv.FormatFloat(autodrain.DefaultPeerRatio, 'f', -1, 64))
 }
 
 // redisStartupPing bounds the startup check. It only decides what is logged:

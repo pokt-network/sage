@@ -100,6 +100,13 @@ const (
 	maxMethods     = 64
 	overflowMethod = "\x00overflow"
 
+	// DefaultPeerRatio is how many times the median of the pool's other
+	// measured operators a candidate's failure must be to stand out from
+	// them: the base of the autodrain.peer_ratio knob. A slowdown every
+	// operator shares is not one operator's to be drained for; a drain only
+	// moves its load onto peers failing the same way.
+	DefaultPeerRatio = 2.0
+
 	drainFor      = 2 * time.Hour
 	maxLivePool   = 1 // live auto drains per (service, RPC type)
 	maxLiveFleet  = 5
@@ -127,6 +134,10 @@ const (
 	// different facts, and a chain at 0.1 requests/second hits the second one
 	// while 98% of its callers fail (mainnet poly-zkevm, 2026-09-16).
 	OutcomeNoClientEvidence = "no_client_evidence"
+	// OutcomePoolWide is a candidate that fails no worse than the pool's
+	// other operators by the peer ratio: the pool is degraded, not the
+	// operator.
+	OutcomePoolWide = "pool_wide"
 )
 
 // What put a candidate in front of the decision, recorded on the event.
@@ -182,6 +193,16 @@ type Event struct {
 	// share is an outlier (chainGap, chainRatio). It overstates a little: a
 	// chain error the heuristic retries is not delivered.
 	AnswerHarm float64 `json:"answer_harm,omitempty"`
+	// PeerOperatorRate, PeerSuccessRate and PeerFirstSuccess are the medians
+	// of the pool's other operators measured on the same window (minAttempts),
+	// and Peers how many there were. PoolWide marks a candidate that does not
+	// stand out from them on the measure that raised it (DefaultPeerRatio);
+	// chain answers are compared with the peers already and never are.
+	PeerOperatorRate float64 `json:"peer_operator_rate,omitempty"`
+	PeerSuccessRate  float64 `json:"peer_success_rate,omitempty"`
+	PeerFirstSuccess float64 `json:"peer_first_success,omitempty"`
+	Peers            int     `json:"peers,omitempty"`
+	PoolWide         bool    `json:"pool_wide,omitempty"`
 }
 
 // EndpointProvider lists a service's current endpoints for one RPC type.
@@ -290,6 +311,10 @@ type Engine struct {
 	mu      sync.Mutex
 	pools   map[poolKey]*pool
 	clients map[domain.ServiceID]*clientWindow
+
+	// peerRatio gives a service's peer ratio (SetPeerRatio); nil means
+	// DefaultPeerRatio.
+	peerRatio atomic.Pointer[func(domain.ServiceID) float64]
 
 	// Evaluation state, touched only from Evaluate.
 	live       map[drain.Key]time.Time // auto drains this instance set, until
@@ -516,16 +541,81 @@ func (e *Engine) clientShare(svc domain.ServiceID, oldest int64) (share float64,
 	return float64(failed) / float64(requests), requests
 }
 
-// opRate is the operator's corrected chronic rate in the pool, 0 when unknown.
-func (e *Engine) opRate(k poolKey, operator string) float64 {
+// opRate is the operator's corrected chronic rate in the pool; ok is false
+// when it is unknown.
+func (e *Engine) opRate(k poolKey, operator string) (float64, bool) {
 	if e.d.Rates == nil {
-		return 0
+		return 0, false
 	}
 	r, ok := e.d.Rates.OperatorRate(k.svc, k.rpc, operator)
-	if !ok {
+	return r.Rate, ok
+}
+
+// SetPeerRatio sets how a service's peer ratio is read, on every evaluation;
+// zero or less turns the pool-wide guard off for the service. Call at wire
+// time.
+func (e *Engine) SetPeerRatio(fn func(domain.ServiceID) float64) {
+	e.peerRatio.Store(&fn)
+}
+
+func (e *Engine) ratioFor(svc domain.ServiceID) float64 {
+	if fp := e.peerRatio.Load(); fp != nil {
+		return (*fp)(svc)
+	}
+	return DefaultPeerRatio
+}
+
+// median of xs, the mean of the middle two for an even count; 0 for none.
+func median(xs []float64) float64 {
+	if len(xs) == 0 {
 		return 0
 	}
-	return r.Rate
+	slices.Sort(xs)
+	n := len(xs)
+	if n%2 == 1 {
+		return xs[n/2]
+	}
+	return (xs[n/2-1] + xs[n/2]) / 2
+}
+
+// opView is one operator's window, as the peer comparison reads it.
+type opView struct {
+	attempts, firsts            int
+	success, firstSuccess, rate float64
+	rateOK                      bool
+}
+
+// peerCompare sets ev's peer medians from the pool's other operators with
+// minAttempts in the window, and whether ev stands out from them by ratio on
+// the measure its trigger read: the chronic rate for operator_rate, first-
+// attempt failure (all attempts when it has too few firsts) otherwise.
+func peerCompare(ev *Event, self string, views map[string]opView, ratio float64) {
+	var rates, success, firsts []float64
+	for name, v := range views {
+		if name == self || v.attempts < minAttempts {
+			continue
+		}
+		ev.Peers++
+		success = append(success, v.success)
+		if v.rateOK {
+			rates = append(rates, v.rate)
+		}
+		if v.firsts >= minAttempts {
+			firsts = append(firsts, v.firstSuccess)
+		}
+	}
+	ev.PeerOperatorRate, ev.PeerSuccessRate, ev.PeerFirstSuccess = median(rates), median(success), median(firsts)
+	if ratio <= 0 || ev.Trigger == TriggerChainAnswers {
+		return
+	}
+	switch {
+	case ev.Trigger == TriggerOperatorRate && len(rates) > 0:
+		ev.PoolWide = ev.OperatorRate < ratio*ev.PeerOperatorRate
+	case ev.Trigger != TriggerOperatorRate && ev.FirstAttempts >= minAttempts && len(firsts) > 0:
+		ev.PoolWide = 1-ev.FirstSuccess < ratio*(1-ev.PeerFirstSuccess)
+	case ev.Trigger != TriggerOperatorRate && len(success) > 0:
+		ev.PoolWide = 1-ev.SuccessRate < ratio*(1-ev.PeerSuccessRate)
+	}
 }
 
 func (e *Engine) slot(k poolKey, now time.Time) *slot {
@@ -597,22 +687,28 @@ func (e *Engine) window(now time.Time) []candidate {
 			}
 		}
 		cshare, creq := e.clientShare(k.svc, oldest)
+		views := make(map[string]opView, len(ops))
 		for name, c := range ops {
-			share, success, opRate := 0.0, 0.0, 0.0
+			v := opView{attempts: c.attempts, firsts: c.firsts}
+			if c.attempts > 0 {
+				v.success = float64(c.successes) / float64(c.attempts)
+			}
+			if c.firsts > 0 {
+				v.firstSuccess = 1 - float64(c.firstFails)/float64(c.firsts)
+			}
+			if c.attempts >= minAttempts {
+				v.rate, v.rateOK = e.opRate(k, name)
+			}
+			views[name] = v
+		}
+		ratio := e.ratioFor(k.svc)
+		for name, c := range ops {
+			v := views[name]
+			share, success, opRate, firstSuccess := 0.0, v.success, v.rate, v.firstSuccess
 			if collapse > 0 {
 				share = float64(c.picks) / float64(collapse)
 			}
-			if c.attempts > 0 {
-				success = float64(c.successes) / float64(c.attempts)
-			}
-			if c.attempts >= minAttempts {
-				opRate = e.opRate(k, name)
-			}
 			matched, chainShare, peerChain, excess, outlier := matchedChain(methods[name], poolMethods)
-			firstSuccess := 0.0
-			if c.firsts > 0 {
-				firstSuccess = 1 - float64(c.firstFails)/float64(c.firsts)
-			}
 			harm := 0.0
 			if outlier && creq > 0 {
 				harm = excess / float64(creq)
@@ -628,17 +724,16 @@ func (e *Engine) window(now time.Time) []candidate {
 			default:
 				continue
 			}
-			out = append(out, candidate{
-				key: drain.Key{ServiceID: k.svc, Operator: name, RPCType: k.rpc},
-				event: Event{
-					ServiceID: k.svc, RPCType: k.rpc, Operator: name,
-					CollapsePicks: collapse, Share: share, Attempts: c.attempts, SuccessRate: success,
-					Trigger: trigger, OperatorRate: opRate,
-					ClientFailure: cshare, ClientRequests: creq,
-					FirstAttempts: c.firsts, FirstSuccess: firstSuccess, MatchedAnswers: matched,
-					ChainShare: chainShare, PeerChainShare: peerChain, AnswerHarm: harm,
-				},
-			})
+			ev := Event{
+				ServiceID: k.svc, RPCType: k.rpc, Operator: name,
+				CollapsePicks: collapse, Share: share, Attempts: c.attempts, SuccessRate: success,
+				Trigger: trigger, OperatorRate: opRate,
+				ClientFailure: cshare, ClientRequests: creq,
+				FirstAttempts: c.firsts, FirstSuccess: firstSuccess, MatchedAnswers: matched,
+				ChainShare: chainShare, PeerChainShare: peerChain, AnswerHarm: harm,
+			}
+			peerCompare(&ev, name, views, ratio)
+			out = append(out, candidate{key: drain.Key{ServiceID: k.svc, Operator: name, RPCType: k.rpc}, event: ev})
 		}
 	}
 	return out
@@ -739,6 +834,11 @@ func (e *Engine) decide(ctx context.Context, k drain.Key, now time.Time, act boo
 	// 5xx does, and the client-facing status never shows them.
 	if ev.ClientFailure < minClientFailure && ev.AnswerHarm < minClientFailure && !ev.Severe {
 		return OutcomeBelowClient
+	}
+	// Past the gate on a pool every operator is failing: a drain would move
+	// this operator's load onto peers no better than it.
+	if ev.PoolWide {
+		return OutcomePoolWide
 	}
 	eps, _ := e.d.Endpoints.AvailableEndpoints(ctx, k.ServiceID, k.RPCType)
 	// The alternative must be a different provider, not another brand of the

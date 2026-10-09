@@ -115,6 +115,9 @@ const (
 	// KnobClassShareFull is the excess over the cleanest party charged the
 	// whole class_share penalty.
 	KnobClassShareFull = "reputation.class_share_full"
+	// KnobAutoDrainPeerRatio is how many times its peers' median failure an
+	// auto-drain candidate's must be to stand out from the pool.
+	KnobAutoDrainPeerRatio = "autodrain.peer_ratio"
 )
 
 // Knob describes one overridable setting.
@@ -199,6 +202,14 @@ var Knobs = []Knob{
 		Min:         0,
 		Max:         1,
 		Unit:        "share",
+	},
+	{
+		Name:        KnobAutoDrainPeerRatio,
+		Kind:        KindFloat,
+		Description: "How many times the median failure of the pool's other measured operators an auto-drain candidate's failure must be before it can be drained; below it the candidate is recorded as pool_wide. 0 turns the guard off.",
+		Min:         0,
+		Max:         100,
+		Unit:        "ratio",
 	},
 	{
 		Name: KnobWSDuplicateWindow,
