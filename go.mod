@@ -1,6 +1,6 @@
 module github.com/pokt-network/sage
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/cosmos/cosmos-sdk v0.53.7
@@ -14,7 +14,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/tidwall/gjson v1.19.0
 	github.com/tsenart/vegeta/v12 v12.13.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/sync v0.23.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
