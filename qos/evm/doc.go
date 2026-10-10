@@ -33,7 +33,10 @@
 // shallowest it refused, behind the head when it answered, and a request is
 // kept off it only from the depth it refused onward. eth_getLogs keeps a mark
 // of its own, measured from its filter's fromBlock: log retention is separate
-// from state, and a node pruned of state may keep every log.
+// from state, and a node pruned of state may keep every log. A filter that
+// would leave a request a single party to go to is skipped for it: the marks
+// steer historical calls among hosts that keep the history, they do not pile
+// them onto the only one.
 //
 // Observations come from client traffic that happened to name a historical
 // block (see observeArchival), which is a free probe and the only kind the

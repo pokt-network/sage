@@ -16,7 +16,9 @@ import (
 // full node and a proxy with no archival backend answered first on every pod,
 // every time, and the archival node only ever served the retry. Observe sits
 // outside Retry and sees the final attempt, so the endpoints that said the
-// state was gone were never the ones observed.
+// state was gone were never the ones observed. Two archival parties here: with
+// one, the plugin leaves the request unfiltered rather than pile every
+// historical call onto it (evm manyParties).
 func TestArchival_EveryAttemptThatSaysStateIsGoneIsRemembered(t *testing.T) {
 	plugin := evm.NewPlugin(nil, evm.Config{SyncAllowance: 150})
 	rep := reputation.NewService(reputation.NewMemoryStorage(), nil, reputation.ServiceConfig{})
@@ -24,10 +26,11 @@ func TestArchival_EveryAttemptThatSaysStateIsGoneIsRemembered(t *testing.T) {
 	if err := reg.Register("base", plugin); err != nil {
 		t.Fatal(err)
 	}
-	pruned := domain.EndpointAddr("sA-https://pruned.full.test")
-	archive := domain.EndpointAddr("sB-https://archive.full.test")
-	proxy := domain.EndpointAddr("sC-https://proxy.full.test")
-	pool := domain.EndpointAddrList{pruned, archive, proxy}
+	pruned := domain.EndpointAddr("sA-https://pruned.one.test")
+	archive := domain.EndpointAddr("sB-https://archive.two.test")
+	archive2 := domain.EndpointAddr("sD-https://archive.four.test")
+	proxy := domain.EndpointAddr("sC-https://proxy.three.test")
+	pool := domain.EndpointAddrList{pruned, archive, archive2, proxy}
 	for _, ep := range pool {
 		plugin.UpdateBlockHeight(ep, 51_821_922)
 	}
@@ -70,7 +73,7 @@ func TestArchival_EveryAttemptThatSaysStateIsGoneIsRemembered(t *testing.T) {
 			first[firstPick]++
 		}
 	}
-	if first[archive] != 40 {
-		t.Fatalf("first attempts after the first ten requests = %v, want all 40 on the archival node", first)
+	if first[archive]+first[archive2] != 40 {
+		t.Fatalf("first attempts after the first ten requests = %v, want all 40 on the archival nodes", first)
 	}
 }

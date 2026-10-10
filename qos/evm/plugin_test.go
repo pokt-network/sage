@@ -191,13 +191,15 @@ func TestSelectEndpoints_ZeroPerceivedAllowsAll(t *testing.T) {
 func TestSelectEndpoints_ArchivalFiltering(t *testing.T) {
 	p := newTestPlugin(5)
 
-	// Two endpoints; "nonarchival" has told us it does not retain the state.
+	// "nonarchival" has told us it does not retain the state; two other
+	// parties are left, so the filter applies (manyParties).
 	p.UpdateBlockHeight("archival", 1000)
+	p.UpdateBlockHeight("archival2", 1000)
 	p.UpdateBlockHeight("nonarchival", 1000)
 	p.archival.Set(hostKey("archival"), archivalMark{served: math.MaxUint64, hasServed: true})
 	p.archival.Set(hostKey("nonarchival"), refusedEverything)
 
-	addrs := domain.EndpointAddrList{"archival", "nonarchival"}
+	addrs := domain.EndpointAddrList{"archival", "archival2", "nonarchival"}
 	// Archival request: eth_getBalance at a specific historical block.
 	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
 	payloads := []domain.Payload{
@@ -208,8 +210,8 @@ func TestSelectEndpoints_ArchivalFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(selected) != 1 || selected[0] != "archival" {
-		t.Fatalf("expected only archival endpoint, got %v", selected)
+	if len(selected) != 2 || selected[0] != "archival" || selected[1] != "archival2" {
+		t.Fatalf("expected only the archival endpoints, got %v", selected)
 	}
 }
 
@@ -682,10 +684,11 @@ func TestSelectEndpoints_ArchivalUnobservedNotExcluded(t *testing.T) {
 	p := newTestPlugin(5)
 
 	p.UpdateBlockHeight("never-asked", 1000)
+	p.UpdateBlockHeight("never-asked-2", 1000)
 	p.UpdateBlockHeight("known-pruned", 1000)
 	p.archival.Set(hostKey("known-pruned"), refusedEverything)
 
-	addrs := domain.EndpointAddrList{"never-asked", "known-pruned"}
+	addrs := domain.EndpointAddrList{"never-asked", "never-asked-2", "known-pruned"}
 	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
 	payloads := []domain.Payload{
 		domain.NewPayload([]byte(body), domain.RPCTypeJSONRPC, "eth_getBalance"),
@@ -695,8 +698,8 @@ func TestSelectEndpoints_ArchivalUnobservedNotExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(selected) != 1 || selected[0] != "never-asked" {
-		t.Fatalf("expected only the unobserved endpoint, got %v", selected)
+	if len(selected) != 2 || selected[0] != "never-asked" || selected[1] != "never-asked-2" {
+		t.Fatalf("expected only the unobserved endpoints, got %v", selected)
 	}
 }
 
@@ -714,12 +717,14 @@ func TestSelectEndpoints_ArchivalObservationExpires(t *testing.T) {
 	// parse to the host "negative" and share one mark.
 	stale := domain.EndpointAddr("s1-https://stale.example")
 	fresh := domain.EndpointAddr("s2-https://fresh.example")
+	other := domain.EndpointAddr("s3-https://other.example")
 	p.UpdateBlockHeight(stale, 1000)
 	p.UpdateBlockHeight(fresh, 1000)
+	p.UpdateBlockHeight(other, 1000)
 	p.archival.SetUntil(hostKey(stale), refusedEverything, time.Now().Add(-time.Minute))
 	p.archival.SetUntil(hostKey(fresh), refusedEverything, time.Now().Add(archivalTTL))
 
-	addrs := domain.EndpointAddrList{stale, fresh}
+	addrs := domain.EndpointAddrList{stale, fresh, other}
 	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
 	payloads := []domain.Payload{
 		domain.NewPayload([]byte(body), domain.RPCTypeJSONRPC, "eth_getBalance"),
@@ -729,7 +734,7 @@ func TestSelectEndpoints_ArchivalObservationExpires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(selected) != 1 || selected[0] != stale {
+	if len(selected) != 2 || selected[0] != stale || selected[1] != other {
 		t.Fatalf("expected the expired observation to read as unknown, got %v", selected)
 	}
 	if isArchivalEndpoint(p, stale) {
@@ -916,7 +921,8 @@ func TestArchivalMemory_SharedAcrossAddressesOfOneHost(t *testing.T) {
 	a := domain.EndpointAddr("pokt1a-https://h1.opb.example")
 	b := domain.EndpointAddr("pokt1b-https://h1.opb.example")
 	other := domain.EndpointAddr("pokt1c-https://r001.example.xyz")
-	for _, ep := range []domain.EndpointAddr{a, b, other} {
+	other2 := domain.EndpointAddr("pokt1d-https://r002.another.xyz")
+	for _, ep := range []domain.EndpointAddr{a, b, other, other2} {
 		p.UpdateBlockHeight(ep, 1000)
 	}
 	req := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`)
@@ -928,15 +934,15 @@ func TestArchivalMemory_SharedAcrossAddressesOfOneHost(t *testing.T) {
 		t.Fatal("b shares a's host and must read as not archival")
 	}
 	payloads := []domain.Payload{domain.NewPayload(req, domain.RPCTypeJSONRPC, "eth_getBalance")}
-	selected, err := p.SelectEndpoints(domain.EndpointAddrList{a, b, other}, payloads)
+	selected, err := p.SelectEndpoints(domain.EndpointAddrList{a, b, other, other2}, payloads)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(selected) != 1 || selected[0] != other {
-		t.Fatalf("selected = %v, want only the other host: both addresses on the pruned host are excluded", selected)
+	if len(selected) != 2 || selected[0] != other || selected[1] != other2 {
+		t.Fatalf("selected = %v, want only the other hosts: both addresses on the pruned host are excluded", selected)
 	}
 	p.ResetState()
-	if selected, _ = p.SelectEndpoints(domain.EndpointAddrList{a, b, other}, payloads); len(selected) != 3 {
+	if selected, _ = p.SelectEndpoints(domain.EndpointAddrList{a, b, other, other2}, payloads); len(selected) != 4 {
 		t.Fatalf("after ResetState the memory must be empty, got %v", selected)
 	}
 }
@@ -1127,7 +1133,8 @@ func TestSelectEndpoints_BlockLookupsDoNotUndoAStateRefusal(t *testing.T) {
 	p := newTestPlugin(5)
 	pruned := domain.EndpointAddr("pokt1a-https://dopokt.pruned.example")
 	full := domain.EndpointAddr("pokt1b-https://r001.full.example")
-	for _, ep := range []domain.EndpointAddr{pruned, full} {
+	full2 := domain.EndpointAddr("pokt1c-https://r001.archive.example")
+	for _, ep := range []domain.EndpointAddr{pruned, full, full2} {
 		p.UpdateBlockHeight(ep, 100_000)
 	}
 	body := func(method, block string) domain.Payload {
@@ -1145,11 +1152,11 @@ func TestSelectEndpoints_BlockLookupsDoNotUndoAStateRefusal(t *testing.T) {
 		p.RecordArchival(pruned, body("eth_getBlockByNumber", "0x10"), block)
 	}
 
-	all := domain.EndpointAddrList{pruned, full}
-	if got, _ := p.SelectEndpoints(all, []domain.Payload{body("eth_getBalance", fmt.Sprintf("0x%x", 100_000-5_000))}); len(got) != 1 || got[0] != full {
-		t.Errorf("deep eth_getBalance went to %v, want only the full node", got)
+	all := domain.EndpointAddrList{pruned, full, full2}
+	if got, _ := p.SelectEndpoints(all, []domain.Payload{body("eth_getBalance", fmt.Sprintf("0x%x", 100_000-5_000))}); len(got) != 2 || got[0] != full || got[1] != full2 {
+		t.Errorf("deep eth_getBalance went to %v, want only the full nodes", got)
 	}
-	if got, _ := p.SelectEndpoints(all, []domain.Payload{body("eth_getBlockByNumber", "0x10")}); len(got) != 2 {
+	if got, _ := p.SelectEndpoints(all, []domain.Payload{body("eth_getBlockByNumber", "0x10")}); len(got) != 3 {
 		t.Errorf("an old block lookup went to %v, want both: it is not a state read", got)
 	}
 	if m := p.ArchivalHosts()["dopokt.pruned.example"]; m.RefusedDepth == nil || *m.RefusedDepth != 1_000 || m.ServedDepth != nil {
@@ -1192,7 +1199,8 @@ func TestSelectEndpoints_LogRetentionIsSeparate(t *testing.T) {
 	p := newTestPlugin(5)
 	shortLogs := domain.EndpointAddr("pokt1a-https://rm02.shortlogs.example")
 	prunedState := domain.EndpointAddr("pokt1b-https://dopokt.prunedstate.example")
-	for _, ep := range []domain.EndpointAddr{shortLogs, prunedState} {
+	unknown := domain.EndpointAddr("pokt1c-https://r001.unasked.example")
+	for _, ep := range []domain.EndpointAddr{shortLogs, prunedState, unknown} {
 		p.UpdateBlockHeight(ep, 100_000)
 	}
 	refused := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"historical state is not available"}}`)
@@ -1205,7 +1213,7 @@ func TestSelectEndpoints_LogRetentionIsSeparate(t *testing.T) {
 	p.RecordArchival(shortLogs, logs(100_000-1_000), refused)
 	p.RecordArchival(prunedState, balance(100_000-1_000), refused)
 
-	all := domain.EndpointAddrList{shortLogs, prunedState}
+	all := domain.EndpointAddrList{shortLogs, prunedState, unknown}
 	pick := func(pl domain.Payload) domain.EndpointAddrList {
 		got, err := p.SelectEndpoints(all, []domain.Payload{pl})
 		if err != nil {
@@ -1213,17 +1221,43 @@ func TestSelectEndpoints_LogRetentionIsSeparate(t *testing.T) {
 		}
 		return got
 	}
-	if got := pick(logs(100_000 - 5_000)); len(got) != 1 || got[0] != prunedState {
+	if got := pick(logs(100_000 - 5_000)); len(got) != 2 || got[0] != prunedState || got[1] != unknown {
 		t.Errorf("deep eth_getLogs went to %v, want only the host that keeps logs", got)
 	}
-	if got := pick(balance(100_000 - 5_000)); len(got) != 1 || got[0] != shortLogs {
+	if got := pick(balance(100_000 - 5_000)); len(got) != 2 || got[0] != shortLogs || got[1] != unknown {
 		t.Errorf("deep eth_getBalance went to %v, want only the host that keeps state", got)
 	}
-	if got := pick(logs(100_000 - 500)); len(got) != 2 {
+	if got := pick(logs(100_000 - 500)); len(got) != 3 {
 		t.Errorf("shallow eth_getLogs went to %v, want both", got)
 	}
 	marks := p.ArchivalHosts()
 	if m := marks["rm02.shortlogs.example"]; m.LogsRefusedDepth == nil || m.RefusedDepth != nil {
 		t.Errorf("short-logs host mark %+v, want a logs refusal only", m)
+	}
+}
+
+// A retention filter that would leave a request one party is skipped: every
+// historical call would land on it, which is capacity, not retention. Two
+// hosts of one owner are one party.
+func TestSelectEndpoints_OnePartyLeftSkipsTheFilter(t *testing.T) {
+	p := newTestPlugin(5)
+	prunedA := domain.EndpointAddr("pokt1a-https://dopokt.prunedone.example")
+	prunedB := domain.EndpointAddr("pokt1b-https://rm02.prunedtwo.example")
+	archiveA := domain.EndpointAddr("pokt1c-https://r008.archive.example")
+	archiveB := domain.EndpointAddr("pokt1c-https://r031.archive.example")
+	all := domain.EndpointAddrList{prunedA, prunedB, archiveA, archiveB}
+	for _, ep := range all {
+		p.UpdateBlockHeight(ep, 1000)
+	}
+	p.archival.Set(hostKey(prunedA), refusedEverything)
+	p.archival.Set(hostKey(prunedB), refusedEverything)
+
+	payloads := []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`), domain.RPCTypeJSONRPC, "eth_getBalance")}
+	got, err := p.SelectEndpoints(all, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(all) {
+		t.Fatalf("selected %v, want every endpoint: the filter would leave one party", got)
 	}
 }

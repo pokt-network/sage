@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -247,6 +248,17 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		mark, known := p.logs.Get(hostKey(addr))
 		return !known || mark.admits(logDepth, now)
 	}
+	// A retention filter that would leave the request one party to go to is
+	// skipped for it: every historical call then lands on that party, which
+	// is capacity, not retention, and one that fails slowly under it never
+	// refuses its way out. Without the filter the request goes anywhere and a
+	// refusal is retried, as before the marks existed.
+	if needsArchival && !manyParties(endpoints, archivalFilter) {
+		needsArchival = false
+	}
+	if needsLogs && !manyParties(endpoints, func(addr domain.EndpointAddr) bool { return archivalFilter(addr) && logsFilter(addr) }) {
+		needsLogs = false
+	}
 
 	minHeight := qos.MinAllowedHeight(perceived, p.SyncAllowance())
 	relaxedMin := qos.MinAllowedHeight(perceived, p.SyncAllowance()*2)
@@ -273,6 +285,25 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	}
 
 	return result.Endpoints, nil
+}
+
+// manyParties reports whether the endpoints keep tells hold at least two
+// parties (domain.EndpointAddr.Party: one owner's brands count once; an
+// address with no party is its own).
+func manyParties(eps domain.EndpointAddrList, keep func(domain.EndpointAddr) bool) bool {
+	first, seen := "", false
+	for _, ep := range eps {
+		if !keep(ep) {
+			continue
+		}
+		party := cmp.Or(ep.Party(), string(ep))
+		if !seen {
+			first, seen = party, true
+		} else if party != first {
+			return true
+		}
+	}
+	return false
 }
 
 // --- qos.BlockHeightTracker ---
