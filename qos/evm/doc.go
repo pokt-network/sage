@@ -28,6 +28,11 @@
 // request excluded every unobserved endpoint, which at any moment is most of
 // them, and the tier cascade then handed back the unfiltered list anyway.
 //
+// Retention is a depth, not a yes or no: a node keeps state some number of
+// blocks behind its head. A host's mark is the deepest it served and the
+// shallowest it refused, behind the head when it answered, and a request is
+// kept off it only from the depth it refused onward.
+//
 // Observations come from client traffic that happened to name a historical
 // block (see observeArchival), which is a free probe and the only kind the
 // plugin gets: health checks ask for the head. That is also why the block

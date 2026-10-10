@@ -11,7 +11,8 @@ import (
 // handleGetChainState reads what a service's plugin believes about its chain:
 // the perceived head, the latest height each endpoint reported, and, where the
 // plugin keeps them, its live archival marks per host ("archival": host to
-// true for served historical state, false for refused it). It is the
+// served_depth, the deepest it served, and refused_depth, the shallowest it
+// refused, in blocks behind the head). It is the
 // read half of the chain-state route — the reset existed without it, so an
 // operator watching the chain-view spread jump to the whole chain height had
 // no way to ask which endpoint did it.

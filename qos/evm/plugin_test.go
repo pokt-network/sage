@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"testing"
@@ -192,8 +194,8 @@ func TestSelectEndpoints_ArchivalFiltering(t *testing.T) {
 	// Two endpoints; "nonarchival" has told us it does not retain the state.
 	p.UpdateBlockHeight("archival", 1000)
 	p.UpdateBlockHeight("nonarchival", 1000)
-	p.archival.Set(hostKey("archival"), true)
-	p.archival.Set(hostKey("nonarchival"), false)
+	p.archival.Set(hostKey("archival"), archivalMark{served: math.MaxUint64, hasServed: true})
+	p.archival.Set(hostKey("nonarchival"), refusedEverything)
 
 	addrs := domain.EndpointAddrList{"archival", "nonarchival"}
 	// Archival request: eth_getBalance at a specific historical block.
@@ -381,6 +383,7 @@ func TestCacheTTL(t *testing.T) {
 
 func TestIsArchivalRequest_Archival(t *testing.T) {
 	p := newTestPlugin(5)
+	p.UpdateBlockHeight("head", 0x100000000)
 
 	cases := []struct {
 		method string
@@ -406,7 +409,7 @@ func TestIsArchivalRequest_Archival(t *testing.T) {
 
 	for _, tc := range cases {
 		payloads := []domain.Payload{domain.NewPayload([]byte(tc.body), domain.RPCTypeJSONRPC, tc.method)}
-		if !p.IsArchivalRequest(payloads) {
+		if _, ok := p.requestDepth(payloads); !ok {
 			t.Errorf("%s with specific block: expected archival", tc.method)
 		}
 	}
@@ -414,6 +417,7 @@ func TestIsArchivalRequest_Archival(t *testing.T) {
 
 func TestIsArchivalRequest_NotArchival(t *testing.T) {
 	p := newTestPlugin(5)
+	p.UpdateBlockHeight("head", 0x100000000)
 
 	cases := []struct {
 		method string
@@ -444,7 +448,7 @@ func TestIsArchivalRequest_NotArchival(t *testing.T) {
 
 	for _, tc := range cases {
 		payloads := []domain.Payload{domain.NewPayload([]byte(tc.body), domain.RPCTypeJSONRPC, tc.method)}
-		if p.IsArchivalRequest(payloads) {
+		if _, ok := p.requestDepth(payloads); ok {
 			t.Errorf("%s: expected NOT archival", tc.method)
 		}
 	}
@@ -678,7 +682,7 @@ func TestSelectEndpoints_ArchivalUnobservedNotExcluded(t *testing.T) {
 
 	p.UpdateBlockHeight("never-asked", 1000)
 	p.UpdateBlockHeight("known-pruned", 1000)
-	p.archival.Set(hostKey("known-pruned"), false)
+	p.archival.Set(hostKey("known-pruned"), refusedEverything)
 
 	addrs := domain.EndpointAddrList{"never-asked", "known-pruned"}
 	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
@@ -711,8 +715,8 @@ func TestSelectEndpoints_ArchivalObservationExpires(t *testing.T) {
 	fresh := domain.EndpointAddr("s2-https://fresh.example")
 	p.UpdateBlockHeight(stale, 1000)
 	p.UpdateBlockHeight(fresh, 1000)
-	p.archival.SetUntil(hostKey(stale), false, time.Now().Add(-time.Minute))
-	p.archival.SetUntil(hostKey(fresh), false, time.Now().Add(archivalTTL))
+	p.archival.SetUntil(hostKey(stale), refusedEverything, time.Now().Add(-time.Minute))
+	p.archival.SetUntil(hostKey(fresh), refusedEverything, time.Now().Add(archivalTTL))
 
 	addrs := domain.EndpointAddrList{stale, fresh}
 	body := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`
@@ -785,6 +789,7 @@ func TestExtractData_ArchivalInference(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newTestPlugin(5)
+			p.Consensus.AddObservation("head", 1000)
 			data, err := p.ExtractData("ep", []byte(tt.request), []byte(tt.response))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -987,9 +992,13 @@ func TestSelectEndpoints_RolloverAddressOfStaleHostFiltered(t *testing.T) {
 // isArchivalEndpoint reports whether the endpoint's host is known to serve
 // historical state: an endpoint nothing has observed returns false.
 func isArchivalEndpoint(p *Plugin, endpoint domain.EndpointAddr) bool {
-	archival, known := p.archival.Get(hostKey(endpoint))
-	return known && archival
+	m, known := p.archival.Get(hostKey(endpoint))
+	return known && m.hasServed
 }
+
+// refusedEverything is a host that refused state one block behind the head,
+// which no archival request is shallower than.
+var refusedEverything = archivalMark{hasRefused: true}
 
 // A client's head answer becomes the answering endpoint's height, so the
 // height filter reads it at once rather than at the next probe; the consensus
@@ -1060,6 +1069,7 @@ func TestSelectEndpoints_GenesisNodeIsFiltered(t *testing.T) {
 // recent block, marks nothing.
 func TestRecordArchival_MarksTheHostFromEachAttempt(t *testing.T) {
 	p := NewPlugin(nil, Config{})
+	p.Consensus.AddObservation("head", 0x2000)
 	pruned := domain.EndpointAddr("pokt1a-https://rm01.pruned.example")
 	full := domain.EndpointAddr("pokt1b-https://r001.full.example")
 	balanceAt := func(block string) domain.Payload {
@@ -1073,8 +1083,48 @@ func TestRecordArchival_MarksTheHostFromEachAttempt(t *testing.T) {
 		[]byte(`{"jsonrpc":"2.0","id":1,"result":"0x10"}`))
 
 	got := p.ArchivalHosts()
-	want := map[string]bool{"rm01.pruned.example": false, "r001.full.example": true}
-	if len(got) != len(want) || got["rm01.pruned.example"] != false || got["r001.full.example"] != true {
-		t.Fatalf("archival hosts = %v, want %v", got, want)
+	depth := uint64(0x2000 - 0x10)
+	pruned0, full0 := got["rm01.pruned.example"], got["r001.full.example"]
+	if len(got) != 2 || pruned0.RefusedDepth == nil || *pruned0.RefusedDepth != depth || pruned0.ServedDepth != nil ||
+		full0.ServedDepth == nil || *full0.ServedDepth != depth || full0.RefusedDepth != nil {
+		t.Fatalf("archival hosts = %+v, want rm01 refused and r001 served at depth %d", got, depth)
+	}
+}
+
+// A host that serves state a million blocks back and refuses it ten million
+// back stays in the pool for anything shallower than its refusal; the newest
+// evidence wins where served and refused disagree.
+func TestArchivalMark_ByDepth(t *testing.T) {
+	m := archivalMark{served: 1_000_000, hasServed: true, refused: 10_000_000, hasRefused: true}
+	for depth, want := range map[uint64]bool{500_000: true, 1_000_000: true, 5_000_000: true, 10_000_000: false, 20_000_000: false} {
+		if got := m.admits(depth); got != want {
+			t.Errorf("depth %d: admits = %v, want %v", depth, got, want)
+		}
+	}
+
+	p := newTestPlugin(5)
+	p.Consensus.AddObservation("head", 20_000_000)
+	ep := domain.EndpointAddr("pokt1a-https://rm-eu-b.lb.example")
+	at := func(depth uint64) []byte {
+		return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1010","0x%x"]}`, 20_000_000-depth))
+	}
+	served := []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+	refused := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"historical state is not available"}}`)
+	mark := func() archivalMark { m, _ := p.archival.Get(hostKey(ep)); return m }
+
+	p.observeArchival(ep, "eth_getBalance", at(1_000_000), served)
+	p.observeArchival(ep, "eth_getBalance", at(10_000_000), refused)
+	if m := mark(); !m.admits(1_000_000) || !m.admits(5_000_000) || m.admits(10_000_000) {
+		t.Fatalf("mark %+v: want admitted to 5M, refused from 10M", m)
+	}
+	// Refused shallower than it once served: the newer answer wins.
+	p.observeArchival(ep, "eth_getBalance", at(500_000), refused)
+	if m := mark(); m.hasServed || m.admits(500_000) {
+		t.Fatalf("mark %+v: want the served evidence dropped and 500k refused", m)
+	}
+	// Served deeper than it refused: the refusal goes.
+	p.observeArchival(ep, "eth_getBalance", at(12_000_000), served)
+	if m := mark(); m.hasRefused || !m.admits(12_000_000) {
+		t.Fatalf("mark %+v: want the refusal dropped and 12M served", m)
 	}
 }

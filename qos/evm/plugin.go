@@ -36,6 +36,27 @@ type evmEndpoint struct {
 // what held the invariant, and it did not.
 const archivalTTL = 1 * time.Hour
 
+// archivalMark is what one host has shown of its history, as depths behind
+// the perceived head when it answered: the deepest it served and the
+// shallowest it refused. Depth rather than block number, because a pruned
+// node's window moves with the head. The newest evidence wins where the two
+// disagree, as they do behind a balancer whose backends keep different
+// history.
+type archivalMark struct {
+	served, refused       uint64
+	hasServed, hasRefused bool
+}
+
+// admits reports whether a request depth behind the head may reach the host:
+// yes where it served that deep, no where it refused that shallow, yes
+// otherwise, since most hosts carry no evidence at all.
+func (m archivalMark) admits(depth uint64) bool {
+	if m.hasServed && depth <= m.served {
+		return true
+	}
+	return !m.hasRefused || depth < m.refused
+}
+
 // maxArchivalHosts bounds the archival memory; hosts come from staked URLs.
 const maxArchivalHosts = 4096
 
@@ -90,7 +111,7 @@ type Plugin struct {
 	expectedChainID string
 	stateCanary     func() bool
 	// archival remembers, per host, who served or refused historical state.
-	archival *qos.HostMemory[bool]
+	archival *qos.HostMemory[archivalMark]
 }
 
 // Config carries the per-service settings an EVM plugin needs.
@@ -146,7 +167,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		store:           qos.NewEndpointStore[evmEndpoint](),
 		expectedChainID: cfg.ExpectedChainID,
 		stateCanary:     cfg.StateCanary,
-		archival:        qos.NewHostMemory[bool](archivalTTL, maxArchivalHosts),
+		archival:        qos.NewHostMemory[archivalMark](archivalTTL, maxArchivalHosts),
 	}
 	p.Consensus = qos.NewBlockConsensus(logger, cfg.SyncAllowance)
 	p.SetSyncAllowance(cfg.SyncAllowance)
@@ -172,7 +193,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	}
 
 	perceived := p.Consensus.PerceivedBlock()
-	needsArchival := p.IsArchivalRequest(payloads)
+	depth, needsArchival := p.requestDepth(payloads)
 
 	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, p.Consensus.Projection())
 
@@ -180,14 +201,14 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		if !needsArchival {
 			return true
 		}
-		// Only a fresh negative observation excludes an endpoint. Archival
-		// status is inferred from traffic that happened to name a historical
-		// block, so most hosts carry no observation at all — and requiring
-		// proof of archival before serving an archival request would exclude
-		// every one of them, exhausting all three tiers on every such request
-		// and handing back the unfiltered list anyway.
-		archival, known := p.archival.Get(hostKey(addr))
-		return !known || archival
+		// Only a fresh refusal at this depth or shallower excludes an
+		// endpoint. Archival status is inferred from traffic that happened to
+		// name a historical block, so most hosts carry no observation at all —
+		// and requiring proof of archival before serving an archival request
+		// would exclude every one of them, exhausting all three tiers on every
+		// such request and handing back the unfiltered list anyway.
+		mark, known := p.archival.Get(hostKey(addr))
+		return !known || mark.admits(depth)
 	}
 
 	minHeight := qos.MinAllowedHeight(perceived, p.SyncAllowance())
@@ -238,15 +259,17 @@ func reportedHeight(h uint64) uint64 {
 
 // --- Archival routing ---
 
-// IsArchivalRequest returns true if any payload in the batch requests archival state.
-func (p *Plugin) IsArchivalRequest(payloads []domain.Payload) bool {
+// requestDepth is the deepest archival depth any payload of the batch names
+// (archivalDepth); ok is false when none does, or while the head is unknown.
+func (p *Plugin) requestDepth(payloads []domain.Payload) (depth uint64, ok bool) {
+	head := p.Consensus.PerceivedBlock()
 	for _, payload := range payloads {
 		params := gjson.GetBytes(payload.Bytes(), "params").Raw
-		if isArchivalRequest(payload.Method(), json.RawMessage(params), p.Consensus.PerceivedBlock()) {
-			return true
+		if d, archival := archivalDepth(payload.Method(), json.RawMessage(params), head); archival {
+			depth, ok = max(depth, d), true
 		}
 	}
-	return false
+	return depth, ok
 }
 
 // observeArchival records what a relay says about an endpoint's history
@@ -262,17 +285,33 @@ func (p *Plugin) IsArchivalRequest(payloads []domain.Payload) bool {
 // here is isArchivalRequest, which is why that cannot happen.
 func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, request, response []byte) (archival bool, observed bool) {
 	params := gjson.GetBytes(request, "params").Raw
-	if !isArchivalRequest(method, json.RawMessage(params), p.Consensus.PerceivedBlock()) {
+	depth, ok := archivalDepth(method, json.RawMessage(params), p.Consensus.PerceivedBlock())
+	if !ok {
 		return false, false
 	}
 
 	switch classifyArchivalResponse(response) {
 	case archivalServed:
-		p.archival.Set(hostKey(endpoint), true)
+		p.archival.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark {
+			m.served, m.hasServed = max(m.served, depth), true
+			if m.hasRefused && m.refused <= depth {
+				m.hasRefused = false
+			}
+			return m
+		})
 		return true, true
 
 	case archivalMissing:
-		p.archival.Set(hostKey(endpoint), false)
+		p.archival.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark {
+			if !m.hasRefused || depth < m.refused {
+				m.refused = depth
+			}
+			m.hasRefused = true
+			if m.hasServed && m.served >= depth {
+				m.hasServed = false
+			}
+			return m
+		})
 		return false, true
 
 	default:
@@ -291,8 +330,20 @@ func (p *Plugin) RecordArchival(endpoint domain.EndpointAddr, payload domain.Pay
 }
 
 // ArchivalHosts implements qos.ArchivalLister.
-func (p *Plugin) ArchivalHosts() map[string]bool {
-	return p.archival.Snapshot()
+func (p *Plugin) ArchivalHosts() map[string]qos.ArchivalMark {
+	marks := p.archival.Snapshot()
+	out := make(map[string]qos.ArchivalMark, len(marks))
+	for host, m := range marks {
+		var v qos.ArchivalMark
+		if m.hasServed {
+			v.ServedDepth = &m.served
+		}
+		if m.hasRefused {
+			v.RefusedDepth = &m.refused
+		}
+		out[host] = v
+	}
+	return out
 }
 
 var (

@@ -65,6 +65,28 @@ func (m *HostMemory[V]) Get(host string) (value V, ok bool) {
 	return e.value, true
 }
 
+// Update records fn's merge of host's live observation (ok false when there
+// is none) with a new one, trusted for the TTL from now. An empty host is
+// ignored.
+func (m *HostMemory[V]) Update(host string, fn func(old V, ok bool) V) {
+	if host == "" {
+		return
+	}
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, found := m.entries[host]
+	var old V
+	live := found && now.Before(e.expiry)
+	if live {
+		old = e.value
+	}
+	if !found && len(m.entries) >= m.maxHosts {
+		m.entries = make(map[string]hostEntry[V])
+	}
+	m.entries[host] = hostEntry[V]{value: fn(old, live), expiry: now.Add(m.ttl)}
+}
+
 // Snapshot returns every observation still within its TTL, by host.
 func (m *HostMemory[V]) Snapshot() map[string]V {
 	now := m.now()

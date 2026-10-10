@@ -42,8 +42,8 @@ Callers type-assert and skip the feature when it is absent.
 | `VerdictRefiner` | re-attribute a heuristic verdict from the request's shape: the routes a node answers 5xx to by design when the query cannot be served (the cosmos plugin: cosmwasm smart queries, transactions by block) become the chain's answer, delivered, not retried, nobody scored |
 | `RPCTypeClassifier` | decide which declared RPC type a request is relayed as when the chain fronts several surfaces on one service; consulted by `parse` after generic detection, overridden by the client's `RPC-Type` header. The cosmos plugin uses it for CometBFT's two faces (JSON-RPC POST and HTTP GET), which Pocket suppliers stake as `json_rpc` and `rest` without a `comet_bft` stake |
 | `ExternalFloorSetter` | take a trusted outside height (`services[].external_block_sources`) as a floor under the perceived head |
-| `ArchivalRecorder` | learn per host, from every attempt's answer to a request naming an old block, whether it retains historical state, so a pruned host's refusal a retry rescued still keeps historical requests off it (`archival_per_attempt`; the EVM plugin) |
-| `ArchivalLister` | list the live archival marks per host, for `GET /admin/chain-state/{service}` |
+| `ArchivalRecorder` | learn per host, from every attempt's answer to a request naming an old block, how deep it retains historical state, so a pruned host's refusal a retry rescued still keeps historical requests off it (`archival_per_attempt`; the EVM plugin) |
+| `ArchivalLister` | list the live archival marks per host (deepest depth served, shallowest refused), for `GET /admin/chain-state/{service}` |
 | `EndpointHeightLister` | list the latest height each endpoint reported, for `GET /admin/chain-state/{service}` |
 | `HeadLagReader` | read the chain head out of an answer to a head method and say how far it lags the head expected now, for `sage_answer_head_lag_blocks` and `sage_stale_answers_total` |
 | `StaleChecker` | say whether every endpoint in a list is known to sit below the relaxed height bound, so Retry and Hedge never narrow a request onto hosts far behind the head |

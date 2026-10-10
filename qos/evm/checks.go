@@ -105,22 +105,41 @@ const nearHeadBlocks = 128
 // genesis. head is the perceived chain head; 0 means unknown, and every
 // numbered block then counts as archival, as before.
 func isArchivalRequest(method string, params json.RawMessage, head uint64) bool {
+	block, ok := historicalBlock(method, params)
+	return ok && (head == 0 || block+nearHeadBlocks < head)
+}
+
+// archivalDepth is how far behind head the block an archival request names
+// (isArchivalRequest) was; ok is false for any other request, or while head is
+// unknown, when there is nothing to measure the depth from. Genesis is head
+// deep.
+func archivalDepth(method string, params json.RawMessage, head uint64) (uint64, bool) {
+	block, ok := historicalBlock(method, params)
+	if !ok || head == 0 || block+nearHeadBlocks >= head {
+		return 0, false
+	}
+	return head - block, true
+}
+
+// historicalBlock is the block a request's block parameter names, 0 for
+// genesis; ok is false for a method without one, or a recent-state tag.
+func historicalBlock(method string, params json.RawMessage) (uint64, bool) {
 	if !methodsWithBlockParam[method] {
-		return false
+		return 0, false
 	}
 	if len(params) == 0 {
-		return false
+		return 0, false
 	}
 
 	// params is a JSON array. We need the last element that looks like a block identifier.
 	result := gjson.ParseBytes(params)
 	if !result.IsArray() {
-		return false
+		return 0, false
 	}
 
 	arr := result.Array()
 	if len(arr) == 0 {
-		return false
+		return 0, false
 	}
 
 	// The block parameter is conventionally the last parameter for most methods.
@@ -128,27 +147,27 @@ func isArchivalRequest(method string, params json.RawMessage, head uint64) bool 
 	// Rather than hardcoding per-method positions, we inspect the last string element.
 	blockParam := findLastStringParam(arr)
 	if blockParam == "" {
-		return false
+		return 0, false
 	}
 
 	tag := strings.ToLower(blockParam)
 
 	// If it's a recent-state tag, it's not archival.
 	if recentStateBlockTags[tag] {
-		return false
+		return 0, false
 	}
 
 	// Genesis: only a node retaining full history can serve it.
 	if tag == blockTagEarliest {
-		return true
+		return 0, true
 	}
 
 	// A hex number names a specific block: archival unless it is near the head.
 	n, err := parseHexUint64(blockParam)
 	if err != nil {
-		return false
+		return 0, false
 	}
-	return head == 0 || n+nearHeadBlocks < head
+	return n, true
 }
 
 // archivalOutcome is what a response to an archival request reveals about the

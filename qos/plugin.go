@@ -241,11 +241,18 @@ type ArchivalRecorder interface {
 	RecordArchival(endpoint domain.EndpointAddr, payload domain.Payload, response []byte)
 }
 
+// ArchivalMark is what one host has shown of its history, as depths behind
+// the head when it answered: the deepest it served and the shallowest it
+// refused. Nil is no evidence.
+type ArchivalMark struct {
+	ServedDepth  *uint64 `json:"served_depth,omitempty"`
+	RefusedDepth *uint64 `json:"refused_depth,omitempty"`
+}
+
 // ArchivalLister is implemented by plugins that can list their live archival
-// marks per host (true: served historical state; false: refused it), for the
-// admin chain-state read.
+// marks per host, for the admin chain-state read.
 type ArchivalLister interface {
-	ArchivalHosts() map[string]bool
+	ArchivalHosts() map[string]ArchivalMark
 }
 
 // EndpointHeightLister is implemented by plugins that can say what each

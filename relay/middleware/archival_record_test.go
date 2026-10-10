@@ -23,6 +23,7 @@ func TestHeuristic_RecordsArchivalPerAttempt(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			plugin := evm.NewPlugin(nil, evm.Config{})
+			plugin.UpdateBlockHeight("head", 0x2000)
 			ctx := relay.NewContext(context.Background(), httptest.NewRequest(http.MethodPost, "/v1", nil), nil, nil)
 			ctx.ServiceID = "poly"
 			ctx.Plugin = plugin
@@ -34,9 +35,9 @@ func TestHeuristic_RecordsArchivalPerAttempt(t *testing.T) {
 			})
 			_ = Heuristic(newFlags(tc.flags...), nil, HeuristicOptions{})(send).HandleRelay(ctx)
 
-			archival, marked := plugin.ArchivalHosts()["rm01.pruned.example"]
-			if marked != tc.want || archival {
-				t.Fatalf("mark = %v (archival %v), want marked=%v and not archival", marked, archival, tc.want)
+			mark, marked := plugin.ArchivalHosts()["rm01.pruned.example"]
+			if marked != tc.want || mark.ServedDepth != nil {
+				t.Fatalf("mark = %+v (marked %v), want marked=%v as refused", mark, marked, tc.want)
 			}
 		})
 	}
