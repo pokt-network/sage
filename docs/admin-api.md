@@ -101,7 +101,7 @@ failureThreshold) here.
 | `GET` | `/admin/reputation/{serviceID}` | Returns every reputation state for a service. |
 | `POST` | `/admin/reputation/reset/{serviceID}/{endpoint...}` | Returns one endpoint's recorded scores to the initial score. |
 | `POST` | `/admin/reputation/operator-reset/{serviceID}/{operator}` | Forgets an operator's failure evidence (the per-operator counters operator_chronic charges its keys from) in one service, every RPC type. |
-| `GET` | `/admin/chain-state/{serviceID}` | Reads what a service's plugin believes about its chain: the perceived head, and the latest height each endpoint reported. |
+| `GET` | `/admin/chain-state/{serviceID}` | Reads what a service's plugin believes about its chain: the perceived head, the latest height each endpoint reported, and, where the plugin keeps them, its live archival marks per host ("archival": host to true for served historical state, false for refused it). |
 | `POST` | `/admin/chain-state/clear/{serviceID}` | Discards the QoS state a service's plugin has learned: block consensus (perceived height, external floor) and its per-endpoint QoS store (block heights, chain-id observations, archival marks — see qos.StateResetter). |
 | `GET` | `/admin/timeline/{serviceID}` | Returns the recent reputation events for every endpoint of a service, newest last. |
 | `GET` | `/admin/timeline/{serviceID}/{endpoint...}` | Returns the reputation events for a single endpoint. |
@@ -240,7 +240,9 @@ no counters on that service; 501 when the reputation service cannot.
 ### `GET /admin/chain-state/{serviceID}`
 
 Reads what a service's plugin believes about its chain:
-the perceived head, and the latest height each endpoint reported. It is the
+the perceived head, the latest height each endpoint reported, and, where the
+plugin keeps them, its live archival marks per host ("archival": host to
+true for served historical state, false for refused it). It is the
 read half of the chain-state route — the reset existed without it, so an
 operator watching the chain-view spread jump to the whole chain height had
 no way to ask which endpoint did it.

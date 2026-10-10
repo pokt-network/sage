@@ -9,7 +9,9 @@ import (
 )
 
 // handleGetChainState reads what a service's plugin believes about its chain:
-// the perceived head, and the latest height each endpoint reported. It is the
+// the perceived head, the latest height each endpoint reported, and, where the
+// plugin keeps them, its live archival marks per host ("archival": host to
+// true for served historical state, false for refused it). It is the
 // read half of the chain-state route — the reset existed without it, so an
 // operator watching the chain-view spread jump to the whole chain height had
 // no way to ask which endpoint did it.
@@ -34,6 +36,9 @@ func (a *AdminAPI) handleGetChainState(w http.ResponseWriter, req *http.Request)
 	} else {
 		out["heights"] = []qos.EndpointHeight{}
 		out["message"] = "plugin tracks no per-endpoint heights"
+	}
+	if lister, ok := plugin.(qos.ArchivalLister); ok {
+		out["archival"] = lister.ArchivalHosts()
 	}
 	writeJSON(w, http.StatusOK, out)
 }

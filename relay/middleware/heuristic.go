@@ -75,6 +75,7 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 			if ctx.Response != nil {
 				headLag, headStale = o.observeHeadLag(registry, ctx)
 				recordHead(flags, registry, ctx)
+				recordArchival(flags, registry, ctx)
 			}
 
 			// Skip analysis if the flag is disabled.
@@ -274,6 +275,19 @@ func recordHead(flags featureflag.FlagStore, registry *qos.Registry, ctx *relay.
 		return
 	}
 	recorder.RecordHead(ctx.Endpoint, ctx.Payloads[0], ctx.Response.Body)
+}
+
+// recordArchival hands the attempt's answer to the plugin's archival memory
+// (qos.ArchivalRecorder), behind featureflag.FlagArchivalPerAttempt.
+func recordArchival(flags featureflag.FlagStore, registry *qos.Registry, ctx *relay.Context) {
+	if len(ctx.Payloads) != 1 || ctx.Response.HTTPStatusCode != 200 || ctx.Endpoint == "" {
+		return
+	}
+	recorder, ok := pluginOf(registry, ctx).(qos.ArchivalRecorder)
+	if !ok || flags == nil || !flags.IsEnabled(ctx.Ctx, featureflag.FlagArchivalPerAttempt, ctx.ServiceID) {
+		return
+	}
+	recorder.RecordArchival(ctx.Endpoint, ctx.Payloads[0], ctx.Response.Body)
 }
 
 // budget is the time this attempt has (the smaller of the per-attempt timeout

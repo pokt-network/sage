@@ -278,6 +278,11 @@ const (
 	// last probed 600 behind. The consensus head is not fed from it. Off: only
 	// probes and sampled observations write heights.
 	FlagHeadAnswersHeight = "head_answers_height"
+	// FlagArchivalPerAttempt marks a host's historical-state retention from
+	// every attempt's answer (qos.ArchivalRecorder), so a pruned host's
+	// refusal that a retry rescued still keeps historical requests off it.
+	// Off, the marks come from the sampled, delivered answers alone.
+	FlagArchivalPerAttempt = "archival_per_attempt"
 	// FlagWSDuplicatePenalty charges a supplier a minor ws_duplicate_notifications
 	// signal for each minute in which more than 1% of at least 500 notifications
 	// it pushed on a connection were repeats. Off: repeats are counted, not
@@ -398,6 +403,7 @@ var DefaultFlags = map[string]bool{
 	FlagWSDrainRebind:           true,
 	FlagWSDropDuplicates:        true,
 	FlagHeadAnswersHeight:       true,
+	FlagArchivalPerAttempt:      true,
 	FlagWSDuplicateShare:        false,
 	FlagThrottleShare:           false,
 	FlagClassShare:              false,

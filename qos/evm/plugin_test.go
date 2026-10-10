@@ -1054,3 +1054,27 @@ func TestSelectEndpoints_GenesisNodeIsFiltered(t *testing.T) {
 		t.Errorf("block 0 answer: lag %d ok %v, want 1000 true", lag, ok)
 	}
 }
+
+// Every attempt's answer to a request naming an old block marks its host: a
+// refusal false, an answer true. A method without a block parameter, or a
+// recent block, marks nothing.
+func TestRecordArchival_MarksTheHostFromEachAttempt(t *testing.T) {
+	p := NewPlugin(nil, Config{})
+	pruned := domain.EndpointAddr("pokt1a-https://rm01.pruned.example")
+	full := domain.EndpointAddr("pokt1b-https://r001.full.example")
+	balanceAt := func(block string) domain.Payload {
+		return domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1010","`+block+`"]}`), domain.RPCTypeJSONRPC, "eth_getBalance")
+	}
+	p.RecordArchival(pruned, balanceAt("0x10"), []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"historical state is not available"}}`))
+	p.RecordArchival(full, balanceAt("0x10"), []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`))
+	p.RecordArchival(domain.EndpointAddr("pokt1c-https://r001.other.example"), balanceAt("latest"), []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"historical state is not available"}}`))
+	p.RecordArchival(domain.EndpointAddr("pokt1d-https://r001.head.example"),
+		domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`), domain.RPCTypeJSONRPC, "eth_blockNumber"),
+		[]byte(`{"jsonrpc":"2.0","id":1,"result":"0x10"}`))
+
+	got := p.ArchivalHosts()
+	want := map[string]bool{"rm01.pruned.example": false, "r001.full.example": true}
+	if len(got) != len(want) || got["rm01.pruned.example"] != false || got["r001.full.example"] != true {
+		t.Fatalf("archival hosts = %v, want %v", got, want)
+	}
+}

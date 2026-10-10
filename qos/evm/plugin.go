@@ -280,6 +280,26 @@ func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, re
 	}
 }
 
+// RecordArchival implements qos.ArchivalRecorder: one attempt's answer to a
+// request naming a historical block marks its host. Methods without a block
+// parameter return before any parsing.
+func (p *Plugin) RecordArchival(endpoint domain.EndpointAddr, payload domain.Payload, response []byte) {
+	if !methodsWithBlockParam[payload.Method()] {
+		return
+	}
+	p.observeArchival(endpoint, payload.Method(), payload.Bytes(), response)
+}
+
+// ArchivalHosts implements qos.ArchivalLister.
+func (p *Plugin) ArchivalHosts() map[string]bool {
+	return p.archival.Snapshot()
+}
+
+var (
+	_ qos.ArchivalRecorder = (*Plugin)(nil)
+	_ qos.ArchivalLister   = (*Plugin)(nil)
+)
+
 // --- qos.HealthChecker ---
 
 // HealthChecks returns the standard EVM health check payloads for an endpoint.

@@ -232,6 +232,22 @@ type EndpointHeight struct {
 	ObservedAt time.Time           `json:"observed_at"`
 }
 
+// ArchivalRecorder is implemented by plugins that learn per host whether an
+// endpoint retains historical state, from the answers to requests naming an
+// old block. The Heuristic middleware hands it every attempt's answer: a
+// refusal a retry rescued still marks the host that refused, which the
+// observation pipeline, seeing only the delivered answer, never does.
+type ArchivalRecorder interface {
+	RecordArchival(endpoint domain.EndpointAddr, payload domain.Payload, response []byte)
+}
+
+// ArchivalLister is implemented by plugins that can list their live archival
+// marks per host (true: served historical state; false: refused it), for the
+// admin chain-state read.
+type ArchivalLister interface {
+	ArchivalHosts() map[string]bool
+}
+
 // EndpointHeightLister is implemented by plugins that can say what each
 // endpoint last reported, for the admin chain-state read. It exists because
 // on 2026-09-04 one sui endpoint reported a near-zero height for two cycles

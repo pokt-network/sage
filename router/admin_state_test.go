@@ -133,6 +133,10 @@ func (fakeViewingPlugin) EndpointHeights() []qos.EndpointHeight {
 	}
 }
 
+func (fakeViewingPlugin) ArchivalHosts() map[string]bool {
+	return map[string]bool{"n1.example": true, "n2.example": false}
+}
+
 func TestAdmin_GetChainState_NamesTheEndpointBehindTheSpread(t *testing.T) {
 	reg := qos.NewRegistry()
 	if err := reg.Register("sui", fakeViewingPlugin{}); err != nil {
@@ -148,7 +152,8 @@ func TestAdmin_GetChainState_NamesTheEndpointBehindTheSpread(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
 	var body struct {
-		Perceived uint64 `json:"perceived"`
+		Perceived uint64          `json:"perceived"`
+		Archival  map[string]bool `json:"archival"`
 		Heights   []struct {
 			Endpoint string `json:"endpoint"`
 			Height   uint64 `json:"height"`
@@ -156,6 +161,9 @@ func TestAdmin_GetChainState_NamesTheEndpointBehindTheSpread(t *testing.T) {
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v (%s)", err, rec.Body)
+	}
+	if len(body.Archival) != 2 || !body.Archival["n1.example"] || body.Archival["n2.example"] {
+		t.Errorf("archival = %v, want n1 served and n2 refused", body.Archival)
 	}
 	if body.Perceived != 318664809 || len(body.Heights) != 2 || body.Heights[1].Height != 3 {
 		t.Fatalf("body = %s; the point of the route is naming the endpoint that reported 3", rec.Body)

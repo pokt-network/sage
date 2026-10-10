@@ -65,6 +65,20 @@ func (m *HostMemory[V]) Get(host string) (value V, ok bool) {
 	return e.value, true
 }
 
+// Snapshot returns every observation still within its TTL, by host.
+func (m *HostMemory[V]) Snapshot() map[string]V {
+	now := m.now()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]V, len(m.entries))
+	for host, e := range m.entries {
+		if now.Before(e.expiry) {
+			out[host] = e.value
+		}
+	}
+	return out
+}
+
 // Reset forgets everything.
 func (m *HostMemory[V]) Reset() {
 	m.mu.Lock()
