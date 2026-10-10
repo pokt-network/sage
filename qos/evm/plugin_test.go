@@ -1128,3 +1128,74 @@ func TestArchivalMark_ByDepth(t *testing.T) {
 		t.Fatalf("mark %+v: want the refusal dropped and 12M served", m)
 	}
 }
+
+// eth_getLogs is measured from its filter's fromBlock: a recent, tagged or
+// blockHash start is not historical, genesis is head deep.
+func TestLogDepth(t *testing.T) {
+	const head = 100_000
+	for params, want := range map[string]int64{
+		`[{"fromBlock":"0x1","toBlock":"latest"}]`:      head - 1,
+		`[{"fromBlock":"earliest"}]`:                    head,
+		`[{"fromBlock":"0x186a0"}]`:                     -1, // at the head
+		`[{"fromBlock":"latest"}]`:                      -1,
+		`[{"blockHash":"0xabc"}]`:                       -1,
+		`[{"fromBlock":"0x18640","toBlock":"0x186a0"}]`: -1, // 96 back: near the head
+	} {
+		got, ok := logDepth(json.RawMessage(params), head)
+		if want < 0 {
+			if ok {
+				t.Errorf("%s: depth %d, want not historical", params, got)
+			}
+			continue
+		}
+		if !ok || got != uint64(want) {
+			t.Errorf("%s: depth %d (%v), want %d", params, got, ok, want)
+		}
+	}
+	if _, ok := logDepth(json.RawMessage(`[{"fromBlock":"0x1"}]`), 0); ok {
+		t.Error("an unknown head measures nothing")
+	}
+}
+
+// Log retention is its own dimension: a host refusing deep logs is kept off
+// deep eth_getLogs and nothing else, and a state refusal does not keep a host
+// off logs.
+func TestSelectEndpoints_LogRetentionIsSeparate(t *testing.T) {
+	p := newTestPlugin(5)
+	shortLogs := domain.EndpointAddr("pokt1a-https://rm02.shortlogs.example")
+	prunedState := domain.EndpointAddr("pokt1b-https://dopokt.prunedstate.example")
+	for _, ep := range []domain.EndpointAddr{shortLogs, prunedState} {
+		p.UpdateBlockHeight(ep, 100_000)
+	}
+	refused := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"historical state is not available"}}`)
+	logs := func(from uint64) domain.Payload {
+		return domain.NewPayload([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x%x"}]}`, from)), domain.RPCTypeJSONRPC, "eth_getLogs")
+	}
+	balance := func(block uint64) domain.Payload {
+		return domain.NewPayload([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1010","0x%x"]}`, block)), domain.RPCTypeJSONRPC, "eth_getBalance")
+	}
+	p.RecordArchival(shortLogs, logs(100_000-1_000), refused)
+	p.RecordArchival(prunedState, balance(100_000-1_000), refused)
+
+	all := domain.EndpointAddrList{shortLogs, prunedState}
+	pick := func(pl domain.Payload) domain.EndpointAddrList {
+		got, err := p.SelectEndpoints(all, []domain.Payload{pl})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := pick(logs(100_000 - 5_000)); len(got) != 1 || got[0] != prunedState {
+		t.Errorf("deep eth_getLogs went to %v, want only the host that keeps logs", got)
+	}
+	if got := pick(balance(100_000 - 5_000)); len(got) != 1 || got[0] != shortLogs {
+		t.Errorf("deep eth_getBalance went to %v, want only the host that keeps state", got)
+	}
+	if got := pick(logs(100_000 - 500)); len(got) != 2 {
+		t.Errorf("shallow eth_getLogs went to %v, want both", got)
+	}
+	marks := p.ArchivalHosts()
+	if m := marks["rm02.shortlogs.example"]; m.LogsRefusedDepth == nil || m.RefusedDepth != nil {
+		t.Errorf("short-logs host mark %+v, want a logs refusal only", m)
+	}
+}

@@ -31,7 +31,9 @@
 // Retention is a depth, not a yes or no: a node keeps state some number of
 // blocks behind its head. A host's mark is the deepest it served and the
 // shallowest it refused, behind the head when it answered, and a request is
-// kept off it only from the depth it refused onward.
+// kept off it only from the depth it refused onward. eth_getLogs keeps a mark
+// of its own, measured from its filter's fromBlock: log retention is separate
+// from state, and a node pruned of state may keep every log.
 //
 // Observations come from client traffic that happened to name a historical
 // block (see observeArchival), which is a free probe and the only kind the

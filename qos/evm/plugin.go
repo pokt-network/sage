@@ -47,6 +47,29 @@ type archivalMark struct {
 	hasServed, hasRefused bool
 }
 
+// withServed records the host answering at depth: the deepest served, and a
+// refusal no deeper than it dropped as older evidence.
+func (m archivalMark) withServed(depth uint64) archivalMark {
+	m.served, m.hasServed = max(m.served, depth), true
+	if m.hasRefused && m.refused <= depth {
+		m.hasRefused = false
+	}
+	return m
+}
+
+// withRefused records the host refusing at depth: the shallowest refused, and
+// a serve at least as deep dropped as older evidence.
+func (m archivalMark) withRefused(depth uint64) archivalMark {
+	if !m.hasRefused || depth < m.refused {
+		m.refused = depth
+	}
+	m.hasRefused = true
+	if m.hasServed && m.served >= depth {
+		m.hasServed = false
+	}
+	return m
+}
+
 // admits reports whether a request depth behind the head may reach the host:
 // yes where it served that deep, no where it refused that shallow, yes
 // otherwise, since most hosts carry no evidence at all.
@@ -110,8 +133,11 @@ type Plugin struct {
 	store           *qos.EndpointStore[evmEndpoint]
 	expectedChainID string
 	stateCanary     func() bool
-	// archival remembers, per host, who served or refused historical state.
+	// archival remembers, per host, how deep it served or refused historical
+	// state; logs the same for eth_getLogs, a separate retention: a node that
+	// prunes state may keep every log, and one that keeps state may not.
 	archival *qos.HostMemory[archivalMark]
+	logs     *qos.HostMemory[archivalMark]
 }
 
 // Config carries the per-service settings an EVM plugin needs.
@@ -168,6 +194,7 @@ func NewPlugin(logger *slog.Logger, cfg Config) *Plugin {
 		expectedChainID: cfg.ExpectedChainID,
 		stateCanary:     cfg.StateCanary,
 		archival:        qos.NewHostMemory[archivalMark](archivalTTL, maxArchivalHosts),
+		logs:            qos.NewHostMemory[archivalMark](archivalTTL, maxArchivalHosts),
 	}
 	p.Consensus = qos.NewBlockConsensus(logger, cfg.SyncAllowance)
 	p.SetSyncAllowance(cfg.SyncAllowance)
@@ -194,6 +221,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 
 	perceived := p.Consensus.PerceivedBlock()
 	depth, needsArchival := p.requestDepth(payloads)
+	logDepth, needsLogs := p.requestLogDepth(payloads)
 
 	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, p.Consensus.Projection())
 
@@ -210,6 +238,13 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		mark, known := p.archival.Get(hostKey(addr))
 		return !known || mark.admits(depth)
 	}
+	logsFilter := func(addr domain.EndpointAddr) bool {
+		if !needsLogs {
+			return true
+		}
+		mark, known := p.logs.Get(hostKey(addr))
+		return !known || mark.admits(logDepth)
+	}
 
 	minHeight := qos.MinAllowedHeight(perceived, p.SyncAllowance())
 	relaxedMin := qos.MinAllowedHeight(perceived, p.SyncAllowance()*2)
@@ -217,9 +252,9 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	blockFilter := qos.BlockHeightFilter(getHeight, minHeight)
 	relaxedBlockFilter := qos.BlockHeightFilter(getHeight, relaxedMin)
 
-	filters := []qos.FilterFunc{blockFilter, archivalFilter}
-	relaxedFilters := []qos.FilterFunc{relaxedBlockFilter, archivalFilter}
-	nonBlockFilters := []qos.FilterFunc{archivalFilter}
+	filters := []qos.FilterFunc{blockFilter, archivalFilter, logsFilter}
+	relaxedFilters := []qos.FilterFunc{relaxedBlockFilter, archivalFilter, logsFilter}
+	nonBlockFilters := []qos.FilterFunc{archivalFilter, logsFilter}
 
 	ranker := qos.LeastStaleFallback(getHeight, perceived)
 	result := qos.SelectWithKnownHeights(endpoints, getHeight, filters, relaxedFilters, nonBlockFilters, ranker)
@@ -272,6 +307,37 @@ func (p *Plugin) requestDepth(payloads []domain.Payload) (depth uint64, ok bool)
 	return depth, ok
 }
 
+// requestLogDepth is the deepest log depth any eth_getLogs payload of the
+// batch names (logDepth); ok is false when none does, or while the head is
+// unknown.
+func (p *Plugin) requestLogDepth(payloads []domain.Payload) (depth uint64, ok bool) {
+	head := p.Consensus.PerceivedBlock()
+	for _, payload := range payloads {
+		if payload.Method() != methodGetLogs {
+			continue
+		}
+		if d, deep := logDepth(json.RawMessage(gjson.GetBytes(payload.Bytes(), "params").Raw), head); deep {
+			depth, ok = max(depth, d), true
+		}
+	}
+	return depth, ok
+}
+
+// observeLogs records what an eth_getLogs answer says about a host's log
+// retention, the way observeArchival does for state.
+func (p *Plugin) observeLogs(endpoint domain.EndpointAddr, request, response []byte) {
+	depth, ok := logDepth(json.RawMessage(gjson.GetBytes(request, "params").Raw), p.Consensus.PerceivedBlock())
+	if !ok {
+		return
+	}
+	switch classifyArchivalResponse(response) {
+	case archivalServed:
+		p.logs.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withServed(depth) })
+	case archivalMissing:
+		p.logs.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withRefused(depth) })
+	}
+}
+
 // observeArchival records what a relay says about an endpoint's history
 // retention, and reports the status it recorded.
 //
@@ -292,26 +358,11 @@ func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, re
 
 	switch classifyArchivalResponse(response) {
 	case archivalServed:
-		p.archival.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark {
-			m.served, m.hasServed = max(m.served, depth), true
-			if m.hasRefused && m.refused <= depth {
-				m.hasRefused = false
-			}
-			return m
-		})
+		p.archival.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withServed(depth) })
 		return true, true
 
 	case archivalMissing:
-		p.archival.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark {
-			if !m.hasRefused || depth < m.refused {
-				m.refused = depth
-			}
-			m.hasRefused = true
-			if m.hasServed && m.served >= depth {
-				m.hasServed = false
-			}
-			return m
-		})
+		p.archival.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withRefused(depth) })
 		return false, true
 
 	default:
@@ -320,26 +371,37 @@ func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, re
 }
 
 // RecordArchival implements qos.ArchivalRecorder: one attempt's answer to a
-// request naming a historical block marks its host. Methods without a block
-// parameter return before any parsing.
+// request naming a historical block, or eth_getLogs from one, marks its host.
+// Other methods return before any parsing.
 func (p *Plugin) RecordArchival(endpoint domain.EndpointAddr, payload domain.Payload, response []byte) {
-	if !methodsWithBlockParam[payload.Method()] {
-		return
+	switch m := payload.Method(); {
+	case m == methodGetLogs:
+		p.observeLogs(endpoint, payload.Bytes(), response)
+	case methodsWithBlockParam[m]:
+		p.observeArchival(endpoint, m, payload.Bytes(), response)
 	}
-	p.observeArchival(endpoint, payload.Method(), payload.Bytes(), response)
 }
 
 // ArchivalHosts implements qos.ArchivalLister.
 func (p *Plugin) ArchivalHosts() map[string]qos.ArchivalMark {
-	marks := p.archival.Snapshot()
-	out := make(map[string]qos.ArchivalMark, len(marks))
-	for host, m := range marks {
-		var v qos.ArchivalMark
+	out := map[string]qos.ArchivalMark{}
+	for host, m := range p.archival.Snapshot() {
+		v := out[host]
 		if m.hasServed {
 			v.ServedDepth = &m.served
 		}
 		if m.hasRefused {
 			v.RefusedDepth = &m.refused
+		}
+		out[host] = v
+	}
+	for host, m := range p.logs.Snapshot() {
+		v := out[host]
+		if m.hasServed {
+			v.LogsServedDepth = &m.served
+		}
+		if m.hasRefused {
+			v.LogsRefusedDepth = &m.refused
 		}
 		out[host] = v
 	}
@@ -515,6 +577,7 @@ func (p *Plugin) ResetState() {
 	p.Consensus.Reset()
 	p.store.Clear()
 	p.archival.Reset()
+	p.logs.Reset()
 }
 
 // AllStale reports whether every endpoint in eps is known to sit below the

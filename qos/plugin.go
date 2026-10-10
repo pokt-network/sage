@@ -247,6 +247,10 @@ type ArchivalRecorder interface {
 type ArchivalMark struct {
 	ServedDepth  *uint64 `json:"served_depth,omitempty"`
 	RefusedDepth *uint64 `json:"refused_depth,omitempty"`
+	// LogsServedDepth and LogsRefusedDepth are the same for eth_getLogs,
+	// whose retention a node keeps apart from its state.
+	LogsServedDepth  *uint64 `json:"logs_served_depth,omitempty"`
+	LogsRefusedDepth *uint64 `json:"logs_refused_depth,omitempty"`
 }
 
 // ArchivalLister is implemented by plugins that can list their live archival

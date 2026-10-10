@@ -12,7 +12,8 @@ import (
 // the perceived head, the latest height each endpoint reported, and, where the
 // plugin keeps them, its live archival marks per host ("archival": host to
 // served_depth, the deepest it served, and refused_depth, the shallowest it
-// refused, in blocks behind the head). It is the
+// refused, in blocks behind the head; logs_served_depth and logs_refused_depth
+// the same for eth_getLogs). It is the
 // read half of the chain-state route — the reset existed without it, so an
 // operator watching the chain-view spread jump to the whole chain height had
 // no way to ask which endpoint did it.

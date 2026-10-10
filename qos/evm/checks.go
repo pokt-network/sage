@@ -220,3 +220,32 @@ func findLastStringParam(arr []gjson.Result) string {
 	}
 	return ""
 }
+
+// methodGetLogs is the log query, whose block range lives in a filter object
+// rather than in a trailing block parameter.
+const methodGetLogs = "eth_getLogs"
+
+// logDepth is how far behind head an eth_getLogs filter's fromBlock is, for
+// one more than nearHeadBlocks back; ok is false for a recent or tagged start,
+// a blockHash filter, or while head is unknown. Genesis is head deep.
+func logDepth(params json.RawMessage, head uint64) (uint64, bool) {
+	if head == 0 || len(params) == 0 {
+		return 0, false
+	}
+	from := gjson.GetBytes(params, "0.fromBlock")
+	if from.Type != gjson.String {
+		return 0, false
+	}
+	block := uint64(0)
+	if tag := strings.ToLower(from.String()); tag != blockTagEarliest {
+		n, err := parseHexUint64(tag)
+		if err != nil {
+			return 0, false
+		}
+		block = n
+	}
+	if block+nearHeadBlocks >= head {
+		return 0, false
+	}
+	return head - block, true
+}
