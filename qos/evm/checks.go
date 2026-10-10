@@ -100,20 +100,15 @@ func extractChainID(response []byte) (string, error) {
 // never answer (and so were never marked) — which returned 503 and 408.
 const nearHeadBlocks = 128
 
-// isArchivalRequest returns true if the method + params indicate an archival
-// data request: a specific block more than nearHeadBlocks behind head, or
-// genesis. head is the perceived chain head; 0 means unknown, and every
-// numbered block then counts as archival, as before.
-func isArchivalRequest(method string, params json.RawMessage, head uint64) bool {
-	block, ok := historicalBlock(method, params)
-	return ok && (head == 0 || block+nearHeadBlocks < head)
-}
-
-// archivalDepth is how far behind head the block an archival request names
-// (isArchivalRequest) was; ok is false for any other request, or while head is
-// unknown, when there is nothing to measure the depth from. Genesis is head
-// deep.
+// archivalDepth is how far behind head the block a state read (stateMethods)
+// names: a specific block more than nearHeadBlocks back, or genesis, which is
+// head deep. A block or transaction lookup by number reads history, which a
+// node pruned of state keeps, and is no evidence of state retention. ok is false for any other request, or while head is unknown, when
+// there is nothing to measure the depth from.
 func archivalDepth(method string, params json.RawMessage, head uint64) (uint64, bool) {
+	if !stateMethods[method] {
+		return 0, false
+	}
 	block, ok := historicalBlock(method, params)
 	if !ok || head == 0 || block+nearHeadBlocks >= head {
 		return 0, false

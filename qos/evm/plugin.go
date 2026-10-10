@@ -37,47 +37,48 @@ type evmEndpoint struct {
 const archivalTTL = 1 * time.Hour
 
 // archivalMark is what one host has shown of its history, as depths behind
-// the perceived head when it answered: the deepest it served and the
-// shallowest it refused. Depth rather than block number, because a pruned
-// node's window moves with the head. The newest evidence wins where the two
-// disagree, as they do behind a balancer whose backends keep different
-// history.
+// the perceived head when it answered: the shallowest it refused, which
+// decides, and the deepest it served, which only informs. Depth rather than
+// block number, because a pruned node's window moves with the head.
+//
+// A refusal is not undone by a later answer at the same depth or deeper:
+// behind a balancer whose backends keep different history both happen, and
+// letting the answer win sent every request back to the backend that refuses
+// it. It lapses on its own clock instead, archivalTTL after the last refusal,
+// so a host that starts keeping more history is tried again.
 type archivalMark struct {
-	served, refused       uint64
-	hasServed, hasRefused bool
+	served    uint64
+	hasServed bool
+	refused   uint64
+	refusedAt time.Time
 }
 
-// withServed records the host answering at depth: the deepest served, and a
-// refusal no deeper than it dropped as older evidence.
+// withServed records the host answering at depth.
 func (m archivalMark) withServed(depth uint64) archivalMark {
 	m.served, m.hasServed = max(m.served, depth), true
-	if m.hasRefused && m.refused <= depth {
-		m.hasRefused = false
-	}
 	return m
 }
 
-// withRefused records the host refusing at depth: the shallowest refused, and
-// a serve at least as deep dropped as older evidence.
-func (m archivalMark) withRefused(depth uint64) archivalMark {
-	if !m.hasRefused || depth < m.refused {
+// withRefused records the host refusing at depth at now: the shallowest live
+// refusal stands.
+func (m archivalMark) withRefused(depth uint64, now time.Time) archivalMark {
+	if !m.refusing(now) || depth < m.refused {
 		m.refused = depth
 	}
-	m.hasRefused = true
-	if m.hasServed && m.served >= depth {
-		m.hasServed = false
-	}
+	m.refusedAt = now
 	return m
 }
 
-// admits reports whether a request depth behind the head may reach the host:
-// yes where it served that deep, no where it refused that shallow, yes
-// otherwise, since most hosts carry no evidence at all.
-func (m archivalMark) admits(depth uint64) bool {
-	if m.hasServed && depth <= m.served {
-		return true
-	}
-	return !m.hasRefused || depth < m.refused
+// refusing reports whether the mark holds a refusal still in force at now.
+func (m archivalMark) refusing(now time.Time) bool {
+	return !m.refusedAt.IsZero() && now.Sub(m.refusedAt) < archivalTTL
+}
+
+// admits reports whether a request depth behind the head may reach the host
+// at now: unless a live refusal at that depth or shallower says otherwise,
+// since most hosts carry no evidence at all.
+func (m archivalMark) admits(depth uint64, now time.Time) bool {
+	return !m.refusing(now) || depth < m.refused
 }
 
 // maxArchivalHosts bounds the archival memory; hosts come from staked URLs.
@@ -222,6 +223,7 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	perceived := p.Consensus.PerceivedBlock()
 	depth, needsArchival := p.requestDepth(payloads)
 	logDepth, needsLogs := p.requestLogDepth(payloads)
+	now := time.Now()
 
 	getHeight := qos.HeightGetter(p.store, func(ep evmEndpoint) uint64 { return ep.BlockNumber }, p.Consensus.Projection())
 
@@ -236,14 +238,14 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 		// would exclude every one of them, exhausting all three tiers on every
 		// such request and handing back the unfiltered list anyway.
 		mark, known := p.archival.Get(hostKey(addr))
-		return !known || mark.admits(depth)
+		return !known || mark.admits(depth, now)
 	}
 	logsFilter := func(addr domain.EndpointAddr) bool {
 		if !needsLogs {
 			return true
 		}
 		mark, known := p.logs.Get(hostKey(addr))
-		return !known || mark.admits(logDepth)
+		return !known || mark.admits(logDepth, now)
 	}
 
 	minHeight := qos.MinAllowedHeight(perceived, p.SyncAllowance())
@@ -334,7 +336,8 @@ func (p *Plugin) observeLogs(endpoint domain.EndpointAddr, request, response []b
 	case archivalServed:
 		p.logs.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withServed(depth) })
 	case archivalMissing:
-		p.logs.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withRefused(depth) })
+		now := time.Now()
+		p.logs.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withRefused(depth, now) })
 	}
 }
 
@@ -362,7 +365,8 @@ func (p *Plugin) observeArchival(endpoint domain.EndpointAddr, method string, re
 		return true, true
 
 	case archivalMissing:
-		p.archival.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withRefused(depth) })
+		now := time.Now()
+		p.archival.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withRefused(depth, now) })
 		return false, true
 
 	default:
@@ -377,20 +381,21 @@ func (p *Plugin) RecordArchival(endpoint domain.EndpointAddr, payload domain.Pay
 	switch m := payload.Method(); {
 	case m == methodGetLogs:
 		p.observeLogs(endpoint, payload.Bytes(), response)
-	case methodsWithBlockParam[m]:
+	case stateMethods[m]:
 		p.observeArchival(endpoint, m, payload.Bytes(), response)
 	}
 }
 
 // ArchivalHosts implements qos.ArchivalLister.
 func (p *Plugin) ArchivalHosts() map[string]qos.ArchivalMark {
+	now := time.Now()
 	out := map[string]qos.ArchivalMark{}
 	for host, m := range p.archival.Snapshot() {
 		v := out[host]
 		if m.hasServed {
 			v.ServedDepth = &m.served
 		}
-		if m.hasRefused {
+		if m.refusing(now) {
 			v.RefusedDepth = &m.refused
 		}
 		out[host] = v
@@ -400,7 +405,7 @@ func (p *Plugin) ArchivalHosts() map[string]qos.ArchivalMark {
 		if m.hasServed {
 			v.LogsServedDepth = &m.served
 		}
-		if m.hasRefused {
+		if m.refusing(now) {
 			v.LogsRefusedDepth = &m.refused
 		}
 		out[host] = v

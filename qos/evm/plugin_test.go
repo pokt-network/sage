@@ -401,10 +401,6 @@ func TestIsArchivalRequest_Archival(t *testing.T) {
 			method: "eth_call",
 			body:   `{"jsonrpc":"2.0","method":"eth_call","params":[{},"0xdeadbeef"],"id":1}`,
 		},
-		{
-			method: "eth_getBlockByNumber",
-			body:   `{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1194af2",true],"id":1}`,
-		},
 	}
 
 	for _, tc := range cases {
@@ -443,6 +439,11 @@ func TestIsArchivalRequest_NotArchival(t *testing.T) {
 		{
 			method: "eth_getTransactionByHash",
 			body:   `{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0xabc"],"id":1}`,
+		},
+		{
+			// A block by number reads history, which a state-pruned node keeps.
+			method: "eth_getBlockByNumber",
+			body:   `{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1194af2",true],"id":1}`,
 		},
 	}
 
@@ -822,10 +823,10 @@ func TestExtractData_ArchivalInference(t *testing.T) {
 // hex parse below it never sees it; treating it like "latest" made the deepest
 // query on the chain read as the shallowest.
 func TestIsArchivalRequest_Earliest(t *testing.T) {
-	if !isArchivalRequest("eth_getBalance", []byte(`["0xabc","earliest"]`), 1000) {
-		t.Fatal("earliest must count as archival")
+	if d, ok := archivalDepth("eth_getBalance", []byte(`["0xabc","earliest"]`), 1000); !ok || d != 1000 {
+		t.Fatalf("earliest: depth %d (%v), want head deep", d, ok)
 	}
-	if isArchivalRequest("eth_getBalance", []byte(`["0xabc","latest"]`), 1000) {
+	if _, ok := archivalDepth("eth_getBalance", []byte(`["0xabc","latest"]`), 1000); ok {
 		t.Fatal("latest must not count as archival")
 	}
 }
@@ -846,10 +847,10 @@ func TestIsArchivalRequest_NearHeadIsNotArchival(t *testing.T) {
 		{"0x367", head, true},  // one further: archival
 		{"0x1", head, true},    // deep history
 		{"0x3f0", head, false}, // a block ahead of our perceived head
-		{"0x3e8", 0, true},     // head unknown: every number is archival, as before
+		{"0x3e8", 0, false},    // head unknown: no depth to measure
 	}
 	for _, c := range cases {
-		if got := isArchivalRequest("eth_call", []byte(`[{"to":"0x0"},"`+c.block+`"]`), c.head); got != c.want {
+		if _, got := archivalDepth("eth_call", []byte(`[{"to":"0x0"},"`+c.block+`"]`), c.head); got != c.want {
 			t.Errorf("block %s head %d: archival = %v, want %v", c.block, c.head, got, c.want)
 		}
 	}
@@ -998,7 +999,7 @@ func isArchivalEndpoint(p *Plugin, endpoint domain.EndpointAddr) bool {
 
 // refusedEverything is a host that refused state one block behind the head,
 // which no archival request is shallower than.
-var refusedEverything = archivalMark{hasRefused: true}
+var refusedEverything = archivalMark{refusedAt: time.Now()}
 
 // A client's head answer becomes the answering endpoint's height, so the
 // height filter reads it at once rather than at the next probe; the consensus
@@ -1091,41 +1092,68 @@ func TestRecordArchival_MarksTheHostFromEachAttempt(t *testing.T) {
 	}
 }
 
-// A host that serves state a million blocks back and refuses it ten million
-// back stays in the pool for anything shallower than its refusal; the newest
-// evidence wins where served and refused disagree.
-func TestArchivalMark_ByDepth(t *testing.T) {
-	m := archivalMark{served: 1_000_000, hasServed: true, refused: 10_000_000, hasRefused: true}
-	for depth, want := range map[uint64]bool{500_000: true, 1_000_000: true, 5_000_000: true, 10_000_000: false, 20_000_000: false} {
-		if got := m.admits(depth); got != want {
+// A refusal decides: requests at its depth or deeper skip the host, the
+// shallowest live refusal stands, a later answer does not undo it, and it
+// lapses archivalTTL after it was last seen.
+func TestArchivalMark_RefusalDecides(t *testing.T) {
+	now := time.Now()
+	m := archivalMark{}.withServed(1_000_000).withRefused(10_000_000, now)
+	for depth, want := range map[uint64]bool{500_000: true, 5_000_000: true, 10_000_000: false, 20_000_000: false} {
+		if got := m.admits(depth, now); got != want {
 			t.Errorf("depth %d: admits = %v, want %v", depth, got, want)
 		}
 	}
+	m = m.withRefused(1_000, now)
+	if m.admits(5_000, now) || !m.admits(500, now) {
+		t.Errorf("mark %+v: the shallowest refusal stands", m)
+	}
+	m = m.withServed(12_000_000)
+	if m.admits(5_000, now) {
+		t.Errorf("mark %+v: a later answer must not undo the refusal", m)
+	}
+	if !m.admits(5_000, now.Add(archivalTTL)) {
+		t.Errorf("mark %+v: the refusal must lapse after archivalTTL", m)
+	}
+	if m = m.withRefused(50_000, now.Add(archivalTTL)); m.refused != 50_000 {
+		t.Errorf("a refusal after the old one lapsed starts over, got %d", m.refused)
+	}
+}
 
+// The regression shape: a node pruned of state answers block lookups by number
+// at any depth and refuses state a thousand blocks back. The lookups are no
+// evidence either way and are never filtered; the state refusal keeps deep
+// state reads off it however many lookups it answers after.
+func TestSelectEndpoints_BlockLookupsDoNotUndoAStateRefusal(t *testing.T) {
 	p := newTestPlugin(5)
-	p.Consensus.AddObservation("head", 20_000_000)
-	ep := domain.EndpointAddr("pokt1a-https://rm-eu-b.lb.example")
-	at := func(depth uint64) []byte {
-		return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1010","0x%x"]}`, 20_000_000-depth))
+	pruned := domain.EndpointAddr("pokt1a-https://dopokt.pruned.example")
+	full := domain.EndpointAddr("pokt1b-https://r001.full.example")
+	for _, ep := range []domain.EndpointAddr{pruned, full} {
+		p.UpdateBlockHeight(ep, 100_000)
 	}
-	served := []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+	body := func(method, block string) domain.Payload {
+		params := `["0x1010","` + block + `"]`
+		if method == "eth_getBlockByNumber" {
+			params = `["` + block + `",false]`
+		}
+		return domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"`+method+`","params":`+params+`}`), domain.RPCTypeJSONRPC, method)
+	}
 	refused := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"historical state is not available"}}`)
-	mark := func() archivalMark { m, _ := p.archival.Get(hostKey(ep)); return m }
+	block := []byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x10"}}`)
 
-	p.observeArchival(ep, "eth_getBalance", at(1_000_000), served)
-	p.observeArchival(ep, "eth_getBalance", at(10_000_000), refused)
-	if m := mark(); !m.admits(1_000_000) || !m.admits(5_000_000) || m.admits(10_000_000) {
-		t.Fatalf("mark %+v: want admitted to 5M, refused from 10M", m)
+	p.RecordArchival(pruned, body("eth_getBalance", fmt.Sprintf("0x%x", 100_000-1_000)), refused)
+	for i := 0; i < 5; i++ {
+		p.RecordArchival(pruned, body("eth_getBlockByNumber", "0x10"), block)
 	}
-	// Refused shallower than it once served: the newer answer wins.
-	p.observeArchival(ep, "eth_getBalance", at(500_000), refused)
-	if m := mark(); m.hasServed || m.admits(500_000) {
-		t.Fatalf("mark %+v: want the served evidence dropped and 500k refused", m)
+
+	all := domain.EndpointAddrList{pruned, full}
+	if got, _ := p.SelectEndpoints(all, []domain.Payload{body("eth_getBalance", fmt.Sprintf("0x%x", 100_000-5_000))}); len(got) != 1 || got[0] != full {
+		t.Errorf("deep eth_getBalance went to %v, want only the full node", got)
 	}
-	// Served deeper than it refused: the refusal goes.
-	p.observeArchival(ep, "eth_getBalance", at(12_000_000), served)
-	if m := mark(); m.hasRefused || !m.admits(12_000_000) {
-		t.Fatalf("mark %+v: want the refusal dropped and 12M served", m)
+	if got, _ := p.SelectEndpoints(all, []domain.Payload{body("eth_getBlockByNumber", "0x10")}); len(got) != 2 {
+		t.Errorf("an old block lookup went to %v, want both: it is not a state read", got)
+	}
+	if m := p.ArchivalHosts()["dopokt.pruned.example"]; m.RefusedDepth == nil || *m.RefusedDepth != 1_000 || m.ServedDepth != nil {
+		t.Errorf("pruned host mark %+v, want state refused at 1000 and nothing served", m)
 	}
 }
 
