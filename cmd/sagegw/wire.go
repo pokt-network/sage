@@ -805,6 +805,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 				recorder.RecordArchivalFilter(id, kind, outcome, removed)
 			})
 		}
+		if gated, ok := qosReg.Get(id).(qos.ArchivalRoutingGate); ok {
+			gated.SetArchivalRoutingGate(func() bool {
+				return flags.IsEnabled(context.Background(), featureflag.FlagArchivalRouting, id)
+			})
+		}
 	}
 	baseSampleRate := cfg.Gateway.ObservationPipeline.SampleRate
 	if baseSampleRate <= 0 || baseSampleRate > 1 {

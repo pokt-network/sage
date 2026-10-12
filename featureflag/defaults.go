@@ -283,6 +283,12 @@ const (
 	// refusal that a retry rescued still keeps historical requests off it.
 	// Off, the marks come from the sampled, delivered answers alone.
 	FlagArchivalPerAttempt = "archival_per_attempt"
+	// FlagArchivalRouting lets selection use the per-host archival and log
+	// marks: a historical request is kept off a host that refused the history
+	// it asks for. Off for a service, selection ignores the marks there and
+	// sage_archival_filter_total counts outcome=disabled; the marks are still
+	// written, so turning it back on needs no re-learning.
+	FlagArchivalRouting = "archival_routing"
 	// FlagWSDuplicatePenalty charges a supplier a minor ws_duplicate_notifications
 	// signal for each minute in which more than 1% of at least 500 notifications
 	// it pushed on a connection were repeats. Off: repeats are counted, not
@@ -404,6 +410,7 @@ var DefaultFlags = map[string]bool{
 	FlagWSDropDuplicates:        true,
 	FlagHeadAnswersHeight:       true,
 	FlagArchivalPerAttempt:      true,
+	FlagArchivalRouting:         true,
 	FlagWSDuplicateShare:        false,
 	FlagThrottleShare:           false,
 	FlagClassShare:              false,

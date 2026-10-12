@@ -143,6 +143,9 @@ type Plugin struct {
 	// recordArchival counts each historical selection's filter outcome
 	// (qos.ArchivalFilterReporter); set at wire time, read without a lock.
 	recordArchival func(kind, outcome string, removedParties int)
+	// archivalRouting says whether selection reads the marks
+	// (qos.ArchivalRoutingGate); nil means yes. Set at wire time.
+	archivalRouting func() bool
 }
 
 // Config carries the per-service settings an EVM plugin needs.
@@ -256,6 +259,15 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	// is capacity, not retention, and one that fails slowly under it never
 	// refuses its way out. Without the filter the request goes anywhere and a
 	// refusal is retried, as before the marks existed.
+	if (needsArchival || needsLogs) && p.archivalRouting != nil && !p.archivalRouting() {
+		// Routing on the marks is off here: a pure bypass, counted.
+		for kind, needed := range map[string]bool{qos.ArchivalState: needsArchival, qos.ArchivalLogs: needsLogs} {
+			if needed && p.recordArchival != nil {
+				p.recordArchival(kind, qos.ArchivalDisabled, 0)
+			}
+		}
+		needsArchival, needsLogs = false, false
+	}
 	if needsArchival {
 		needsArchival = p.decideArchival(qos.ArchivalState, endpoints, archivalFilter)
 	}
@@ -335,7 +347,15 @@ func (p *Plugin) SetArchivalFilterRecorder(fn func(kind, outcome string, removed
 	p.recordArchival = fn
 }
 
-var _ qos.ArchivalFilterReporter = (*Plugin)(nil)
+// SetArchivalRoutingGate implements qos.ArchivalRoutingGate. Wire time only.
+func (p *Plugin) SetArchivalRoutingGate(fn func() bool) {
+	p.archivalRouting = fn
+}
+
+var (
+	_ qos.ArchivalFilterReporter = (*Plugin)(nil)
+	_ qos.ArchivalRoutingGate    = (*Plugin)(nil)
+)
 
 // --- qos.BlockHeightTracker ---
 

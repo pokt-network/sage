@@ -349,7 +349,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "archival_filter_total",
-				Help:      "Endpoint selections for a historical request (a state read at an old block, or eth_getLogs from one), by what the archival filter did: filtered (kept the request off at least one host that refused that history), bypassed (it would have left a single party, so it was skipped and the request went anywhere), noop (it applied and kept every host). kind is state or logs. One count per selection, so per relay attempt. The filter reads the per-host marks whether or not archival_per_attempt is on; the flag only decides whether every attempt writes them.",
+				Help:      "Endpoint selections for a historical request (a state read at an old block, or eth_getLogs from one), by what the archival filter did: filtered (kept the request off at least one host that refused that history), bypassed (it would have left a single party, so it was skipped and the request went anywhere), noop (it applied and kept every host), disabled (archival_routing is off for the service, so the marks were not read). kind is state or logs. One count per selection, so per relay attempt. The filter reads the per-host marks whether or not archival_per_attempt is on; the flag only decides whether every attempt writes them.",
 			},
 			[]string{"service_id", "kind", "outcome"},
 		),

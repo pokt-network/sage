@@ -1291,3 +1291,39 @@ func TestSelectEndpoints_ReportsArchivalFilterOutcome(t *testing.T) {
 		t.Fatalf("reported %v, want %v (a latest read reports nothing)", got, want)
 	}
 }
+
+// With archival routing off a historical request ignores the marks, a pure
+// bypass counted as disabled, while the marks keep being written for when
+// routing comes back on.
+func TestSelectEndpoints_ArchivalRoutingOffIgnoresTheMarks(t *testing.T) {
+	p := newTestPlugin(5)
+	routing := false
+	p.SetArchivalRoutingGate(func() bool { return routing })
+	var got []string
+	p.SetArchivalFilterRecorder(func(kind, outcome string, removed int) {
+		got = append(got, fmt.Sprintf("%s:%s:%d", kind, outcome, removed))
+	})
+	pruned := domain.EndpointAddr("pokt1a-https://dopokt.pruned.example")
+	archiveA := domain.EndpointAddr("pokt1b-https://r001.archive.example")
+	archiveB := domain.EndpointAddr("pokt1c-https://r001.other.example")
+	all := domain.EndpointAddrList{pruned, archiveA, archiveB}
+	for _, ep := range all {
+		p.UpdateBlockHeight(ep, 1000)
+	}
+	state := domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`), domain.RPCTypeJSONRPC, "eth_getBalance")
+	p.RecordArchival(pruned, state, []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"historical state is not available"}}`))
+	if m := p.ArchivalHosts()["dopokt.pruned.example"]; m.RefusedDepth == nil {
+		t.Fatal("marks must be written with routing off")
+	}
+
+	if sel, _ := p.SelectEndpoints(all, []domain.Payload{state}); len(sel) != 3 {
+		t.Errorf("routing off selected %v, want every endpoint", sel)
+	}
+	routing = true
+	if sel, _ := p.SelectEndpoints(all, []domain.Payload{state}); len(sel) != 2 {
+		t.Errorf("routing back on selected %v, want the refusing host left out at once", sel)
+	}
+	if want := []string{"state:disabled:0", "state:filtered:1"}; !slices.Equal(got, want) {
+		t.Errorf("reported %v, want %v", got, want)
+	}
+}

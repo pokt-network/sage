@@ -39,6 +39,8 @@ const (
 	ArchivalBypassed = "bypassed"
 	// ArchivalNoop: the filter applied and kept every host.
 	ArchivalNoop = "noop"
+	// ArchivalDisabled: routing on the marks is off for the service.
+	ArchivalDisabled = "disabled"
 	// ArchivalState and ArchivalLogs are the retention the filter read:
 	// state at a block, or eth_getLogs history.
 	ArchivalState = "state"
@@ -52,4 +54,12 @@ const (
 // filter took out of the pool (0 unless filtered).
 type ArchivalFilterReporter interface {
 	SetArchivalFilterRecorder(fn func(kind, outcome string, removedParties int))
+}
+
+// ArchivalRoutingGate is implemented by plugins whose selection reads the
+// archival marks. Wire sets the gate once per service, before traffic; it is
+// read on every historical selection, and false makes selection ignore the
+// marks there.
+type ArchivalRoutingGate interface {
+	SetArchivalRoutingGate(fn func() bool)
 }
