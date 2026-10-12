@@ -140,6 +140,9 @@ type Plugin struct {
 	// prunes state may keep every log, and one that keeps state may not.
 	archival *qos.HostMemory[archivalMark]
 	logs     *qos.HostMemory[archivalMark]
+	// recordArchival counts each historical selection's filter outcome
+	// (qos.ArchivalFilterReporter); set at wire time, read without a lock.
+	recordArchival func(kind, outcome string, removedParties int)
 }
 
 // Config carries the per-service settings an EVM plugin needs.
@@ -253,11 +256,11 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	// is capacity, not retention, and one that fails slowly under it never
 	// refuses its way out. Without the filter the request goes anywhere and a
 	// refusal is retried, as before the marks existed.
-	if needsArchival && !manyParties(endpoints, archivalFilter) {
-		needsArchival = false
+	if needsArchival {
+		needsArchival = p.decideArchival(qos.ArchivalState, endpoints, archivalFilter)
 	}
-	if needsLogs && !manyParties(endpoints, func(addr domain.EndpointAddr) bool { return archivalFilter(addr) && logsFilter(addr) }) {
-		needsLogs = false
+	if needsLogs {
+		needsLogs = p.decideArchival(qos.ArchivalLogs, endpoints, func(addr domain.EndpointAddr) bool { return archivalFilter(addr) && logsFilter(addr) })
 	}
 
 	minHeight := qos.MinAllowedHeight(perceived, p.SyncAllowance())
@@ -287,24 +290,52 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 	return result.Endpoints, nil
 }
 
-// manyParties reports whether the endpoints keep tells hold at least two
-// parties (domain.EndpointAddr.Party: one owner's brands count once; an
-// address with no party is its own).
-func manyParties(eps domain.EndpointAddrList, keep func(domain.EndpointAddr) bool) bool {
-	first, seen := "", false
+// decideArchival reports whether a retention filter of kind applies to the
+// request: not when the hosts it keeps hold fewer than two parties. It counts
+// the outcome (qos.ArchivalFilterReporter).
+func (p *Plugin) decideArchival(kind string, eps domain.EndpointAddrList, keep func(domain.EndpointAddr) bool) bool {
+	kept, removed := partyCounts(eps, keep)
+	outcome, apply := qos.ArchivalFiltered, true
+	switch {
+	case kept < 2:
+		outcome, apply, removed = qos.ArchivalBypassed, false, 0
+	case removed == 0:
+		outcome = qos.ArchivalNoop
+	}
+	if p.recordArchival != nil {
+		p.recordArchival(kind, outcome, removed)
+	}
+	return apply
+}
+
+// partyCounts is how many parties the endpoints keep tells hold, and how many
+// it takes out entirely (domain.EndpointAddr.Party: one owner's brands count
+// once; an address with no party is its own).
+func partyCounts(eps domain.EndpointAddrList, keep func(domain.EndpointAddr) bool) (kept, removed int) {
+	in, out := map[string]bool{}, map[string]bool{}
 	for _, ep := range eps {
-		if !keep(ep) {
-			continue
-		}
 		party := cmp.Or(ep.Party(), string(ep))
-		if !seen {
-			first, seen = party, true
-		} else if party != first {
-			return true
+		if keep(ep) {
+			in[party] = true
+		} else {
+			out[party] = true
 		}
 	}
-	return false
+	for party := range out {
+		if !in[party] {
+			removed++
+		}
+	}
+	return len(in), removed
 }
+
+// SetArchivalFilterRecorder implements qos.ArchivalFilterReporter. Wire time
+// only.
+func (p *Plugin) SetArchivalFilterRecorder(fn func(kind, outcome string, removedParties int)) {
+	p.recordArchival = fn
+}
+
+var _ qos.ArchivalFilterReporter = (*Plugin)(nil)
 
 // --- qos.BlockHeightTracker ---
 

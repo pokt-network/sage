@@ -75,6 +75,8 @@ type Recorder struct {
 	batchDisconnects       *prometheus.CounterVec
 	quorumRequests         *prometheus.CounterVec
 	selectionTiers         *prometheus.CounterVec
+	archivalFilter         *prometheus.CounterVec
+	archivalRemoved        *prometheus.CounterVec
 	staleAnswers           *prometheus.CounterVec
 	invalidResults         *prometheus.CounterVec
 	answerHeadLag          *prometheus.HistogramVec
@@ -342,6 +344,22 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 				Help:      "Endpoint selections by the height tier the service's QoS plugin settled on: 1 within sync_allowance of the perceived head, 2 within twice it, 3 with the height filter abandoned and the candidates ranked least-stale. One count per selection, which is one per relay attempt (every retry, hedge arm, batch item and quorum arm selects), not one per client request. rate(tier=\"3\") over the sum across tiers is the share of attempts sent without a height guarantee. Counted by the plugins that filter on height: evm (tron included), cosmos, solana and the JSON-height chains; a service on the passthrough plugin has no series. Reads compare heights projected to the head's moment, so a reading one probe cycle old is not counted as behind.",
 			},
 			[]string{"service_id", "tier"},
+		),
+		archivalFilter: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "archival_filter_total",
+				Help:      "Endpoint selections for a historical request (a state read at an old block, or eth_getLogs from one), by what the archival filter did: filtered (kept the request off at least one host that refused that history), bypassed (it would have left a single party, so it was skipped and the request went anywhere), noop (it applied and kept every host). kind is state or logs. One count per selection, so per relay attempt. The filter reads the per-host marks whether or not archival_per_attempt is on; the flag only decides whether every attempt writes them.",
+			},
+			[]string{"service_id", "kind", "outcome"},
+		),
+		archivalRemoved: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "archival_filter_removed_parties_total",
+				Help:      "Parties the archival filter took out of the pool entirely, summed over filtered selections, by service and kind. Divided by sage_archival_filter_total{outcome=\"filtered\"} it is how hard the filter narrows the pool per request.",
+			},
+			[]string{"service_id", "kind"},
 		),
 		staleAnswers: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -622,6 +640,8 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.batchDisconnects,
 		r.quorumRequests,
 		r.selectionTiers,
+		r.archivalFilter,
+		r.archivalRemoved,
 		r.staleAnswers,
 		r.invalidResults,
 		r.answerHeadLag,
@@ -764,6 +784,16 @@ func (r *Recorder) RecordAnswerHead(serviceID domain.ServiceID, party, method st
 // its method. method is a DATA method a plugin names, so it is bounded.
 func (r *Recorder) RecordInvalidResult(serviceID domain.ServiceID, party, method string) {
 	r.invalidResults.WithLabelValues(r.services.serviceValue(serviceID), r.operators.value(party), method).Inc()
+}
+
+// RecordArchivalFilter counts one historical selection by what the archival
+// filter did, and the parties it took out of the pool when it filtered.
+func (r *Recorder) RecordArchivalFilter(serviceID domain.ServiceID, kind, outcome string, removedParties int) {
+	sid := r.services.serviceValue(serviceID)
+	r.archivalFilter.WithLabelValues(sid, kind, outcome).Inc()
+	if removedParties > 0 {
+		r.archivalRemoved.WithLabelValues(sid, kind).Add(float64(removedParties))
+	}
 }
 
 // RecordSelectionTier counts one endpoint selection by its height tier. Tiers

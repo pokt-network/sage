@@ -800,6 +800,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		if reporter, ok := qosReg.Get(id).(qos.SelectionTierReporter); ok {
 			reporter.SetSelectionTierRecorder(func(tier int) { recorder.RecordSelectionTier(id, tier) })
 		}
+		if reporter, ok := qosReg.Get(id).(qos.ArchivalFilterReporter); ok {
+			reporter.SetArchivalFilterRecorder(func(kind, outcome string, removed int) {
+				recorder.RecordArchivalFilter(id, kind, outcome, removed)
+			})
+		}
 	}
 	baseSampleRate := cfg.Gateway.ObservationPipeline.SampleRate
 	if baseSampleRate <= 0 || baseSampleRate > 1 {

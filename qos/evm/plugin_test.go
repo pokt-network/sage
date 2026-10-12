@@ -1261,3 +1261,33 @@ func TestSelectEndpoints_OnePartyLeftSkipsTheFilter(t *testing.T) {
 		t.Fatalf("selected %v, want every endpoint: the filter would leave one party", got)
 	}
 }
+
+// Each historical selection reports what the filter did: filtered with the
+// parties it took out, bypassed when it would have left one party, noop when
+// it kept every host.
+func TestSelectEndpoints_ReportsArchivalFilterOutcome(t *testing.T) {
+	p := newTestPlugin(5)
+	var got []string
+	p.SetArchivalFilterRecorder(func(kind, outcome string, removed int) {
+		got = append(got, fmt.Sprintf("%s:%s:%d", kind, outcome, removed))
+	})
+	pruned := domain.EndpointAddr("pokt1a-https://dopokt.pruned.example")
+	archiveA := domain.EndpointAddr("pokt1b-https://r001.archive.example")
+	archiveB := domain.EndpointAddr("pokt1c-https://r001.other.example")
+	for _, ep := range []domain.EndpointAddr{pruned, archiveA, archiveB} {
+		p.UpdateBlockHeight(ep, 1000)
+	}
+	state := []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","0x1"],"id":1}`), domain.RPCTypeJSONRPC, "eth_getBalance")}
+
+	_, _ = p.SelectEndpoints(domain.EndpointAddrList{pruned, archiveA, archiveB}, state)
+	p.archival.Set(hostKey(pruned), refusedEverything)
+	_, _ = p.SelectEndpoints(domain.EndpointAddrList{pruned, archiveA, archiveB}, state)
+	_, _ = p.SelectEndpoints(domain.EndpointAddrList{pruned, archiveA}, state)
+	_, _ = p.SelectEndpoints(domain.EndpointAddrList{pruned, archiveA},
+		[]domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","latest"],"id":1}`), domain.RPCTypeJSONRPC, "eth_getBalance")})
+
+	want := []string{"state:noop:0", "state:filtered:1", "state:bypassed:0"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("reported %v, want %v (a latest read reports nothing)", got, want)
+	}
+}

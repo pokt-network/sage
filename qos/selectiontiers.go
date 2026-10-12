@@ -28,3 +28,28 @@ func (s *SelectionTiers) ReportTier(tier int) {
 		s.record(tier)
 	}
 }
+
+// Archival filter outcomes and kinds, the labels ArchivalFilterReporter
+// records.
+const (
+	// ArchivalFiltered: the filter kept the request off at least one host.
+	ArchivalFiltered = "filtered"
+	// ArchivalBypassed: the filter would have left the request one party,
+	// so it was skipped.
+	ArchivalBypassed = "bypassed"
+	// ArchivalNoop: the filter applied and kept every host.
+	ArchivalNoop = "noop"
+	// ArchivalState and ArchivalLogs are the retention the filter read:
+	// state at a block, or eth_getLogs history.
+	ArchivalState = "state"
+	ArchivalLogs  = "logs"
+)
+
+// ArchivalFilterReporter is implemented by plugins that keep historical
+// requests off hosts that refused the history they ask for. Wire sets the
+// recorder once per service, before traffic: one call per selection that
+// needed the history, with the kind, the outcome and how many parties the
+// filter took out of the pool (0 unless filtered).
+type ArchivalFilterReporter interface {
+	SetArchivalFilterRecorder(fn func(kind, outcome string, removedParties int))
+}
