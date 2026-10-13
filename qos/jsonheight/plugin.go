@@ -237,14 +237,19 @@ func (p *Plugin) isCanary(request []byte) bool {
 
 // --- qos.DataExtractor --- //
 
-// ExtractData reads the height out of a response that carries one.
+// ExtractData reads the height out of an answer to a head request.
 //
-// The rule is the response, not the request: if the declared path is there,
-// the response answered the question this plugin asks, and it does not matter
-// who asked. That is what lets client traffic keep a busy service's chain view
-// fresh between probe cycles — and it is the only rule that works for a REST
-// chain, whose probe carries no body to recognise it by, so a request-shaped
-// test could never tell its own probe from a client's call.
+// A chain that declares how a request names its method reads only answers to
+// a head request (askedForHead), its probe's or a client's: client traffic
+// keeps a busy service's chain view fresh between probe cycles. Any other
+// answer can carry the path too — sui's path is the whole result, which any
+// call answering a bare number fills, and NEAR's block asked by id names a
+// historical block — and read as the endpoint's height it set the host behind.
+//
+// A REST chain's probe carries no body to recognise it by, so a request-shaped
+// test could never tell its own probe from a client's call: there the rule is
+// the response. ponytail: a REST client asking for a historical header still
+// reads as a height; recognising the head needs the request path here.
 //
 // A response WITHOUT the path is nothing rather than an error, because most
 // traffic is not asking for the head and grading a supplier for that would be
@@ -252,6 +257,9 @@ func (p *Plugin) isCanary(request []byte) bool {
 // probe: that one asked for the head specifically, so a response with no
 // height in it is the endpoint failing to answer, and it is graded.
 func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []byte) (*qos.ExtractedData, error) {
+	if p.chain.RequestMethodPath != "" && !p.askedForHead(request) {
+		return &qos.ExtractedData{}, nil
+	}
 	height, err := p.heightFrom(response)
 	if err != nil {
 		if p.askedForHeight(request) {

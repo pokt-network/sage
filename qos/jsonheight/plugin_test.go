@@ -97,6 +97,30 @@ func TestExtractData_ReadsClientTrafficWhenTheChainSaysHow(t *testing.T) {
 	}
 }
 
+// A chain that can tell a head request from the rest reads a height from that
+// request only. Sui's path is the whole result, which any call answering a
+// bare number fills; NEAR's block names a historical block when asked by id.
+// Read as the endpoint's height, either set the host that served it behind
+// (or, at a small number, below) the chain.
+func TestExtractData_ReadsOnlyAHeadRequest(t *testing.T) {
+	for _, tc := range []struct {
+		chain             Chain
+		request, response string
+	}{
+		{Sui, `{"jsonrpc":"2.0","id":1,"method":"suix_getReferenceGasPrice","params":[]}`, `{"jsonrpc":"2.0","result":"750","id":1}`},
+		{NEAR, `{"jsonrpc":"2.0","id":1,"method":"block","params":{"block_id":100}}`, `{"jsonrpc":"2.0","result":{"header":{"height":100}},"id":1}`},
+	} {
+		p := NewPlugin(nil, tc.chain, 100)
+		data, err := p.ExtractData(ep, []byte(tc.request), []byte(tc.response))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.chain.Name, err)
+		}
+		if data.BlockHeight != nil {
+			t.Errorf("%s: read %d as the endpoint's height from %s", tc.chain.Name, *data.BlockHeight, tc.request)
+		}
+	}
+}
+
 // A REST chain's probe carries no body, so no request-shaped test could tell
 // it from a client call. The response is what decides: a body carrying the
 // declared path answered the question, whoever asked it.
