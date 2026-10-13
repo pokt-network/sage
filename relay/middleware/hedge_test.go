@@ -857,3 +857,90 @@ func TestHedge_NotSentIntoARuledOutPool(t *testing.T) {
 		}
 	})
 }
+
+// A hedge arm that fails fast (a rate limit) while the primary hangs used to
+// leave the race waiting on the primary until the attempt deadline. With
+// rehedge on, one more arm goes to an operator neither arm used.
+func TestHedge_RehedgesOnceWhenTheHedgeFailsFirst(t *testing.T) {
+	endpoints := domain.EndpointAddrList{
+		"supplier1-https://a1.alpha.net",
+		"supplier2-https://b1.beta.net",
+		"supplier3-https://c1.gamma.net",
+	}
+	run := func(flags ...string) (arms []domain.EndpointAddr, ctx *relay.Context, rec *recordingHedgeRec, elapsed time.Duration) {
+		var mu sync.Mutex
+		handler := relay.HandlerFunc(func(ctx *relay.Context) error {
+			ep := ctx.Endpoints[0]
+			ctx.Endpoint = ep
+			if ctx.SelectedEndpoint != nil {
+				ctx.SelectedEndpoint.Store(&ep)
+			}
+			mu.Lock()
+			arms = append(arms, ep)
+			mu.Unlock()
+			switch ep.Operator() {
+			case "alpha.net":
+				time.Sleep(300 * time.Millisecond)
+			case "beta.net":
+				return retryableErr("rate limited")
+			}
+			ctx.Response = &domain.Response{HTTPStatusCode: 200}
+			return nil
+		})
+		rec = &recordingHedgeRec{}
+		ctx = baseContext()
+		ctx.Endpoints = endpoints
+		start := time.Now()
+		if err := Hedge(newFlags(flags...), hedgeCfg(10*time.Millisecond), rec, nil)(handler).HandleRelay(ctx); err != nil {
+			t.Fatalf("flags %v: %v", flags, err)
+		}
+		elapsed = time.Since(start)
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(arms), ctx, rec, elapsed
+	}
+
+	arms, _, _, elapsed := run("hedge", "operator_aware_selection")
+	if len(arms) != 2 || elapsed < 250*time.Millisecond {
+		t.Errorf("rehedge off: %d arms in %v, want 2 and the primary's wait", len(arms), elapsed)
+	}
+
+	arms, ctx, rec, elapsed := run("hedge", "operator_aware_selection", featureflag.FlagRehedge)
+	if len(arms) != 3 || arms[2] != endpoints[2] || ctx.Endpoint != endpoints[2] {
+		t.Fatalf("rehedge on: arms %v, answered by %q, want the third to the untried operator", arms, ctx.Endpoint)
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Errorf("rehedge on: took %v, waited on the primary", elapsed)
+	}
+	if len(rec.results) != 1 || rec.results[0] != "rehedge_won" {
+		t.Errorf("recorded %v, want one rehedge_won", rec.results)
+	}
+}
+
+// A third arm only goes to an operator neither earlier arm used: with none
+// left the race waits on the primary as before.
+func TestHedge_NoRehedgeWithoutAnUntriedOperator(t *testing.T) {
+	var calls atomic.Int32
+	handler := relay.HandlerFunc(func(ctx *relay.Context) error {
+		ep := ctx.Endpoints[0]
+		ctx.Endpoint = ep
+		if ctx.SelectedEndpoint != nil {
+			ctx.SelectedEndpoint.Store(&ep)
+		}
+		if calls.Add(1) == 1 {
+			time.Sleep(50 * time.Millisecond)
+			ctx.Response = &domain.Response{HTTPStatusCode: 200}
+			return nil
+		}
+		return retryableErr("rate limited")
+	})
+	ctx := baseContext()
+	ctx.Endpoints = multiOperatorEndpoints() // two operators
+	h := Hedge(newFlags("hedge", "operator_aware_selection", featureflag.FlagRehedge), hedgeCfg(5*time.Millisecond), nil, nil)(handler)
+	if err := h.HandleRelay(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Errorf("%d arms, want primary and one hedge", n)
+	}
+}

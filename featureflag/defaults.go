@@ -352,6 +352,12 @@ const (
 	// it on for a service only once the edge strips the headers from clients
 	// that may not spend that.
 	FlagQuorum = "quorum"
+	// FlagRehedge sends one more hedge arm when the hedge fails while the
+	// primary is still running, to an operator neither arm used. Without it
+	// a hedge refused at once (a rate limit) leaves the race waiting on a
+	// hung primary until the attempt deadline. At most one extra relay per
+	// race, and only after a failed hedge. Off by default.
+	FlagRehedge = "rehedge"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -419,6 +425,7 @@ var DefaultFlags = map[string]bool{
 	FlagRelativeChronic:         true,
 	FlagOperatorChronic:         false,
 	FlagQuorum:                  false,
+	FlagRehedge:                 false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

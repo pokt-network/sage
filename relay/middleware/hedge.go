@@ -22,7 +22,8 @@ type hedgeResult struct {
 }
 
 // HedgeRecorder is notified of the outcome of a hedge race
-// (primary_before_delay, primary_won, hedge_won, both_failed). metrics.Recorder satisfies it.
+// (primary_before_delay, primary_won, hedge_won, rehedge_won, both_failed).
+// metrics.Recorder satisfies it.
 // Nil disables recording.
 type HedgeRecorder interface {
 	RecordHedge(serviceID domain.ServiceID, result string)
@@ -32,6 +33,8 @@ type HedgeRecorder interface {
 // request after HedgeDelay if the primary has not yet completed. The first
 // successful response wins; if both fail, the primary error is returned. If the
 // "hedge" flag is disabled or HedgeDelay==0 the middleware passes through.
+// With the "rehedge" flag, a hedge that fails while the primary still runs is
+// followed by one more arm, to an operator neither arm used.
 //
 // rec, when non-nil, records sage_hedge_total on each resolved race.
 // endpoints, when non-nil, fetches the pool before the race so the hedge can
@@ -175,22 +178,35 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			hedgeCtx.Response = nil
 			hedgeCtx.Err = nil
 
-			// Detached context — same rationale as the primary arm above.
-			hedgeDetached, hedgeCancel := armContext(ctx.Ctx)
-			hedgeCtx.Ctx = hedgeDetached
-			go func() {
-				defer safego.Recover(hedgeCtx.Logger, "hedge.hedge.goroutine")
-				defer hedgeCancel()
-				err := safego.Call(hedgeCtx.Logger, "hedge.hedge", func() error {
-					return next.HandleRelay(hedgeCtx)
-				})
-				hedgeCh <- hedgeResult{err: err, ctx: hedgeCtx}
-			}()
+			// launch runs a hedge arm reporting on hedgeCh, on a detached
+			// context — same rationale as the primary arm above.
+			launch := func(arm *relay.Context) {
+				detached, cancel := armContext(ctx.Ctx)
+				arm.Ctx = detached
+				go func() {
+					defer safego.Recover(arm.Logger, "hedge.hedge.goroutine")
+					defer cancel()
+					err := safego.Call(arm.Logger, "hedge.hedge", func() error {
+						return next.HandleRelay(arm)
+					})
+					hedgeCh <- hedgeResult{err: err, ctx: arm}
+				}()
+			}
+			launch(hedgeCtx)
 
 			// Race: first successful result wins.
 			var primaryRes, hedgeRes hedgeResult
 			primaryDone := false
 			hedgeDone := false
+			// rehedged is set once the race has decided on a third arm; a
+			// hedge that wins after it is that arm.
+			rehedged := false
+			hedgeWon := func() string {
+				if rehedged {
+					return "rehedge_won"
+				}
+				return "hedge_won"
+			}
 
 			for !primaryDone || !hedgeDone {
 				select {
@@ -209,12 +225,12 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					// Primary failed — if hedge already succeeded, use it.
 					if hedgeDone && hedgeRes.err == nil {
 						mergeContext(ctx, hedgeRes.ctx)
-						recordHedge(ctx, "hedge_won")
+						recordHedge(ctx, hedgeWon())
 						return nil
 					}
 
 				case res := <-hedgeCh:
-					if errors.Is(res.err, errHedgeRuledOut) {
+					if errors.Is(res.err, errHedgeRuledOut) && !rehedged {
 						// Nothing was sent: the race is the primary's alone.
 						recordHedge(ctx, "suppressed_ruled_out")
 						if !primaryDone {
@@ -231,7 +247,7 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					hedgeDone = true
 					if res.err == nil {
 						mergeContext(ctx, res.ctx)
-						recordHedge(ctx, "hedge_won")
+						recordHedge(ctx, hedgeWon())
 						return nil
 					}
 					// Hedge failed — if primary already succeeded, use it.
@@ -239,6 +255,21 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 						mergeContext(ctx, primaryRes.ctx)
 						recordHedge(ctx, "primary_won")
 						return nil
+					}
+					// Failed while the primary still runs: a hedge refused at
+					// once (a rate limit) left the race waiting on a hung
+					// primary until the attempt deadline. One more arm, to an
+					// operator neither arm used.
+					if !primaryDone && !rehedged && flags.IsEnabled(ctx.Ctx, featureflag.FlagRehedge, ctx.ServiceID) {
+						rehedged = true
+						tried := []domain.EndpointAddr{res.ctx.Endpoint}
+						if p := primaryCtx.SelectedEndpoint.Load(); p != nil {
+							tried = append(tried, *p)
+						}
+						if arm := rehedgeArm(ctx, tried...); arm != nil {
+							hedgeCtx, hedgeDone = arm, false
+							launch(arm)
+						}
 					}
 				}
 			}
@@ -252,6 +283,23 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 			return primaryRes.err
 		})
 	}
+}
+
+// rehedgeArm is the third arm of a race whose hedge failed while the primary
+// still runs: a clone of ctx that may pick only an operator none of tried
+// belongs to, or nil when none is left or only hosts far behind the head are.
+func rehedgeArm(ctx *relay.Context, tried ...domain.EndpointAddr) *relay.Context {
+	affiliates := domain.AffiliatesOf(tried...)
+	left := filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool { return !affiliates.Contains(ep) })
+	if len(left) == 0 || narrowsIntoStale(ctx, left, ctx.Endpoints) {
+		return nil
+	}
+	arm := ctx.Clone()
+	arm.AttemptKind = relay.AttemptHedge
+	arm.Endpoints = left
+	arm.SelectedEndpoint = new(atomic.Pointer[domain.EndpointAddr])
+	arm.Endpoint, arm.Response, arm.Err = "", nil, nil
+	return arm
 }
 
 // armContext is the context a hedge arm runs on: detached from the caller's
