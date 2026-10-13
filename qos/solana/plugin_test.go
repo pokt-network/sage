@@ -246,6 +246,25 @@ func TestExtractData_RejectsBareNumberFromOtherMethods(t *testing.T) {
 	}
 }
 
+// getBlock answers with the requested block's blockHeight, the same field
+// getEpochInfo uses for the head. Read as the endpoint's height, every sampled
+// client fetch of an older block set its host behind the chain, and the
+// height filters sent the traffic to whichever hosts had not been sampled.
+func TestExtractData_IgnoresAHistoricalBlocksHeight(t *testing.T) {
+	p := solana.NewPlugin(nil, 100)
+
+	req := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlock","params":[290000000]}`)
+	resp := []byte(`{"jsonrpc":"2.0","id":1,"result":{"blockHeight":270000000,"parentSlot":289999999}}`)
+
+	data, err := p.ExtractData("pokt1a-https://a.example.com", req, resp)
+	if err != nil {
+		t.Fatalf("ExtractData: %v", err)
+	}
+	if data.BlockHeight != nil {
+		t.Errorf("a getBlock answer was taken as the endpoint's height (%d)", *data.BlockHeight)
+	}
+}
+
 // getEpochInfo keeps working, and absoluteSlot is still not a fallback.
 func TestExtractData_EpochInfoUnchanged(t *testing.T) {
 	p := solana.NewPlugin(nil, 100)

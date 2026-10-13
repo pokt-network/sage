@@ -48,16 +48,18 @@ func extractBlockHeightFromResponse(response []byte) (uint64, error) {
 	return 0, fmt.Errorf("solana: no blockHeight in response")
 }
 
-// extractBlockHeightForMethod is extractBlockHeightFromResponse plus the one
-// other response shape that really is a block height: getBlockHeight answers
-// with a bare number rather than an object.
+// extractBlockHeightForMethod reads the head from the two answers that name
+// it: getEpochInfo's result.blockHeight, and getBlockHeight's bare number.
 //
 // Gated on the request method, and that gate is the whole point rather than an
 // optimization. getSlot also answers with a bare number, and a slot is not a
 // height — accepting any bare number would reopen exactly the poisoning hole
 // the absoluteSlot comment above describes, just through a different door.
-// Naming the method is what distinguishes "the caller asked for a height and
-// got one" from "this response happens to contain a number".
+// getBlock answers with result.blockHeight too, but of the block it was asked
+// for: read as the endpoint's height, a client fetching older blocks set the
+// host that served it behind the chain. Naming the method is what
+// distinguishes "the caller asked for the head and got it" from "this
+// response happens to contain a height".
 //
 // This matters because an operator can configure health checks
 // (active_health_checks.local). A configured getBlockHeight probe would
@@ -67,18 +69,14 @@ func extractBlockHeightFromResponse(response []byte) (uint64, error) {
 // lagging endpoint serving no user traffic is never caught. PATH hit the
 // sharper version of this, where the same gap benched the endpoint outright.
 func extractBlockHeightForMethod(request, response []byte) (uint64, error) {
-	if h, err := extractBlockHeightFromResponse(response); err == nil {
-		return h, nil
-	}
-
-	if gjson.GetBytes(request, "method").String() != "getBlockHeight" {
-		return 0, fmt.Errorf("solana: no blockHeight in response")
-	}
-
-	result := gjson.GetBytes(response, "result")
-	if result.Type == gjson.Number {
-		if v := result.Uint(); v > 0 {
-			return v, nil
+	switch gjson.GetBytes(request, "method").String() {
+	case "getEpochInfo":
+		return extractBlockHeightFromResponse(response)
+	case "getBlockHeight":
+		if result := gjson.GetBytes(response, "result"); result.Type == gjson.Number {
+			if v := result.Uint(); v > 0 {
+				return v, nil
+			}
 		}
 	}
 	return 0, fmt.Errorf("solana: no blockHeight in response")
