@@ -166,28 +166,18 @@ func TestParseBlockHeight_CometBFT(t *testing.T) {
 	}
 }
 
-func TestParseBlockHeight_CosmosREST(t *testing.T) {
-	resp := []byte(`{"height":"12345","hash":"AABBCC"}`)
-
-	h, err := parseBlockHeight(resp)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if h != 12345 {
-		t.Errorf("expected 12345, got %d", h)
-	}
-}
-
-func TestParseBlockHeight_CometBFT_TakesPriorityOverREST(t *testing.T) {
-	// Both fields present — CometBFT sync_info should win.
-	resp := []byte(`{"height":"100","result":{"sync_info":{"latest_block_height":"200"}}}`)
-
-	h, err := parseBlockHeight(resp)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if h != 200 {
-		t.Errorf("expected CometBFT height 200, got %d", h)
+// A top-level REST height names whatever the answer is about: an upgrade's
+// applied plan, a legacy query run at the height the client asked for, a
+// transaction's block. None is the head, and read as the endpoint's height it
+// set the host that served it behind the chain.
+func TestParseBlockHeight_RESTHeightIsNotTheHead(t *testing.T) {
+	for _, resp := range []string{
+		`{"height":"4707300"}`,
+		`{"height":"12345","result":{"amount":"1"}}`,
+	} {
+		if h, err := parseBlockHeight([]byte(resp)); err == nil {
+			t.Errorf("read %d as the head from %s", h, resp)
+		}
 	}
 }
 
@@ -207,7 +197,7 @@ func TestParseBlockHeight_NoHeightField(t *testing.T) {
 }
 
 func TestParseBlockHeight_InvalidDecimal(t *testing.T) {
-	resp := []byte(`{"height":"not-a-number"}`)
+	resp := []byte(`{"result":{"sync_info":{"latest_block_height":"not-a-number"}}}`)
 	_, err := parseBlockHeight(resp)
 	if err == nil {
 		t.Fatal("expected error for non-decimal height")

@@ -234,29 +234,22 @@ func withRequestHTTP(p domain.Payload, req *http.Request) domain.Payload {
 	return p.WithHTTP(req.URL.RequestURI(), req.Method)
 }
 
-// parseBlockHeight attempts to extract a block height from a response body.
-// It handles two formats:
+// parseBlockHeight extracts the head from a CometBFT status answer:
 //
-//  1. CometBFT JSON-RPC sync_info format:
-//     {"result":{"sync_info":{"latest_block_height":"12345"}}}
+//	{"result":{"sync_info":{"latest_block_height":"12345"}}}
 //
-//  2. Cosmos REST format:
-//     {"height":"12345"}
+// Only status names the head. A top-level REST "height" names what the answer
+// is about (an upgrade's applied plan, a legacy query at the height the client
+// asked for, a transaction's block), and read as the serving endpoint's height
+// it set that host behind the chain.
 func parseBlockHeight(response []byte) (uint64, error) {
 	if len(response) == 0 {
 		return 0, fmt.Errorf("cosmos: empty response")
 	}
 
-	// Try CometBFT format first.
 	cometHeight := gjson.GetBytes(response, "result.sync_info.latest_block_height")
 	if cometHeight.Exists() {
 		return parseDecimalString(cometHeight.String(), "comet_bft latest_block_height")
-	}
-
-	// Try Cosmos REST format.
-	restHeight := gjson.GetBytes(response, "height")
-	if restHeight.Exists() {
-		return parseDecimalString(restHeight.String(), "rest height")
 	}
 
 	return 0, fmt.Errorf("cosmos: no block height found in response")
