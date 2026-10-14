@@ -231,6 +231,7 @@ func TestRefreshSession_RepeatedFailureLogsOnce(t *testing.T) {
 	sm := newSessionManager(fn, map[domain.ServiceID]struct{}{"router": {}}, logger)
 
 	for _, height := range []int{901781, 901801, 901821} {
+		sm.latestBlockHeight.Store(int64(height))
 		fn.sessionErr = fmt.Errorf("could not find suppliers for service router at height %d", height)
 		if _, err := sm.getSession(context.Background(), "router", "pokt1app"); err == nil {
 			t.Fatal("expected getSession to fail")
@@ -241,12 +242,14 @@ func TestRefreshSession_RepeatedFailureLogsOnce(t *testing.T) {
 	}
 
 	// Recovery is news again, and so is the next failure after it.
+	sm.latestBlockHeight.Store(901841)
 	fn.sessionErr = nil
 	fn.session = buildRelayTestSession("pokt1supplier", "https://node.example.com")
 	if _, err := sm.refreshSession(context.Background(), "router", "pokt1app", fetchSync); err != nil {
 		t.Fatal(err)
 	}
 	fn.sessionErr = errors.New("no suppliers not found for session")
+	sm.latestBlockHeight.Store(901861)
 	_, _ = sm.refreshSession(context.Background(), "router", "pokt1app", fetchSync)
 	if n := strings.Count(buf.String(), "full node returned error"); n != 2 {
 		t.Fatalf("a failure after recovery must log again, got %d entries:\n%s", n, buf.String())

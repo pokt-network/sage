@@ -279,7 +279,16 @@ func (m *countingFullNode) GetSession(_ context.Context, _ string, _ string) (*s
 	m.calls++
 	m.mu.Unlock()
 	time.Sleep(m.delay)
+	if m.sessErr != nil {
+		return nil, m.sessErr
+	}
 	return m.session, nil
+}
+
+func (m *countingFullNode) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
 }
 
 // At a session boundary every concurrent relay for a service sees the cached
@@ -515,5 +524,76 @@ func TestGetSession_CountsFetchesByPathAndOutcome(t *testing.T) {
 	get()
 	if got := spy.last(); got != "sync|error" {
 		t.Fatalf("failed fetch = %q, want sync|error", got)
+	}
+}
+
+// A fetch that changes nothing (the full node answers the session already
+// cached, or an error) is not repeated until the polled height moves. Asked
+// again by every relay, a node one block behind at a boundary spends its CPU
+// on GetSession instead of the next block, and stays behind.
+func TestGetSession_UnchangedAnswerHoldsUntilTheHeightMoves(t *testing.T) {
+	ended := &sessiontypes.Session{SessionId: "s1",
+		Header: &sessiontypes.SessionHeader{SessionId: "s1", ServiceId: "eth", SessionEndBlockHeight: 100}}
+	fn := &countingFullNode{stubFullNode: stubFullNode{session: ended}}
+	sm := newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger())
+	sm.SetGraceBlocks(10)
+	key := sessionCacheKey("eth", "pokt1app")
+	sm.sessionCache.Store(key, ended)
+	idle := func() {
+		for { // the background refresh marker clears once its fetch is recorded
+			if _, busy := sm.bgRefreshing.Load(key); !busy {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	get := func() (*sessiontypes.Session, error) {
+		s, err := sm.getSession(context.Background(), "eth", "pokt1app")
+		idle()
+		return s, err
+	}
+
+	// In grace: one background fetch, then none while the height stays.
+	sm.latestBlockHeight.Store(105)
+	for range 20 {
+		if s, err := get(); err != nil || s.SessionId != "s1" {
+			t.Fatalf("in grace: %v %v, want the cached s1", s, err)
+		}
+	}
+	if n := fn.count(); n != 1 {
+		t.Fatalf("in grace with the height unchanged: %d GetSession, want 1", n)
+	}
+
+	// Past grace, the height moved: one sync fetch, the cached session served
+	// after it while the node still answers it.
+	sm.latestBlockHeight.Store(120)
+	for range 20 {
+		if s, err := get(); err != nil || s.SessionId != "s1" {
+			t.Fatalf("past grace: %v %v, want the cached s1", s, err)
+		}
+	}
+	if n := fn.count(); n != 2 {
+		t.Fatalf("after the height moved once: %d GetSession, want 2", n)
+	}
+
+	// A failed fetch holds the same way, and hands its error back.
+	fn.sessErr = errors.New("full node busy")
+	sm.latestBlockHeight.Store(121)
+	for range 20 {
+		if _, err := get(); err == nil {
+			t.Fatal("a held failure must still answer with its error")
+		}
+	}
+	if n := fn.count(); n != 3 {
+		t.Fatalf("after a failure at an unchanged height: %d GetSession, want 3", n)
+	}
+
+	// A new session ends the hold.
+	fn.sessErr = nil
+	fn.session = &sessiontypes.Session{SessionId: "s2",
+		Header: &sessiontypes.SessionHeader{SessionId: "s2", ServiceId: "eth", SessionEndBlockHeight: 200}}
+	sm.latestBlockHeight.Store(122)
+	if s, err := get(); err != nil || s.SessionId != "s2" {
+		t.Fatalf("height moved and the node has the next session: %v %v, want s2", s, err)
 	}
 }

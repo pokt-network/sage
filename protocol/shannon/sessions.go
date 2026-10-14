@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,17 @@ const (
 	// Blocks on Shannon are ~1 minute, so polling every 10 seconds is plenty responsive
 	// for detecting session boundaries while avoiding unnecessary gRPC traffic.
 	blockPollInterval = 10 * time.Second
+
+	// sessionHoldMax is the longest a (service, app) waits, with the polled
+	// height unchanged, before asking again after a fetch that changed
+	// nothing; up to as much again is added at random so held keys do not all
+	// ask at once. A height that moves ends the hold sooner.
+	sessionHoldMax = 30 * time.Second
+	// sessionErrorHold is the same for a failed fetch, whose error is handed
+	// back meanwhile: long enough that a key the node keeps failing (a
+	// service with no suppliers) is not asked by every relay, short enough
+	// that one transient failure is not a block's worth of errors.
+	sessionErrorHold = 2 * time.Second
 )
 
 // sessionManager caches sessions and their extracted endpoints.
@@ -109,6 +121,10 @@ type sessionManager struct {
 	// an error, the repeats are debug (with the current message), recovery is
 	// info and clears the mark.
 	failing sync.Map // "serviceID:appAddr" → struct{}
+
+	// holds marks each (serviceID, appAddr) whose last fetch changed nothing,
+	// so it is not asked again until the polled height moves (sessionHold).
+	holds sync.Map // "serviceID:appAddr" → sessionHold
 
 	// metrics holds a sessionMetrics once Protocol.SetSessionMetrics has
 	// run. Atomic because wiring happens after the poller has started.
@@ -385,12 +401,50 @@ func (sm *sessionManager) currentSession(ctx context.Context, serviceID, appAddr
 // errSessionWait is awaitSession giving up on a fetch still in flight.
 var errSessionWait = errors.New("session fetch still in flight")
 
+// sessionHold is a (service, app) whose last fetch changed nothing: the full
+// node answered with the session already cached, or an error. Asked again
+// before the chain moves it answers the same, and GetSession costs the node
+// CPU: asked by every relay of every service, a node one block behind at a
+// boundary spent its CPU on GetSession instead of the next block, and stayed
+// behind.
+type sessionHold struct {
+	height int64     // polled height when the answer came back
+	until  time.Time // asked again after this even if the height has not moved
+	err    error     // the failed fetch's error; nil for the cached session
+}
+
+// held reports the hold on key, if one is in force at the polled height.
+func (sm *sessionManager) held(key string) (sessionHold, bool) {
+	v, ok := sm.holds.Load(key)
+	if !ok {
+		return sessionHold{}, false
+	}
+	h := v.(sessionHold)
+	return h, sm.latestBlockHeight.Load() <= h.height && time.Now().Before(h.until)
+}
+
+// heldAnswer is what a held key answers instead of a fetch: the failed
+// fetch's error, or the session cached.
+func (sm *sessionManager) heldAnswer(key string, h sessionHold) (*sessiontypes.Session, error) {
+	if h.err != nil {
+		return nil, h.err
+	}
+	if cached, ok := sm.sessionCache.Load(key); ok {
+		return cached.(*sessiontypes.Session), nil
+	}
+	return nil, errSessionWait
+}
+
 // awaitSession joins (or starts) the coalesced fetch of the next session for
 // a WebSocket dial and waits for it, at most bound when bound is non-zero,
 // and no longer than ctx. The fetch itself is detached and completes for
 // everyone else whatever this caller does.
 func (sm *sessionManager) awaitSession(ctx context.Context, serviceID, appAddr string, bound time.Duration) (*sessiontypes.Session, error) {
-	ch := sm.refreshGroup.DoChan(sessionCacheKey(serviceID, appAddr), func() (any, error) {
+	key := sessionCacheKey(serviceID, appAddr)
+	if h, ok := sm.held(key); ok {
+		return sm.heldAnswer(key, h)
+	}
+	ch := sm.refreshGroup.DoChan(key, func() (any, error) {
 		var session *sessiontypes.Session
 		// DoChan re-panics a panic where no one can recover it; this keeps
 		// it an error, delivered to every waiter.
@@ -428,6 +482,9 @@ func (sm *sessionManager) awaitSession(ctx context.Context, serviceID, appAddr s
 // flight, and refreshSession itself coalesces the actual GetSession.
 func (sm *sessionManager) scheduleBackgroundRefresh(serviceID, appAddr string) {
 	key := sessionCacheKey(serviceID, appAddr)
+	if _, ok := sm.held(key); ok {
+		return
+	}
 	if _, inFlight := sm.bgRefreshing.LoadOrStore(key, struct{}{}); inFlight {
 		return
 	}
@@ -452,6 +509,9 @@ const sessionFetchTimeout = 15 * time.Second
 // once, under the path of the caller that ran it.
 func (sm *sessionManager) refreshSession(ctx context.Context, serviceID, appAddr, path string) (*sessiontypes.Session, error) {
 	key := sessionCacheKey(serviceID, appAddr)
+	if h, ok := sm.held(key); ok {
+		return sm.heldAnswer(key, h)
+	}
 	v, err, _ := sm.refreshGroup.Do(key, func() (interface{}, error) {
 		// A relay that reaches its deadline while waiting must not cancel the
 		// shared fetch, so the fetch runs on a detached, independently bounded
@@ -469,6 +529,7 @@ func (sm *sessionManager) refreshSession(ctx context.Context, serviceID, appAddr
 // doRefreshSession is the uncoalesced fetch-and-store, run once per boundary
 // under refreshGroup.
 func (sm *sessionManager) doRefreshSession(ctx context.Context, serviceID, appAddr, path string) (*sessiontypes.Session, error) {
+	height := sm.latestBlockHeight.Load()
 	session, err := sm.fullNode.GetSession(ctx, serviceID, appAddr)
 	key := sessionCacheKey(serviceID, appAddr)
 	if err != nil {
@@ -483,7 +544,9 @@ func (sm *sessionManager) doRefreshSession(ctx context.Context, serviceID, appAd
 				"error", err,
 			)
 		}
-		return nil, fmt.Errorf("getSession: %w", err)
+		err = fmt.Errorf("getSession: %w", err)
+		sm.hold(key, height, err)
+		return nil, err
 	}
 	if _, failed := sm.failing.LoadAndDelete(key); failed {
 		sm.logger.Info("getSession: full node answers again",
@@ -502,11 +565,26 @@ func (sm *sessionManager) doRefreshSession(ctx context.Context, serviceID, appAd
 	if prev, ok := sm.sessionCache.Load(key); ok &&
 		session.Header.SessionEndBlockHeight <= prev.(*sessiontypes.Session).Header.SessionEndBlockHeight {
 		outcome = fetchSameSession
+		sm.hold(key, height, nil)
+	} else {
+		sm.holds.Delete(key)
 	}
 	sm.recordFetch(serviceID, path, outcome)
 
 	sm.sessionCache.Store(key, session)
 	return session, nil
+}
+
+// hold stops key from asking the full node again until the polled height
+// moves past height, or sessionHoldMax (sessionErrorHold for an error) plus
+// jitter passes.
+func (sm *sessionManager) hold(key string, height int64, err error) {
+	base := sessionHoldMax
+	if err != nil {
+		base = sessionErrorHold
+	}
+	wait := base + rand.N(base)
+	sm.holds.Store(key, sessionHold{height: height, until: time.Now().Add(wait), err: err})
 }
 
 // getEndpoints returns the endpoint map for (serviceID, appAddr).
