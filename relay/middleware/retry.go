@@ -11,6 +11,7 @@ import (
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/protocol"
+	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/relay"
 	"github.com/pokt-network/sage/reputation"
 )
@@ -310,6 +311,18 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 						available = other
 					}
 
+					// A request a host refused for its history is retried where
+					// the archival marks show that history, even one party
+					// (featureflag.FlagArchivalRetry): elsewhere it meets
+					// another host that refuses too.
+					if historyRefusal(pendingCause) && flags.IsEnabled(ctx.Ctx, featureflag.FlagArchivalRetry, ctx.ServiceID) {
+						if n, ok := ctx.Plugin.(qos.ArchivalNarrower); ok {
+							if kept, ok := n.RetainingEndpoints(available, ctx.Payloads); ok && anyVouched(o.Reputation, ctx, kept) {
+								available = kept
+							}
+						}
+					}
+
 					ctx.Endpoints = available
 
 					// Clear selected endpoint to force re-selection by inner chain.
@@ -450,6 +463,13 @@ func limiterVerdict(reason string) bool {
 		return true
 	}
 	return false
+}
+
+// historyRefusal reports whether a retry cause is a host lacking the
+// history a request names: a node's missing block or state, or a recent one
+// refused as pruned.
+func historyRefusal(reason string) bool {
+	return reason == heuristic.ReasonBlockchainError || reason == heuristic.ReasonRefusedRecent
 }
 
 // retryReason is the coarse label sage_retry_total carries. It stays low

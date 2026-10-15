@@ -259,6 +259,16 @@ type ArchivalLister interface {
 	ArchivalHosts() map[string]ArchivalMark
 }
 
+// ArchivalNarrower is implemented by plugins that keep archival marks: the
+// endpoints of eps that the marks show retaining the history payloads ask
+// for (those that served it, else those not refusing it), without the
+// selection's guard against leaving one party. ok is false when the request
+// names no history or the marks are not read for the service. For the retry
+// of a request a host refused for its history.
+type ArchivalNarrower interface {
+	RetainingEndpoints(eps domain.EndpointAddrList, payloads []domain.Payload) (kept domain.EndpointAddrList, ok bool)
+}
+
 // EndpointHeightLister is implemented by plugins that can say what each
 // endpoint last reported, for the admin chain-state read. It exists because
 // on 2026-09-04 one sui endpoint reported a near-zero height for two cycles

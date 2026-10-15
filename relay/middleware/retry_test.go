@@ -3,6 +3,8 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/relay"
 )
@@ -793,5 +796,62 @@ func TestRetryOverHedge_RecoversWithNoPoolBeforeTheFirstAttempt(t *testing.T) {
 
 	if err := chain.HandleRelay(ctx); err != nil {
 		t.Fatalf("expected recovery on the retry, got %v", err)
+	}
+}
+
+// narrowingPlugin says only "deep" retains what any request asks.
+type narrowingPlugin struct{ deep domain.EndpointAddr }
+
+func (narrowingPlugin) ParseRequest(_ context.Context, _ *http.Request, _ []byte, _ domain.RPCType) ([]domain.Payload, error) {
+	return nil, nil
+}
+
+func (narrowingPlugin) SelectEndpoints(eps domain.EndpointAddrList, _ []domain.Payload) (domain.EndpointAddrList, error) {
+	return eps, nil
+}
+
+func (n narrowingPlugin) RetainingEndpoints(eps domain.EndpointAddrList, _ []domain.Payload) (domain.EndpointAddrList, bool) {
+	if slices.Contains(eps, n.deep) {
+		return domain.EndpointAddrList{n.deep}, true
+	}
+	return nil, false
+}
+
+// A retry after a host refused a request for its history goes to the host the
+// archival marks show retaining it, behind archival_retry.
+func TestRetry_HistoryRefusalRetriesWhereTheHistoryIs(t *testing.T) {
+	eps := domain.EndpointAddrList{
+		"supplier1-https://a1.shallow.net",
+		"supplier2-https://b1.other.net",
+		"supplier3-https://c1.deep.net",
+	}
+	run := func(on bool) []domain.EndpointAddr {
+		var seen []domain.EndpointAddr
+		inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+			ctx.Endpoint = ctx.Endpoints[0]
+			seen = append(seen, ctx.Endpoint)
+			if ctx.Endpoint == eps[2] {
+				ctx.Response = &domain.Response{HTTPStatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)}
+				return nil
+			}
+			ctx.HeuristicResult = &heuristic.AnalysisResult{ShouldRetry: true, Attribution: heuristic.AttrBlockchain, Reason: heuristic.ReasonBlockchainError}
+			return domain.NewRelayError(domain.ErrEndpoint, "heuristic analysis suggests retry", domain.ErrRetryVerdict, true)
+		})
+		flags := []string{"retry"}
+		if on {
+			flags = append(flags, featureflag.FlagArchivalRetry)
+		}
+		cfg := func(domain.ServiceID) config.RetryConfig { return config.RetryConfig{MaxRetries: 1} }
+		ctx := baseContext()
+		ctx.Endpoints = slices.Clone(eps)
+		ctx.Plugin = narrowingPlugin{deep: eps[2]}
+		_ = Retry(newFlags(flags...), cfg, nil, RetryOptions{})(inner).HandleRelay(ctx)
+		return seen
+	}
+	if got := run(true); len(got) != 2 || got[1] != eps[2] {
+		t.Errorf("archival_retry on: attempts %v, want the retry on the deep host", got)
+	}
+	if got := run(false); len(got) != 2 || got[1] != eps[1] {
+		t.Errorf("archival_retry off: attempts %v, want the retry on the next host as before", got)
 	}
 }

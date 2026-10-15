@@ -363,6 +363,12 @@ const (
 	// instead of retrying it: every node answers it alike. Off: retried like
 	// any blockchain_error, and counted as future_block either way.
 	FlagFutureBlockAnswers = "future_block_answers"
+	// FlagArchivalRetry sends the retry of a request a host refused for its
+	// history (blockchain_error, refused_recent) only to hosts the archival
+	// marks show retaining it, even when that is one party: the selection's
+	// guard against leaving one party is for first attempts, and the retry's
+	// alternative is another host that refuses too. Off by default.
+	FlagArchivalRetry = "archival_retry"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -432,6 +438,7 @@ var DefaultFlags = map[string]bool{
 	FlagQuorum:                  false,
 	FlagRehedge:                 false,
 	FlagFutureBlockAnswers:      false,
+	FlagArchivalRetry:           false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

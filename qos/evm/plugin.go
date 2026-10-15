@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -301,6 +302,42 @@ func (p *Plugin) SelectEndpoints(endpoints domain.EndpointAddrList, payloads []d
 
 	return result.Endpoints, nil
 }
+
+// RetainingEndpoints implements qos.ArchivalNarrower: the endpoints whose
+// host served the request's depth (state, or eth_getLogs retention), or when
+// none did, those not refusing it.
+func (p *Plugin) RetainingEndpoints(eps domain.EndpointAddrList, payloads []domain.Payload) (domain.EndpointAddrList, bool) {
+	if p.archivalRouting != nil && !p.archivalRouting() {
+		return nil, false
+	}
+	depth, state := p.requestDepth(payloads)
+	logDepth, logs := p.requestLogDepth(payloads)
+	if !state && !logs {
+		return nil, false
+	}
+	now := time.Now()
+	retains := func(served bool) func(domain.EndpointAddr) bool {
+		check := func(memory *qos.HostMemory[archivalMark], d uint64, addr domain.EndpointAddr) bool {
+			m, known := memory.Get(hostKey(addr))
+			if served {
+				return known && m.hasServed && m.served >= d && m.admits(d, now)
+			}
+			return !known || m.admits(d, now)
+		}
+		return func(addr domain.EndpointAddr) bool {
+			return (!state || check(p.archival, depth, addr)) && (!logs || check(p.logs, logDepth, addr))
+		}
+	}
+	for _, served := range []bool{true, false} {
+		keep := retains(served)
+		if kept := slices.DeleteFunc(slices.Clone(eps), func(addr domain.EndpointAddr) bool { return !keep(addr) }); len(kept) > 0 {
+			return kept, true
+		}
+	}
+	return nil, false
+}
+
+var _ qos.ArchivalNarrower = (*Plugin)(nil)
 
 // decideArchival reports whether a retention filter of kind applies to the
 // request: not when the hosts it keeps hold fewer than two parties. It counts

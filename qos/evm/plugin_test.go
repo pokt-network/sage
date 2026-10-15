@@ -1327,3 +1327,36 @@ func TestSelectEndpoints_ArchivalRoutingOffIgnoresTheMarks(t *testing.T) {
 		t.Errorf("reported %v, want %v", got, want)
 	}
 }
+
+// The retry of a request a host refused for its history goes where the marks
+// show that history: hosts that served it, or failing that, hosts not
+// refusing it, one party if that is all there is.
+func TestRetainingEndpoints(t *testing.T) {
+	p := newTestPlugin(5)
+	shallow := domain.EndpointAddr("pokt1a-https://rm02.shallow.example")
+	deep := domain.EndpointAddr("pokt1b-https://r001.deep.example")
+	unknown := domain.EndpointAddr("pokt1c-https://x.unknown.example")
+	all := domain.EndpointAddrList{shallow, deep, unknown}
+	for _, ep := range all {
+		p.UpdateBlockHeight(ep, 100_000)
+	}
+	p.archival.Set(hostKey(shallow), archivalMark{refused: 130, refusedAt: time.Now()})
+	p.archival.Set(hostKey(deep), archivalMark{served: 50_000, hasServed: true})
+	balanceAt := func(block string) []domain.Payload {
+		return []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xabc","`+block+`"],"id":1}`), domain.RPCTypeJSONRPC, "eth_getBalance")}
+	}
+
+	if got, ok := p.RetainingEndpoints(all, balanceAt(fmt.Sprintf("0x%x", 99_000))); !ok || !slices.Equal(got, domain.EndpointAddrList{deep}) {
+		t.Errorf("1,000 deep: %v %v, want only the host that served deeper", got, ok)
+	}
+	if got, ok := p.RetainingEndpoints(all, balanceAt("0x1")); !ok || !slices.Equal(got, domain.EndpointAddrList{deep, unknown}) {
+		t.Errorf("deeper than anything served: %v %v, want every host not refusing it", got, ok)
+	}
+	if _, ok := p.RetainingEndpoints(all, balanceAt("latest")); ok {
+		t.Error("a read at the head has no history to narrow by")
+	}
+	p.SetArchivalRoutingGate(func() bool { return false })
+	if _, ok := p.RetainingEndpoints(all, balanceAt("0x1")); ok {
+		t.Error("with archival_routing off the marks are not read")
+	}
+}
