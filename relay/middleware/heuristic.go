@@ -134,6 +134,13 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 			// the host's failure (qos.VerdictRefiner).
 			refineVerdict(registry, ctx, &result)
 
+			// A block past the head is missing on every node: retrying it
+			// only spends a relay (featureflag.FlagFutureBlockAnswers).
+			if result.Reason == heuristic.ReasonFutureBlock &&
+				flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagFutureBlockAnswers, ctx.ServiceID) {
+				result.ShouldRetry = false
+			}
+
 			// A node's own error on a light call is the supplier's
 			// (featureflag.FlagLightMethodErrors): the analyzer's
 			// pass-through is for lookups the chain could not serve, and a

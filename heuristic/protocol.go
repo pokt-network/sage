@@ -449,7 +449,7 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 			ShouldPenalize:     false,
 			Attribution:        AttrBlockchain,
 			Confidence:         0.85,
-			Reason:             "blockchain_error",
+			Reason:             ReasonBlockchainError,
 			Details:            "blockchain error (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
 		}
 		result.MethodBlocking = reportsMethodUnsupported(lowerMsg)
@@ -553,7 +553,7 @@ func classifyInternalError(lowerMsg string) AnalysisResult {
 			ShouldRetry: true,
 			Attribution: AttrBlockchain,
 			Confidence:  0.85,
-			Reason:      "blockchain_error",
+			Reason:      ReasonBlockchainError,
 			Details:     "node behind the height asked for: " + lowerMsg,
 		}
 	}

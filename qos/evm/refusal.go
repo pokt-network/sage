@@ -196,3 +196,23 @@ func requestedBlocks(method string, params gjson.Result, head uint64) (from, to 
 	}
 	return 0, 0, false
 }
+
+// futureBlockVerdict re-labels a blockchain_error whose request names only
+// blocks past the head (beyond) as heuristic.ReasonFutureBlock. The wording
+// cannot tell them apart: "header not found" or "unknown block" is the same
+// answer for a block no node has made and for one the answering node has not
+// imported yet, and on a fast chain the second is common and recovers on
+// retry. The request's block against the head can, as heightJustAhead does
+// for CometBFT's wording. A request naming no block number (a tag, a hash)
+// is left alone.
+func futureBlockVerdict(payload domain.Payload, result heuristic.AnalysisResult, head uint64, beyond func(uint64) bool) (heuristic.AnalysisResult, bool) {
+	if head == 0 || beyond == nil || result.Reason != heuristic.ReasonBlockchainError {
+		return result, false
+	}
+	method := payload.Method()
+	from, _, ok := requestedBlocks(method, gjson.GetBytes(payload.Bytes(), "params"), head)
+	if !ok || !beyond(from) {
+		return result, false
+	}
+	return heuristic.FutureBlock(result, fmt.Sprintf("%s from block %d, head %d", method, from, head)), true
+}

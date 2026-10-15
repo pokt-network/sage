@@ -358,6 +358,11 @@ const (
 	// hung primary until the attempt deadline. At most one extra relay per
 	// race, and only after a failed hedge. Off by default.
 	FlagRehedge = "rehedge"
+	// FlagFutureBlockAnswers delivers a node's missing-block answer to a
+	// request for a block past the chain's head (heuristic.ReasonFutureBlock)
+	// instead of retrying it: every node answers it alike. Off: retried like
+	// any blockchain_error, and counted as future_block either way.
+	FlagFutureBlockAnswers = "future_block_answers"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -426,6 +431,7 @@ var DefaultFlags = map[string]bool{
 	FlagOperatorChronic:         false,
 	FlagQuorum:                  false,
 	FlagRehedge:                 false,
+	FlagFutureBlockAnswers:      false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

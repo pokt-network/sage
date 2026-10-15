@@ -354,6 +354,44 @@ func (refinerPlugin) RefineVerdict(_ domain.EndpointAddr, payload domain.Payload
 	return result, false
 }
 
+// futurePlugin says every blockchain_error names a block the chain has not made.
+type futurePlugin struct{ *mockPlugin }
+
+var _ qos.VerdictRefiner = futurePlugin{}
+
+func (futurePlugin) RefineVerdict(_ domain.EndpointAddr, _ domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
+	if result.Reason == heuristic.ReasonBlockchainError {
+		return heuristic.FutureBlock(result, "block past the head"), true
+	}
+	return result, false
+}
+
+// A future_block is retried like any blockchain_error until the service turns
+// future_block_answers on; then the node's answer is delivered.
+func TestHeuristic_FutureBlockDeliveredBehindItsFlag(t *testing.T) {
+	reg := qos.NewRegistry()
+	if err := reg.Register("arb-one", futurePlugin{&mockPlugin{}}); err != nil {
+		t.Fatal(err)
+	}
+	run := func(flags map[string]bool) (*heuristic.AnalysisResult, error) {
+		ctx := newCtx(newPOSTRequest("/v1", ""))
+		ctx.ServiceID = "arb-one"
+		ctx.RPCType = domain.RPCTypeJSONRPC
+		ctx.Payloads = []domain.Payload{domain.NewPayload([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x1"},"0xffffffff"]}`), domain.RPCTypeJSONRPC, "eth_call")}
+		ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"header not found"}}`), HTTPStatusCode: 200}
+		err := middleware.Heuristic(newMockFlags(flags), reg, middleware.HeuristicOptions{})(relay.Noop).HandleRelay(ctx)
+		return ctx.HeuristicResult, err
+	}
+	res, err := run(map[string]bool{"heuristic": true, featureflag.FlagFutureBlockAnswers: false})
+	if !errors.Is(err, domain.ErrRetryVerdict) || res == nil || res.Reason != heuristic.ReasonFutureBlock {
+		t.Fatalf("flag off: err=%v result=%+v, want a retried future_block", err, res)
+	}
+	res, err = run(map[string]bool{"heuristic": true, featureflag.FlagFutureBlockAnswers: true})
+	if err != nil || res == nil || res.Reason != heuristic.ReasonFutureBlock || res.ShouldRetry {
+		t.Fatalf("flag on: err=%v result=%+v, want the node's answer delivered", err, res)
+	}
+}
+
 func smartQueryCtx(t *testing.T) (*relay.Context, *qos.Registry) {
 	t.Helper()
 	reg := qos.NewRegistry()

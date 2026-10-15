@@ -516,3 +516,32 @@ func TestBlockConsensus_StateLagIgnoresAnImplausibleTime(t *testing.T) {
 		t.Fatal("a 1970 timestamp must not be a reading")
 	}
 }
+
+// A block more than an answer's stale tolerance past the expected head is one
+// no node has made: the mirror of AnswerLag, on the same tolerance.
+func TestBlockConsensus_BeyondHead(t *testing.T) {
+	bc := NewBlockConsensus(nil, 10)
+	now := time.Now()
+	if bc.BeyondHead(5000, now) {
+		t.Error("with no head nothing is beyond it")
+	}
+	bc.mu.Lock()
+	bc.rateSamples = []rateSample{{height: 900, at: now.Add(-100 * time.Second)}, {height: 1000, at: now}} // 1 block/s
+	bc.perceived.Store(1000)
+	bc.mu.Unlock()
+	for _, tc := range []struct {
+		height uint64
+		at     time.Duration
+		beyond bool
+	}{
+		{1010, 0, false}, // ten seconds of blocks ahead: a node may be that far ahead of the pool
+		{1011, 0, true},
+		{1015, 5 * time.Second, false}, // the head has moved on since
+		{1016, 5 * time.Second, true},
+		{999_999, bc.windowDuration + time.Second, false}, // the head stopped: no verdict
+	} {
+		if got := bc.BeyondHead(tc.height, now.Add(tc.at)); got != tc.beyond {
+			t.Errorf("BeyondHead(%d, +%v) = %v, want %v", tc.height, tc.at, got, tc.beyond)
+		}
+	}
+}

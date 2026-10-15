@@ -167,6 +167,25 @@ func LightMethodError(prev AnalysisResult) AnalysisResult {
 // check. Callers ask IsSuccess rather than comparing against it.
 const ReasonSuccess = "success"
 
+// ReasonBlockchainError is the Reason for a node's error answer about the
+// chain (a block, header or state it does not hold): retried on another
+// party, nobody scored.
+const ReasonBlockchainError = "blockchain_error"
+
+// ReasonFutureBlock is the Reason for a blockchain_error whose request names
+// a block past the chain's head (qos/evm): every node answers it alike, so a
+// retry only spends a relay. Retried like a blockchain_error unless the
+// service turns featureflag.FlagFutureBlockAnswers on.
+const ReasonFutureBlock = "future_block"
+
+// FutureBlock re-labels a blockchain_error verdict as ReasonFutureBlock,
+// keeping its retry, attribution and penalty.
+func FutureBlock(prev AnalysisResult, detail string) AnalysisResult {
+	prev.Reason = ReasonFutureBlock
+	prev.Details = detail + ": " + prev.Details
+	return prev
+}
+
 // ReasonMethodNotFound is the Reason for a JSON-RPC -32601: the host does not
 // serve the method. The analyzer does not retry it (a bogus method name must
 // not bounce across the pool); the heuristic middleware does, once the

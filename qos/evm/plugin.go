@@ -737,11 +737,17 @@ func (p *Plugin) RecordHead(endpoint domain.EndpointAddr, payload domain.Payload
 
 var _ qos.HeadRecorder = (*Plugin)(nil)
 
-// RefineVerdict implements qos.VerdictRefiner: a missing-state answer about a
-// block too recent to have been discarded is the supplier refusing
-// (RefusalVerdict).
+// RefineVerdict implements qos.VerdictRefiner: a missing-block answer about a
+// block past the head is the chain's answer to everyone (futureBlockVerdict),
+// and a missing-state answer about a block too recent to have been discarded
+// is the supplier refusing (RefusalVerdict).
 func (p *Plugin) RefineVerdict(endpoint domain.EndpointAddr, payload domain.Payload, result heuristic.AnalysisResult) (heuristic.AnalysisResult, bool) {
-	refined, ok, skip := RefusalVerdict(payload, result, p.Consensus.PerceivedBlock(), p.Consensus.BlocksIn)
+	head := p.Consensus.PerceivedBlock()
+	beyond := func(n uint64) bool { return p.Consensus.BeyondHead(n, time.Now()) }
+	if refined, ok := futureBlockVerdict(payload, result, head, beyond); ok {
+		return refined, true
+	}
+	refined, ok, skip := RefusalVerdict(payload, result, head, p.Consensus.BlocksIn)
 	if skip != "" {
 		p.logger.Debug("prune claim not judged", "endpoint", endpoint, "method", payload.Method(), "skip", skip, "detail", result.Details)
 	}

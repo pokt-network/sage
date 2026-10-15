@@ -524,6 +524,21 @@ func (bc *BlockConsensus) AnswerLag(height uint64, now time.Time) (lag uint64, s
 	return lag, lag > tolerance, true
 }
 
+// BeyondHead reports whether height is past the head this consensus expects
+// at now by more than AnswerLag lets an answer trail it: a block no node has
+// made yet, rather than one a node a little ahead of the pool already has.
+// False while the block rate is unknown or the head has not moved for a
+// window, as AnswerLag gives no verdict then.
+func (bc *BlockConsensus) BeyondHead(height uint64, now time.Time) bool {
+	p := bc.Projection()
+	age := now.Sub(p.headAt)
+	if p.perceived == 0 || p.rate <= 0 || age > p.window {
+		return false
+	}
+	head := p.perceived + uint64(p.rate*max(age, 0).Seconds())
+	return height > head+max(uint64(staleAnswerMinBlocks), uint64(p.rate*staleAnswerSeconds))
+}
+
 // staleStateSlack is what a state answer's block timestamp may trail the
 // clock by beyond two blocks before it counts as stale: propagation, clock
 // skew and the time the probe itself took.
