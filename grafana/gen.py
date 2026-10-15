@@ -18,6 +18,10 @@ import sys
 S = 'job="sage", environment="mainnet-sage"'
 DS = {"type": "prometheus", "uid": "prometheus"}
 RI = "$__rate_interval"
+# Retries a node's own answer started rather than a supplier failure: they
+# recover only when another node holds what this one lacked, and would read
+# as supplier recovery failing.
+CHAIN_RETRY = 'reason!~"blockchain_error|future_block|method_not_found"'
 
 
 def rec(name, matchers=""):
@@ -301,8 +305,8 @@ if not PUBLIC:
     relay_success(0)
 ops[0] = True
 stat("Hedge Fire Rate %",
-     f'sum(rate(sage_hedge_total{{{S}, result=~"primary_won|hedge_won|both_failed"}}[{RI}])) / '
-     f'sum(rate(sage_hedge_total{{{S}, result=~"primary_before_delay|primary_won|hedge_won|both_failed"}}[{RI}])) * 100',
+     f'sum(rate(sage_hedge_total{{{S}, result=~"primary_won|hedge_won|rehedge_won|both_failed"}}[{RI}])) / '
+     f'sum(rate(sage_hedge_total{{{S}, result=~"primary_before_delay|primary_won|hedge_won|rehedge_won|both_failed"}}[{RI}])) * 100',
      4, 4, unit="percent", mn=0, mx=100, steps=((0, "green"), (15, "yellow"), (30, "red")),
      desc="Share of hedged relays where the primary had not answered by the hedge delay, so a hedge was sent. "
           "High means primaries are often slower than the delay. Reads 100% on images older than 2433a89, "
@@ -321,10 +325,12 @@ stat("Drained Operators", f'count(max by (service_id, domain, rpc_type) (sage_dr
 ops[0] = False
 ops[0] = True
 stat("Retry Recovery %",
-     f'sum(rate(sage_retry_resolution_total{{{S}, outcome="recovered"}}[{RI}])) / '
-     f'sum(rate(sage_retry_resolution_total{{{S}}}[{RI}])) * 100',
+     f'sum(rate(sage_retry_resolution_total{{{S}, outcome="recovered", {CHAIN_RETRY}}}[{RI}])) / '
+     f'sum(rate(sage_retry_resolution_total{{{S}, {CHAIN_RETRY}}}[{RI}])) * 100',
      16, 4, unit="percent", mn=0, mx=100, steps=((0, "red"), (50, "yellow"), (80, "green")),
-     desc="Retries a later attempt rescued. The rest were exhausted: the client got the last answer or an error.")
+     desc="Retries of a supplier's failure (a 5xx, a timeout, a rate limit) that a later attempt rescued. Retries "
+          "started by the chain's own answer (blockchain_error, future_block, method_not_found) are left out: "
+          "they recover only when another node holds what this one lacked, and are counted under Retry Outcomes.")
 ops[0] = False
 ops[0] = True
 stat("Recovered Panics (1h)", f'sum(increase(sage_recovered_panics_total{{{S}}}[1h])) or vector(0)', 20, 4,
@@ -504,8 +510,8 @@ ts("Client Requests by RPC Type", [(f'sum by (rpc_type) (rate(sage_rpc_type_tota
 y[0] += 8
 ops[0] = True
 ts("Hedge Fire Rate by Service",
-   [(f'sum by (service_id) (rate(sage_hedge_total{{{S}, result=~"primary_won|hedge_won|both_failed"}}[{RI}])) / '
-     f'sum by (service_id) (rate(sage_hedge_total{{{S}, result=~"primary_before_delay|primary_won|hedge_won|both_failed"}}[{RI}])) * 100', "{{service_id}}")],
+   [(f'sum by (service_id) (rate(sage_hedge_total{{{S}, result=~"primary_won|hedge_won|rehedge_won|both_failed"}}[{RI}])) / '
+     f'sum by (service_id) (rate(sage_hedge_total{{{S}, result=~"primary_before_delay|primary_won|hedge_won|rehedge_won|both_failed"}}[{RI}])) * 100', "{{service_id}}")],
    0, 24, unit="percent", stack=False, fill=10, mn=0, steps=((0, "green"), (15, "yellow"), (30, "red")),
    desc="Share of hedged relays where a hedge was sent, by service. One service climbing while the others stay flat points "
         "at that service's suppliers, not the gateway.")
@@ -573,12 +579,24 @@ ts("Retry Outcomes", [(f'sum by (outcome) (rate(sage_retry_resolution_total{{{S}
 y[0] += 8
 ts("Exhausted Retries by Cause", [(f'sum by (reason) (rate(sage_retry_resolution_total{{{S}, outcome="exhausted"}}[{RI}]))', "{{reason}}")],
    0, 12, unit="reqps", stack=False,
-   desc="Retries that ran out, by the verdict that started them. blockchain_error here usually means the chain "
-        "state asked for exists on no node in the pool.")
+   desc="Retries that ran out, by the verdict that started them. blockchain_error: the block or state asked for "
+        "was on no node tried, often a node a block behind on a fast chain. future_block: a block past the chain's "
+        "head, which no node has (delivered without retry where future_block_answers is on).")
 ts("Degraded Responses", [(f'sum by (tier) (rate(sage_degraded_total{{{S}}}[{RI}]))', "{{tier}}")],
    12, 12, unit="reqps",
    desc="Requests served in degraded mode: pool collapse (every endpoint below the floor) or an answer sent with X-Degraded.")
 y[0] += 8
+if not PUBLIC:
+    ts("Full Node Behind the Chain",
+       [(f'scalar(max(sage_chain_view_external_floor{{{S}, service_id="pocket"}})) - max by (pod) (sage_full_node_block_height{{{S}}})', "{{pod}}")],
+       0, 12, unit="short", stack=False, fill=10, steps=((0, "green"), (3, "red")),
+       desc="Blocks the full node SAGE reads heights and sessions from trails the Pocket chain (its external source), per "
+            "pod. Above a few blocks for minutes, SAGE signs relays for a session that has ended and relay miners drop them.")
+    ts("Session Fetches by Outcome", [(f'sum by (outcome) (rate(sage_session_fetches_total{{{S}}}[{RI}]))', "{{outcome}}")],
+       12, 12, unit="reqps",
+       desc="GetSession calls to the full node. ok spikes at each session rollover. same_session is the node answering "
+            "the session that ended: a node behind at a boundary.")
+    y[0] += 8
 
 ops[0] = False
 # ---------------------------------------------------------------------------
