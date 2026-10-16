@@ -369,6 +369,12 @@ const (
 	// guard against leaving one party is for first attempts, and the retry's
 	// alternative is another host that refuses too. Off by default.
 	FlagArchivalRetry = "archival_retry"
+	// FlagQuery5xxRetry retries a query_5xx (a REST query a node answered
+	// 500, graded the chain's answer) once on another node: one that lacks
+	// the height or the index asked for answers so while another serves it.
+	// A genuine chain answer fails the retry too and the node's body is
+	// delivered as before. Off by default.
+	FlagQuery5xxRetry = "query_5xx_retry"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -439,6 +445,7 @@ var DefaultFlags = map[string]bool{
 	FlagRehedge:                 false,
 	FlagFutureBlockAnswers:      false,
 	FlagArchivalRetry:           false,
+	FlagQuery5xxRetry:           false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

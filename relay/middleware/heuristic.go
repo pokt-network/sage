@@ -49,7 +49,17 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 				// The plugin may know the route better than the analyzer
 				// (qos.VerdictRefiner): a verdict refined to "deliver" must
 				// also stop Retry, which keys on the error's own flag.
-				if refineVerdict(registry, ctx, &result) && !result.ShouldRetry {
+				refined := refineVerdict(registry, ctx, &result) && !retryQuery5xx(flags, ctx, &result)
+				// A query_5xx retried keeps the node's body for Retry to
+				// deliver if the retry fails as well.
+				if result.Reason == heuristic.ReasonQuery5xx && result.ShouldRetry {
+					if resp, ok := upstreamAnswer(err); ok {
+						ctx.Response, ctx.HeuristicResult = resp, &result
+						ctx.Err = retryVerdict(result.Reason)
+						return ctx.Err
+					}
+				}
+				if refined && !result.ShouldRetry {
 					// The HA relay miner hands a node's 5xx on as its own HTTP
 					// status: the answer arrives as an error carrying the
 					// node's body. Refined to the chain's answer, it is that
@@ -133,6 +143,7 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 			// design to a query it cannot serve is the chain's answer, not
 			// the host's failure (qos.VerdictRefiner).
 			refineVerdict(registry, ctx, &result)
+			retryQuery5xx(flags, ctx, &result)
 
 			// A block past the head is missing on every node: retrying it
 			// only spends a relay (featureflag.FlagFutureBlockAnswers).
@@ -191,14 +202,8 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 			}
 
 			if result.ShouldRetry {
-				relayErr := domain.NewRelayError(
-					domain.ErrEndpoint,
-					"heuristic analysis suggests retry: "+result.Reason,
-					domain.ErrRetryVerdict,
-					true,
-				)
-				ctx.Err = relayErr
-				return relayErr
+				ctx.Err = retryVerdict(result.Reason)
+				return ctx.Err
 			}
 
 			return nil
@@ -358,6 +363,23 @@ func gradeTimeoutBudget(r *heuristic.AnalysisResult, have, owed time.Duration) {
 // mainnet base (2026-09-26) one such node took the first attempt of numbered
 // eth_getBalance calls two years back, around 1,000 times in five minutes, on
 // every pod, answering "historical state is not available" each time.
+// retryVerdict is the error that makes Retry go again on a verdict's word.
+func retryVerdict(reason string) error {
+	return domain.NewRelayError(domain.ErrEndpoint, "heuristic analysis suggests retry: "+reason, domain.ErrRetryVerdict, true)
+}
+
+// retryQuery5xx turns a query_5xx into a retry where
+// featureflag.FlagQuery5xxRetry is on, and reports whether it did: another
+// node may hold the height or the index this one lacked. A genuine chain
+// answer fails the retry too, and Retry delivers the node's body it kept.
+func retryQuery5xx(flags featureflag.FlagStore, ctx *relay.Context, result *heuristic.AnalysisResult) bool {
+	if result.Reason != heuristic.ReasonQuery5xx || flags == nil || !flags.IsEnabled(ctx.Ctx, featureflag.FlagQuery5xxRetry, ctx.ServiceID) {
+		return false
+	}
+	result.ShouldRetry = true
+	return true
+}
+
 func observeAttempt(registry *qos.Registry, ctx *relay.Context) {
 	if len(ctx.Payloads) == 0 {
 		return

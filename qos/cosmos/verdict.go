@@ -14,8 +14,10 @@ var _ qos.VerdictRefiner = (*Plugin)(nil)
 
 // ReasonQuery5xx is the verdict reason for a 5xx on a REST route the node
 // answers 5xx to by design when the query itself cannot be served: the
-// answer is the chain's, delivered as is, nothing retried, nobody scored.
-const ReasonQuery5xx = "query_5xx"
+// answer is the chain's, delivered as is, nobody scored. Retried once where
+// featureflag.FlagQuery5xxRetry is on: a height or an index one node lacks
+// another may hold.
+const ReasonQuery5xx = heuristic.ReasonQuery5xx
 
 // query5xxPrefixes are the REST routes a gRPC-gateway node turns a query
 // failure into a 5xx on. The prefix match is on the raw path (query string

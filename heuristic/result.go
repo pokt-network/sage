@@ -172,6 +172,11 @@ const ReasonSuccess = "success"
 // party, nobody scored.
 const ReasonBlockchainError = "blockchain_error"
 
+// ReasonQuery5xx is the Reason for a 5xx a node answers by design to a query
+// it cannot serve (qos/cosmos): the chain's answer, delivered as is, nobody
+// scored; retried once where featureflag.FlagQuery5xxRetry is on.
+const ReasonQuery5xx = "query_5xx"
+
 // ReasonFutureBlock is the Reason for a blockchain_error whose request names
 // a block past the chain's head (qos/evm): every node answers it alike, so a
 // retry only spends a relay. Retried like a blockchain_error unless the

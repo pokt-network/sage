@@ -410,7 +410,7 @@ func smartQueryCtx(t *testing.T) (*relay.Context, *qos.Registry) {
 func TestHeuristic_PluginRefinesA5xxResponse(t *testing.T) {
 	ctx, reg := smartQueryCtx(t)
 	ctx.Response = &domain.Response{Body: []byte(`{"code":2,"message":"query wasm contract failed"}`), HTTPStatusCode: 500}
-	flags := newMockFlags(map[string]bool{"heuristic": true})
+	flags := newMockFlags(map[string]bool{"heuristic": true, featureflag.FlagQuery5xxRetry: false})
 
 	if err := middleware.Heuristic(flags, reg, middleware.HeuristicOptions{})(relay.Noop).HandleRelay(ctx); err != nil {
 		t.Fatalf("a refined 5xx must be delivered, got %v", err)
@@ -435,7 +435,7 @@ func TestHeuristic_PluginRefinesAnUpstream5xxError(t *testing.T) {
 	inner := relay.HandlerFunc(func(_ *relay.Context) error {
 		return domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable", &domain.UpstreamStatusError{Status: 500}, true)
 	})
-	flags := newMockFlags(map[string]bool{"heuristic": true})
+	flags := newMockFlags(map[string]bool{"heuristic": true, featureflag.FlagQuery5xxRetry: false})
 
 	err := middleware.Heuristic(flags, reg, middleware.HeuristicOptions{})(inner).HandleRelay(ctx)
 	if err == nil {
@@ -459,7 +459,7 @@ func TestHeuristic_PluginRefinesAnUpstream5xxError(t *testing.T) {
 // stands, final.
 func TestHeuristic_RefinedUpstream5xxDeliversTheNodesBody(t *testing.T) {
 	node := []byte(`{"code":2,"message":"Error parsing into type cw3_fixed_multisig::msg::QueryMsg: unknown variant ` + "`bogus`" + `: query wasm contract failed","details":[]}`)
-	flags := newMockFlags(map[string]bool{"heuristic": true})
+	flags := newMockFlags(map[string]bool{"heuristic": true, featureflag.FlagQuery5xxRetry: false})
 	for _, tc := range []struct {
 		name    string
 		body    []byte
@@ -505,5 +505,29 @@ func TestHeuristic_RetryVerdict_IsIdentifiable(t *testing.T) {
 	err := handler.HandleRelay(ctx)
 	if !errors.Is(err, domain.ErrRetryVerdict) {
 		t.Fatalf("retry verdict must wrap domain.ErrRetryVerdict, got %v", err)
+	}
+}
+
+// Behind query_5xx_retry a query_5xx goes again on another node, the node's
+// body kept for Retry to deliver if the retry fails too: as a response, and
+// as the HA relay miner's 500 carrying it.
+func TestHeuristic_Query5xxRetriedBehindItsFlag(t *testing.T) {
+	flags := newMockFlags(map[string]bool{"heuristic": true, featureflag.FlagQuery5xxRetry: true})
+	node := []byte(`{"code":2,"message":"height 5 is not available","details":[]}`)
+
+	ctx, reg := smartQueryCtx(t)
+	ctx.Response = &domain.Response{Body: node, HTTPStatusCode: 500}
+	err := middleware.Heuristic(flags, reg, middleware.HeuristicOptions{})(relay.Noop).HandleRelay(ctx)
+	if !errors.Is(err, domain.ErrRetryVerdict) || ctx.HeuristicResult == nil || ctx.HeuristicResult.Reason != "query_5xx" || !ctx.HeuristicResult.ShouldRetry {
+		t.Fatalf("response: err %v verdict %+v, want a retried query_5xx", err, ctx.HeuristicResult)
+	}
+
+	ctx, reg = smartQueryCtx(t)
+	inner := relay.HandlerFunc(func(_ *relay.Context) error {
+		return domain.NewRelayError(domain.ErrEndpoint, "upstream endpoint unavailable", &domain.UpstreamStatusError{Status: 500, Body: node}, true)
+	})
+	err = middleware.Heuristic(flags, reg, middleware.HeuristicOptions{})(inner).HandleRelay(ctx)
+	if !errors.Is(err, domain.ErrRetryVerdict) || !domain.IsRetryable(err) || ctx.Response == nil || string(ctx.Response.Body) != string(node) {
+		t.Fatalf("miner's 500: err %v response %+v, want a retry verdict holding the node's body", err, ctx.Response)
 	}
 }
