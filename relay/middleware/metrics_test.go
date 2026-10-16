@@ -294,7 +294,7 @@ func TestMetrics_RecordsOperatorAttemptPerAttempt(t *testing.T) {
 // method as the service's plugin catalogues it, the key method blocks use.
 func TestMetrics_AttemptHookCarriesTheCataloguedMethod(t *testing.T) {
 	var got []string
-	hook := WithAttemptHook(func(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, attribution, kind, method string) {
+	hook := WithAttemptHook(func(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, attribution, kind, method string, _ bool) {
 		got = append(got, string(svc)+" "+string(rpc)+" "+ep.Operator()+" "+attribution+" "+kind+" "+method)
 	})
 	inner := relay.HandlerFunc(func(ctx *relay.Context) error {

@@ -79,7 +79,7 @@ func TestEngine_SevereOperatorPassesTheClientGate(t *testing.T) {
 		h.e.OnCollapse(sei, jsonrpc, domain.EndpointAddrList{opb})
 	}
 	for i := 0; i < 300; i++ {
-		h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i%2 == 1)), "first", method)
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i%2 == 1)), "first", method, false)
 	}
 	h.clients(200, 8) // 4%: under the bar
 
@@ -113,10 +113,10 @@ func TestEngine_SeverityReadsFirstAttempts(t *testing.T) {
 	} {
 		h := newHarnessWith(t, fakeVouch{opb: true}, true, fakeRates{"opa.example": 0.25})
 		for i := 0; i < tc.firsts; i++ {
-			h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i < tc.firstOK)), "first", method)
+			h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i < tc.firstOK)), "first", method, false)
 		}
 		for i := 0; i < tc.retries; i++ {
-			h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i < tc.retryOK)), tc.kind, method)
+			h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i < tc.retryOK)), tc.kind, method, false)
 		}
 		h.clients(200, 0)
 		h.e.Evaluate(context.Background())
@@ -146,7 +146,7 @@ func TestEngine_HTTPCountsItemsNotSignals(t *testing.T) {
 	}
 	for i := 0; i < 60; i++ {
 		h.e.OnSignal(sei, jsonrpc, opa, reputation.SignalMajorError, false) // one worst signal per batch
-		h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i%2 == 0)), "first", method)
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(okIf(i%2 == 0)), "first", method, false)
 	}
 	h.clients(200, 40)
 	h.e.Evaluate(context.Background())
@@ -177,7 +177,7 @@ func TestEngine_MildOperatorStillMeetsTheClientGate(t *testing.T) {
 		if i%10 == 0 {
 			st = reputation.SignalMajorError
 		}
-		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first", method)
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first", method, false)
 	}
 	h.clients(200, 1)
 
@@ -223,7 +223,7 @@ func dilutedFeed(h *harness) {
 		if i%10 == 0 {
 			st = reputation.SignalMajorError
 		}
-		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first", method)
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first", method, false)
 	}
 	h.clients(200, 40)
 }
@@ -257,8 +257,8 @@ func TestEngine_TwoOperatorPoolNeverDrainsBoth(t *testing.T) {
 	vouch := fakeVouch{opa: true, opa2: true, opb: true}
 	bothFailing := func(h *harness) {
 		for i := 0; i < 100; i++ {
-			h.e.OnAttempt(sei, jsonrpc, opa, attr(reputation.SignalMajorError), "first", method)
-			h.e.OnAttempt(sei, jsonrpc, opb, attr(reputation.SignalMajorError), "first", method)
+			h.e.OnAttempt(sei, jsonrpc, opa, attr(reputation.SignalMajorError), "first", method, false)
+			h.e.OnAttempt(sei, jsonrpc, opb, attr(reputation.SignalMajorError), "first", method, false)
 		}
 		h.clients(200, 40)
 	}

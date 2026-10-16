@@ -112,14 +112,14 @@ func (h *harness) feedTraffic(opaSuccess, opaAttempts int) {
 		if i < opaSuccess {
 			st = reputation.SignalSuccess
 		}
-		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first", method)
+		h.e.OnAttempt(sei, jsonrpc, opa, attr(st), "first", method, false)
 	}
 	for i := 0; i < 100; i++ {
 		st := reputation.SignalSuccess
 		if i%10 >= 7 {
 			st = reputation.SignalMajorError
 		}
-		h.e.OnAttempt(sei, jsonrpc, opb, attr(st), "first", method)
+		h.e.OnAttempt(sei, jsonrpc, opb, attr(st), "first", method, false)
 	}
 }
 
@@ -258,7 +258,7 @@ func TestEngine_RateLimitedPerService(t *testing.T) {
 		h.e.OnCollapse(sei, domain.RPCTypeREST, domain.EndpointAddrList{opa})
 	}
 	for i := 0; i < 60; i++ {
-		h.e.OnAttempt(sei, domain.RPCTypeREST, opa, attr(reputation.SignalMajorError), "first", method)
+		h.e.OnAttempt(sei, domain.RPCTypeREST, opa, attr(reputation.SignalMajorError), "first", method, false)
 	}
 	h.e.Evaluate(context.Background())
 
@@ -311,7 +311,7 @@ func (h *harness) firsts(ep domain.EndpointAddr, kind string, n, chain int) {
 		if i < chain {
 			attribution = "blockchain"
 		}
-		h.e.OnAttempt(sei, jsonrpc, ep, attribution, kind, method)
+		h.e.OnAttempt(sei, jsonrpc, ep, attribution, kind, method, false)
 	}
 }
 
@@ -344,6 +344,23 @@ func TestEngine_ChainAnswerOutlier(t *testing.T) {
 				t.Fatalf("drains = %+v, want opa drained naming the chain errors", active)
 			}
 		}
+	}
+}
+
+// A chain error the heuristic retried never reached the caller: a host
+// lacking history whose refusals are retried onto one holding it answers
+// chain errors at many times its peers' share and harms nobody.
+func TestEngine_RetriedChainAnswersAreNotHarm(t *testing.T) {
+	h := newHarness(t, fakeVouch{opb: true}, false)
+	for i := 0; i < 60; i++ {
+		h.e.OnAttempt(sei, jsonrpc, opa, "blockchain", "first", method, true)
+	}
+	h.firsts(opb, "first", 100, 4)
+	h.clients(200, 0)
+	h.e.Evaluate(context.Background())
+
+	if evs, _ := h.log.Recent(context.Background(), "", 10); len(evs) != 0 {
+		t.Fatalf("events = %+v, want none: every chain error was retried", evs)
 	}
 }
 
@@ -383,7 +400,7 @@ func TestEngine_ChainAnswerNotAnOutlier(t *testing.T) {
 		}, 200, nil},
 		"client-attributed": {func(h *harness) {
 			for i := 0; i < 60; i++ {
-				h.e.OnAttempt(sei, jsonrpc, opa, "client", "first", method)
+				h.e.OnAttempt(sei, jsonrpc, opa, "client", "first", method, false)
 			}
 			h.firsts(opb, "first", 100, 4)
 		}, 200, nil},
@@ -407,7 +424,7 @@ func (h *harness) answers(ep domain.EndpointAddr, m string, n, chain int) {
 		if i < chain {
 			attribution = "blockchain"
 		}
-		h.e.OnAttempt(sei, jsonrpc, ep, attribution, "first", m)
+		h.e.OnAttempt(sei, jsonrpc, ep, attribution, "first", m, false)
 	}
 }
 
@@ -431,7 +448,7 @@ func TestEngine_ChainAnswersComparedByMethod(t *testing.T) {
 		"peers fail the method instead of answering": {func(h *harness) {
 			h.answers(opa, "block", 60, 60)
 			for i := 0; i < 100; i++ {
-				h.e.OnAttempt(sei, jsonrpc, opb, "supplier", "first", "block")
+				h.e.OnAttempt(sei, jsonrpc, opb, "supplier", "first", "block", false)
 			}
 		}, nil},
 		"peers too thin on the method": {func(h *harness) {

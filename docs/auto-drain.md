@@ -173,7 +173,10 @@ blocks use). It reads first and probation attempts only, from the Metrics
 middleware's attempt hook (`middleware.WithAttemptHook`): a retry or a hedge
 arm reaches whoever is left, carrying the requests others already failed. On
 each side it counts answers only; a 408 or a refusal is not an answer to
-compare. For every method the pool's other operators answered at least 20
+compare. A chain error the heuristic retried counts as an answer but not as a
+chain error: the caller never received it. A host lacking history whose
+refusals are retried onto one holding it otherwise read as an outlier
+harming nobody. For every method the pool's other operators answered at least 20
 times in the window, the operator's answers and chain errors are summed, along
 with the chain errors the peers' rate on that method predicts. A candidate is
 raised when, over at least the attempt floor of such matched answers, its

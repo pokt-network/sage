@@ -190,8 +190,8 @@ type Event struct {
 	// AnswerHarm is the chain errors the operator answered beyond its peers'
 	// share, per client request of the service in the window: errors callers
 	// received inside a 200, which ClientFailure cannot see. Set only when the
-	// share is an outlier (chainGap, chainRatio). It overstates a little: a
-	// chain error the heuristic retries is not delivered.
+	// share is an outlier (chainGap, chainRatio). A chain error the heuristic
+	// retried is not counted (OnAttempt): it was not delivered.
 	AnswerHarm float64 `json:"answer_harm,omitempty"`
 	// PeerOperatorRate, PeerSuccessRate and PeerFirstSuccess are the medians
 	// of the pool's other operators measured on the same window (minAttempts),
@@ -423,8 +423,11 @@ func (e *Engine) OnSignal(svc domain.ServiceID, rpc domain.RPCType, ep domain.En
 // toward the fair sample the chain-answer and severity reads use: a retry or a
 // hedge arm reaches whoever is left with whatever budget is left, carrying the
 // requests other operators already failed. A client-attributed attempt is
-// nobody's and is not counted.
-func (e *Engine) OnAttempt(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, attribution, kind, method string) {
+// nobody's and is not counted. A chain error whose verdict retried it counts
+// as an answer but not as a chain error: the client did not receive it, and
+// on a pool where a node lacking history is retried onto one holding it, it
+// read as harm no caller saw.
+func (e *Engine) OnAttempt(svc domain.ServiceID, rpc domain.RPCType, ep domain.EndpointAddr, attribution, kind, method string, retried bool) {
 	if !e.counting.Load() || attribution == heuristic.AttrClient.String() {
 		return
 	}
@@ -447,7 +450,7 @@ func (e *Engine) OnAttempt(svc domain.ServiceID, rpc domain.RPCType, ep domain.E
 	}
 	m := c.method(method)
 	m.answered++
-	if attribution == heuristic.AttrBlockchain.String() {
+	if attribution == heuristic.AttrBlockchain.String() && !retried {
 		m.chain++
 	}
 }

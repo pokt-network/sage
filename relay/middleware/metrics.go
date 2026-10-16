@@ -49,9 +49,11 @@ func methodClassOf(p qos.Plugin, payload domain.Payload) string {
 
 // AttemptHook is told every attempt Metrics records against an operator:
 // service, RPC type, endpoint, attribution (none, blockchain, supplier,
-// unknown, client), kind (first, retry, hedge, probation) and the method as
-// the service's plugin catalogues it ("" when it has no notion of one).
-type AttemptHook func(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution, kind, method string)
+// unknown, client), kind (first, retry, hedge, probation), the method as the
+// service's plugin catalogues it ("" when it has no notion of one), and
+// whether the attempt's verdict asked for a retry: an answer retried is not
+// the one the client receives.
+type AttemptHook func(serviceID domain.ServiceID, rpcType domain.RPCType, endpoint domain.EndpointAddr, attribution, kind, method string, retried bool)
 
 // MetricsOption configures Metrics.
 type MetricsOption func(*metricsOptions)
@@ -125,7 +127,8 @@ func Metrics(recorder MetricsRecorder, opts ...MetricsOption) relay.Middleware {
 				recorder.RecordOperatorAttempt(ctx.ServiceID, ctx.RPCType, ctx.Endpoint,
 					attribution, kind, class, latency)
 				if o.attemptHook != nil {
-					o.attemptHook(ctx.ServiceID, ctx.RPCType, ctx.Endpoint, attribution, kind, cataloguedMethod(ctx))
+					retried := ctx.HeuristicResult != nil && ctx.HeuristicResult.ShouldRetry
+					o.attemptHook(ctx.ServiceID, ctx.RPCType, ctx.Endpoint, attribution, kind, cataloguedMethod(ctx), retried)
 				}
 			}
 

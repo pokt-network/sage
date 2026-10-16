@@ -15,7 +15,7 @@ func (h *harness) failing(ep domain.EndpointAddr, ok, n int) {
 		if i < ok {
 			st = reputation.SignalSuccess
 		}
-		h.e.OnAttempt(sei, jsonrpc, ep, attr(st), "first", method)
+		h.e.OnAttempt(sei, jsonrpc, ep, attr(st), "first", method, false)
 	}
 }
 
