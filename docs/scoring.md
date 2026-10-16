@@ -615,7 +615,10 @@ charges it only when selecting for a request of that class, as one more party
 penalty (the largest charged, never stacked). It moves a party down for the
 class it fails; it cannot create capacity a whole pool lacks in that class.
 `sage_party_class_share` is measured with the flag off, so who is good only on
-simple calls is visible before anything is charged.
+simple calls is visible before anything is charged. A supplier's 5xx counts at
+a major error's half here, though it is minor to the chronic rate: a backend
+that sheds the expensive calls under load answers them 5xx while it serves the
+cheap ones, and nothing else would see it.
 
 ### 7.4 Probe-only endpoints: selectable at full score
 

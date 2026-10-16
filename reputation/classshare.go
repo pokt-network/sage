@@ -69,7 +69,7 @@ func (s *serviceImpl) PartyClassShares() map[string][]PartyShare {
 
 // recordClass counts one graded attempt toward its party's share in the
 // request's class: first client attempts only, as recordThrottle, weighted by
-// FailureWeight so a minor verdict (a throttle) is not a failure here.
+// classFailureWeight.
 func (s *serviceImpl) recordClass(serviceID domain.ServiceID, endpoint domain.EndpointAddr, rpcType domain.RPCType, signal Signal, now time.Time) {
 	if signal.Type == "" || signal.Probe || signal.Leftover || rpcType == domain.RPCTypeWebSocket {
 		return
@@ -79,7 +79,19 @@ func (s *serviceImpl) recordClass(serviceID domain.ServiceID, endpoint domain.En
 	if t == nil || party == "" {
 		return
 	}
-	t.recordN(opID{svc: serviceID, op: party}, 1, FailureWeight(signal.Type), now)
+	t.recordN(opID{svc: serviceID, op: party}, 1, classFailureWeight(signal), now)
+}
+
+// classFailureWeight is FailureWeight, so a throttle (minor) is not a failure,
+// except a supplier's 5xx, minor too, which weighs a major's half here: a
+// backend shedding the calls that cost it something answers those 5xx while
+// it serves the cheap ones, and its class share is where that shows. The
+// reasons are heuristic's for the relay miner's 5xx and the node's.
+func classFailureWeight(signal Signal) float64 {
+	if signal.Type == SignalMinorError && (signal.Reason == "upstream_5xx" || signal.Reason == "http_5xx") {
+		return FailureWeight(SignalMajorError)
+	}
+	return FailureWeight(signal.Type)
 }
 
 // priceClasses measures and prices every class tracker into v.

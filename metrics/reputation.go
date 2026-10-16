@@ -464,7 +464,7 @@ func NewClassShareCollector(each func(yield func(serviceID domain.ServiceID, par
 		parties: cappedLabel(maxOperatorLabels),
 		shareDesc: prometheus.NewDesc(
 			"sage_party_class_share",
-			"Share of a party's first client attempts (not WebSocket) in a method class (light, standard, heavy) that failed, weighted as the chronic rate weighs them, by service, party and class, over counts halving every 30 minutes, on this replica. Only parties with at least 200 attempts' evidence in the class. Measured whatever the flags say.",
+			"Share of a party's first client attempts (not WebSocket) in a method class (light, standard, heavy) that failed, weighted as the chronic rate weighs them except a supplier's 5xx, counted at a major error's half, by service, party and class, over counts halving every 30 minutes, on this replica. Only parties with at least 200 attempts' evidence in the class. Measured whatever the flags say.",
 			[]string{"service_id", "party", "class"}, nil,
 		),
 		penDesc: prometheus.NewDesc(

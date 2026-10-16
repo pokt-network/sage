@@ -314,7 +314,8 @@ const (
 	// default.
 	FlagThrottleShare = "throttle_share"
 	// FlagClassShare charges a party for its share of failed first attempts
-	// in a method class (light, standard, heavy), relative to the service's
+	// (a supplier's 5xx counted at a major error's half) in a method class
+	// (light, standard, heavy), relative to the service's
 	// cleanest party in that class, when selecting for a request of that
 	// class only (sage_party_class_share): 0 within
 	// reputation.class_share_floor, linear to -40 at

@@ -95,7 +95,8 @@ func TestClassShare_ChargesOnlyTheFailingClass(t *testing.T) {
 // The class share counts first client attempts with a class, failures weighed
 // as the chronic rate weighs them: a throttle is minor and not a failure, and
 // a retry or hedge arm, a probe, a WebSocket attempt or an unclassed one does
-// not count.
+// not count. A supplier's 5xx, minor to the chronic rate, weighs a major's
+// half here: a backend shedding the calls that cost it answers them 5xx.
 func TestClassShare_CountsFirstClassedAttempts(t *testing.T) {
 	s := NewService(NewMemoryStorage(), nil, ServiceConfig{})
 	ep := domain.EndpointAddr("pokt1a-https://r001.flaky.example")
@@ -110,6 +111,8 @@ func TestClassShare_CountsFirstClassedAttempts(t *testing.T) {
 		{"timeout", domain.RPCTypeJSONRPC, Signal{Type: SignalMajorError, Class: domain.MethodClassHeavy}, 1, 0.5},
 		{"critical", domain.RPCTypeJSONRPC, Signal{Type: SignalCriticalError, Class: domain.MethodClassHeavy}, 1, 1},
 		{"throttle", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Class: domain.MethodClassHeavy}, 1, 0},
+		{"miner's 5xx", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Reason: "upstream_5xx", Class: domain.MethodClassHeavy}, 1, 0.5},
+		{"node's 5xx", domain.RPCTypeJSONRPC, Signal{Type: SignalMinorError, Reason: "http_5xx", Class: domain.MethodClassHeavy}, 1, 0.5},
 		{"success", domain.RPCTypeJSONRPC, Signal{Type: SignalSuccess, Class: domain.MethodClassHeavy}, 1, 0},
 		{"retry or hedge arm", domain.RPCTypeJSONRPC, Signal{Type: SignalMajorError, Class: domain.MethodClassHeavy, Leftover: true}, 0, 0},
 		{"probe", domain.RPCTypeJSONRPC, Signal{Type: SignalMajorError, Class: domain.MethodClassHeavy, Probe: true}, 0, 0},
