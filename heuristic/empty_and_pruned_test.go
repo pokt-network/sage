@@ -93,6 +93,7 @@ func TestReportsMissingHistoricalState(t *testing.T) {
 		"historical state 0xabc",
 		"state not available",
 		"Missing trie node",
+		"old data not available due to pruning: requested block 11627421, blocks are available from block 11661271",
 	}
 	for _, msg := range missing {
 		if !ReportsMissingHistoricalState(msg) {
@@ -109,5 +110,15 @@ func TestReportsMissingHistoricalState(t *testing.T) {
 		if ReportsMissingHistoricalState(msg) {
 			t.Fatalf("%q must not read as missing historical state", msg)
 		}
+	}
+}
+
+// erigon's retention wording is the chain's answer about a block the node no
+// longer holds: retried, since another node may hold it, and nobody scored.
+func TestAnalyze_ErigonPruningIsABlockchainError(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"old data not available due to pruning: requested block 11627421, blocks are available from block 11661271"}}`)
+	r := Analyze(body, 200, domain.RPCTypeJSONRPC)
+	if r.Reason != ReasonBlockchainError || r.Attribution != AttrBlockchain || !r.ShouldRetry || r.ShouldPenalize {
+		t.Fatalf("%+v, want a retried, unscored blockchain_error", r)
 	}
 }

@@ -229,8 +229,10 @@ func reportsMethodUnsupported(lowerMsg string) bool {
 //
 // Every vendor words this differently, so the entries are deliberately short
 // prefixes: geth hash-scheme says "missing trie node", geth path-scheme (PBSS)
-// says "metadata is not found, <block>", erigon "state not available", and
-// gnosis/polygon "historical state is not available" / "historical state <hash>".
+// says "metadata is not found, <block>", erigon "state not available" (and
+// "old data not available due to pruning" for a block it no longer keeps),
+// and gnosis/polygon "historical state is not available" / "historical state
+// <hash>".
 var capabilityLimitationPatterns = []string{
 	"missing trie node",
 	"metadata is not found",
@@ -241,6 +243,7 @@ var capabilityLimitationPatterns = []string{
 	"no state found for block",
 	"is pruned",
 	"pruned history",
+	"old data not available",
 	"height is not available",
 	"haven't been fully indexed",
 	"not been fully indexed",
