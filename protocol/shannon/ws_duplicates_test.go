@@ -10,6 +10,7 @@ import (
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
 	sessiontypes "github.com/pokt-network/poktroll/x/session/types"
 
+	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/qos"
 	"github.com/pokt-network/sage/qos/evm"
 	"github.com/pokt-network/sage/reputation"
@@ -104,3 +105,16 @@ func TestWSDuplicates_PenalizesARepeatingSupplier(t *testing.T) {
 }
 
 func defaultDupLimits() DuplicateLimits { return defaultDuplicateLimits }
+
+// An evicted party's endpoints are dropped, unless they are all there is.
+func TestWithoutEvicted(t *testing.T) {
+	a := domain.EndpointAddr("pokt1a-https://n1.op-alpha.example")
+	b := domain.EndpointAddr("pokt1b-https://n1.op-beta.example")
+	evicted := map[string]bool{a.Party(): true}
+	if got := withoutEvicted(domain.EndpointAddrList{a, b}, evicted); len(got) != 1 || got[0] != b {
+		t.Errorf("with another party left: %v, want [%s]", got, b)
+	}
+	if got := withoutEvicted(domain.EndpointAddrList{a}, evicted); len(got) != 1 || got[0] != a {
+		t.Errorf("evicted party alone: %v, want it kept", got)
+	}
+}

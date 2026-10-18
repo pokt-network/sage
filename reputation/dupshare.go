@@ -25,8 +25,9 @@ const (
 	// dupShareMinNotes is the decayed evidence a party needs to be measured,
 	// or to set the service's baseline.
 	dupShareMinNotes = 500
-	// dupSharePenalty is the most the term takes off a score.
-	dupSharePenalty = -40.0
+	// DuplicateSharePenalty is the most the term takes off a score: a party
+	// charged it is past websocket.duplicate_share_full.
+	DuplicateSharePenalty = -40.0
 	// dupShareHold keeps a priced party's penalty once too little evidence
 	// remains to measure it: the penalty moves its connections away, which
 	// starves the evidence (staleShareHold).
@@ -187,7 +188,7 @@ type shareRule struct {
 }
 
 // dupRule prices WebSocket repeats.
-var dupRule = shareRule{minEvidence: dupShareMinNotes, most: dupSharePenalty, hold: dupShareHold,
+var dupRule = shareRule{minEvidence: dupShareMinNotes, most: DuplicateSharePenalty, hold: dupShareHold,
 	floor: DefaultDuplicateShareFloor, full: DefaultDuplicateShareFull}
 
 // priceShares measures every party with enough evidence (Attempts the

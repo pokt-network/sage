@@ -121,3 +121,67 @@ func (d *wsDuplicates) observe(dup bool, now time.Time) bool {
 	}
 	return dup && d.drop()
 }
+
+// duplicateShares is the reputation service's priced repeat shares
+// (reputation.serviceImpl.PartyDuplicateShares).
+type duplicateShares interface {
+	PartyDuplicateShares() []reputation.PartyShare
+}
+
+// evictedParties is the parties ws_duplicate_evict keeps off WebSocket on
+// serviceID: the ones its repeat share charges the whole penalty. Nil with
+// the flag off.
+func (r *WSRelayer) evictedParties(serviceID domain.ServiceID) map[string]bool {
+	shares, ok := r.deps.Reputation.(duplicateShares)
+	if !ok || !r.deps.Flags.IsEnabled(context.Background(), featureflag.FlagWSDuplicateEvict, serviceID) {
+		return nil
+	}
+	var out map[string]bool
+	for _, s := range shares.PartyDuplicateShares() {
+		if s.ServiceID == serviceID && s.Penalty <= reputation.DuplicateSharePenalty {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[s.Party] = true
+		}
+	}
+	return out
+}
+
+// withoutEvicted drops the endpoints of evicted parties, unless that would
+// leave none: a session holding nothing else is served by them.
+func withoutEvicted(eps domain.EndpointAddrList, evicted map[string]bool) domain.EndpointAddrList {
+	if len(evicted) == 0 {
+		return eps
+	}
+	kept := make(domain.EndpointAddrList, 0, len(eps))
+	for _, ep := range eps {
+		if !evicted[ep.Party()] {
+			kept = append(kept, ep)
+		}
+	}
+	if len(kept) == 0 {
+		return eps
+	}
+	return kept
+}
+
+// evictedWithElsewhere reports whether ep's party is evicted on serviceID and
+// the session's WebSocket endpoints hold another party to move to: with none,
+// a move would only land on the same party again.
+func (r *WSRelayer) evictedWithElsewhere(serviceID domain.ServiceID, ep domain.EndpointAddr) bool {
+	evicted := r.evictedParties(serviceID)
+	if !evicted[ep.Party()] || r.deps.Protocol == nil {
+		return false
+	}
+	eps, err := r.deps.Protocol.AvailableEndpoints(context.Background(), serviceID, domain.RPCTypeWebSocket)
+	if err != nil {
+		return false
+	}
+	for _, other := range eps {
+		if !evicted[other.Party()] {
+			return true
+		}
+	}
+	return false
+}

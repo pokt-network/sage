@@ -36,6 +36,13 @@ type signalLog struct {
 	tieredRep
 	mu      sync.Mutex
 	reasons map[domain.EndpointAddr][]string
+	dups    []reputation.PartyShare
+}
+
+func (s *signalLog) PartyDuplicateShares() []reputation.PartyShare {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dups
 }
 
 func (s *signalLog) RecordSignal(_ context.Context, _ domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType, sig reputation.Signal) error {
@@ -239,6 +246,68 @@ func TestWSOpen_DrainMovesALiveConnection(t *testing.T) {
 			require.False(t, moved(), "with ws_drain_rebind off the connection must stay")
 		}
 	}
+}
+
+// A party charged the whole repeat-share penalty is left by a live connection
+// and not drawn by a new one, though it scores the better tier; with
+// ws_duplicate_evict off both stay on it.
+func TestWSOpen_EvictedRepeaterIsLeftAndNotDrawn(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		f := newTwoSuppliers(t, map[string]bool{featureflag.FlagWSDuplicateEvict: on})
+		f.r.chainHeight = func() int64 { return 105 } // inside the session: no rollover
+		f.r.expiryCheck = 20 * time.Millisecond
+		bound := func(ep domain.EndpointAddr) int {
+			f.spy.mu.Lock()
+			defer f.spy.mu.Unlock()
+			n := 0
+			for _, b := range f.spy.bound {
+				if strings.HasPrefix(b, ep.Operator()+"|") {
+					n++
+				}
+			}
+			return n
+		}
+		f.dial()
+		require.Eventually(t, func() bool { return bound(f.silentEP) == 1 }, 2*time.Second, 10*time.Millisecond,
+			"the connection never bound the better-tier supplier")
+
+		f.rep.mu.Lock()
+		f.rep.dups = []reputation.PartyShare{{ServiceID: "eth", Party: f.silentEP.Party(), Penalty: reputation.DuplicateSharePenalty}}
+		f.rep.mu.Unlock()
+		f.dial()
+		if on {
+			require.Eventually(t, func() bool { return bound(f.echoEP) == 2 }, 2*time.Second, 10*time.Millisecond,
+				"the live connection must move off the repeater and the new one must not draw it")
+			require.Equal(t, 1, bound(f.silentEP))
+		} else {
+			require.Eventually(t, func() bool { return bound(f.silentEP) == 2 }, 2*time.Second, 10*time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
+			require.Zero(t, bound(f.echoEP), "with ws_duplicate_evict off the repeater keeps both")
+		}
+	}
+}
+
+// With every party in the session evicted there is nowhere better: the live
+// connection stays and a new one is placed as without the flag, rather than
+// moved from one repeater to another every cooldown.
+func TestWSOpen_EvictionWithNoAlternativeStays(t *testing.T) {
+	f := newTwoSuppliers(t, map[string]bool{featureflag.FlagWSDuplicateEvict: true})
+	f.r.chainHeight = func() int64 { return 105 }
+	f.r.expiryCheck = 20 * time.Millisecond
+	binds := func() int {
+		f.spy.mu.Lock()
+		defer f.spy.mu.Unlock()
+		return len(f.spy.bound)
+	}
+	f.dial()
+	require.Eventually(t, func() bool { return binds() == 1 }, 2*time.Second, 10*time.Millisecond, "the connection never bound")
+	f.rep.mu.Lock()
+	for _, ep := range []domain.EndpointAddr{f.silentEP, f.echoEP} {
+		f.rep.dups = append(f.rep.dups, reputation.PartyShare{ServiceID: "eth", Party: ep.Party(), Penalty: reputation.DuplicateSharePenalty})
+	}
+	f.rep.mu.Unlock()
+	time.Sleep(200 * time.Millisecond)
+	require.Equal(t, 1, binds(), "with no other party to move to, the live connection must stay")
 }
 
 // A supplier's first silent request is minor; a second within the window is

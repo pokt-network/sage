@@ -635,12 +635,16 @@ const wsDrainRebindCooldown = 5 * time.Minute
 // planned move (ws_drain_rebind), and reports whether it did. A drain changed
 // only who new connections drew; on mainnet robinhood (2026-10-04) thirteen
 // connections stayed on a drained, stale supplier until their sessions
-// ended.
+// ended. A supplier whose party ws_duplicate_evict keeps off WebSocket is
+// left the same way, while the session holds anyone else to move to.
 func (r *WSRelayer) moveOffDrained(serviceID domain.ServiceID, current *atomic.Pointer[wsMessageProcessor], bridge *websockets.Bridge, movedAt *time.Time) bool {
 	p := current.Load()
-	if p == nil || !bridge.Rebindable() || time.Since(*movedAt) < wsDrainRebindCooldown ||
-		!r.drainedWS(serviceID, p.endpointAddr) ||
-		!r.deps.Flags.IsEnabled(context.Background(), featureflag.FlagWSDrainRebind, serviceID) {
+	if p == nil || !bridge.Rebindable() || time.Since(*movedAt) < wsDrainRebindCooldown {
+		return false
+	}
+	drained := r.drainedWS(serviceID, p.endpointAddr) &&
+		r.deps.Flags.IsEnabled(context.Background(), featureflag.FlagWSDrainRebind, serviceID)
+	if !drained && !r.evictedWithElsewhere(serviceID, p.endpointAddr) {
 		return false
 	}
 	*movedAt = time.Now()
@@ -1239,6 +1243,8 @@ func (r *WSRelayer) resolveEndpoint(ctx context.Context, serviceID domain.Servic
 	if len(endpoints) == 0 {
 		return nil, "no websocket endpoints available", errors.New("no endpoints for rpc type websocket")
 	}
+	// Where AvailableEndpoints drops a drain: before every narrowing below.
+	endpoints = withoutEvicted(endpoints, r.evictedParties(serviceID))
 	candidates := r.freshest(serviceID, endpoints)
 	if top := r.topTier(ctx, serviceID, candidates); !allTried(top, tried) {
 		candidates = top

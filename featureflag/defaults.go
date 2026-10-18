@@ -305,6 +305,15 @@ const (
 	// party_penalties_websocket, which is about penalties measured on HTTP.
 	// Off by default.
 	FlagWSDuplicateShare = "ws_duplicate_share"
+	// FlagWSDuplicateEvict keeps a party that ws_duplicate_share charges its
+	// whole penalty off WebSocket in the service: new connections and rebinds
+	// do not draw it unless nothing else is in the session, and a live
+	// connection on it moves as a planned rebind, the way ws_drain_rebind
+	// moves one off a drain. The penalty only lowers a tier, and a session
+	// whose alternatives score no better kept handing the repeater
+	// connections it is paid for frame by frame. Reads the penalty, so it
+	// does nothing where ws_duplicate_share is off. Off: the penalty alone.
+	FlagWSDuplicateEvict = "ws_duplicate_evict"
 	// FlagThrottleShare charges a party for the share of its first client
 	// attempts that were throttled (an HTTP 429, or a node's own rate-limit
 	// answer), relative to the service's cleanest party, on every key it has
@@ -436,6 +445,7 @@ var DefaultFlags = map[string]bool{
 	FlagArchivalPerAttempt:      true,
 	FlagArchivalRouting:         true,
 	FlagWSDuplicateShare:        false,
+	FlagWSDuplicateEvict:        false,
 	FlagThrottleShare:           false,
 	FlagClassShare:              false,
 	FlagWSDuplicatePenalty:      true,
