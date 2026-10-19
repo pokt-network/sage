@@ -24,7 +24,7 @@ import (
 // have) is nobody's signal and is dropped here, so it is not an attempt for
 // the rate term either. A blockchain-attributed answer (block not found, a
 // pruned height) is the endpoint answering correctly about a chain state it
-// does not have, and scores a success.
+// does not have, and scores a success (nothing, under chain_answers_unscored).
 //
 // Gated by scoring_v2. Off, this is a pass-through and Observe scores as
 // before; on, Observe records nothing.
@@ -44,14 +44,16 @@ func Score(flags featureflag.FlagStore, repSvc reputation.Service) relay.Middlew
 			if nobodysSignal(ctx.HeuristicResult, err) {
 				return err
 			}
-			sig := buildSignal(ctx, err, time.Since(start))
+			sig := buildSignal(flags, ctx, err, time.Since(start))
 			sig.Leftover = ctx.AttemptKind == relay.AttemptRetry || ctx.AttemptKind == relay.AttemptHedge
 			sig.Class = requestClass(ctx)
 			if sig.Type == "" {
-				// A retried-but-unscored verdict leaves no signal; the timeline
+				// A retried-but-unscored verdict, or an unscored chain answer
+				// (delivered, so no error), leaves no signal; the timeline
 				// still says which host answered what (reputation.Noter).
-				if n, ok := repSvc.(reputation.Noter); ok && err != nil && ctx.HeuristicResult != nil && !errors.Is(err, domain.ErrEndpointsStale) {
-					n.RecordNote(ctx.ServiceID, ctx.Endpoint, ctx.RPCType, ctx.HeuristicResult.Reason, ctx.HeuristicResult.Details)
+				res := ctx.HeuristicResult
+				if n, ok := repSvc.(reputation.Noter); ok && res != nil && (err != nil || res.Attribution == heuristic.AttrBlockchain) && !errors.Is(err, domain.ErrEndpointsStale) {
+					n.RecordNote(ctx.ServiceID, ctx.Endpoint, ctx.RPCType, res.Reason, res.Details)
 				}
 				return err
 			}

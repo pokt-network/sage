@@ -385,6 +385,12 @@ const (
 	// A genuine chain answer fails the retry too and the node's body is
 	// delivered as before. Off by default.
 	FlagQuery5xxRetry = "query_5xx_retry"
+	// FlagChainAnswersUnscored records nothing for a blockchain-attributed
+	// verdict that carries no penalty (a pruned height, a missing block, a
+	// node's own internal error) instead of a success: the attempt is neither
+	// a success nor an attempt for the rate term, and the timeline keeps an
+	// unscored note. Off: such an answer scores a success.
+	FlagChainAnswersUnscored = "chain_answers_unscored"
 )
 
 // DefaultFlags is the set of known flags and their default state. It is the ONE
@@ -457,6 +463,7 @@ var DefaultFlags = map[string]bool{
 	FlagFutureBlockAnswers:      false,
 	FlagArchivalRetry:           false,
 	FlagQuery5xxRetry:           false,
+	FlagChainAnswersUnscored:    false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

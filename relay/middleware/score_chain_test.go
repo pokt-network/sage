@@ -111,7 +111,12 @@ func connectionRefused(*relay.Context) error {
 // buildChain wires batch → observe → retry → hedge → [scripted select] →
 // score → heuristic → [scripted send], with a real Heuristic middleware.
 func buildChain(rep reputation.Service, b *scriptedBackend, hedgeDelay time.Duration, maxRetries int) relay.Handler {
-	flags := newFlags(featureflag.FlagScoringV2, featureflag.FlagRetry, featureflag.FlagHedge, featureflag.FlagHeuristic)
+	return buildChainFlags(rep, b, hedgeDelay, maxRetries)
+}
+
+// buildChainFlags is buildChain with extra flags on.
+func buildChainFlags(rep reputation.Service, b *scriptedBackend, hedgeDelay time.Duration, maxRetries int, extra ...string) relay.Handler {
+	flags := newFlags(append([]string{featureflag.FlagScoringV2, featureflag.FlagRetry, featureflag.FlagHedge, featureflag.FlagHeuristic}, extra...)...)
 	retryCfg := func(domain.ServiceID) config.RetryConfig {
 		return config.RetryConfig{Enabled: true, MaxRetries: maxRetries, HedgeDelay: hedgeDelay}
 	}
@@ -215,6 +220,49 @@ func TestChain_BlockchainErrorScoresSuccessAndRetries(t *testing.T) {
 	assert.Equal(t, "blockchain_error", aReason, "the analyzer's own verdict")
 	assert.NotContains(t, aReason, "heuristic analysis suggests retry",
 		"the retry wrapper's message is not a reputation reason")
+}
+
+// notingRepService also keeps the timeline-only notes (reputation.Noter).
+type notingRepService struct {
+	recordingRepService
+	notes []domain.EndpointAddr
+}
+
+func (r *notingRepService) RecordNote(_ domain.ServiceID, ep domain.EndpointAddr, _ domain.RPCType, _, _ string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notes = append(r.notes, ep)
+}
+
+// heightNotAvailable is a CometBFT node answering a height it has pruned:
+// graded AttrBlockchain and delivered, not retried, so the attempt carries no
+// relay error.
+func heightNotAvailable(ctx *relay.Context) error {
+	ctx.Response = &domain.Response{Body: []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"height 5 is not available, lowest height is 10"}}`), HTTPStatusCode: 200}
+	return nil
+}
+
+// Under chain_answers_unscored a blockchain-attributed answer records no
+// signal, retried or delivered, and the timeline still notes it.
+func TestChain_ChainAnswersUnscored(t *testing.T) {
+	for name, tc := range map[string]struct {
+		answer func(*relay.Context) error
+		wantB  []reputation.SignalType
+	}{
+		"retried":   {blockNotFound, []reputation.SignalType{reputation.SignalSuccess}},
+		"delivered": {heightNotAvailable, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rep := &notingRepService{}
+			b := &scriptedBackend{endpoints: []domain.EndpointAddr{epA, epB},
+				responses: map[domain.EndpointAddr]func(*relay.Context) error{epA: tc.answer, epB: okJSON}}
+			require.NoError(t, buildChainFlags(rep, b, 0, 2, featureflag.FlagChainAnswersUnscored).HandleRelay(chainCtx(1)))
+			got := signalsByEndpoint(&rep.recordingRepService)
+			assert.Empty(t, got[epA], "the chain's answer is no evidence either way")
+			assert.Equal(t, tc.wantB, got[epB])
+			assert.Equal(t, []domain.EndpointAddr{epA}, rep.notes, "the timeline still says who answered what")
+		})
+	}
 }
 
 func TestChain_HedgeLoserIsScored(t *testing.T) {

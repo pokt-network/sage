@@ -21,7 +21,8 @@ import (
 //     error — except when the relay errored and ctx.HeuristicResult
 //     attributes the failure to the client (e.g. a client hang-up): that
 //     case is nobody's signal, and buildSignal returns a zero Signal that
-//     the call site skips recording entirely. This is the pre-v2 path: one
+//     the call site skips recording entirely; so is a blockchain-attributed
+//     answer under chain_answers_unscored. This is the pre-v2 path: one
 //     signal per CLIENT REQUEST, from outside retry and hedge, so the
 //     attempts that lost are never seen. Under the scoring_v2 flag it does
 //     not run at all — the score middleware records one signal per ATTEMPT
@@ -62,7 +63,7 @@ func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputatio
 			// Under scoring_v2 the score middleware records per attempt;
 			// recording here too would count every request twice.
 			if ctx.Endpoint != "" && !scoringV2Enabled(flags, ctx) {
-				sig := buildSignal(ctx, err, latency)
+				sig := buildSignal(flags, ctx, err, latency)
 				if sig.Type != "" {
 					// Best-effort: ignore RecordSignal errors so we never block a relay.
 					_ = repSvc.RecordSignal(context.Background(), ctx.ServiceID, ctx.Endpoint, ctx.RPCType, sig)
@@ -93,7 +94,7 @@ func Observe(flags featureflag.FlagStore, queue *observe.Queue, repSvc reputatio
 // buildSignal converts the relay outcome into a reputation.Signal.
 // It consults the heuristic result (if present) to determine severity;
 // otherwise it falls back to HTTP status code heuristics.
-func buildSignal(ctx *relay.Context, relayErr error, latency time.Duration) reputation.Signal {
+func buildSignal(flags featureflag.FlagStore, ctx *relay.Context, relayErr error, latency time.Duration) reputation.Signal {
 	// A session rollover between selection and send is nobody's signal: no
 	// relay reached the supplier, so there is nothing to grade for or against
 	// it, and it is not an attempt for the chronic-rate term either.
@@ -123,7 +124,13 @@ func buildSignal(ctx *relay.Context, relayErr error, latency time.Duration) repu
 	// ShouldPenalize is still honoured: a blockchain-attributed verdict that
 	// DOES carry a penalty (the analyzer decided the endpoint is at fault as
 	// well) falls through unchanged.
+	//
+	// Under chain_answers_unscored the answer records nothing instead: no
+	// evidence either way, and not an attempt for the rate term.
 	if res := ctx.HeuristicResult; res != nil && res.Attribution == heuristic.AttrBlockchain && !res.ShouldPenalize {
+		if flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagChainAnswersUnscored, ctx.ServiceID) {
+			return reputation.Signal{}
+		}
 		return reputation.NewSignal(reputation.SignalSuccess, res.Reason, latency)
 	}
 
