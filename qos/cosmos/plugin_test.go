@@ -166,6 +166,19 @@ func TestParseBlockHeight_CometBFT(t *testing.T) {
 	}
 }
 
+// A node that drops the JSON-RPC envelope from URI answers (Tendermint 0.35
+// forks) answers GET /status with the bare object; its head is the same field.
+// An error envelope still names no head.
+func TestParseBlockHeight_BareStatus(t *testing.T) {
+	h, err := parseBlockHeight([]byte(`{"node_info":{"network":"pacific-1"},"sync_info":{"latest_block_height":"98765"}}`))
+	if err != nil || h != 98765 {
+		t.Fatalf("bare status: %d %v, want 98765", h, err)
+	}
+	if h, err := parseBlockHeight([]byte(`{"jsonrpc":"2.0","id":-1,"error":{"code":-32603,"message":"Internal error"}}`)); err == nil {
+		t.Errorf("read %d as the head from an error envelope", h)
+	}
+}
+
 // A top-level REST height names whatever the answer is about: an upgrade's
 // applied plan, a legacy query run at the height the client asked for, a
 // transaction's block. None is the head, and read as the endpoint's height it
@@ -516,6 +529,25 @@ func TestExtractData_ChainIDComparesExactly(t *testing.T) {
 				t.Errorf("%q must not satisfy a cosmoshub-4 assertion; err = %v", reported, err)
 			}
 		})
+	}
+}
+
+// The bare /status answer carries the network too, so a node on the wrong
+// chain is still ejected and a right one still reports both facts.
+func TestExtractData_BareStatusAssertsChainID(t *testing.T) {
+	bare := func(network string) []byte {
+		return []byte(`{"node_info":{"network":"` + network + `"},"sync_info":{"latest_block_height":"20000000"}}`)
+	}
+	p := newPluginWithChainID("pacific-1")
+	if _, err := p.ExtractData("supplier1", nil, bare("atlantic-2")); !errors.Is(err, qos.ErrWrongChain) {
+		t.Fatalf("ExtractData err = %v, want qos.ErrWrongChain", err)
+	}
+	data, err := p.ExtractData("supplier1", nil, bare("pacific-1"))
+	if err != nil {
+		t.Fatalf("ExtractData: %v", err)
+	}
+	if data.ChainID == nil || *data.ChainID != "pacific-1" || data.BlockHeight == nil || *data.BlockHeight != 20000000 {
+		t.Errorf("ChainID = %v, BlockHeight = %v, want pacific-1 and 20000000", data.ChainID, data.BlockHeight)
 	}
 }
 

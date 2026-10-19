@@ -234,6 +234,19 @@ func withRequestHTTP(p domain.Payload, req *http.Request) domain.Payload {
 	return p.WithHTTP(req.URL.RequestURI(), req.Method)
 }
 
+// cometField reads a field of a CometBFT answer: under "result" in the
+// JSON-RPC envelope, or at the top level where a node answers a URI request
+// without it. Tendermint 0.35 forks (sei's among them) answer GET /status as
+// the bare {"node_info":…,"sync_info":…}, and read only under result every
+// status probe there found no height. A field path, not the whole body as a
+// result: client answers of every face pass through ExtractData.
+func cometField(response []byte, path string) gjson.Result {
+	if v := gjson.GetBytes(response, "result."+path); v.Exists() {
+		return v
+	}
+	return gjson.GetBytes(response, path)
+}
+
 // parseBlockHeight extracts the head from a CometBFT status answer:
 //
 //	{"result":{"sync_info":{"latest_block_height":"12345"}}}
@@ -247,7 +260,7 @@ func parseBlockHeight(response []byte) (uint64, error) {
 		return 0, fmt.Errorf("cosmos: empty response")
 	}
 
-	cometHeight := gjson.GetBytes(response, "result.sync_info.latest_block_height")
+	cometHeight := cometField(response, "sync_info.latest_block_height")
 	if cometHeight.Exists() {
 		return parseDecimalString(cometHeight.String(), "comet_bft latest_block_height")
 	}
@@ -271,7 +284,7 @@ func parseChainID(response []byte) (string, bool) {
 	if len(response) == 0 {
 		return "", false
 	}
-	network := gjson.GetBytes(response, "result.node_info.network")
+	network := cometField(response, "node_info.network")
 	if !network.Exists() || network.Type != gjson.String {
 		return "", false
 	}

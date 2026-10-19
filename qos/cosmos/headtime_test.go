@@ -29,8 +29,10 @@ func TestHeadTime(t *testing.T) {
 		ok      bool
 	}{
 		{"GET /status", get("/status"), status, true},
+		{"GET /status, no envelope", get("/status"), fmt.Sprintf(`{"node_info":{},"sync_info":{"latest_block_height":"10","latest_block_time":%q}}`, ts), true},
 		{"JSON-RPC status", post(`{"jsonrpc":"2.0","id":1,"method":"status"}`), status, true},
 		{"GET /block, latest", get("/block"), block, true},
+		{"GET /block, latest, no envelope", get("/block"), fmt.Sprintf(`{"block":{"header":{"height":"10","time":%q}}}`, ts), true},
 		{"GET /block at a height", get("/block?height=5"), block, false},
 		{"JSON-RPC block, latest", post(`{"jsonrpc":"2.0","id":1,"method":"block","params":{}}`), block, true},
 		{"JSON-RPC block at a height", post(`{"jsonrpc":"2.0","id":1,"method":"block","params":{"height":"5"}}`), block, false},

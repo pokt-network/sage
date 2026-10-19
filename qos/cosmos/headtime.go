@@ -24,21 +24,21 @@ const restCanaryName = "rest_head_canary"
 // feeds consensus, CometBFT and EVM numbers agree only where the flag says
 // so. ok is false for any other request or an answer without the field.
 func headTime(payload domain.Payload, response []byte) (time.Time, bool) {
-	var field string
+	var v gjson.Result
 	switch {
 	case payload.Path() == restLatestBlockPath:
-		field = "block.header.time"
-		if !gjson.GetBytes(response, field).Exists() {
-			field = "sdk_block.header.time"
+		v = gjson.GetBytes(response, "block.header.time")
+		if !v.Exists() {
+			v = gjson.GetBytes(response, "sdk_block.header.time")
 		}
 	case isCometCall(payload, "status"):
-		field = "result.sync_info.latest_block_time"
+		v = cometField(response, "sync_info.latest_block_time")
 	case isCometCall(payload, "block") && !namesHeight(payload.Bytes()):
-		field = "result.block.header.time"
+		v = cometField(response, "block.header.time")
 	default:
 		return time.Time{}, false
 	}
-	t, err := time.Parse(time.RFC3339Nano, gjson.GetBytes(response, field).String())
+	t, err := time.Parse(time.RFC3339Nano, v.String())
 	if err != nil || t.IsZero() {
 		return time.Time{}, false
 	}
