@@ -19,6 +19,15 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # cosmos-sdk follows the version poktroll builds with, and moves when
+      # poktroll does. A newer minor also fails to resolve here: v0.55 split
+      # x/group out into cosmossdk.io/x/group, and every weekly run errored
+      # on that bump.
+      - dependency-name: github.com/cosmos/cosmos-sdk
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
 
   - package-ecosystem: docker
     directory: /
