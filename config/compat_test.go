@@ -538,7 +538,7 @@ func TestConfigFixtureIsExhaustive(t *testing.T) {
 // yamlTags collects every yaml key reachable from t, descending through nested
 // structs, slices and maps. seen guards against a type reachable from itself.
 func yamlTags(t reflect.Type, seen map[reflect.Type]bool) []string {
-	for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice || t.Kind() == reflect.Map {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Map {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct || seen[t] {

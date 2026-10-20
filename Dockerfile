@@ -5,7 +5,7 @@
 # runs this whole stage under QEMU for the foreign architecture — a Go
 # compile of the shannon-sdk dependency tree under emulation takes the
 # better part of an hour; cross-compiled it takes minutes.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 WORKDIR /build
 

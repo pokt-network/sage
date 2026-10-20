@@ -1,13 +1,14 @@
 module github.com/pokt-network/sage
 
-go 1.26.9
+go 1.27.3
 
 require (
-	github.com/cosmos/cosmos-sdk v0.53.7
+	cosmossdk.io/depinject v1.2.1
+	github.com/cosmos/cosmos-sdk v0.53.8
 	github.com/gorilla/websocket v1.5.3
-	github.com/pokt-network/poktroll v0.1.35
-	github.com/pokt-network/ring-go v0.2.0
-	github.com/pokt-network/shannon-sdk v0.0.0-20260910080906-b1ba68f94c6e
+	github.com/pokt-network/poktroll v0.1.36
+	github.com/pokt-network/ring-go v0.2.1
+	github.com/pokt-network/shannon-sdk v0.0.0-20261020154032-c95752a8daaa
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/redis/go-redis/v9 v9.22.0
@@ -15,7 +16,7 @@ require (
 	github.com/tidwall/gjson v1.19.0
 	github.com/tsenart/vegeta/v12 v12.13.0
 	golang.org/x/net v0.60.0
-	golang.org/x/sync v0.23.0
+	golang.org/x/sync v0.24.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
@@ -25,7 +26,6 @@ require (
 	cosmossdk.io/api v0.9.2 // indirect
 	cosmossdk.io/collections v1.3.1 // indirect
 	cosmossdk.io/core v0.11.3 // indirect
-	cosmossdk.io/depinject v1.2.1 // indirect
 	cosmossdk.io/errors v1.0.2 // indirect
 	cosmossdk.io/log v1.6.1 // indirect
 	cosmossdk.io/math v1.5.3 // indirect
@@ -40,10 +40,11 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bgentry/speakeasy v0.2.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic v1.15.0 // indirect
-	github.com/bytedance/sonic/loader v0.5.0 // indirect
+	github.com/bytedance/sonic v1.15.4 // indirect
+	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cockroachdb/errors v1.12.0 // indirect
 	github.com/cockroachdb/fifo v0.0.0-20240606204812-0bbfbd93a7ce // indirect
@@ -51,7 +52,7 @@ require (
 	github.com/cockroachdb/pebble v1.1.5 // indirect
 	github.com/cockroachdb/redact v1.1.6 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
-	github.com/cometbft/cometbft v0.38.21 // indirect
+	github.com/cometbft/cometbft v0.38.26 // indirect
 	github.com/cometbft/cometbft-db v0.14.1 // indirect
 	github.com/cosmos/btcutil v1.0.5 // indirect
 	github.com/cosmos/cosmos-db v1.1.3 // indirect
@@ -127,7 +128,7 @@ require (
 	github.com/petermattis/goid v0.0.0-20251121121749-a11dd1a45f9a // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pokt-network/go-dleq v0.0.0-20260910080229-86b20e4865eb // indirect
-	github.com/pokt-network/smt v0.14.1 // indirect
+	github.com/pokt-network/smt v0.16.0 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20201227073835-cf1acfcdf475 // indirect
@@ -162,11 +163,11 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.17.0 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/term v0.46.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/term v0.47.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/genproto v0.0.0-20260128011058-8636f8732409 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260706201446-f0a921348800 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
