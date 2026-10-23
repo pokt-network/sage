@@ -196,6 +196,8 @@ func (sm *sessionManager) StartBlockPoller(ctx context.Context) {
 // which is correct if less smooth. The value changes rarely (a governance
 // param), so it is not re-polled.
 func (sm *sessionManager) loadGracePeriod(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, blockPollInterval)
+	defer cancel()
 	params, err := sm.fullNode.GetSharedParams(ctx)
 	if err != nil || params == nil {
 		sm.logger.Warn("session grace period: shared params unavailable, grace disabled",
@@ -217,6 +219,10 @@ func (sm *sessionManager) StopBlockPoller() {
 // "sessions look live for another tick", whereas a zeroed one would read as
 // "not yet polled" to every consumer at once.
 func (sm *sessionManager) pollBlockHeight(ctx context.Context) {
+	// The full node's client sets no deadline of its own: a node that accepts
+	// the call and never answers would hold the poller, and the height, forever.
+	ctx, cancel := context.WithTimeout(ctx, blockPollInterval)
+	defer cancel()
 	height, err := sm.fullNode.GetCurrentBlockHeight(ctx)
 	if err != nil {
 		sm.logger.Warn("block poller: failed to get block height",
