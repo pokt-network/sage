@@ -2,6 +2,7 @@ package shannon
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/protocol"
 )
 
@@ -81,11 +83,64 @@ type DebugRelayResult struct {
 	// Body is the backend's answer as the relay carried it.
 	Body  string `json:"body,omitempty"`
 	Error string `json:"error,omitempty"`
+	// Analysis is what the response analyzer reads in the answer, before the
+	// plugin's refinements and the per-service flags the relay path applies.
+	Analysis *DebugAnalysis `json:"analysis,omitempty"`
 	// SignedRequest and SignedResponse are the wire bytes, base64 when
 	// marshalled: the RelayRequest SAGE signed and the RelayResponse the
 	// supplier signed over the payload and session header.
 	SignedRequest  []byte `json:"signed_request_b64,omitempty"`
 	SignedResponse []byte `json:"signed_response_b64,omitempty"`
+}
+
+// DebugAnalysis is heuristic.Analyze's verdict on a probe's answer.
+type DebugAnalysis struct {
+	Reason       string `json:"reason"`
+	Attribution  string `json:"attribution"`
+	Severity     string `json:"severity,omitempty"`
+	Retry        bool   `json:"retry"`
+	Penalize     bool   `json:"penalize"`
+	CircuitBreak bool   `json:"circuit_break"`
+	Details      string `json:"details,omitempty"`
+}
+
+// analyze sets the analyzer's verdict on an answer the probe received.
+func (r *DebugRelayResult) analyze(rpcType domain.RPCType) {
+	if r.Error != "" || r.HTTPStatus == 0 {
+		return
+	}
+	a := heuristic.Analyze([]byte(r.Body), r.HTTPStatus, rpcType)
+	r.Analysis = &DebugAnalysis{Reason: a.Reason, Attribution: a.Attribution.String(), Severity: a.PenaltySeverity,
+		Retry: a.ShouldRetry, Penalize: a.ShouldPenalize, CircuitBreak: a.ShouldCircuitBreak, Details: a.Details}
+}
+
+// debugPayload is the relay a probe sends: body as a JSON-RPC request when no
+// path is given, else an HTTP request for path (REST, CometBFT's URI face)
+// with body, if any, as its content. method names it in the log.
+func debugPayload(rpcType domain.RPCType, path, httpMethod string, body []byte) (payload domain.Payload, method string, err error) {
+	if len(body) > debugMaxPayload {
+		return payload, "", fmt.Errorf("%w: at most %d bytes", protocol.ErrDebugBadRequest, debugMaxPayload)
+	}
+	if string(body) == "null" {
+		body = nil
+	}
+	switch {
+	case rpcType == domain.RPCTypeGRPC || rpcType == domain.RPCTypeWebSocket:
+		return payload, "", fmt.Errorf("%w: rpc_type %s is not probed here", protocol.ErrDebugBadRequest, rpcType)
+	case path == "" && rpcType == domain.RPCTypeREST:
+		return payload, "", fmt.Errorf("%w: a REST probe needs a path", protocol.ErrDebugBadRequest)
+	case path == "":
+		method = gjson.GetBytes(body, "method").String()
+		if method == "" {
+			return payload, "", fmt.Errorf("%w: a JSON-RPC request with a method, or a path", protocol.ErrDebugBadRequest)
+		}
+		return domain.NewPayload(body, rpcType, method), method, nil
+	}
+	httpMethod = strings.ToUpper(cmp.Or(httpMethod, http.MethodGet))
+	if !strings.HasPrefix(path, "/") || (httpMethod != http.MethodGet && httpMethod != http.MethodPost) {
+		return payload, "", fmt.Errorf("%w: a path starting with / and http_method GET or POST", protocol.ErrDebugBadRequest)
+	}
+	return domain.NewPayload(body, rpcType, "").WithHTTP(path, httpMethod), httpMethod + " " + path, nil
 }
 
 // debugLimits holds the probe's rate and concurrency caps.
@@ -164,12 +219,14 @@ func (p *Protocol) resolveDebugTarget(ctx context.Context, serviceID domain.Serv
 }
 
 // DebugRelay sends one relay to exactly the target and reports it with its
-// signed bytes. See the file comment; the admin route is its only caller.
-func (p *Protocol) DebugRelay(ctx context.Context, serviceID domain.ServiceID, target string, rpcType domain.RPCType, body []byte) (DebugRelayResult, error) {
+// signed bytes and the analyzer's verdict. A path makes it an HTTP request
+// for that path (debugPayload). See the file comment; the admin route is its
+// only caller.
+func (p *Protocol) DebugRelay(ctx context.Context, serviceID domain.ServiceID, target string, rpcType domain.RPCType, path, httpMethod string, body []byte) (DebugRelayResult, error) {
 	res := DebugRelayResult{ServiceID: string(serviceID), RPCType: string(rpcType)}
-	method := gjson.GetBytes(body, "method").String()
-	if method == "" || len(body) > debugMaxPayload {
-		return res, fmt.Errorf("%w: a JSON-RPC request with a method, at most %d bytes", protocol.ErrDebugBadRequest, debugMaxPayload)
+	payload, method, err := debugPayload(rpcType, path, httpMethod, body)
+	if err != nil {
+		return res, err
 	}
 	if !p.debugLimits.takeRelay(time.Now()) {
 		return res, fmt.Errorf("%w: at most %d relays a second", protocol.ErrDebugBusy, int(time.Second/debugRelayInterval))
@@ -177,7 +234,9 @@ func (p *Protocol) DebugRelay(ctx context.Context, serviceID domain.ServiceID, t
 	p.logger.Warn("admin: debug relay", "service_id", serviceID, "target", target, "rpc_type", rpcType, "method", method)
 
 	if target == debugTargetReference {
-		return p.debugReferenceRelay(ctx, serviceID, body, res)
+		res, err = p.debugReferenceRelay(ctx, serviceID, payload, res)
+		res.analyze(rpcType)
+		return res, err
 	}
 	addr, ep, err := p.resolveDebugTarget(ctx, serviceID, rpcType, target)
 	if err != nil {
@@ -187,7 +246,7 @@ func (p *Protocol) DebugRelay(ctx context.Context, serviceID domain.ServiceID, t
 
 	var ev relayEvidence
 	start := time.Now()
-	resp, err := p.sendRelay(ctx, serviceID, addr, domain.NewPayload(body, rpcType, method), &ev)
+	resp, err := p.sendRelay(ctx, serviceID, addr, payload, &ev)
 	res.LatencyMS = time.Since(start).Milliseconds()
 	res.SignedRequest, res.SignedResponse, res.HTTPStatus = ev.Request, ev.Response, ev.HTTPStatus
 	if h := ev.Session; h != nil {
@@ -199,11 +258,14 @@ func (p *Protocol) DebugRelay(ctx context.Context, serviceID domain.ServiceID, t
 		return res, nil
 	}
 	res.HTTPStatus, res.Body = resp.HTTPStatusCode, string(resp.Body)
+	res.analyze(rpcType)
 	return res, nil
 }
 
-// debugReferenceRelay posts the request to the configured reference, unsigned.
-func (p *Protocol) debugReferenceRelay(ctx context.Context, serviceID domain.ServiceID, body []byte, res DebugRelayResult) (DebugRelayResult, error) {
+// debugReferenceRelay sends the request to the configured reference,
+// unsigned: a JSON-RPC POST to the URL, or the payload's verb on the URL plus
+// its path.
+func (p *Protocol) debugReferenceRelay(ctx context.Context, serviceID domain.ServiceID, payload domain.Payload, res DebugRelayResult) (DebugRelayResult, error) {
 	url := p.debugRefHTTP[serviceID]
 	if url == "" {
 		return res, fmt.Errorf("%w: no debug_reference_url for %s", protocol.ErrDebugTargetNotFound, serviceID)
@@ -211,7 +273,7 @@ func (p *Protocol) debugReferenceRelay(ctx context.Context, serviceID domain.Ser
 	res.Target = DebugTarget{Endpoint: debugTargetReference}
 	ctx, cancel := context.WithTimeout(ctx, debugReferenceTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, cmp.Or(payload.HTTPMethod(), http.MethodPost), url+payload.Path(), bytes.NewReader(payload.Bytes()))
 	if err != nil {
 		res.Error = "reference request could not be built"
 		return res, nil

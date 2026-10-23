@@ -143,7 +143,7 @@ failureThreshold) here.
 | `POST` | `/admin/websocket/rebind/{serviceID}` | Replaces the supplier under every live WebSocket connection of a service, without closing any client. |
 | `GET` | `/admin/websocket/clients` | Reports which clients drive WebSocket traffic and which suppliers served them, over the last one to two hours: per client address, the connections it opened, how many supplier tenures it ended itself within 30s (quick_client_closes), and per supplier — service, operator, owner — the tenures, their total seconds and the frames that supplier pushed. |
 | `GET` | `/admin/websocket/notification-samples` | Returns a sample of the hashes suppliers pushed in WebSocket subscription notifications: one notification in 100 per service, operator, owner and topic, the last 200 of each, on this replica. |
-| `POST` | `/admin/debug/relay` | Sends one signed relay to exactly the named target — an endpoint address, a URL, an operator, a supplier address, an owner address, or "reference" — in the service's current session, outside the middleware chain (no retry, hedge, scoring or metrics), and returns the answer with the signed request and response bytes (base64) as evidence. |
+| `POST` | `/admin/debug/relay` | Sends one signed relay to exactly the named target — an endpoint address, a URL, an operator, a supplier address, an owner address, or "reference" — in the service's current session, outside the middleware chain (no retry, hedge, scoring or metrics), and returns the answer with the signed request and response bytes (base64) as evidence, and "analysis", the response analyzer's verdict on it before the plugin's refinements and per-service flags. |
 | `POST` | `/admin/debug/ws-subscribe` | Opens a WebSocket to exactly the named target (as for the relay route), sends the subscribe, and records every frame with its time until duration_s (at most 300), max_events (at most 20000) or the end of the session it was signed for; it does not rebind. |
 | `GET` | `/admin/request-sample` | Returns every service the request-shape sampler has observed, each with its most recently completed traffic summary. |
 | `GET` | `/admin/request-sample/{serviceID}` | Returns one service's request-shape summary plus its top fingerprints for a single window. |
@@ -687,11 +687,17 @@ Sends one signed relay to exactly the named target — an
 endpoint address, a URL, an operator, a supplier address, an owner
 address, or "reference" — in the service's current session, outside the middleware chain (no retry,
 hedge, scoring or metrics), and returns the answer with the signed request
-and response bytes (base64) as evidence. Body: {"service_id", "target",
-"rpc_type" (default json_rpc), "payload" (a JSON-RPC request)}. 404 when
+and response bytes (base64) as evidence, and "analysis", the response
+analyzer's verdict on it before the plugin's refinements and per-service
+flags. Body: {"service_id", "target", "rpc_type" (default json_rpc),
+"payload" (a JSON-RPC request), "path", "http_method"}; with a path
+("/cosmos/base/tendermint/v1beta1/blocks/latest", "/status?height=5") the
+relay is that HTTP request instead, http_method GET (default) or POST,
+payload its body if any: rest needs one, comet_bft takes either. 404 when
 the target is not in the current session (the error lists the operators
-that are), 429 past 10 probe relays a second, 400 for a payload that is not
-a JSON-RPC request. A supplier failure is a 200 with "error" set.
+that are), 429 past 10 probe relays a second, 400 for a request it cannot
+send (no method and no path, a path not starting with "/", grpc or
+websocket). A supplier failure is a 200 with "error" set.
 
 ### `POST /admin/debug/ws-subscribe`
 

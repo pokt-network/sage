@@ -1265,8 +1265,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	if app.Protocol != nil {
 		refHTTP, refWS := debugReferencesFrom(cfg)
 		app.Protocol.SetDebugReferences(refHTTP, refWS)
-		app.Admin.SetDebugProbe(func(ctx context.Context, serviceID domain.ServiceID, target string, rpcType domain.RPCType, body []byte) (any, error) {
-			return app.Protocol.DebugRelay(ctx, serviceID, target, rpcType, body)
+		app.Admin.SetDebugProbe(func(ctx context.Context, serviceID domain.ServiceID, target string, rpcType domain.RPCType, path, httpMethod string, body []byte) (any, error) {
+			return app.Protocol.DebugRelay(ctx, serviceID, target, rpcType, path, httpMethod, body)
 		}, debugSub)
 	}
 	if app.blocklist != nil {

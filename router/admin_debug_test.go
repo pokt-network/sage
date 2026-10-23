@@ -32,10 +32,11 @@ func TestAdmin_DebugRoutes(t *testing.T) {
 	}
 
 	var gotType domain.RPCType
+	var gotPath string
 	var gotDuration time.Duration
 	admin.SetDebugProbe(
-		func(_ context.Context, _ domain.ServiceID, target string, rpcType domain.RPCType, _ []byte) (any, error) {
-			gotType = rpcType
+		func(_ context.Context, _ domain.ServiceID, target string, rpcType domain.RPCType, path, _ string, _ []byte) (any, error) {
+			gotType, gotPath = rpcType, path
 			switch target {
 			case "gone":
 				return nil, fmt.Errorf("%w: x", protocol.ErrDebugTargetNotFound)
@@ -66,5 +67,9 @@ func TestAdmin_DebugRoutes(t *testing.T) {
 	}
 	if gotType != domain.RPCTypeJSONRPC || gotDuration != 30*time.Second {
 		t.Fatalf("rpc_type=%q duration=%v", gotType, gotDuration)
+	}
+	if rec := post("/admin/debug/relay", `{"service_id":"akash","target":"op.example","rpc_type":"rest","path":"/cosmos/base/tendermint/v1beta1/blocks/latest"}`); rec.Code != http.StatusOK ||
+		gotType != domain.RPCTypeREST || gotPath != "/cosmos/base/tendermint/v1beta1/blocks/latest" {
+		t.Fatalf("rest probe: %d, rpc_type=%q path=%q", rec.Code, gotType, gotPath)
 	}
 }

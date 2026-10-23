@@ -3,6 +3,7 @@ package shannon
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	servicetypes "github.com/pokt-network/poktroll/x/service/types"
+	sharedtypes "github.com/pokt-network/poktroll/x/shared/types"
+	sdktypes "github.com/pokt-network/shannon-sdk/types"
 
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
@@ -167,7 +170,7 @@ func TestDebugRelay_ReportsAFailedVerificationWithoutActing(t *testing.T) {
 	}
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 
-	res, err := p.DebugRelay(context.Background(), "eth", server.URL, domain.RPCTypeJSONRPC, body)
+	res, err := p.DebugRelay(context.Background(), "eth", server.URL, domain.RPCTypeJSONRPC, "", "", body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +180,7 @@ func TestDebugRelay_ReportsAFailedVerificationWithoutActing(t *testing.T) {
 	if p.bl.IsBlacklisted("eth", "pokt1supplier") {
 		t.Fatal("a probe blacklisted the supplier")
 	}
-	if _, err := p.DebugRelay(context.Background(), "eth", server.URL, domain.RPCTypeJSONRPC, body); !errors.Is(err, protocol.ErrDebugBusy) {
+	if _, err := p.DebugRelay(context.Background(), "eth", server.URL, domain.RPCTypeJSONRPC, "", "", body); !errors.Is(err, protocol.ErrDebugBusy) {
 		t.Fatalf("second relay inside the interval: err = %v", err)
 	}
 }
@@ -193,12 +196,64 @@ func TestDebugRelay_Reference(t *testing.T) {
 	p.SetDebugReferences(map[domain.ServiceID]string{"eth": ref.URL}, nil)
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`)
 
-	res, err := p.DebugRelay(context.Background(), "eth", "reference", domain.RPCTypeJSONRPC, body)
+	res, err := p.DebugRelay(context.Background(), "eth", "reference", domain.RPCTypeJSONRPC, "", "", body)
 	if err != nil || res.Body != `{"jsonrpc":"2.0","id":1,"result":"0x10"}` || res.Target.Endpoint != "reference" {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
 	p.debugLimits = newDebugLimits() // past the rate cap the first relay took
-	if _, err := p.DebugRelay(context.Background(), "base", "reference", domain.RPCTypeJSONRPC, body); !errors.Is(err, protocol.ErrDebugTargetNotFound) {
+	if _, err := p.DebugRelay(context.Background(), "base", "reference", domain.RPCTypeJSONRPC, "", "", body); !errors.Is(err, protocol.ErrDebugTargetNotFound) {
 		t.Fatalf("unconfigured: err = %v", err)
+	}
+}
+
+// With a path the probe is that HTTP request, GET unless told otherwise, and
+// the answer carries the analyzer's verdict. A request it cannot send is
+// refused before anything goes out.
+func TestDebugRelay_RESTPath(t *testing.T) {
+	const answer = `{"block":{"header":{"height":"5"}}}`
+	respBz := envelopeBytes(t, http.StatusOK, answer)
+	var received []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		_, _ = w.Write(respBz)
+	}))
+	t.Cleanup(server.Close)
+	session := buildMultiServiceSession("eth", "pokt1supplier", map[sharedtypes.RPCType]string{sharedtypes.RPCType_REST: server.URL})
+	fn := &mockRelayFullNode{session: session, app: session.Application, height: 200, validateResponse: &servicetypes.RelayResponse{Payload: respBz}}
+	p := &Protocol{
+		fullNode: fn, sessions: newSessionManager(fn, map[domain.ServiceID]struct{}{"eth": {}}, newTestLogger()),
+		signer: &mockSigner{}, bl: newBlacklist(), ownedApps: map[domain.ServiceID][]string{"eth": {"pokt1app"}},
+		httpClient: server.Client(), metrics: noopSupplierMetrics{}, logger: newTestLogger(), debugLimits: newDebugLimits(),
+	}
+	const path = "/cosmos/base/tendermint/v1beta1/blocks/latest"
+
+	res, err := p.DebugRelay(context.Background(), "eth", server.URL, domain.RPCTypeREST, path, "", nil)
+	if err != nil || res.Error != "" || res.HTTPStatus != http.StatusOK || res.Body != answer {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if res.Analysis == nil || res.Analysis.Reason != "success" || res.Analysis.Penalize {
+		t.Fatalf("analysis = %+v, want an unpenalized success", res.Analysis)
+	}
+	var relayReq servicetypes.RelayRequest
+	if err := relayReq.Unmarshal(received); err != nil {
+		t.Fatal(err)
+	}
+	embedded, err := sdktypes.DeserializeHTTPRequest(relayReq.Payload)
+	if err != nil || embedded.Url != server.URL+path || embedded.Method != http.MethodGet {
+		t.Fatalf("supplier saw %s %s (err %v), want GET %s", embedded.GetMethod(), embedded.GetUrl(), err, server.URL+path)
+	}
+
+	for _, tc := range []struct {
+		rpcType          domain.RPCType
+		path, httpMethod string
+	}{
+		{domain.RPCTypeREST, "", ""},
+		{domain.RPCTypeREST, "cosmos/x", ""},
+		{domain.RPCTypeREST, path, "DELETE"},
+		{domain.RPCTypeGRPC, "/cosmos.bank.v1beta1.Query/Balance", "POST"},
+	} {
+		if _, err := p.DebugRelay(context.Background(), "eth", server.URL, tc.rpcType, tc.path, tc.httpMethod, nil); !errors.Is(err, protocol.ErrDebugBadRequest) {
+			t.Errorf("%s %q %q: err = %v, want a bad request", tc.rpcType, tc.httpMethod, tc.path, err)
+		}
 	}
 }
