@@ -1,6 +1,9 @@
 package websockets
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // ConnectionLimiter bounds how many WebSocket connections a gateway holds open
 // at once.
@@ -19,6 +22,11 @@ type ConnectionLimiter struct {
 	// max <= 0 means no cap. Atomic so SetMax can move it under live traffic.
 	max    atomic.Int64
 	active atomic.Int64
+
+	// perClient is each client address's live connections (AcquireClient),
+	// holding only clients with one open.
+	mu        sync.Mutex
+	perClient map[string]int
 }
 
 // NewConnectionLimiter returns a limiter capping concurrent connections at max.
@@ -70,6 +78,45 @@ func (l *ConnectionLimiter) Release() {
 		return
 	}
 	l.active.Add(-1)
+}
+
+// AcquireClient reserves one of client's own slots, so that one address cannot
+// hold every slot Acquire hands out. It returns true when one was reserved —
+// the caller must then ReleaseClient exactly once — and false when client
+// already holds max. max <= 0 means no cap. An empty client, an address that
+// could not be read, is never capped: every such client would share one count.
+//
+// A nil limiter always returns true.
+func (l *ConnectionLimiter) AcquireClient(client string, max int) bool {
+	if l == nil || client == "" {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := l.perClient[client]
+	if max > 0 && n >= max {
+		return false
+	}
+	if l.perClient == nil {
+		l.perClient = make(map[string]int)
+	}
+	l.perClient[client] = n + 1
+	return true
+}
+
+// ReleaseClient frees a slot from a successful AcquireClient. A nil limiter is
+// a no-op.
+func (l *ConnectionLimiter) ReleaseClient(client string) {
+	if l == nil || client == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if n := l.perClient[client]; n > 1 {
+		l.perClient[client] = n - 1
+	} else {
+		delete(l.perClient, client)
+	}
 }
 
 // Active returns how many slots are currently held. A nil limiter reports 0.

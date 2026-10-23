@@ -307,7 +307,7 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "websocket_rejected_total",
-				Help:      "WebSocket upgrades the gateway refused before opening a bridge, by service and reason (capacity: the max_concurrent_connections cap was reached).",
+				Help:      "WebSocket upgrades the gateway refused before opening a bridge, by service and reason (capacity: the max_concurrent_connections cap was reached; client_capacity: the client address already held websocket.max_connections_per_client).",
 			},
 			[]string{"service_id", "reason"},
 		),

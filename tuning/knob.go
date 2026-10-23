@@ -93,6 +93,9 @@ const (
 	// KnobWSDuplicateBudget is how many notifications a connection's
 	// duplicate windows hold per generation, per service as well as globally.
 	KnobWSDuplicateBudget = "websocket.duplicate_budget"
+	// KnobWSMaxConnectionsPerClient is how many live WebSocket connections one
+	// client address may hold on a replica, per service as well as globally.
+	KnobWSMaxConnectionsPerClient = "websocket.max_connections_per_client"
 	// KnobWSDuplicateMajorShare is the repeat share above which a WebSocket
 	// supplier's minute is charged major instead of minor.
 	KnobWSDuplicateMajorShare = "websocket.duplicate_major_share"
@@ -220,6 +223,14 @@ var Knobs = []Knob{
 		Min:         0,
 		Max:         300_000,
 		Unit:        "ms",
+	},
+	{
+		Name:        KnobWSMaxConnectionsPerClient,
+		Kind:        KindInt,
+		Description: "Most live WebSocket connections one client address may hold on a replica; one more is refused with HTTP 429 (sage_websocket_rejected_total, reason client_capacity). The count is the address's across every service, held against the value of the service being opened. 0 removes the cap; websocket_config.max_concurrent_connections still bounds the total.",
+		Min:         0,
+		Max:         1_000_000,
+		Unit:        "connections",
 	},
 	{
 		Name:        KnobWSDuplicateBudget,

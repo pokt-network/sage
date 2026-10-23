@@ -84,6 +84,11 @@ type WSRelayerDeps struct {
 	// (see config.WebSocketConfig.EffectiveMaxConcurrentConnections).
 	MaxConcurrentConnections int
 
+	// MaxConnectionsPerClient is how many of those one client address may
+	// hold, read when it opens one on the service. Zero or negative disables
+	// the cap; nil takes DefaultMaxConnectionsPerClient.
+	MaxConnectionsPerClient func(domain.ServiceID) int
+
 	// Metrics receives bridge lifecycle events. Optional: nil records
 	// nothing, which is what the tests want and what production must never
 	// wire (see wire.go).
@@ -115,6 +120,10 @@ type WSRelayerDeps struct {
 	// nil takes the direct peer, which behind a proxy is the proxy.
 	ClientIP func(*http.Request) netip.Addr
 }
+
+// DefaultMaxConnectionsPerClient is WSRelayerDeps.MaxConnectionsPerClient's
+// default, and the base of the websocket.max_connections_per_client knob.
+const DefaultMaxConnectionsPerClient = 1000
 
 // WSMetrics is what the relayer needs from the metrics package: a per-service
 // observer for each bridge, a counter for the upgrades it refuses before a
@@ -318,6 +327,14 @@ func (r *WSRelayer) releaseSupplier(serviceID domain.ServiceID, clientIP string,
 		tenure, p.endpointFrames.Load(), p.topicCounts(), clientQuit)
 }
 
+// maxConnectionsPerClient is MaxConnectionsPerClient for a service.
+func (r *WSRelayer) maxConnectionsPerClient(serviceID domain.ServiceID) int {
+	if r.deps.MaxConnectionsPerClient == nil {
+		return DefaultMaxConnectionsPerClient
+	}
+	return r.deps.MaxConnectionsPerClient(serviceID)
+}
+
 // SetMaxConcurrentConnections moves the live-bridge cap on a running relayer.
 // <= 0 removes it. Bridges already open above a lowered cap are not closed.
 func (r *WSRelayer) SetMaxConcurrentConnections(n int) {
@@ -361,6 +378,19 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	}
 	defer r.connLimiter.Release()
 
+	// And one of the client's own, so that one address cannot take every slot
+	// above and leave every other client a 503.
+	clientIP := r.clientIP(req)
+	if !r.connLimiter.AcquireClient(clientIP, r.maxConnectionsPerClient(serviceID)) {
+		logger.Warn("ws open: client at its connection cap, rejecting", "client_ip", clientIP)
+		if r.deps.Metrics != nil {
+			r.deps.Metrics.Rejected(serviceID, "client_capacity")
+		}
+		http.Error(w, "too many concurrent websocket connections from this client", http.StatusTooManyRequests)
+		return errors.New("ws open: per-client connection limit reached")
+	}
+	defer r.connLimiter.ReleaseClient(clientIP)
+
 	// Pick and resolve an endpoint: tier cascade + load-aware weighted
 	// random, then the session, URL and app that go with it. The same path a
 	// rebind takes later, minus the exclusions.
@@ -373,7 +403,6 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		return fmt.Errorf("ws open: %w", err)
 	}
 	endpointAddr, ep, url, session, appAddr := target.addr, target.ep, target.url, target.session, target.appAddr
-	clientIP := r.clientIP(req)
 
 	// Increment load counter; guarantee decrement on return — for whichever
 	// endpoint is current by then, since a rebind moves it.

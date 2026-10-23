@@ -640,6 +640,47 @@ func TestWSRelayer_OpenRejectsAtCapacity_IsCounted(t *testing.T) {
 	}
 }
 
+// One address at its own cap is told to back off, before the protocol is
+// touched and without holding a slot; another address is not.
+func TestWSRelayer_OpenRejectsAClientAtItsCap(t *testing.T) {
+	spy := &spyWSMetrics{}
+	r := NewWSRelayer(WSRelayerDeps{
+		Protocol:                &Protocol{logger: newTestLogger()},
+		Reputation:              &spyRepSvc{},
+		Observe:                 newDisabledQueue(),
+		Flags:                   featureflag.NewMemoryStore(map[string]bool{featureflag.FlagWebsocketRelays: true}),
+		Logger:                  newTestLogger(),
+		MaxConnectionsPerClient: func(domain.ServiceID) int { return 1 },
+		Metrics:                 spy,
+	})
+	if !r.connLimiter.AcquireClient("192.0.2.1", 1) {
+		t.Fatal("could not take the client's slot")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/ws", nil) // RemoteAddr 192.0.2.1
+	w := httptest.NewRecorder()
+	if err := r.Open(context.Background(), "eth", req, w); err == nil || w.Code != http.StatusTooManyRequests {
+		t.Fatalf("Open = (%v, %d), want an error and %d", err, w.Code, http.StatusTooManyRequests)
+	}
+	if got := r.connLimiter.Active(); got != 0 {
+		t.Errorf("Active() = %d after the refusal, want 0", got)
+	}
+
+	other := httptest.NewRequest(http.MethodGet, "/v1/ws", nil)
+	other.RemoteAddr = "198.51.100.7:1234"
+	w = httptest.NewRecorder()
+	_ = r.Open(context.Background(), "eth", other, w) // no endpoints wired: fails after the caps
+	if w.Code == http.StatusTooManyRequests {
+		t.Error("another address was refused at the per-client cap")
+	}
+
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	if len(spy.rejected) != 1 || spy.rejected[0] != "eth:client_capacity" {
+		t.Fatalf("rejected = %v, want [eth:client_capacity]", spy.rejected)
+	}
+}
+
 // untriedFirst is the rebind's selection narrowing: never the endpoint that
 // just died, preferably not its operator either, unless that leaves nothing.
 func TestUntriedFirst(t *testing.T) {

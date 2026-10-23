@@ -1191,10 +1191,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			FrameObservationSampleRate: wsCfg.EffectiveFrameObservationSampleRate(),
 			CloseObservationSampleRate: wsCfg.EffectiveCloseObservationSampleRate(),
 			MaxConcurrentConnections:   wsCfg.EffectiveMaxConcurrentConnections(),
-			Metrics:                    metrics.NewWebSocketMetrics(serviceIDsFrom(cfg)),
-			QoS:                        qosReg,
-			ClientIP:                   middleware.RequestClientIP(trustedProxies),
-			RequestTimeout:             timeoutFn,
+			MaxConnectionsPerClient: func(serviceID domain.ServiceID) int {
+				return tuningStore.Int(tuning.KnobWSMaxConnectionsPerClient, serviceID, shannon.DefaultMaxConnectionsPerClient)
+			},
+			Metrics:        metrics.NewWebSocketMetrics(serviceIDsFrom(cfg)),
+			QoS:            qosReg,
+			ClientIP:       middleware.RequestClientIP(trustedProxies),
+			RequestTimeout: timeoutFn,
 			DuplicateWindow: func(serviceID domain.ServiceID) (time.Duration, int) {
 				return tuningStore.Duration(tuning.KnobWSDuplicateWindow, serviceID, qos.DefaultDuplicateWindow),
 					tuningStore.Int(tuning.KnobWSDuplicateBudget, serviceID, qos.DefaultDuplicateBudget)
@@ -1380,6 +1383,7 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobWSDuplicateMinNotifications, strconv.Itoa(shannon.DuplicateMinNotifications))
 	store.SetBase(tuning.KnobWSDuplicateWindow, qos.DefaultDuplicateWindow.String())
 	store.SetBase(tuning.KnobWSDuplicateBudget, strconv.Itoa(qos.DefaultDuplicateBudget))
+	store.SetBase(tuning.KnobWSMaxConnectionsPerClient, strconv.Itoa(shannon.DefaultMaxConnectionsPerClient))
 	store.SetBase(tuning.KnobWSDuplicateMajorShare, strconv.FormatFloat(shannon.DuplicateMajorShare, 'f', -1, 64))
 	store.SetBase(tuning.KnobWSDuplicateShareFloor, strconv.FormatFloat(reputation.DefaultDuplicateShareFloor, 'f', -1, 64))
 	store.SetBase(tuning.KnobWSDuplicateShareFull, strconv.FormatFloat(reputation.DefaultDuplicateShareFull, 'f', -1, 64))

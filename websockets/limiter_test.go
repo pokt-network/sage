@@ -150,3 +150,47 @@ func TestConnectionLimiter_ConcurrentAcquireRelease(t *testing.T) {
 		t.Errorf("Active() = %d after every acquire was released, want 0", got)
 	}
 }
+
+// One address is capped on its own, others are not, an unread address is
+// never capped, and an address with nothing open is not held.
+func TestConnectionLimiter_PerClient(t *testing.T) {
+	l := NewConnectionLimiter(0)
+
+	for i := 0; i < 2; i++ {
+		if !l.AcquireClient("a", 2) {
+			t.Fatalf("acquire %d must succeed at a cap of 2", i+1)
+		}
+	}
+	if l.AcquireClient("a", 2) {
+		t.Error("the third must fail at a cap of 2")
+	}
+	if !l.AcquireClient("b", 2) {
+		t.Error("another address must not share the count")
+	}
+	for i := 0; i < 5; i++ {
+		if !l.AcquireClient("", 1) {
+			t.Fatal("an unread address must never be capped")
+		}
+	}
+	if !l.AcquireClient("a", 0) {
+		t.Error("a cap of 0 must not refuse")
+	}
+
+	for _, c := range []string{"a", "a", "a", "b"} {
+		l.ReleaseClient(c)
+	}
+	if len(l.perClient) != 0 {
+		t.Errorf("perClient = %v after every release, want empty", l.perClient)
+	}
+	if !l.AcquireClient("a", 1) {
+		t.Error("a released slot must be reusable")
+	}
+
+	var nilLimiter *ConnectionLimiter
+	for i := 0; i < 2; i++ {
+		if !nilLimiter.AcquireClient("a", 1) {
+			t.Fatal("a nil limiter must never refuse")
+		}
+	}
+	nilLimiter.ReleaseClient("a")
+}
