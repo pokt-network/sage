@@ -573,7 +573,7 @@ func classifyInternalError(lowerMsg string) AnalysisResult {
 	// the three services paid 31–42% more relays for it. Serving those
 	// queries needs to know which endpoint holds which heights, which is
 	// selection's job, not a retry's.
-	if ind := matchIndicator([]byte(lowerMsg)); ind != nil {
+	if ind := matchIndicator([]byte(lowerMsg), false); ind != nil {
 		ind.Details = "internal error, " + ind.Details
 		if ind.Attribution == AttrBlockchain {
 			ind.ShouldRetry = false

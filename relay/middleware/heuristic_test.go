@@ -92,6 +92,39 @@ func TestHeuristic_RESTBodiesAsAnswersFlagIsTheUndo(t *testing.T) {
 	}
 }
 
+// A 2xx REST JSON document is graded as the route's answer while
+// rest_documents_as_answers is on; off, it is graded as any other body. An
+// error object or envelope is graded the same either way.
+func TestHeuristic_RESTDocumentsAsAnswersFlag(t *testing.T) {
+	for _, tc := range []struct {
+		body       string
+		reasonOn   string
+		reasonOff  string
+		penalizeOn bool
+	}{
+		{`{"tx":{"body":{"memo":"connection refused"}},"tx_response":{"code":0}}`, "success", "connection_refused", false},
+		{`{"code":14,"message":"upstream connect error: connection refused"}`, "connection_refused", "connection_refused", true},
+		{`{"error":{"code":504,"message":"upstream request timeout"}}`, "unknown_error_code", "unknown_error_code", true},
+	} {
+		for _, on := range []bool{true, false} {
+			flags := newMockFlags(map[string]bool{"heuristic": true, featureflag.FlagRESTDocumentsAsAnswers: on})
+			ctx := newCtx(newPOSTRequest("/cosmos/tx/v1beta1/txs/AB", ""))
+			ctx.ServiceID = "akash"
+			ctx.RPCType = domain.RPCTypeREST
+			ctx.Response = &domain.Response{Body: []byte(tc.body), HTTPStatusCode: 200}
+
+			_ = middleware.Heuristic(flags, nil, middleware.HeuristicOptions{})(relay.Noop).HandleRelay(ctx)
+			want, penalize := tc.reasonOff, true
+			if on {
+				want, penalize = tc.reasonOn, tc.penalizeOn
+			}
+			if r := ctx.HeuristicResult; r == nil || r.Reason != want || r.ShouldPenalize != penalize {
+				t.Errorf("%s, flag %v: result %+v, want %s penalize=%v", tc.body, on, r, want, penalize)
+			}
+		}
+	}
+}
+
 // circuit_break_upstream hands a relay miner's 408 and 5xx to the circuit
 // breaker; off, neither asks for a break. A backend's own server error never
 // does.

@@ -21,6 +21,17 @@ import (
 //	2: Protocol (JSON-RPC parsing and error code classification)
 //	3: Indicator patterns (content matching)
 func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) AnalysisResult {
+	return analyze(response, httpStatusCode, rpcType, false)
+}
+
+// RESTDocumentAnswer grades a REST answer as Analyze does, with a 2xx JSON
+// document read as the route's answer by Tier 3 (matchIndicator). Only behind
+// featureflag.FlagRESTDocumentsAsAnswers, off by default.
+func RESTDocumentAnswer(response []byte, httpStatusCode int) AnalysisResult {
+	return analyze(response, httpStatusCode, domain.RPCTypeREST, httpStatusCode/100 == 2)
+}
+
+func analyze(response []byte, httpStatusCode int, rpcType domain.RPCType, documentIsAnswer bool) AnalysisResult {
 	// Over-servicing rejections must be checked before the HTTP status tier:
 	// the signal arrives on both HTTP 200 (poktroll relay-miner) and HTTP 429
 	// (HA relay-miner), and a 429 would otherwise be classified as a penalizable
@@ -56,7 +67,7 @@ func Analyze(response []byte, httpStatusCode int, rpcType domain.RPCType) Analys
 	}
 
 	// Tier 3: Indicator pattern matching.
-	if result := matchIndicator(response); result != nil {
+	if result := matchIndicator(response, documentIsAnswer); result != nil {
 		return *result
 	}
 

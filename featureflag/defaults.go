@@ -100,6 +100,11 @@ const (
 	// would catch a backend answering 200 with nothing to every route, so a
 	// service turns it on when its routes answer that way by design.
 	FlagRESTBodiesAsAnswers = "rest_bodies_as_answers"
+	// FlagRESTDocumentsAsAnswers grades a 2xx REST answer that is a JSON
+	// document as the route's answer (heuristic.RESTDocumentAnswer) rather
+	// than as any other body. Off by default: a service turns it on when its
+	// documents carry error wordings as data.
+	FlagRESTDocumentsAsAnswers = "rest_documents_as_answers"
 	// FlagCircuitBreakUpstream lets a supplier's relay-miner timeout (HTTP
 	// 408) or 5xx count toward the circuit breaker's failure-rate gate, so a
 	// host failing a fifth of its relays within 30s is taken out of selection
@@ -430,6 +435,7 @@ var DefaultFlags = map[string]bool{
 	FlagAutoDrainChainAnswers:   false,
 	FlagPenalize408:             true,
 	FlagRESTBodiesAsAnswers:     false,
+	FlagRESTDocumentsAsAnswers:  false,
 	FlagCircuitBreakUpstream:    false,
 	FlagMethodBlock408:          false,
 	FlagMethodBlockRefusal:      false,

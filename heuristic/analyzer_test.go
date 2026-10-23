@@ -384,6 +384,36 @@ func TestAnalyze_Tier3_Indicators(t *testing.T) {
 	}
 }
 
+// RESTDocumentAnswer grades a 2xx REST JSON document as the route's answer;
+// Analyze, what a service gets by default, grades it as any other body.
+func TestRESTDocumentAnswer(t *testing.T) {
+	tx := `{"tx":{"body":{"messages":[],"memo":"connection refused","timeout_height":"0"}},"tx_response":{"height":"1","code":0}}`
+	tests := []struct {
+		name         string
+		body         string
+		wantDefault  string
+		wantDocument string
+	}{
+		{"document", tx, "connection_refused", "success"},
+		{"error object", `{"code":14,"message":"upstream connect error: connection refused","details":[]}`, "connection_refused", "connection_refused"},
+		{"error message", `{"message":"upstream request timeout"}`, "timeout", "timeout"},
+		{"error field", `{"Error":"java.util.concurrent.TimeoutException"}`, "timeout", "timeout"},
+		{"error envelope", `{"error":{"code":504,"message":"upstream request timeout"}}`, "unknown_error_code", "unknown_error_code"},
+		{"chain wording", `{"note":"height 5 is not available, lowest height is 9"}`, "height_not_available", "height_not_available"},
+		{"not json", tx[:len(tx)-10], "connection_refused", "connection_refused"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if r := Analyze([]byte(tt.body), 200, domain.RPCTypeREST); r.Reason != tt.wantDefault {
+				t.Errorf("Analyze reason = %q, want %q (%+v)", r.Reason, tt.wantDefault, r)
+			}
+			if r := RESTDocumentAnswer([]byte(tt.body), 200); r.Reason != tt.wantDocument {
+				t.Errorf("RESTDocumentAnswer reason = %q, want %q (%+v)", r.Reason, tt.wantDocument, r)
+			}
+		})
+	}
+}
+
 func TestAnalyze_RetryAndCircuitBreakAreIndependent(t *testing.T) {
 	// 429: retry=true, circuit_break=false
 	result429 := Analyze([]byte(`{}`), 429, domain.RPCTypeJSONRPC)

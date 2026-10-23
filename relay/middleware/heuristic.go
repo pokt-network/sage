@@ -125,6 +125,12 @@ func Heuristic(flags featureflag.FlagStore, registry *qos.Registry, o HeuristicO
 					result = pass
 				}
 			}
+			// rest_documents_as_answers, per service: a 2xx JSON document is
+			// graded as the route's answer (heuristic.RESTDocumentAnswer).
+			if ctx.RPCType == domain.RPCTypeREST && !result.IsSuccess() &&
+				flags != nil && flags.IsEnabled(ctx.Ctx, featureflag.FlagRESTDocumentsAsAnswers, ctx.ServiceID) {
+				result = heuristic.RESTDocumentAnswer(ctx.Response.Body, ctx.Response.HTTPStatusCode)
+			}
 
 			// A -32601 on a method the plugin catalogues is retried on another
 			// operator. The analyzer leaves it unretried because it cannot tell

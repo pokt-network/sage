@@ -22,7 +22,7 @@ func AnalyzeFrame(body []byte, _ domain.RPCType) AnalysisResult {
 	if result, done := analyzeTier2(body); done {
 		return result
 	}
-	if result := matchIndicator(body); result != nil {
+	if result := matchIndicator(body, false); result != nil {
 		return *result
 	}
 	return successResult()

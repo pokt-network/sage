@@ -264,6 +264,7 @@ likely a chain-wide slowdown than every operator down at once.
 | websocket_probes | on | Once a minute, WebSocket endpoints of a service below full reputation get one signed probe, so a demoted WebSocket key has a way back |
 | penalize_408 | on | A supplier's HTTP 408 costs it a major error |
 | rest_bodies_as_answers | off | An empty or plain-text 2xx REST answer passes as the answer instead of empty_response (critical, breaker vote) or plain_text_response (major); for services whose routes answer that way by design |
+| rest_documents_as_answers | off | A 2xx REST answer that is a JSON document is graded as the route's answer, not as any other body; for services whose documents carry error wordings as data |
 | relative_chronic | on | The chronic penalty is measured from the pool's best failure rate, not from zero |
 | operator_chronic | off | Every key is charged its operator's failure rate from per-operator counters that outlive the session draw; WebSocket keeps the per-key rate |
 | auto_drain | off | The auto-drain engine may set drains (docs/auto-drain.md) |

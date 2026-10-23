@@ -1,5 +1,7 @@
 package heuristic
 
+import "github.com/tidwall/gjson"
+
 // indicator represents a content pattern that hints at the cause of an error.
 type indicator struct {
 	pattern        string
@@ -67,8 +69,10 @@ var indicators = []indicator{
 }
 
 // matchIndicator scans the response body for Tier 3 indicator patterns.
-// Returns an AnalysisResult if a pattern matches, or nil if no match.
-func matchIndicator(body []byte) *AnalysisResult {
+// Returns an AnalysisResult if a pattern matches, or nil if no match. With
+// documentIsAnswer, a body that is valid JSON is matched against the
+// supplier-attributed patterns in its top-level string values (inTopLevelString).
+func matchIndicator(body []byte, documentIsAnswer bool) *AnalysisResult {
 	if len(body) == 0 {
 		return nil
 	}
@@ -79,8 +83,12 @@ func matchIndicator(body []byte) *AnalysisResult {
 		searchArea = searchArea[:2048]
 	}
 
+	document := documentIsAnswer && gjson.ValidBytes(body)
 	for _, ind := range indicators {
 		if containsFold(searchArea, ind.pattern) {
+			if document && ind.attribution == AttrSupplier && !inTopLevelString(body, ind.pattern) {
+				continue
+			}
 			result := AnalysisResult{
 				ShouldRetry:        true, // every indicator is retried; attribution decides blame
 				ShouldCircuitBreak: ind.severity == SeverityCritical || ind.severity == SeverityFatal,
@@ -97,4 +105,15 @@ func matchIndicator(body []byte) *AnalysisResult {
 	}
 
 	return nil
+}
+
+// inTopLevelString reports whether pattern occurs in one of a JSON document's
+// top-level string values.
+func inTopLevelString(body []byte, pattern string) bool {
+	found := false
+	gjson.ParseBytes(body).ForEach(func(_, v gjson.Result) bool {
+		found = v.Type == gjson.String && containsFold([]byte(v.Str), pattern)
+		return !found
+	})
+	return found
 }
