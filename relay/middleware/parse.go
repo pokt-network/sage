@@ -296,14 +296,20 @@ func isWebSocketUpgrade(req *http.Request) bool {
 // Config: router_config.max_request_body_bytes.
 const DefaultMaxBodyBytes int64 = 75 << 20 // 75 MiB
 
+// maxPresizedBody is the largest Content-Length a buffer is sized to before
+// the body arrives. The header is the client's claim: sized to it, a request
+// that declares the cap and sends nothing holds the cap in memory for the
+// whole read timeout. A larger body grows its buffer as it is received.
+const maxPresizedBody = 64 << 10
+
 // errBodyTooLarge is the cause when a body exceeds the cap, so the rejection
 // can be a 413 rather than the 400 a body that failed to read gets.
 var errBodyTooLarge = errors.New("request body too large")
 
 // readDeclaredLength reads a body whose length Content-Length already states,
 // into a buffer sized to exactly that. Returns nil — not an error — when the
-// header offers nothing usable, meaning the caller should read until EOF
-// instead.
+// header offers nothing usable, or claims more than maxPresizedBody, meaning
+// the caller should read until EOF instead.
 //
 // It exists because bytes.Buffer.ReadFrom insists on bytes.MinRead (512) bytes
 // of headroom before every read. A JSON-RPC request is an order of magnitude
@@ -315,7 +321,7 @@ var errBodyTooLarge = errors.New("request body too large")
 // a short body is returned at its real length and a long one is read to the end
 // rather than silently truncated.
 func readDeclaredLength(contentLength int64, r io.Reader, maxBodyBytes int64) ([]byte, error) {
-	if contentLength <= 0 || contentLength > maxBodyBytes {
+	if contentLength <= 0 || contentLength > min(maxBodyBytes, maxPresizedBody) {
 		return nil, nil
 	}
 

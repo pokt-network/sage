@@ -94,6 +94,22 @@ func TestReadBody_AtExactlyTheCap(t *testing.T) {
 	}
 }
 
+// A Content-Length past maxPresizedBody is not allocated up front: the claim
+// is the client's, and a request declaring the cap and sending nothing would
+// hold it for the whole read timeout. Such a body is still read whole.
+func TestReadBody_LargeClaimIsNotPresized(t *testing.T) {
+	r := bytes.NewReader([]byte("x"))
+	if data, err := readDeclaredLength(maxPresizedBody+1, r, DefaultMaxBodyBytes); data != nil || err != nil || r.Len() != 1 {
+		t.Fatalf("readDeclaredLength = (%d bytes, %v), %d left unread; want (nil, nil), 1", len(data), err, r.Len())
+	}
+
+	body := bytes.Repeat([]byte("x"), maxPresizedBody+6<<10)
+	got, err := readBody(newRequestWithBody(t, body, int64(len(body))), DefaultMaxBodyBytes)
+	if err != nil || !bytes.Equal(got, body) {
+		t.Fatalf("readBody = (%d bytes, %v), want the %d-byte body", len(got), err, len(body))
+	}
+}
+
 // BenchmarkReadBody measures the per-relay cost for a typical JSON-RPC request.
 func BenchmarkReadBody(b *testing.B) {
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
