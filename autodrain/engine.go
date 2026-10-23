@@ -500,10 +500,12 @@ func (e *Engine) OnClientResult(svc domain.ServiceID, status int, origin domain.
 	now := e.d.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// The name is the client's header, read before the service is checked:
+	// only a service with a pool has a window (slot), so a made-up one adds
+	// nothing.
 	w := e.clients[svc]
 	if w == nil {
-		w = &clientWindow{}
-		e.clients[svc] = w
+		return
 	}
 	m := now.Unix() / 60
 	s := &w.slots[m%windowSlots]
@@ -626,6 +628,9 @@ func (e *Engine) slot(k poolKey, now time.Time) *slot {
 	if p == nil {
 		p = &pool{}
 		e.pools[k] = p
+		if e.clients[k.svc] == nil {
+			e.clients[k.svc] = &clientWindow{}
+		}
 	}
 	m := now.Unix() / 60
 	s := &p.slots[m%windowSlots]

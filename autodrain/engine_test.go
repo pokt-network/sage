@@ -163,6 +163,25 @@ func TestEngine_SeiShapeDrainsTheOperatorTheFallbackFeeds(t *testing.T) {
 	}
 }
 
+// A client's answer is counted only for a service with a pool: the name comes
+// from the request header before the service is checked, so a made-up one
+// must not grow the engine.
+func TestEngine_ClientResultsOnlyForPooledServices(t *testing.T) {
+	h := newHarness(t, fakeVouch{opb: true}, false)
+	h.e.OnClientResult("made-up", 504, domain.OriginSupplier)
+	h.e.OnClientResult(sei, 504, domain.OriginSupplier) // before any traffic
+	if len(h.e.clients) != 0 {
+		t.Fatalf("clients = %d entries before any pool, want 0", len(h.e.clients))
+	}
+
+	h.feedTraffic(0, 60)
+	h.e.OnClientResult(sei, 504, domain.OriginSupplier)
+	h.e.OnClientResult("made-up", 504, domain.OriginSupplier)
+	if _, requests := h.e.clientShare(sei, 0); requests != 1 || len(h.e.clients) != 1 {
+		t.Fatalf("sei requests = %d over %d windows, want 1 over 1", requests, len(h.e.clients))
+	}
+}
+
 func TestEngine_ShadowByDefaultNeverSetsADrain(t *testing.T) {
 	h := newHarness(t, fakeVouch{opb: true}, false)
 	h.feed(0, 60)
