@@ -691,8 +691,10 @@ func (s *serviceImpl) refreshBaselines() {
 		v.policyGate = gateOf(&s.policyGate)
 		v.policyOn = map[domain.ServiceID]bool{}
 		v.keyParty = make(map[string]string, len(keys))
+		v.keyOp = make(map[string]string, len(keys))
 		for _, ks := range keys {
 			v.keyParty[ks.id.key] = domain.PartyOfOperator(ks.op.op)
+			v.keyOp[ks.id.key] = ks.op.op
 			if _, seen := v.trustOn[ks.id.svc]; !seen && v.trustGate != nil {
 				v.trustOn[ks.id.svc] = v.trustGate(ks.id.svc)
 			}

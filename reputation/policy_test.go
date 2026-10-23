@@ -2,6 +2,7 @@ package reputation
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -80,6 +81,62 @@ func TestPolicyPenalty_ChargedUntilLapsedOrDeleted(t *testing.T) {
 	if found, _ := s.DeletePolicyPenalty(ctx, resold.Party()); found {
 		t.Error("a second delete found one")
 	}
+}
+
+// An entry on an operator domain charges every key of the domain once the
+// domain is dedicated to an owner, a minority tenant's and a key with no state
+// yet included; an entry on the owner charges the same keys, and where both
+// are set the larger applies.
+func TestPolicyPenalty_DomainEntryOnADedicatedDomain(t *testing.T) {
+	for i := range 10 {
+		domain.RecordOwner(fmt.Sprintf("pokt1polded%d", i), "pokt1polowner", "dedicated.example")
+	}
+	domain.RecordOwner("pokt1poltenant", "pokt1poltenantowner", "dedicated.example")
+	s := staleShareService(false)
+	s.SetPolicyPenaltyGate(func(domain.ServiceID) bool { return true })
+	ctx := context.Background()
+	owned := domain.EndpointAddr("pokt1polded0-https://r001.dedicated.example")
+	tenant := domain.EndpointAddr("pokt1poltenant-https://r002.dedicated.example")
+	other := domain.EndpointAddr("pokt1b-https://r001.other.example")
+	if owned.Party() != "pokt1polowner" {
+		t.Fatalf("fixture: domain not dedicated, party %q", owned.Party())
+	}
+	for _, ep := range []domain.EndpointAddr{owned, tenant, other} {
+		_ = s.RecordSignal(ctx, "eth", ep, domain.RPCTypeJSONRPC, Signal{Type: SignalSuccess, Timestamp: time.Now()})
+	}
+	score := func(ep domain.EndpointAddr) float64 {
+		v, _ := s.scoreForSelector(ctx, "eth", ep, domain.RPCTypeJSONRPC)
+		return v
+	}
+	set := func(party string, pen float64) {
+		t.Helper()
+		if err := s.SetPolicyPenalty(ctx, PolicyPenalty{Party: party, Penalty: pen, Reason: "r", SetAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		s.refreshBaselines()
+	}
+	check := func(when string, want map[domain.EndpointAddr]float64) {
+		t.Helper()
+		for ep, w := range want {
+			if got := score(ep); got != w {
+				t.Errorf("%s: %s scores %.0f, want %.0f", when, ep, got, w)
+			}
+		}
+	}
+
+	set("dedicated.example", -20)
+	check("domain entry", map[domain.EndpointAddr]float64{
+		owned: 80, tenant: 80, "pokt1polded9-https://r099.dedicated.example": 80, other: 100,
+	})
+
+	set("pokt1polowner", -30)
+	check("domain and owner entries", map[domain.EndpointAddr]float64{owned: 70, tenant: 70, other: 100})
+
+	if _, err := s.DeletePolicyPenalty(ctx, "dedicated.example"); err != nil {
+		t.Fatal(err)
+	}
+	s.refreshBaselines()
+	check("owner entry alone", map[domain.EndpointAddr]float64{owned: 70, tenant: 70, other: 100})
 }
 
 // The policy penalty is shared through the store: a second instance over the

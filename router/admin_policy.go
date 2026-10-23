@@ -47,7 +47,8 @@ func (a *AdminAPI) handleListPolicyPenalties(w http.ResponseWriter, req *http.Re
 // conduct SAGE cannot measure: a party reselling a public RPC answers fresh
 // and correct, and the measured party penalties (stale share, trust) never
 // charge it. party is an owner address ("pokt1…"), which reaches every domain
-// dedicated to that owner, or an operator domain. Body: {"penalty": -30,
+// dedicated to that owner, or an operator domain, which reaches every key of
+// that domain, dedicated to an owner or not. Body: {"penalty": -30,
 // "reason": "...", "until": "2026-11-01T00:00:00Z"}; penalty between -100 and
 // 0 exclusive, reason required, until optional (none: until deleted). It
 // replaces the party's previous one, is shared through Redis with every

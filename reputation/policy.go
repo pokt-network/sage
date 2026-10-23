@@ -27,8 +27,9 @@ import (
 
 // PolicyPenalty is one party's policy penalty.
 type PolicyPenalty struct {
-	// Party is an owner address ("pokt1…") or an operator domain, as the
-	// party penalties name parties (domain.PartyOfOperator).
+	// Party is an owner address ("pokt1…"), charged on every domain
+	// dedicated to it (domain.PartyOfOperator), or an operator domain,
+	// charged on every key of that domain whether or not it is dedicated.
 	Party string `json:"party"`
 	// Penalty is what it takes off every key's score: negative.
 	Penalty float64 `json:"penalty"`

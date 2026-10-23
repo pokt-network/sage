@@ -113,8 +113,10 @@ type chronicView struct {
 	// to it), op holding the party.
 	partySeed map[opID]float64
 	// keyParty is each known key's party, so the lookup per candidate does
-	// not parse a URL; an unknown key's is computed (partyOfKey).
+	// not parse a URL; an unknown key's is computed (partyOfKey). keyOp is
+	// each known key's operator, for the same reason.
 	keyParty map[string]string
+	keyOp    map[string]string
 }
 
 // partyPenalties returns the stale-share and trust penalties a key's party
@@ -185,9 +187,9 @@ func (v *chronicView) partyPenalty(svc domain.ServiceID, key string) float64 {
 	return min(stale, trust, v.policyPenalty(svc, key), v.throttlePenalty(svc, key), v.duplicatePenalty(svc, key))
 }
 
-// policyPenalty is the policy penalty a key's party carries in a service:
-// where the policy_penalty flag is on and, on a websocket key, where the
-// party penalties reach websocket keys.
+// policyPenalty is the policy penalty a key's party or operator carries in a
+// service, the larger of the two: where the policy_penalty flag is on and, on
+// a websocket key, where the party penalties reach websocket keys.
 func (v *chronicView) policyPenalty(svc domain.ServiceID, key string) float64 {
 	if v == nil || len(v.policyPen) == 0 {
 		return 0
@@ -196,11 +198,15 @@ func (v *chronicView) policyPenalty(svc domain.ServiceID, key string) float64 {
 		return 0
 	}
 	party, ok := v.keyParty[key]
+	op := v.keyOp[key]
 	if !ok {
-		party = partyOfKey(key)
+		op = operatorOfKey(key)
+		party = domain.PartyOfOperator(op)
 	}
-	pen, ok := v.policyPen[party]
-	if !ok {
+	// On a domain dedicated to an owner the party is the owner, so an entry
+	// set on the domain itself is looked up apart.
+	pen := min(v.policyPen[party], v.policyPen[op])
+	if pen == 0 {
 		return 0
 	}
 	on, known := v.policyOn[svc]
