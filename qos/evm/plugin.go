@@ -585,9 +585,14 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 			return nil, fmt.Errorf("eth_blockNumber: %w", err)
 		}
 		height = reportedHeight(height)
+		// Stored even when refused: the height filters read an implausible
+		// height as the lowest (qos.HeightGetter). Consensus never takes it.
 		p.store.ObserveHeight(endpoint, func(ep *evmEndpoint) {
 			ep.BlockNumber = height
 		})
+		if !qos.IsPlausibleBlockHeight(height) {
+			return nil, fmt.Errorf("eth_blockNumber: implausible block height %d from endpoint %s", height, endpoint)
+		}
 		p.Consensus.AddObservation(endpoint, height)
 		return &qos.ExtractedData{BlockHeight: &height}, nil
 

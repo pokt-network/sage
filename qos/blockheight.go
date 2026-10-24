@@ -1,14 +1,11 @@
 package qos
 
-import (
-	"fmt"
-	"math"
-)
+import "math"
 
 const (
-	// maxBlockHeightDelta is the maximum difference between a reported block height
-	// and the perceived block height. Heights exceeding this are likely parsing bugs
-	// or malicious responses.
+	// maxBlockHeightDelta is how far past the perceived height a stored height
+	// may sit and still be read as one (HeightGetter). Further is a parsing bug
+	// or a false answer.
 	maxBlockHeightDelta = 1_000_000
 
 	// MaxPlausibleBlockHeight is an absolute ceiling on any height a real chain
@@ -52,24 +49,4 @@ func saturatingMul(a, b uint64) uint64 {
 		return math.MaxUint64
 	}
 	return a * b
-}
-
-// ValidateBlockHeight validates a raw block height against the perceived block height.
-// Returns an error if the height is zero or suspiciously far ahead of perceived.
-func ValidateBlockHeight(raw, perceived uint64) error {
-	if raw == 0 {
-		return fmt.Errorf("block height is zero")
-	}
-
-	// If perceived is zero (cold start), accept any non-zero height.
-	if perceived == 0 {
-		return nil
-	}
-
-	if raw > saturatingAdd(perceived, maxBlockHeightDelta) {
-		return fmt.Errorf("block height %d is %d ahead of perceived %d (max delta %d)",
-			raw, raw-perceived, perceived, maxBlockHeightDelta)
-	}
-
-	return nil
 }

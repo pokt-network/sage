@@ -504,6 +504,54 @@ func TestExtractData_BlockNumber(t *testing.T) {
 	}
 }
 
+// A probe naming a height no chain could reach fails, and consensus does not
+// take it. The endpoint is not selected as current on it.
+func TestExtractData_BlockNumberImplausible(t *testing.T) {
+	p := newTestPlugin(5)
+	p.UpdateBlockHeight("ep0", 100)
+	request := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+	response := []byte(`{"jsonrpc":"2.0","id":1,"result":"0xffffffffffffffff"}`)
+
+	if _, err := p.ExtractData("ep1", request, response); err == nil {
+		t.Fatal("want an error for an implausible height")
+	}
+	if got := p.Consensus.PerceivedBlock(); got != 100 {
+		t.Fatalf("perceived = %d, want 100", got)
+	}
+	payloads := []domain.Payload{domain.NewPayload(request, domain.RPCTypeJSONRPC, "eth_blockNumber")}
+	selected, err := p.SelectEndpoints(domain.EndpointAddrList{"ep0", "ep1"}, payloads)
+	if err != nil || len(selected) != 1 || selected[0] != "ep0" {
+		t.Fatalf("selected %v (%v), want ep0 alone", selected, err)
+	}
+}
+
+// A node far behind that answers first after a boot does not hold the head
+// down: the heights after it reach consensus, and the endpoints at the head
+// are the ones selected.
+func TestExtractData_FarBehindFirstAnswerDoesNotHoldTheHead(t *testing.T) {
+	p := newTestPlugin(5)
+	request := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+	const behind, a, b = domain.EndpointAddr("pokt1behind-https://behind.example.com"), domain.EndpointAddr("pokt1aaa-https://a.example.com"), domain.EndpointAddr("pokt1bbb-https://b.example.com")
+
+	for _, answer := range []struct {
+		ep     domain.EndpointAddr
+		height uint64
+	}{{behind, 5_000}, {a, 300_000_000}, {b, 300_000_000}} {
+		response := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":"0x%x"}`, answer.height))
+		if _, err := p.ExtractData(answer.ep, request, response); err != nil {
+			t.Fatalf("%s at %d: %v", answer.ep, answer.height, err)
+		}
+	}
+	if got := p.Consensus.PerceivedBlock(); got != 300_000_000 {
+		t.Fatalf("perceived = %d, want 300000000", got)
+	}
+	payloads := []domain.Payload{domain.NewPayload(request, domain.RPCTypeJSONRPC, "eth_blockNumber")}
+	selected, err := p.SelectEndpoints(domain.EndpointAddrList{behind, a, b}, payloads)
+	if err != nil || len(selected) != 2 || slices.Contains(selected, behind) {
+		t.Fatalf("selected %v (%v), want the two endpoints at the head", selected, err)
+	}
+}
+
 func TestExtractData_ChainID(t *testing.T) {
 	p := newTestPlugin(5)
 	request := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":2}`)

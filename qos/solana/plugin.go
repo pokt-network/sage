@@ -159,8 +159,13 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		return &qos.ExtractedData{}, nil
 	}
 
-	if err := qos.ValidateBlockHeight(height, p.Consensus.PerceivedBlock()); err != nil {
-		return nil, fmt.Errorf("solana: invalid block height from endpoint %s: %w", endpoint, err)
+	if !qos.IsPlausibleBlockHeight(height) {
+		// Stored without consensus: the height filters read an implausible
+		// height as the lowest (qos.HeightGetter). Zero is no height.
+		if height > 0 {
+			p.store.ObserveHeight(endpoint, func(ep *solanaEndpoint) { ep.BlockHeight = height })
+		}
+		return nil, fmt.Errorf("solana: implausible block height %d from endpoint %s", height, endpoint)
 	}
 
 	return &qos.ExtractedData{BlockHeight: &height}, nil

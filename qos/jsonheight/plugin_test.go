@@ -222,6 +222,26 @@ func TestSelectEndpoints_FiltersOnceHeightsAreKnown(t *testing.T) {
 	}
 }
 
+// A height no chain could reach is refused, and consensus does not take it.
+// The endpoint is not selected as current on it.
+func TestExtractData_ImplausibleHeight(t *testing.T) {
+	p := NewPlugin(nil, NEAR, 10)
+	const current = domain.EndpointAddr("supA-https://current.example.com")
+	const ahead = domain.EndpointAddr("supB-https://ahead.example.com")
+	p.UpdateBlockHeight(current, 1000)
+
+	if _, err := p.ExtractData(ahead, NEAR.Probe.Bytes(), []byte(`{"jsonrpc":"2.0","result":{"header":{"height":18446744073709551615}},"id":1}`)); err == nil {
+		t.Fatal("want an error for an implausible height")
+	}
+	if got := p.Consensus.PerceivedBlock(); got != 1000 {
+		t.Fatalf("perceived = %d, want 1000", got)
+	}
+	got, err := p.SelectEndpoints(domain.EndpointAddrList{current, ahead}, nil)
+	if err != nil || len(got) != 1 || got[0] != current {
+		t.Fatalf("selected %v (%v), want the current endpoint alone", got, err)
+	}
+}
+
 // The probe is the only source of the fact this plugin exists for, so it must
 // be Essential or traffic-informed probing could skip it away.
 func TestHealthChecks_TheProbeIsEssential(t *testing.T) {

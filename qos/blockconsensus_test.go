@@ -73,6 +73,21 @@ func TestBlockConsensus_ExternalFloor_DuringGrace(t *testing.T) {
 	}
 }
 
+// A floor no chain could reach is refused and the one in force kept: taken, it
+// put every endpoint behind.
+func TestBlockConsensus_ExternalFloor_RefusesImplausible(t *testing.T) {
+	bc := NewBlockConsensus(nil, 5)
+	bc.gracePeriod = 0
+	bc.graceStart = time.Now().Add(-time.Hour)
+
+	bc.SetExternalFloor(500)
+	bc.AddObservation("ep1", 100)
+	bc.SetExternalFloor(^uint64(0))
+	if got := bc.PerceivedBlock(); got != 495 {
+		t.Fatalf("perceived = %d, want 495 from the floor already in force", got)
+	}
+}
+
 func TestBlockConsensus_ExternalFloor_AfterGrace(t *testing.T) {
 	bc := NewBlockConsensus(nil, 5)
 	bc.gracePeriod = 0 // No grace period.

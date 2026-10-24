@@ -398,6 +398,10 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		if err != nil {
 			return nil, fmt.Errorf("cosmos: evm eth_blockNumber from %s: %w", endpoint, err)
 		}
+		if !qos.IsPlausibleBlockHeight(height) {
+			p.storeRefusedHeight(endpoint, height)
+			return nil, fmt.Errorf("cosmos: implausible block height %d from endpoint %s", height, endpoint)
+		}
 		return &qos.ExtractedData{BlockHeight: &height}, nil
 	}
 
@@ -431,11 +435,26 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		return &qos.ExtractedData{}, nil
 	}
 
+	if !qos.IsPlausibleBlockHeight(height) {
+		p.storeRefusedHeight(endpoint, height)
+		return nil, fmt.Errorf("cosmos: implausible block height %d from endpoint %s", height, endpoint)
+	}
 	data := &qos.ExtractedData{BlockHeight: &height}
 	if hasChainID {
 		data.ChainID = &chainID
 	}
 	return data, nil
+}
+
+// storeRefusedHeight stores a height refused as implausible, without
+// consensus: the height filters read it as the lowest (qos.HeightGetter).
+// Zero is no height, and keeps the one stored.
+func (p *Plugin) storeRefusedHeight(endpoint domain.EndpointAddr, height uint64) {
+	if height > 0 {
+		p.store.ObserveHeight(endpoint, func(ep *cosmosEndpoint) {
+			ep.BlockHeight = height
+		})
+	}
 }
 
 // assertChainID checks a reported network name against the service's configured

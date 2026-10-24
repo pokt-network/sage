@@ -186,6 +186,15 @@ func (bc *BlockConsensus) PerceivedBlock() uint64 {
 // whose endpoints report no height at all (mainnet sei until 2026-09-29) never
 // makes one, and its floor sat in the chain view for a week with perceived at 0.
 func (bc *BlockConsensus) SetExternalFloor(height uint64) {
+	// Zero clears the floor. Any other height is a source's claim, and an
+	// absurd one would put every endpoint behind.
+	if height != 0 && !IsPlausibleBlockHeight(height) {
+		bc.logger.Warn("block consensus: refusing implausible external floor",
+			"height", height,
+			"max_plausible", uint64(MaxPlausibleBlockHeight),
+		)
+		return
+	}
 	bc.mu.Lock()
 	bc.externalFloor.Store(height)
 	beforeStoreHook("floor")

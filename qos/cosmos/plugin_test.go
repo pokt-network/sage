@@ -256,6 +256,26 @@ func TestSelectEndpoints_BlockHeightFilter(t *testing.T) {
 	}
 }
 
+// A height no chain could reach is refused, and consensus does not take it.
+// The endpoint is not selected as current on it.
+func TestExtractData_ImplausibleHeight(t *testing.T) {
+	p := newPlugin(5)
+	current := endpointAddr("pokt1abc-https://current.example.com")
+	ahead := endpointAddr("pokt1def-https://ahead.example.com")
+	p.UpdateBlockHeight(current, 1000)
+
+	if _, err := p.ExtractData(ahead, nil, statusResponse("", "18446744073709551615")); err == nil {
+		t.Fatal("want an error for an implausible height")
+	}
+	if got := p.Consensus.PerceivedBlock(); got != 1000 {
+		t.Fatalf("perceived = %d, want 1000", got)
+	}
+	result, err := p.SelectEndpoints(domain.EndpointAddrList{current, ahead}, []domain.Payload{domain.NewPayload(nil, domain.RPCTypeREST, "")})
+	if err != nil || !result.Contains(current) || result.Contains(ahead) {
+		t.Fatalf("selected %v (%v), want the current endpoint alone", result, err)
+	}
+}
+
 func TestSelectEndpoints_UnknownEndpointPassesThrough(t *testing.T) {
 	p := newPlugin(5)
 

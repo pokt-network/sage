@@ -267,8 +267,13 @@ func (p *Plugin) ExtractData(endpoint domain.EndpointAddr, request, response []b
 		}
 		return &qos.ExtractedData{}, nil
 	}
-	if err := qos.ValidateBlockHeight(height, p.Consensus.PerceivedBlock()); err != nil {
-		return nil, fmt.Errorf("%s: invalid block height from endpoint %s: %w", p.chain.Name, endpoint, err)
+	if !qos.IsPlausibleBlockHeight(height) {
+		// Stored without consensus: the height filters read an implausible
+		// height as the lowest (qos.HeightGetter). Zero is no height.
+		if height > 0 {
+			p.store.ObserveHeight(endpoint, func(s *endpointState) { s.blockHeight = height })
+		}
+		return nil, fmt.Errorf("%s: implausible block height %d from endpoint %s", p.chain.Name, height, endpoint)
 	}
 	return &qos.ExtractedData{BlockHeight: &height}, nil
 }

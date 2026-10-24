@@ -5,44 +5,6 @@ import (
 	"testing"
 )
 
-func TestValidateBlockHeight_Zero(t *testing.T) {
-	if err := ValidateBlockHeight(0, 100); err == nil {
-		t.Fatal("expected error for zero height")
-	}
-}
-
-func TestValidateBlockHeight_Normal(t *testing.T) {
-	if err := ValidateBlockHeight(100, 105); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateBlockHeight_TooHigh(t *testing.T) {
-	if err := ValidateBlockHeight(2_000_000, 100); err == nil {
-		t.Fatal("expected error for height too far ahead")
-	}
-}
-
-func TestValidateBlockHeight_ExactDelta(t *testing.T) {
-	// Exactly at the delta boundary should pass.
-	if err := ValidateBlockHeight(100+maxBlockHeightDelta, 100); err != nil {
-		t.Fatalf("unexpected error at exact delta: %v", err)
-	}
-}
-
-func TestValidateBlockHeight_OneOverDelta(t *testing.T) {
-	if err := ValidateBlockHeight(100+maxBlockHeightDelta+1, 100); err == nil {
-		t.Fatal("expected error for one over delta")
-	}
-}
-
-func TestValidateBlockHeight_PerceivedZero(t *testing.T) {
-	// Cold start: perceived is 0, any non-zero height should pass.
-	if err := ValidateBlockHeight(999999, 0); err != nil {
-		t.Fatalf("unexpected error during cold start: %v", err)
-	}
-}
-
 func TestIsPlausibleBlockHeight(t *testing.T) {
 	cases := []struct {
 		height uint64
@@ -60,16 +22,6 @@ func TestIsPlausibleBlockHeight(t *testing.T) {
 		if got := IsPlausibleBlockHeight(tc.height); got != tc.want {
 			t.Errorf("IsPlausibleBlockHeight(%d) = %v, want %v", tc.height, got, tc.want)
 		}
-	}
-}
-
-// ValidateBlockHeight compares against perceived+maxBlockHeightDelta, which
-// wrapped when perceived sat near the top of the range — turning a ceiling into
-// a floor and rejecting every honest height.
-func TestValidateBlockHeight_NoWrapNearMaxUint64(t *testing.T) {
-	perceived := uint64(math.MaxUint64 - 10)
-	if err := ValidateBlockHeight(perceived, perceived); err != nil {
-		t.Fatalf("a height equal to perceived must validate: %v", err)
 	}
 }
 

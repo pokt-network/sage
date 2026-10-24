@@ -85,6 +85,12 @@ func HeightGetter[T any](store *EndpointStore[T], height func(T) uint64, project
 		if h == 0 {
 			return 0, false
 		}
+		// A height no node holds, absurd or further past the head than
+		// maxBlockHeightDelta, reads as the lowest one: taken as given it
+		// passed every height filter at no lag, whatever the node holds.
+		if !IsPlausibleBlockHeight(h) || (projection.perceived > 0 && h > saturatingAdd(projection.perceived, maxBlockHeightDelta)) {
+			return 1, true
+		}
 		return projection.Project(h, ep.HeightAt), true
 	}
 }

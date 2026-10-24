@@ -225,6 +225,27 @@ func TestExtractData_AcceptsGetBlockHeightResponse(t *testing.T) {
 	}
 }
 
+// A height no chain could reach is refused, and consensus does not take it.
+// The endpoint is not selected as current on it.
+func TestExtractData_ImplausibleHeight(t *testing.T) {
+	p := solana.NewPlugin(nil, 100)
+	const current = domain.EndpointAddr("pokt1a-https://current.example.com")
+	const ahead = domain.EndpointAddr("pokt1b-https://ahead.example.com")
+	p.UpdateBlockHeight(current, 300_000_000)
+
+	req := []byte(`{"jsonrpc":"2.0","id":1,"method":"getBlockHeight"}`)
+	if _, err := p.ExtractData(ahead, req, []byte(`{"jsonrpc":"2.0","id":1,"result":18446744073709551615}`)); err == nil {
+		t.Fatal("want an error for an implausible height")
+	}
+	if got := p.Consensus.PerceivedBlock(); got != 300_000_000 {
+		t.Fatalf("perceived = %d, want 300000000", got)
+	}
+	got, err := p.SelectEndpoints(domain.EndpointAddrList{current, ahead}, nil)
+	if err != nil || len(got) != 1 || got[0] != current {
+		t.Fatalf("selected %v (%v), want the current endpoint alone", got, err)
+	}
+}
+
 // The gate is the point. getSlot also answers with a bare number, and a slot is
 // not a height — Solana skips slots, so absoluteSlot runs tens of millions
 // ahead. Accepting any bare number would poison the perceived-height consensus

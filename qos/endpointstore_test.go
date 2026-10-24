@@ -86,6 +86,34 @@ func TestHeightGetter(t *testing.T) {
 	}
 }
 
+// A height no node holds, absurd or past the head by more than
+// maxBlockHeightDelta, is not taken as current: it reads as the lowest
+// height, so the endpoint stays out of the strict tier however its node is.
+func TestHeightGetter_ImpossibleHeightIsTheLowest(t *testing.T) {
+	type ep struct{ height uint64 }
+	store := NewEndpointStore[ep]()
+	const honest, absurd, ahead = domain.EndpointAddr("pokt1h-https://h.example.com"), domain.EndpointAddr("pokt1x-https://x.example.com"), domain.EndpointAddr("pokt1y-https://y.example.com")
+	store.ObserveHeight(honest, func(e *ep) { e.height = 990 })
+	store.ObserveHeight(absurd, func(e *ep) { e.height = ^uint64(0) })
+	store.ObserveHeight(ahead, func(e *ep) { e.height = 1000 + maxBlockHeightDelta + 1 })
+
+	get := HeightGetter(store, func(e ep) uint64 { return e.height }, HeightProjection{perceived: 1000})
+	for _, addr := range []domain.EndpointAddr{absurd, ahead} {
+		if h, ok := get(addr); !ok || h != 1 {
+			t.Errorf("%s: got (%d, %v), want (1, true)", addr, h, ok)
+		}
+	}
+	if h, ok := get(honest); !ok || h != 990 {
+		t.Errorf("honest: got (%d, %v), want (990, true)", h, ok)
+	}
+
+	filters := []FilterFunc{BlockHeightFilter(get, MinAllowedHeight(1000, 50))}
+	res := SelectWithKnownHeights(domain.EndpointAddrList{honest, absurd, ahead}, get, filters, nil, nil, nil)
+	if res.Tier != 1 || len(res.Endpoints) != 1 || res.Endpoints[0] != honest {
+		t.Fatalf("tier %d %v, want tier 1 with the honest endpoint alone", res.Tier, res.Endpoints)
+	}
+}
+
 // TestEndpointStore_Clear drops every stored endpoint at once, the way an
 // operator-triggered chain-state reset needs to.
 func TestEndpointStore_Clear(t *testing.T) {
