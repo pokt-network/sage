@@ -41,3 +41,12 @@ var (
 	// connections off a supplier being benched.
 	ErrBridgeReplaceRequested = errors.New("endpoint replacement requested")
 )
+
+// PolicyViolation is what an EndpointLostHandler returns to end the bridge
+// instead of a rebind, closing the client with 1008 and Reason: the
+// connection holds something the gateway no longer serves, and a reconnect is
+// how the client learns what.
+type PolicyViolation struct{ Reason string }
+
+// Error names the refusal.
+func (e PolicyViolation) Error() string { return "policy violation: " + e.Reason }

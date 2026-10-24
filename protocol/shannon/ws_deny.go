@@ -3,6 +3,7 @@ package shannon
 import (
 	"cmp"
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -37,18 +38,14 @@ var wsFeedDenials = map[qos.SubscribeFeed]wsFeedDenial{
 // other members get an error saying the batch was not sent, since a supplier
 // cannot be asked for part of it.
 func (r *WSRelayer) subscribeDenial(serviceID domain.ServiceID) func([]byte) []byte {
-	var classifier qos.SubscriptionClassifier
-	if r.deps.QoS != nil {
-		classifier, _ = r.deps.QoS.Get(serviceID).(qos.SubscriptionClassifier)
-	}
+	classifier := r.classifier(serviceID)
 	if classifier == nil {
 		return nil
 	}
 	// denial answers one request, "" when it is not denied.
 	denial := func(frame []byte) string {
-		info := classifier.ClassifyClientFrame(frame)
-		d, ok := wsFeedDenials[info.Feed]
-		if !ok || info.Action != qos.SubscriptionSubscribe || !r.deps.Flags.IsEnabled(context.Background(), d.flag, serviceID) {
+		info, d, denied := r.deniedSubscribe(classifier, serviceID, frame)
+		if !denied {
 			return ""
 		}
 		if r.deps.Metrics != nil {
@@ -79,6 +76,38 @@ func (r *WSRelayer) subscribeDenial(serviceID domain.ServiceID) func([]byte) []b
 		}
 		return []byte("[" + strings.Join(answers, ",") + "]")
 	}
+}
+
+// holdsDeniedSubscription reports whether the subscriptions a rebind would
+// replay include one serviceID's flags now deny: a flag turned on after the
+// client subscribed.
+func (r *WSRelayer) holdsDeniedSubscription(serviceID domain.ServiceID, subs *qos.SubscriptionRegistry) bool {
+	classifier := r.classifier(serviceID)
+	if classifier == nil {
+		return false
+	}
+	return slices.ContainsFunc(subs.Subscribes(), func(frame []byte) bool {
+		_, _, denied := r.deniedSubscribe(classifier, serviceID, frame)
+		return denied
+	})
+}
+
+// deniedSubscribe reads frame and reports whether it is a subscribe to a feed
+// whose flag is on for serviceID, with how to answer it.
+func (r *WSRelayer) deniedSubscribe(classifier qos.SubscriptionClassifier, serviceID domain.ServiceID, frame []byte) (qos.ClientFrameInfo, wsFeedDenial, bool) {
+	info := classifier.ClassifyClientFrame(frame)
+	d, ok := wsFeedDenials[info.Feed]
+	return info, d, ok && info.Action == qos.SubscriptionSubscribe && r.deps.Flags.IsEnabled(context.Background(), d.flag, serviceID)
+}
+
+// classifier is serviceID's subscription classifier, nil when its plugin has
+// none.
+func (r *WSRelayer) classifier(serviceID domain.ServiceID) qos.SubscriptionClassifier {
+	if r.deps.QoS == nil {
+		return nil
+	}
+	c, _ := r.deps.QoS.Get(serviceID).(qos.SubscriptionClassifier)
+	return c
 }
 
 // jsonRPCError is a JSON-RPC error response on a raw id; message is already

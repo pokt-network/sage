@@ -844,6 +844,27 @@ func spliceSpan(data []byte, span Span, raw string) []byte {
 	return out
 }
 
+// Subscribes returns the subscribe frames a Replay would send again, as the
+// client sent them: each live subscription's and each still unanswered. It
+// changes nothing.
+func (r *SubscriptionRegistry) Subscribes() [][]byte {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([][]byte, 0, len(r.active)+r.npending)
+	for _, sub := range r.active {
+		out = append(out, sub.Request)
+	}
+	for _, queue := range r.pending {
+		for _, p := range queue {
+			out = append(out, p.request)
+		}
+	}
+	return out
+}
+
 // Active lists the live subscriptions, in no particular order.
 func (r *SubscriptionRegistry) Active() []Subscription {
 	if r == nil {

@@ -543,6 +543,12 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 				reputation.NewSignal(reputation.SignalMajorError, "ws_endpoint_lost:"+cause.Error(), 0))
 		}
 		noteRebind(tried, lost, cause)
+		// A subscription the service stopped serving after the client opened
+		// it is carried to no supplier: the client is closed with 1008, and
+		// the subscribe it sends again on reconnect gets the JSON-RPC error.
+		if r.holdsDeniedSubscription(serviceID, subs) {
+			return nil, nil, nil, websockets.PolicyViolation{Reason: "subscription no longer served on this endpoint"}
+		}
 
 		next, _, err := r.resolveEndpoint(ctx, serviceID, tried, live)
 		if err != nil {
@@ -795,11 +801,7 @@ func relayMinerHeaders(serviceID domain.ServiceID, appAddr string) http.Header {
 // subscriptionRegistry builds the registry for one bridge from the service's
 // plugin, or an inert one when nothing can classify this chain's frames.
 func (r *WSRelayer) subscriptionRegistry(serviceID domain.ServiceID) *qos.SubscriptionRegistry {
-	var classifier qos.SubscriptionClassifier
-	if r.deps.QoS != nil {
-		classifier, _ = r.deps.QoS.Get(serviceID).(qos.SubscriptionClassifier)
-	}
-	subs := qos.NewSubscriptionRegistry(classifier)
+	subs := qos.NewSubscriptionRegistry(r.classifier(serviceID))
 	if r.deps.DuplicateWindow != nil {
 		subs.SetDuplicateWindow(func() (time.Duration, int) { return r.deps.DuplicateWindow(serviceID) })
 	}

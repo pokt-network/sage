@@ -45,6 +45,9 @@ const (
 	RebindOK RebindResult = "ok"
 	// RebindFailed: the handler could not supply one; the bridge closed.
 	RebindFailed RebindResult = "failed"
+	// RebindRefused: the handler refused to carry the connection over
+	// (PolicyViolation); the bridge closed with 1008.
+	RebindRefused RebindResult = "refused"
 	// RebindExhausted: the limit was already spent; the bridge closed.
 	RebindExhausted RebindResult = "exhausted"
 )

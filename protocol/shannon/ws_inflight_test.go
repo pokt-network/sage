@@ -86,6 +86,7 @@ type twoSuppliers struct {
 	p                *Protocol
 	rep              *signalLog
 	spy              *spyWSMetrics
+	flags            *featureflag.MemoryStore
 	silentEP, echoEP domain.EndpointAddr
 	dial             func() *websocket.Conn
 }
@@ -140,9 +141,10 @@ func newTwoSuppliers(t *testing.T, flags map[string]bool) *twoSuppliers {
 	for k, v := range flags {
 		all[k] = v
 	}
+	f.flags = featureflag.NewMemoryStore(all)
 	f.r = NewWSRelayer(WSRelayerDeps{
 		Protocol: f.p, Reputation: f.rep, Observe: newDisabledQueue(),
-		Flags: featureflag.NewMemoryStore(all), Logger: newTestLogger(), Metrics: f.spy, QoS: reg,
+		Flags: f.flags, Logger: newTestLogger(), Metrics: f.spy, QoS: reg,
 		RequestTimeout: func(domain.ServiceID) time.Duration { return 300 * time.Millisecond },
 	})
 	f.r.stallCheck = 50 * time.Millisecond

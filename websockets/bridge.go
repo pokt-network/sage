@@ -688,6 +688,13 @@ func (b *Bridge) rebind(lost *Connection, cause error) {
 	b.logger.Warn("websocket: endpoint lost, rebinding", "rebind", n+1, "cause", cause)
 
 	raw, processor, replay, err := b.endpointLost(b.ctx, cause)
+	if refused := (PolicyViolation{}); errors.As(err, &refused) {
+		b.endpointMu.Unlock()
+		b.logger.Info("websocket: rebind refused, closing", "reason", refused.Reason)
+		b.observe(func(o Observer) { o.Rebound(RebindRefused) })
+		b.Shutdown(err)
+		return
+	}
 	if err != nil {
 		b.endpointMu.Unlock()
 		b.logger.Warn("websocket: rebind failed, closing", "err", err)
@@ -847,6 +854,11 @@ func endpointCloseCode(clientCode int) int {
 //  2. Client-initiated close code → propagate to endpoint.
 //  3. Error-type mapping for internal shutdowns.
 func (b *Bridge) determineCloseCode(err error) (int, string) {
+	// The gateway's refusal to carry the connection over outranks anything
+	// a peer said: the client is told why it is closed.
+	if refused := (PolicyViolation{}); errors.As(err, &refused) {
+		return websocket.ClosePolicyViolation, refused.Reason
+	}
 	// A rebind that gave up is the bridge's own verdict about the endpoint
 	// side, and it outranks whatever the dead endpoint last said (usually a
 	// 1006 it never sent): the client's remedy is to reconnect, so 1012.

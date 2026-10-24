@@ -266,7 +266,7 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "websocket_rebinds_total",
-				Help:      "Attempts to replace a lost supplier under a live client connection, by service and result: ok (a new supplier took over and the live subscriptions were replayed), failed (no supplier could be reached; the client was told to reconnect), exhausted (the per-connection rebind limit was already spent).",
+				Help:      "Attempts to replace a lost supplier under a live client connection, by service and result: ok (a new supplier took over and the live subscriptions were replayed), failed (no supplier could be reached; the client was told to reconnect), exhausted (the per-connection rebind limit was already spent), refused (the connection held a subscription the service no longer serves, under ws_deny_pending_transactions or ws_deny_unfiltered_logs; the client was closed with 1008 and nothing was replayed).",
 			},
 			[]string{"service_id", "result"},
 		),

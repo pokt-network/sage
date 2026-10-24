@@ -1,6 +1,8 @@
 package shannon
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +82,63 @@ func TestWSOpen_DeniedSubscribesNeverReachASupplier(t *testing.T) {
 			defer f.spy.mu.Unlock()
 			if strings.Join(f.spy.denied, ",") != strings.Join(tc.metrics, ",") {
 				t.Errorf("denials counted %v, want %v", f.spy.denied, tc.metrics)
+			}
+		})
+	}
+}
+
+// A flag turned on after a client subscribed reaches the subscription at the
+// next rebind: the client is closed with 1008 and no supplier is sent the
+// replay. With only another feed's flag on, the rebind goes on as before.
+func TestWSOpen_RebindClosesASubscriptionNowDenied(t *testing.T) {
+	const (
+		subscribe = `{"jsonrpc":"2.0","id":9,"method":"eth_subscribe","params":["newPendingTransactions"]}`
+		read      = `{"jsonrpc":"2.0","id":7,"method":"eth_blockNumber","params":[]}`
+	)
+	for _, tc := range []struct {
+		name   string
+		flip   string
+		closed bool
+	}{
+		{"its flag turned on", featureflag.FlagWSDenyPendingTransactions, true},
+		{"another feed's flag turned on", featureflag.FlagWSDenyUnfilteredLogs, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTwoSuppliers(t, nil)
+			client := f.dial()
+			for _, frame := range []string{subscribe, read} {
+				if err := client.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for f.spy.clientFrames() < 2 && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if err := f.flags.Set(context.Background(), tc.flip, true); err != nil {
+				t.Fatal(err)
+			}
+			// The silent supplier never answers the read: past the relay
+			// timeout the connection rebinds.
+			_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+			_, msg, err := client.ReadMessage()
+
+			f.spy.mu.Lock()
+			bound := strings.Join(f.spy.bound, ",")
+			f.spy.mu.Unlock()
+			toEcho := strings.Contains(bound, f.echoEP.Operator())
+			if !tc.closed {
+				if err != nil || string(msg) != `{"jsonrpc":"2.0","id":7,"result":"0x1"}` || !toEcho {
+					t.Fatalf("read %s (%v), bound %s; want the next supplier's answer after a rebind", msg, err, bound)
+				}
+				return
+			}
+			var closeErr *websocket.CloseError
+			if !errors.As(err, &closeErr) || closeErr.Code != websocket.ClosePolicyViolation || closeErr.Text != "subscription no longer served on this endpoint" {
+				t.Fatalf("read %s (%v); want a 1008 close", msg, err)
+			}
+			if n := f.spy.clientFrames(); n != 2 || toEcho {
+				t.Errorf("%d frames sent to suppliers, bound %s; want the 2 first ones and no rebind", n, bound)
 			}
 		})
 	}
