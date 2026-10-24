@@ -319,6 +319,16 @@ const (
 	// connections it is paid for frame by frame. Reads the penalty, so it
 	// does nothing where ws_duplicate_share is off. Off: the penalty alone.
 	FlagWSDuplicateEvict = "ws_duplicate_evict"
+	// FlagWSDenyPendingTransactions answers a WebSocket subscribe to every
+	// pending transaction (qos.FeedPendingTransactions, EVM
+	// newPendingTransactions) with a JSON-RPC error from the gateway; no
+	// supplier is asked, so nothing is streamed for it. Off: sent on.
+	FlagWSDenyPendingTransactions = "ws_deny_pending_transactions"
+	// FlagWSDenyUnfilteredLogs answers a WebSocket subscribe to every log the
+	// chain emits (qos.FeedAllLogs, an EVM logs subscribe naming no address
+	// and no topic) with a JSON-RPC error from the gateway; a logs subscribe
+	// with a filter is sent on. Off: sent on.
+	FlagWSDenyUnfilteredLogs = "ws_deny_unfiltered_logs"
 	// FlagThrottleShare charges a party for the share of its first client
 	// attempts that were throttled (an HTTP 429, or a node's own rate-limit
 	// answer), relative to the service's cleanest party, on every key it has
@@ -470,6 +480,10 @@ var DefaultFlags = map[string]bool{
 	FlagArchivalRetry:           false,
 	FlagQuery5xxRetry:           false,
 	FlagChainAnswersUnscored:    false,
+
+	// Subscribes the gateway answers itself instead of sending on.
+	FlagWSDenyPendingTransactions: false,
+	FlagWSDenyUnfilteredLogs:      false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

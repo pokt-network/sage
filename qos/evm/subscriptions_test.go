@@ -146,3 +146,33 @@ func TestSubscriptions_EVMDuplicateAcrossTheWindow(t *testing.T) {
 		t.Fatalf("repeat after 17000 others: %+v, want ok, out of the window", old)
 	}
 }
+
+// A subscribe to every pending transaction, or to every log, is marked as a
+// chain-wide feed; a logs subscribe that names an address or a topic is not.
+func TestSubscriptions_EVMFeeds(t *testing.T) {
+	p := &Plugin{}
+	for _, tc := range []struct {
+		params string
+		want   qos.SubscribeFeed
+	}{
+		{`["newPendingTransactions"]`, qos.FeedPendingTransactions},
+		{`["newPendingTransactions", true]`, qos.FeedPendingTransactions},
+		{`["logs"]`, qos.FeedAllLogs},
+		{`["logs", null]`, qos.FeedAllLogs},
+		{`["logs", {}]`, qos.FeedAllLogs},
+		{`["logs", {"address": [], "topics": []}]`, qos.FeedAllLogs},
+		{`["logs", {"address": "", "topics": [null, []]}]`, qos.FeedAllLogs},
+		{`["logs", {"address": "0x55d398326f99059ff775485246999027b3197955"}]`, qos.FeedNone},
+		{`["logs", {"address": ["0x55d398326f99059ff775485246999027b3197955"]}]`, qos.FeedNone},
+		{`["logs", {"topics": ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}]`, qos.FeedNone},
+		{`["logs", {"topics": [null, "0x000000000000000000000000ab"]}]`, qos.FeedNone},
+		{`["logs", {"topics": [["0xddf2", "0x8c5b"]]}]`, qos.FeedNone},
+		{`["logs", "0xabc"]`, qos.FeedNone},
+		{`["newHeads"]`, qos.FeedNone},
+	} {
+		frame := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":` + tc.params + `}`)
+		if got := p.ClassifyClientFrame(frame); got.Feed != tc.want {
+			t.Errorf("params %s: feed %d, want %d", tc.params, got.Feed, tc.want)
+		}
+	}
+}

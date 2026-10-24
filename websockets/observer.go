@@ -94,6 +94,12 @@ func WithRebindLimit(n int) BridgeOption {
 	return func(b *Bridge) { b.rebindLimit = n }
 }
 
+// WithClientAnswer lets answer reply to a client frame itself: a non-nil
+// reply goes back to the client, and the frame goes no further.
+func WithClientAnswer(answer func(data []byte) []byte) BridgeOption {
+	return func(b *Bridge) { b.answer = answer }
+}
+
 // WithStallDetector installs a data-staleness check, polled every period.
 // When it reports true the endpoint is treated as lost: a rebind with a
 // handler installed, 1012 to the client without one. The detector decides

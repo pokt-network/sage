@@ -146,6 +146,7 @@ type WSMetrics interface {
 	SupplierRetyped(serviceID domain.ServiceID, operator, owner string)
 	SupplierAnswer(serviceID domain.ServiceID, operator string, took time.Duration)
 	OpenPhase(serviceID domain.ServiceID, phase string, took time.Duration)
+	SubscriptionDenied(serviceID domain.ServiceID, topic string)
 }
 
 // WSRelayer is the only public entry point for opening WebSocket bridges in
@@ -482,6 +483,9 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	var bridgeOpts []websockets.BridgeOption
 	if r.deps.Metrics != nil {
 		bridgeOpts = append(bridgeOpts, websockets.WithObserver(r.deps.Metrics.ForService(serviceID)))
+	}
+	if deny := r.subscribeDenial(serviceID); deny != nil {
+		bridgeOpts = append(bridgeOpts, websockets.WithClientAnswer(deny))
 	}
 	// Data-staleness is an endpoint loss the socket does not report: live
 	// subscriptions and nothing delivered for them in wsStallTimeout while

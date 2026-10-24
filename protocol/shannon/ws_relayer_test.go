@@ -523,6 +523,26 @@ type spyWSMetrics struct {
 	retyped        []string // operator
 	answers        []string // operator
 	phases         []string
+	denied         []string // service|topic
+}
+
+func (s *spyWSMetrics) SubscriptionDenied(sid domain.ServiceID, topic string) {
+	s.mu.Lock()
+	s.denied = append(s.denied, string(sid)+"|"+topic)
+	s.mu.Unlock()
+}
+
+// clientFrames is how many client frames were signed toward any supplier.
+func (s *spyWSMetrics) clientFrames() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for k, v := range s.frames {
+		if strings.HasSuffix(k, "|client") {
+			n += v
+		}
+	}
+	return n
 }
 
 func (s *spyWSMetrics) SupplierAnswer(_ domain.ServiceID, operator string, _ time.Duration) {

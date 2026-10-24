@@ -765,3 +765,36 @@ func TestEndpointCloseCode(t *testing.T) {
 		})
 	}
 }
+
+// A frame the answer hook replies to goes back to the client and never to
+// the endpoint; a frame it lets pass is forwarded as before. The endpoint
+// echoes, so a leaked frame would come back ahead of the next one.
+func TestBridge_ClientAnswerKeepsTheFrameFromTheEndpoint(t *testing.T) {
+	endpointSrv := newEchoServer(t)
+	defer endpointSrv.Close()
+
+	answer := func(data []byte) []byte {
+		if string(data) == "deny" {
+			return []byte("denied")
+		}
+		return nil
+	}
+	bridgeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := StartBridge(context.Background(), newTestLogger(), r, w,
+			wsURL(endpointSrv), nil, &passthroughProcessor{}, WithClientAnswer(answer))
+		require.NoError(t, err)
+		<-b.Done()
+	}))
+	defer bridgeSrv.Close()
+
+	clientConn := dialTestServer(t, bridgeSrv)
+	defer clientConn.Close()
+
+	for _, step := range []struct{ send, want string }{{"deny", "denied"}, {"pass", "pass"}} {
+		require.NoError(t, clientConn.WriteMessage(websocket.TextMessage, []byte(step.send)))
+		_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, got, err := clientConn.ReadMessage()
+		require.NoError(t, err)
+		require.Equal(t, step.want, string(got))
+	}
+}

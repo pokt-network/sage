@@ -62,7 +62,24 @@ type ClientFrameInfo struct {
 	// targets, and SubscriptionIDSpan where it sits in the frame.
 	SubscriptionID     string
 	SubscriptionIDSpan Span
+	// Feed marks a subscribe to a chain-wide feed, which a service can
+	// refuse instead of sending on (protocol/shannon, per-service flags).
+	Feed SubscribeFeed
 }
+
+// SubscribeFeed is a chain-wide feed a subscribe can ask for.
+type SubscribeFeed int
+
+// The chain-wide feeds a plugin can recognise.
+const (
+	// FeedNone is any subscribe narrower than a chain-wide feed.
+	FeedNone SubscribeFeed = iota
+	// FeedPendingTransactions is every transaction the node's mempool takes.
+	FeedPendingTransactions
+	// FeedAllLogs is every log the chain emits: a logs subscribe naming no
+	// address and no topic.
+	FeedAllLogs
+)
 
 // EndpointFrameKind is what an endpoint→client frame is.
 type EndpointFrameKind int

@@ -43,6 +43,7 @@ type WebSocketMetrics struct {
 	closes       *prometheus.CounterVec
 	unresponsive *prometheus.CounterVec
 	rejected     *prometheus.CounterVec
+	denied       *prometheus.CounterVec
 	rebinds      *prometheus.CounterVec
 	stalls       *prometheus.CounterVec
 	clientTypes  *prometheus.CounterVec
@@ -80,7 +81,7 @@ const (
 // default registry. knownServices bounds the service_id label.
 func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
-	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.rebinds, m.stalls,
+	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.denied, m.rebinds, m.stalls,
 		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes,
 		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast, m.reissued, m.retyped, m.clientTypes, m.openPhases, m.answers)
 	return m
@@ -311,7 +312,20 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			},
 			[]string{"service_id", "reason"},
 		),
+		denied: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_subscriptions_denied_total",
+				Help:      "WebSocket subscribes the gateway answered with a JSON-RPC error instead of sending on, by service and topic: a chain-wide feed refused by the service's ws_deny_pending_transactions or ws_deny_unfiltered_logs flag. No supplier saw them.",
+			},
+			[]string{"service_id", "topic"},
+		),
 	}
+}
+
+// SubscriptionDenied counts a subscribe the gateway answered itself.
+func (m *WebSocketMetrics) SubscriptionDenied(serviceID domain.ServiceID, topic string) {
+	m.denied.WithLabelValues(m.services.serviceValue(serviceID), m.topics.value(topic)).Inc()
 }
 
 // Rejected counts an upgrade refused before a bridge existed.

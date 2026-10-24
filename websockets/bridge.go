@@ -135,6 +135,10 @@ type Bridge struct {
 	// endpoint is delivering nothing the client is waiting for.
 	stalled     func() bool
 	stallPeriod time.Duration
+
+	// answer, when set, may reply to a client frame in the endpoint's place
+	// (WithClientAnswer).
+	answer func(data []byte) []byte
 }
 
 // defaultRebindLimit is how many endpoints one client connection may burn
@@ -385,6 +389,14 @@ func (b *Bridge) route(msg message) {
 	case SourceClient:
 		if b.clientType.Swap(int32(msg.messageType)) == 0 {
 			b.observe(func(o Observer) { o.ClientFrameType(frameTypeLabel(msg.messageType)) })
+		}
+		if b.answer != nil {
+			if reply := b.answer(msg.data); reply != nil {
+				if err := b.SendToClient(reply); err != nil {
+					b.logger.Warn("websocket: answer to client failed", "err", err)
+				}
+				return
+			}
 		}
 		processed, err := b.processor.ProcessClientMessage(msg.data)
 		if err != nil {
