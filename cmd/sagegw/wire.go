@@ -1194,6 +1194,9 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			MaxConnectionsPerClient: func(serviceID domain.ServiceID) int {
 				return tuningStore.Int(tuning.KnobWSMaxConnectionsPerClient, serviceID, shannon.DefaultMaxConnectionsPerClient)
 			},
+			DenyMessage: func(serviceID domain.ServiceID) string {
+				return tuningStore.String(tuning.KnobWSDenyMessage, serviceID, "")
+			},
 			Metrics:        metrics.NewWebSocketMetrics(serviceIDsFrom(cfg)),
 			QoS:            qosReg,
 			ClientIP:       middleware.RequestClientIP(trustedProxies),

@@ -96,6 +96,10 @@ const (
 	// KnobWSMaxConnectionsPerClient is how many live WebSocket connections one
 	// client address may hold on a replica, per service as well as globally.
 	KnobWSMaxConnectionsPerClient = "websocket.max_connections_per_client"
+	// KnobWSDenyMessage is the text a WebSocket client reads when the gateway
+	// refuses its subscribe or closes a connection holding one, per service
+	// as well as globally.
+	KnobWSDenyMessage = "websocket.deny_message"
 	// KnobWSDuplicateMajorShare is the repeat share above which a WebSocket
 	// supplier's minute is charged major instead of minor.
 	KnobWSDuplicateMajorShare = "websocket.duplicate_major_share"
@@ -269,6 +273,15 @@ var Knobs = []Knob{
 		Min:         1,
 		Max:         100_000,
 		Unit:        "payloads",
+	},
+	{
+		Name: KnobWSDenyMessage,
+		Kind: KindString,
+		// Where else to go is the useful part, and it is the operator's.
+		Description: "The message of the JSON-RPC error a WebSocket subscribe gets when ws_deny_pending_transactions or ws_deny_unfiltered_logs refuses it, and the reason of the 1008 close a connection holding one gets at a rebind (cut to 123 bytes there). The error codes stay fixed. Unset: the built-in wording for each.",
+		Min:         1,
+		Max:         500,
+		Unit:        "characters",
 	},
 	{
 		Name: KnobBatchRejectMessage,

@@ -89,6 +89,11 @@ type WSRelayerDeps struct {
 	// the cap; nil takes DefaultMaxConnectionsPerClient.
 	MaxConnectionsPerClient func(domain.ServiceID) int
 
+	// DenyMessage is a service's text for a subscribe the gateway refuses and
+	// for the close of a connection holding one (ws_deny.go). Nil or "" keeps
+	// the built-in wording.
+	DenyMessage func(domain.ServiceID) string
+
 	// Metrics receives bridge lifecycle events. Optional: nil records
 	// nothing, which is what the tests want and what production must never
 	// wire (see wire.go).
@@ -547,7 +552,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		// it is carried to no supplier: the client is closed with 1008, and
 		// the subscribe it sends again on reconnect gets the JSON-RPC error.
 		if r.holdsDeniedSubscription(serviceID, subs) {
-			return nil, nil, nil, websockets.PolicyViolation{Reason: "subscription no longer served on this endpoint"}
+			return nil, nil, nil, websockets.PolicyViolation{Reason: r.denyCloseReason(serviceID)}
 		}
 
 		next, _, err := r.resolveEndpoint(ctx, serviceID, tried, live)

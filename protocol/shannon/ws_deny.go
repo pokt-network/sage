@@ -3,9 +3,11 @@ package shannon
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 
@@ -51,7 +53,7 @@ func (r *WSRelayer) subscribeDenial(serviceID domain.ServiceID) func([]byte) []b
 		if r.deps.Metrics != nil {
 			r.deps.Metrics.SubscriptionDenied(serviceID, info.Topic)
 		}
-		return jsonRPCError(info.RequestID, d.code, strconv.Quote(d.message))
+		return jsonRPCError(info.RequestID, d.code, jsonString(cmp.Or(r.denyMessage(serviceID), d.message)))
 	}
 	return func(data []byte) []byte {
 		frame := gjson.ParseBytes(data)
@@ -108,6 +110,40 @@ func (r *WSRelayer) classifier(serviceID domain.ServiceID) qos.SubscriptionClass
 	}
 	c, _ := r.deps.QoS.Get(serviceID).(qos.SubscriptionClassifier)
 	return c
+}
+
+// denyMessage is the operator's text for serviceID's denials, "" for the
+// built-in wording.
+func (r *WSRelayer) denyMessage(serviceID domain.ServiceID) string {
+	if r.deps.DenyMessage == nil {
+		return ""
+	}
+	return r.deps.DenyMessage(serviceID)
+}
+
+// maxCloseReason is the most a close frame's reason can hold: a control
+// frame's 125-byte payload less the 2-byte code (RFC 6455 §5.5).
+const maxCloseReason = 123
+
+// denyCloseReason is the reason of the 1008 close a connection holding a
+// denied subscription gets, cut on a character boundary to what a close frame
+// holds.
+func (r *WSRelayer) denyCloseReason(serviceID domain.ServiceID) string {
+	reason := cmp.Or(r.denyMessage(serviceID), "subscription no longer served on this endpoint")
+	if len(reason) <= maxCloseReason {
+		return reason
+	}
+	cut := maxCloseReason
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut]
+}
+
+// jsonString is s as a JSON string, escaped.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // jsonRPCError is a JSON-RPC error response on a raw id; message is already
