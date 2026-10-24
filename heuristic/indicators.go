@@ -48,10 +48,15 @@ var indicators = []indicator{
 	{pattern: "haven't been fully indexed", attribution: AttrBlockchain, severity: SeverityNone, reason: "not_indexed"},
 	{pattern: "not been fully indexed", attribution: AttrBlockchain, severity: SeverityNone, reason: "not_indexed"},
 	// Capability limitation (e.g., Tron lite fullnodes that don't expose an API).
-	// These two report the endpoint cannot serve the METHOD, not just this
+	// These report the endpoint cannot serve the METHOD, not just this
 	// block, so they set methodBlocking.
 	{pattern: "lite fullnode", attribution: AttrBlockchain, severity: SeverityNone, reason: "lite_fullnode", methodBlocking: true},
 	{pattern: "api is not supported", attribution: AttrBlockchain, severity: SeverityNone, reason: "api_not_supported", methodBlocking: true},
+	// A node run without a transaction indexer refuses every tx lookup and
+	// search ("transaction indexing is disabled"; a Cosmos REST face answers
+	// it with 400). Another node indexes. Not a missing-history wording, so
+	// not in capabilityLimitationPatterns.
+	{pattern: "indexing is disabled", attribution: AttrBlockchain, severity: SeverityNone, reason: "indexing_disabled", methodBlocking: true},
 	// Solana node started without a secondary account index for this program
 	// (-32010). Configuration, not a fault; another operator has the index.
 	{pattern: "excluded from account secondary indexes", attribution: AttrBlockchain, severity: SeverityNone, reason: "account_index_excluded"},
@@ -89,22 +94,40 @@ func matchIndicator(body []byte, documentIsAnswer bool) *AnalysisResult {
 			if document && ind.attribution == AttrSupplier && !inTopLevelString(body, ind.pattern) {
 				continue
 			}
-			result := AnalysisResult{
-				ShouldRetry:        true, // every indicator is retried; attribution decides blame
-				ShouldCircuitBreak: ind.severity == SeverityCritical || ind.severity == SeverityFatal,
-				ShouldPenalize:     ind.attribution == AttrSupplier,
-				PenaltySeverity:    ind.severity,
-				Attribution:        ind.attribution,
-				Confidence:         0.60,
-				Reason:             ind.reason,
-				Details:            "indicator match: " + ind.pattern,
-				MethodBlocking:     ind.methodBlocking,
-			}
+			result := ind.result()
 			return &result
 		}
 	}
 
 	return nil
+}
+
+// result is the verdict a body matching ind gets.
+func (ind indicator) result() AnalysisResult {
+	return AnalysisResult{
+		ShouldRetry:        true, // every indicator is retried; attribution decides blame
+		ShouldCircuitBreak: ind.severity == SeverityCritical || ind.severity == SeverityFatal,
+		ShouldPenalize:     ind.attribution == AttrSupplier,
+		PenaltySeverity:    ind.severity,
+		Attribution:        ind.attribution,
+		Confidence:         0.60,
+		Reason:             ind.reason,
+		Details:            "indicator match: " + ind.pattern,
+		MethodBlocking:     ind.methodBlocking,
+	}
+}
+
+// methodUnserved reports a body, in its first 2KB, in which the endpoint
+// says it cannot serve the method at all (a methodBlocking indicator), and
+// that indicator's verdict.
+func methodUnserved(body []byte) (AnalysisResult, bool) {
+	area := body[:min(len(body), 2048)]
+	for _, ind := range indicators {
+		if ind.methodBlocking && containsFold(area, ind.pattern) {
+			return ind.result(), true
+		}
+	}
+	return AnalysisResult{}, false
 }
 
 // inTopLevelString reports whether pattern occurs in one of a JSON document's

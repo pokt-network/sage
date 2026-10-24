@@ -225,7 +225,16 @@ func analyzeTier0(statusCode int, response []byte, rpcType domain.RPCType) (Anal
 			Details:            fmt.Sprintf("HTTP %d with a non-JSON body on a %s request", statusCode, rpcType),
 		}, true
 
+	// A 4xx in which the endpoint says it cannot serve the method at all —
+	// a node without a transaction indexer answering a tx lookup with 400 —
+	// is not the client's mistake: another endpoint serves the method. It is
+	// graded as that indicator: retried elsewhere, not penalized, and the
+	// method kept off the host for a while. Read as the client's, it reached
+	// the client while other operators held what it asked for.
 	case statusCode >= 400 && statusCode < 500:
+		if result, ok := methodUnserved(response); ok {
+			return result, true
+		}
 		return AnalysisResult{
 			ShouldRetry:        false,
 			ShouldCircuitBreak: false,

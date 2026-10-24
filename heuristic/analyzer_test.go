@@ -802,3 +802,34 @@ func TestAnalyze_CometBFTHeightAheadIsRetried(t *testing.T) {
 		}
 	}
 }
+
+// A 4xx in which the endpoint says it cannot serve the method is retried on
+// another endpoint and keeps the method off this one, without a penalty; any
+// other 4xx stays the client's. On CometBFT the same wording arrives as a
+// -32603 and is not retried, but still keeps the method off the host.
+func TestAnalyze_UnservedMethodIsRetriedElsewhere(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		body                     string
+		status                   int
+		rpcType                  domain.RPCType
+		reason                   string
+		retry, penalize, blocked bool
+	}{
+		{"rest 400, no tx indexer", `{"code":3,"message":"transaction indexing is disabled: invalid request","details":[]}`, 400, domain.RPCTypeREST,
+			"indexing_disabled", true, false, true},
+		{"rest 400, the client's", `{"code":3,"message":"invalid tx hash","details":[]}`, 400, domain.RPCTypeREST,
+			"http_4xx", false, false, false},
+		{"rest 404, the client's", `{"code":5,"message":"tx not found: AB","details":[]}`, 404, domain.RPCTypeREST,
+			"http_4xx", false, false, false},
+		{"cometbft -32603, no tx indexer", `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"transaction indexing is disabled"}}`, 200, domain.RPCTypeCometBFT,
+			"indexing_disabled", false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Analyze([]byte(tc.body), tc.status, tc.rpcType)
+			if r.Reason != tc.reason || r.ShouldRetry != tc.retry || r.ShouldPenalize != tc.penalize || r.MethodBlocking != tc.blocked {
+				t.Errorf("got %+v, want reason %s retry %v penalize %v method-blocked %v", r, tc.reason, tc.retry, tc.penalize, tc.blocked)
+			}
+		})
+	}
+}
