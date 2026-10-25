@@ -1,6 +1,7 @@
 package heuristic
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pokt-network/sage/domain"
@@ -60,6 +61,20 @@ func TestClassifyJSONRPCError_SimulateCodesAreTheClients(t *testing.T) {
 		got := Analyze(body, 200, domain.RPCTypeJSONRPC)
 		if got.Reason != tc.reason || got.ShouldRetry != tc.retry {
 			t.Errorf("%s %q: %s retry=%v, want %s retry=%v", tc.code, tc.msg, got.Reason, got.ShouldRetry, tc.reason, tc.retry)
+		}
+	}
+}
+
+// An error member that is not {code, message, data} still says something;
+// the verdict keeps it, so the unclassified metric can name the wording.
+func TestClassifyJSONRPCError_BareErrorKeepsItsText(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"jsonrpc":"2.0","id":1,"error":"boom"}`:      "boom",
+		`{"jsonrpc":"2.0","id":1,"error":{"why":"x"}}`: `{"why":"x"}`,
+	} {
+		got := Analyze([]byte(body), 200, domain.RPCTypeCometBFT)
+		if got.Reason != "unknown_error_code" || !strings.HasSuffix(got.Details, ": "+want) {
+			t.Errorf("%s: %s %q, want unknown_error_code ending %q", body, got.Reason, got.Details, want)
 		}
 	}
 }

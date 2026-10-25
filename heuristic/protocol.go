@@ -83,6 +83,13 @@ func parseJSONRPC(body []byte) (jsonRPCAnalysis, bool) {
 		analysis.errorCode = errorField.Get("code").Int()
 		analysis.errorMessage = errorField.Get("message").String()
 		analysis.errorData = errorField.Get("data").String()
+		// An error that is not {code, message, data} — a bare string, an
+		// empty object — carries its reason elsewhere; keep the member
+		// itself, or the verdict and the unclassified metric say nothing.
+		if analysis.errorMessage == "" && analysis.errorData == "" {
+			raw := errorField.String()
+			analysis.errorData = raw[:min(len(raw), 256)]
+		}
 	}
 
 	return analysis, true
