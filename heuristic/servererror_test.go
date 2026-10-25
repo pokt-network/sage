@@ -39,3 +39,27 @@ func TestClassifyServerError_ClientLagAndChainWordings(t *testing.T) {
 		}
 	}
 }
+
+// eth_simulateV1 answers the request's own faults with -380xx codes, whatever
+// the wording; -38026 is the node's own limit, retried elsewhere; any other
+// code outside the spec stays unknown and retried.
+func TestClassifyJSONRPCError_SimulateCodesAreTheClients(t *testing.T) {
+	for _, tc := range []struct {
+		code, msg, reason string
+		retry             bool
+	}{
+		{"-38010", "err: nonce too low: address 0x1, tx: 4 state: 5", "client_error", false},
+		{"-38011", "err: nonce too high: address 0x1, tx: 9 state: 5", "client_error", false},
+		{"-38014", "err: insufficient funds for gas * price + value", "client_error", false},
+		{"-38015", "block gas limit reached: remaining: 1, required: 2", "client_error", false},
+		{"-38026", "too many blocks", "blockchain_error", true},
+		{"-37999", "something nobody catalogued", "unknown_error_code", true},
+		{"-38100", "something nobody catalogued", "unknown_error_code", true},
+	} {
+		body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":` + tc.code + `,"message":"` + tc.msg + `"}}`)
+		got := Analyze(body, 200, domain.RPCTypeJSONRPC)
+		if got.Reason != tc.reason || got.ShouldRetry != tc.retry {
+			t.Errorf("%s %q: %s retry=%v, want %s retry=%v", tc.code, tc.msg, got.Reason, got.ShouldRetry, tc.reason, tc.retry)
+		}
+	}
+}

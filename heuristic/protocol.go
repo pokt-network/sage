@@ -155,6 +155,30 @@ func classifyJSONRPCError(code int64, message string) AnalysisResult {
 			Details:            "parse error: " + message,
 		}
 
+	// -38026 "client limit exceeded": the request is over this node's own
+	// limit (blocks, calls, slots), which each node implementation sets for
+	// itself, so another node may serve it. Retried, nobody scored.
+	case code == -38026:
+		return AnalysisResult{
+			ShouldRetry: true,
+			Attribution: AttrBlockchain,
+			Confidence:  0.85,
+			Reason:      ReasonBlockchainError,
+			Details:     "node limit (code " + strconv.FormatInt(code, 10) + "): " + message,
+		}
+
+	// eth_simulateV1's range (-38010 nonce too low … -38025): each code is
+	// about the simulated calls, which every node answers alike. Outside the
+	// spec, they fell to unknown_error_code and were retried for the same
+	// answer.
+	case code <= -38000 && code >= -38099:
+		return AnalysisResult{
+			Attribution: AttrClient,
+			Confidence:  0.90,
+			Reason:      "client_error",
+			Details:     "client error (code " + strconv.FormatInt(code, 10) + "): " + message,
+		}
+
 	// Server error range (-32000 to -32099) — needs message inspection.
 	case code == codeServerError || (code <= -32000 && code >= -32099):
 		return classifyServerError(code, lowerMsg)
