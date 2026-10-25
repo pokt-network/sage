@@ -501,7 +501,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "unclassified_errors_total",
-				Help:      "Answers whose JSON-RPC error the heuristic could not place (server_error: a -32000..-32099 wording that is neither a known chain answer, a client error nor a supplier failure; unknown_error_code: a code outside the spec), by service, reason and message: the error text with numbers and hex values masked, cut at 60 bytes. These are retried and not scored, so each wording here is either a chain or client answer retried for nothing, or a supplier failure scored as nothing: the list to catalogue in heuristic/protocol.go. Messages past the first 64 collapse to __other__.",
+				Help:      "Answers whose JSON-RPC error the heuristic could not place (server_error: a -32000..-32099 wording that is neither a known chain answer, a client error nor a supplier failure; unknown_error_code: a code outside the spec), by service, reason and message: the error text with numbers and hex values masked, cut at 60 bytes. Both are retried; server_error is not scored, unknown_error_code scores a minor error against the supplier. So each wording here is either a chain or client answer retried for nothing (and, under unknown_error_code, penalized), or a supplier failure scored as nothing or as minor: the list to catalogue in heuristic/protocol.go. Messages past the first 64 collapse to __other__.",
 			},
 			[]string{"service_id", "reason", "message"},
 		),
