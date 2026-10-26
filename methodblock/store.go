@@ -237,8 +237,10 @@ func (s *Store) mark(service, host, method string, escalates, unserved bool) (es
 		h = &hostState{methods: make(map[string]methodMark)}
 		hosts[host] = h
 	}
-	if now.Before(h.hostUntil) {
-		// Already blocked wholesale; a method mark adds nothing.
+	if now.Before(h.hostUntil) && !unserved {
+		// Already blocked wholesale; a failure mark adds nothing. A host
+		// saying it does not have the method is still recorded: that
+		// outlives the block.
 		return false
 	}
 	prev, known := h.methods[method]
@@ -278,7 +280,14 @@ func (s *Store) mark(service, host, method string, escalates, unserved bool) (es
 	}
 	if escalates && s.escalation > 0 && live >= s.escalation {
 		h.hostUntil = expiry
-		h.methods = make(map[string]methodMark)
+		// The host block replaces the failure marks. The unserved ones stay:
+		// a host failing everything still lacks those methods, and forgetting
+		// it made the host count as capacity for them for the block's life.
+		for m, mk := range h.methods {
+			if !mk.unserved {
+				delete(h.methods, m)
+			}
+		}
 		return true
 	}
 	return false

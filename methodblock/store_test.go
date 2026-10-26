@@ -75,6 +75,29 @@ func TestStore_ThirdDistinctMethodEscalatesToHost(t *testing.T) {
 	}
 }
 
+// A host-level block is about failures; what the host said it does not have
+// outlives it. Before, escalation wiped the -32601 marks with the rest, and a
+// host failing everything counted as capacity for methods it never served.
+func TestStore_EscalationKeepsUnservedMarks(t *testing.T) {
+	s := New()
+	s.MarkUnserved("eth", "h.example.com", "net_listening")
+	for _, m := range []string{"eth_getLogs", "eth_call", "eth_getBalance"} {
+		s.Mark("eth", "h.example.com", m, true)
+	}
+	if !s.Blocked("eth", "h.example.com", "eth_blockNumber") {
+		t.Fatal("three timeout marks must escalate to a host block")
+	}
+	s.MarkUnserved("eth", "h.example.com", "debug_traceBlockByNumber")
+	for _, m := range []string{"net_listening", "debug_traceBlockByNumber"} {
+		if !s.Unserved("eth", "h.example.com", m) {
+			t.Errorf("%s must stay unserved through the host block", m)
+		}
+	}
+	if s.Unserved("eth", "h.example.com", "eth_call") {
+		t.Error("a timeout mark is not an unserved one")
+	}
+}
+
 // The finding this test exists for: -32601 is MethodBlocking but
 // client-attributed, and a healthy node without debug_*/trace_* answers it to
 // every catalogued method a client cares to ask for. Three such marks must
