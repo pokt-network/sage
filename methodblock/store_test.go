@@ -98,6 +98,25 @@ func TestStore_EscalationKeepsUnservedMarks(t *testing.T) {
 	}
 }
 
+// A mark both timed out and refused keeps only its unserved half through the
+// host block: after it, the host needs a full set of failures to escalate
+// again, as it did when the block wiped every mark.
+func TestStore_KeptMarksDoNotCountTowardTheNextEscalation(t *testing.T) {
+	s := New(WithTTL(30*time.Millisecond), WithClientTTL(time.Hour))
+	s.Mark("eth", "h.example.com", "net_listening", true)
+	s.MarkUnserved("eth", "h.example.com", "net_listening")
+	for _, m := range []string{"eth_getLogs", "eth_call"} {
+		s.Mark("eth", "h.example.com", m, true)
+	}
+	if !s.Blocked("eth", "h.example.com", "eth_blockNumber") {
+		t.Fatal("three timeout marks must escalate to a host block")
+	}
+	time.Sleep(40 * time.Millisecond)
+	if s.Mark("eth", "h.example.com", "eth_getBalance", true) || s.Mark("eth", "h.example.com", "eth_estimateGas", true) {
+		t.Fatal("two failures after the block must not escalate: the kept mark is unserved only")
+	}
+}
+
 // The finding this test exists for: -32601 is MethodBlocking but
 // client-attributed, and a healthy node without debug_*/trace_* answers it to
 // every catalogued method a client cares to ask for. Three such marks must

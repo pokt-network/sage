@@ -280,11 +280,14 @@ func (s *Store) mark(service, host, method string, escalates, unserved bool) (es
 	}
 	if escalates && s.escalation > 0 && live >= s.escalation {
 		h.hostUntil = expiry
-		// The host block replaces the failure marks. The unserved ones stay:
-		// a host failing everything still lacks those methods, and forgetting
-		// it made the host count as capacity for them for the block's life.
+		// The host block replaces the failure marks. The unserved ones stay,
+		// as unserved only: a host failing everything still lacks those
+		// methods, and forgetting it made the host count as capacity for them
+		// for the block's life. Escalation counting starts again from zero.
 		for m, mk := range h.methods {
-			if !mk.unserved {
+			if mk.unserved {
+				h.methods[m] = methodMark{expiry: mk.expiry, unserved: true}
+			} else {
 				delete(h.methods, m)
 			}
 		}
