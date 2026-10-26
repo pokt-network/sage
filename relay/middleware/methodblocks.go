@@ -135,7 +135,10 @@ func MethodBlocks(
 					ctx.HeuristicResult.Reason != "http_408"
 				event := MethodBlockEventMark
 				host := dialedHost(endpointProvider, ctx.ServiceID, ctx.Endpoint, ctx.RPCType)
-				if store.Mark(serviceID, host, method, escalates) {
+				notFound := ctx.HeuristicResult.Reason == heuristic.ReasonMethodNotFound
+				if notFound {
+					store.MarkUnserved(serviceID, host, method)
+				} else if store.Mark(serviceID, host, method, escalates) {
 					event = MethodBlockEventEscalate
 				}
 				if events != nil {
@@ -145,11 +148,11 @@ func MethodBlocks(
 				// family either; the plugin says which methods those are. The
 				// family marks are client-attributed like the one they came
 				// from, so they never add up to a host-wide block.
-				if ctx.HeuristicResult.Reason == heuristic.ReasonMethodNotFound {
+				if notFound {
 					if family := methodFamily(registry, ctx, method); len(family) > 0 {
 						for _, m := range family {
 							if m != method {
-								store.Mark(serviceID, host, m, false)
+								store.MarkUnserved(serviceID, host, m)
 							}
 						}
 						if events != nil {

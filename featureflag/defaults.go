@@ -129,13 +129,14 @@ const (
 	FlagMethodBlock408 = "method_block_408"
 	// FlagMethodBlockServedCapacity measures the vouched capacity a method
 	// block may not shed (keepsVouchedCapacity in relay/middleware) among
-	// the hosts that serve the method, leaving out a host whose mark says it
-	// does not (-32601 and its family, an unsupported or disabled method).
-	// Without it a pool where most stakes front a node without the method —
-	// a chain's json_rpc stakes pointing at its CometBFT face — bypasses its
-	// own block on every request, and a request that meets those hosts on
-	// every attempt is answered with their -32601. Timeout marks still count
-	// as capacity, so the load guard is unchanged. Off by default.
+	// the hosts that serve the method, leaving out a host marked for
+	// answering -32601 to it or to its family. Without it a pool where most
+	// stakes front a node without the method — a chain's json_rpc stakes
+	// pointing at its CometBFT face — bypasses its own block on every
+	// request, and a request that meets those hosts on every attempt is
+	// answered with their -32601. Timeout, 408 and refused_recent marks
+	// still count as capacity, so the load guard is unchanged. Off by
+	// default.
 	FlagMethodBlockServedCapacity = "method_block_served_capacity"
 	// FlagMethodBlockRefusal makes a refused_recent verdict a method mark,
 	// as method_block_408 does for a 408: a supplier claiming a block is

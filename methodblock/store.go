@@ -32,6 +32,10 @@ type Block struct {
 type methodMark struct {
 	expiry    time.Time
 	escalates bool
+	// unserved: the host answered that it does not have the method
+	// (MarkUnserved), so it is no capacity for it. A 408 mark is also
+	// non-escalating but is a timeout, and load is what makes those.
+	unserved bool
 }
 
 // hostState is one host's marks within one service.
@@ -158,10 +162,9 @@ func (s *Store) Blocked(service, host, method string) bool {
 	return now.Before(h.methods[method].expiry)
 }
 
-// Unserved reports whether host has a live client-attributed mark on exactly
-// method: it said it does not serve the method (-32601 and its family, an
-// unsupported or disabled method), rather than failing it under load. Such a
-// host is no capacity for the method. A host-level block is not one.
+// Unserved reports whether host has a live MarkUnserved mark on exactly
+// method: it said it does not have the method, rather than failing it. Such
+// a host is no capacity for the method. A host-level block is not one.
 func (s *Store) Unserved(service, host, method string) bool {
 	now := time.Now()
 	s.mu.RLock()
@@ -174,7 +177,14 @@ func (s *Store) Unserved(service, host, method string) bool {
 		return false
 	}
 	mk, ok := h.methods[method]
-	return ok && !mk.escalates && now.Before(mk.expiry)
+	return ok && mk.unserved && now.Before(mk.expiry)
+}
+
+// MarkUnserved records that host answered it does not have method (-32601):
+// a client-attributed mark, as Mark(service, host, method, false), that
+// Unserved also reports.
+func (s *Store) MarkUnserved(service, host, method string) {
+	s.mark(service, host, method, false, true)
 }
 
 // Mark records that host could not answer method. It returns true when this
@@ -193,6 +203,10 @@ func (s *Store) Unserved(service, host, method string) bool {
 // The flag is per method mark and sticky within its live window: a
 // client-attributed re-mark does not un-count a supplier-attributed one.
 func (s *Store) Mark(service, host, method string, escalates bool) (escalated bool) {
+	return s.mark(service, host, method, escalates, false)
+}
+
+func (s *Store) mark(service, host, method string, escalates, unserved bool) (escalated bool) {
 	if host == "" || method == "" {
 		return false
 	}
@@ -246,7 +260,8 @@ func (s *Store) Mark(service, host, method string, escalates bool) (escalated bo
 	if known && now.Before(prev.expiry) && prev.escalates {
 		counts = true
 	}
-	h.methods[method] = methodMark{expiry: expiry, escalates: counts}
+	unserved = unserved || (known && now.Before(prev.expiry) && prev.unserved)
+	h.methods[method] = methodMark{expiry: expiry, escalates: counts, unserved: unserved}
 
 	// Count LIVE distinct methods that carry supplier-attributed evidence.
 	// Expired ones are dropped here rather than counted, so a host that was

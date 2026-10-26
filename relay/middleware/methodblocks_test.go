@@ -218,7 +218,8 @@ func TestMethodBlocks_FiltersWhenSurvivorIsVouched(t *testing.T) {
 // Three of four vouched hosts said they do not serve the method (-32601,
 // unscored, so they stay vouched). They are no capacity for it: with
 // method_block_served_capacity the block applies, without it the guard
-// bypasses it. Timeout marks on the same hosts still bypass with the flag on.
+// bypasses it. Timeout and 408 marks on the same hosts still bypass with the
+// flag on: load makes those.
 func TestMethodBlocks_UnservedHostsAreNoCapacity(t *testing.T) {
 	eps := testEndpoints(5)
 	rep := &stubRepService{scores: map[domain.EndpointAddr]float64{
@@ -231,16 +232,25 @@ func TestMethodBlocks_UnservedHostsAreNoCapacity(t *testing.T) {
 	})
 
 	for _, tc := range []struct {
-		flag, timeouts bool
-		wantSeen       int
+		mark     string
+		flag     bool
+		wantSeen int
 	}{
-		{flag: false, timeouts: false, wantSeen: 5},
-		{flag: true, timeouts: false, wantSeen: 2},
-		{flag: true, timeouts: true, wantSeen: 5},
+		{mark: "unserved", flag: false, wantSeen: 5},
+		{mark: "unserved", flag: true, wantSeen: 2},
+		{mark: "timeout", flag: true, wantSeen: 5},
+		{mark: "408", flag: true, wantSeen: 5},
 	} {
 		store := methodblock.New()
 		for _, ep := range eps[:3] {
-			store.Mark("eth", ep.Domain(), "eth_blockNumber", tc.timeouts)
+			switch tc.mark {
+			case "unserved":
+				store.MarkUnserved("eth", ep.Domain(), "eth_blockNumber")
+			case "timeout":
+				store.Mark("eth", ep.Domain(), "eth_blockNumber", true)
+			case "408":
+				store.Mark("eth", ep.Domain(), "eth_blockNumber", false)
+			}
 		}
 		flags := newFlags("method_blocks")
 		if tc.flag {
@@ -251,7 +261,7 @@ func TestMethodBlocks_UnservedHostsAreNoCapacity(t *testing.T) {
 		_ = MethodBlocks(store, registryWith(t), nil, flags, rep, events)(inner).HandleRelay(ctx)
 		bypassed := tc.wantSeen == len(eps)
 		if len(seen) != tc.wantSeen || ctx.Degraded != bypassed || (len(events.events) == 1) != bypassed {
-			t.Errorf("flag=%v timeouts=%v: saw %d, degraded=%v, events=%v; want %d", tc.flag, tc.timeouts, len(seen), ctx.Degraded, events.events, tc.wantSeen)
+			t.Errorf("%s marks, flag=%v: saw %d, degraded=%v, events=%v; want %d", tc.mark, tc.flag, len(seen), ctx.Degraded, events.events, tc.wantSeen)
 		}
 	}
 }
@@ -671,8 +681,8 @@ func TestMethodBlocks_MethodNotFoundMarksTheFamily(t *testing.T) {
 	_ = MethodBlocks(store, reg, nil, newFlags("method_blocks"), nil, events)(notFound).HandleRelay(ctx)
 
 	for _, m := range []string{"eth_blockNumber", "eth_call", "eth_getLogs"} {
-		if !store.Blocked("kava", host, m) {
-			t.Fatalf("%s should be blocked on the host after one -32601 on eth_blockNumber", m)
+		if !store.Blocked("kava", host, m) || !store.Unserved("kava", host, m) {
+			t.Fatalf("%s should be blocked, as unserved, on the host after one -32601 on eth_blockNumber", m)
 		}
 	}
 	if store.Blocked("kava", host, "status") {
