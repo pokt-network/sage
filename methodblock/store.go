@@ -158,6 +158,25 @@ func (s *Store) Blocked(service, host, method string) bool {
 	return now.Before(h.methods[method].expiry)
 }
 
+// Unserved reports whether host has a live client-attributed mark on exactly
+// method: it said it does not serve the method (-32601 and its family, an
+// unsupported or disabled method), rather than failing it under load. Such a
+// host is no capacity for the method. A host-level block is not one.
+func (s *Store) Unserved(service, host, method string) bool {
+	now := time.Now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.ttl <= 0 {
+		return false
+	}
+	h := s.byService[service][host]
+	if h == nil {
+		return false
+	}
+	mk, ok := h.methods[method]
+	return ok && !mk.escalates && now.Before(mk.expiry)
+}
+
 // Mark records that host could not answer method. It returns true when this
 // mark escalated the host to a host-level block. A re-mark refreshes the
 // expiry to one TTL from now and never extends past that.

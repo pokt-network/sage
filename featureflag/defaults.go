@@ -127,6 +127,16 @@ const (
 	// it. The marks never escalate to a host-wide block — a host refusing
 	// some methods is not a dead host. Off by default.
 	FlagMethodBlock408 = "method_block_408"
+	// FlagMethodBlockServedCapacity measures the vouched capacity a method
+	// block may not shed (keepsVouchedCapacity in relay/middleware) among
+	// the hosts that serve the method, leaving out a host whose mark says it
+	// does not (-32601 and its family, an unsupported or disabled method).
+	// Without it a pool where most stakes front a node without the method —
+	// a chain's json_rpc stakes pointing at its CometBFT face — bypasses its
+	// own block on every request, and a request that meets those hosts on
+	// every attempt is answered with their -32601. Timeout marks still count
+	// as capacity, so the load guard is unchanged. Off by default.
+	FlagMethodBlockServedCapacity = "method_block_served_capacity"
 	// FlagMethodBlockRefusal makes a refused_recent verdict a method mark,
 	// as method_block_408 does for a 408: a supplier claiming a block is
 	// pruned when it is between max(16 blocks, 30s) and max(128 blocks,
@@ -484,6 +494,9 @@ var DefaultFlags = map[string]bool{
 	// Subscribes the gateway answers itself instead of sending on.
 	FlagWSDenyPendingTransactions: false,
 	FlagWSDenyUnfilteredLogs:      false,
+
+	// Method-block capacity counted among the hosts that serve the method.
+	FlagMethodBlockServedCapacity: false,
 }
 
 // IsKnownFlag reports whether name is a flag SAGE implements. Used to warn on a

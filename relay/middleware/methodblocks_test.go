@@ -11,6 +11,7 @@ import (
 
 	"github.com/pokt-network/sage/config"
 	"github.com/pokt-network/sage/domain"
+	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
 	"github.com/pokt-network/sage/methodblock"
 	"github.com/pokt-network/sage/qos"
@@ -211,6 +212,47 @@ func TestMethodBlocks_FiltersWhenSurvivorIsVouched(t *testing.T) {
 	}
 	if len(events.events) != 0 {
 		t.Fatalf("events = %v, want none", events.events)
+	}
+}
+
+// Three of four vouched hosts said they do not serve the method (-32601,
+// unscored, so they stay vouched). They are no capacity for it: with
+// method_block_served_capacity the block applies, without it the guard
+// bypasses it. Timeout marks on the same hosts still bypass with the flag on.
+func TestMethodBlocks_UnservedHostsAreNoCapacity(t *testing.T) {
+	eps := testEndpoints(5)
+	rep := &stubRepService{scores: map[domain.EndpointAddr]float64{
+		eps[0]: 70, eps[1]: 70, eps[2]: 70, eps[3]: 70, eps[4]: 0,
+	}}
+	var seen domain.EndpointAddrList
+	inner := relay.HandlerFunc(func(ctx *relay.Context) error {
+		seen = ctx.Endpoints
+		return nil
+	})
+
+	for _, tc := range []struct {
+		flag, timeouts bool
+		wantSeen       int
+	}{
+		{flag: false, timeouts: false, wantSeen: 5},
+		{flag: true, timeouts: false, wantSeen: 2},
+		{flag: true, timeouts: true, wantSeen: 5},
+	} {
+		store := methodblock.New()
+		for _, ep := range eps[:3] {
+			store.Mark("eth", ep.Domain(), "eth_blockNumber", tc.timeouts)
+		}
+		flags := newFlags("method_blocks")
+		if tc.flag {
+			flags = newFlags("method_blocks", featureflag.FlagMethodBlockServedCapacity)
+		}
+		events := &spyEvents{}
+		ctx := methodCtx("eth_blockNumber", eps)
+		_ = MethodBlocks(store, registryWith(t), nil, flags, rep, events)(inner).HandleRelay(ctx)
+		bypassed := tc.wantSeen == len(eps)
+		if len(seen) != tc.wantSeen || ctx.Degraded != bypassed || (len(events.events) == 1) != bypassed {
+			t.Errorf("flag=%v timeouts=%v: saw %d, degraded=%v, events=%v; want %d", tc.flag, tc.timeouts, len(seen), ctx.Degraded, events.events, tc.wantSeen)
+		}
 	}
 }
 

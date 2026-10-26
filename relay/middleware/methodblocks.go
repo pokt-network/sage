@@ -97,9 +97,19 @@ func MethodBlocks(
 			pool := ctx.Endpoints
 			if len(ctx.Endpoints) > 0 {
 				filtered := filterEndpoints(ctx.Endpoints, open)
+				// The capacity a block may not shed is the hosts that serve
+				// the method (featureflag.FlagMethodBlockServedCapacity): a
+				// host that said it does not is none, and counting it let a
+				// pool mostly of such hosts bypass its own block every time.
+				capacity := ctx.Endpoints
+				if flags.IsEnabled(ctx.Ctx, featureflag.FlagMethodBlockServedCapacity, ctx.ServiceID) {
+					capacity = filterEndpoints(ctx.Endpoints, func(ep domain.EndpointAddr) bool {
+						return !store.Unserved(serviceID, dialedHost(endpointProvider, ctx.ServiceID, ep, ctx.RPCType), method)
+					})
+				}
 				bypass := len(filtered) == 0 ||
 					(len(filtered) < len(ctx.Endpoints) &&
-						(!anyVouched(repSvc, ctx, filtered) || !keepsVouchedCapacity(repSvc, ctx, filtered, ctx.Endpoints)))
+						(!anyVouched(repSvc, ctx, filtered) || !keepsVouchedCapacity(repSvc, ctx, filtered, capacity)))
 				if bypass {
 					ctx.Degraded = true
 					if events != nil {
