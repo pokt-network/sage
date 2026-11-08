@@ -27,6 +27,8 @@ func TestClassifyServerError_ClientLagAndChainWordings(t *testing.T) {
 		{"filter not found", "client_error", false},
 		{"Transaction version (0) is not supported by the requesting client", "client_error", false},
 		{"all suitable upstream RPC backends unavailable", "node_behind", true},
+		{"Request failed", "supplier_request_failed", true},
+		{"execution reverted: request failed", "client_error", false},
 		{"Transaction history is not available from this node", "blockchain_error", true},
 		{"state 0xabc is not available", "blockchain_error", true},
 		{"eth_getLogs block range exceeds server limit", "blockchain_error", true},
@@ -38,6 +40,17 @@ func TestClassifyServerError_ClientLagAndChainWordings(t *testing.T) {
 		if got.Reason != tc.reason || got.ShouldRetry != tc.retry {
 			t.Errorf("%q: %s retry=%v, want %s retry=%v", tc.msg, got.Reason, got.ShouldRetry, tc.reason, tc.retry)
 		}
+	}
+}
+
+// A backend's "Request failed" scores the supplier major without breaking its
+// circuit.
+func TestClassifyServerError_RequestFailedIsTheSuppliers(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Request failed"}}`)
+	got := Analyze(body, 200, domain.RPCTypeJSONRPC)
+	if got.Attribution != AttrSupplier || !got.ShouldPenalize || got.PenaltySeverity != SeverityMajor ||
+		!got.ShouldRetry || got.ShouldCircuitBreak {
+		t.Errorf("got %+v, want supplier, major, retried, no circuit break", got)
 	}
 }
 

@@ -504,6 +504,21 @@ func classifyServerError(code int64, lowerMsg string) AnalysisResult {
 		}
 	}
 
+	// A backend reporting that it could not serve the request, with nothing
+	// said about the request itself: the supplier's failure. Major and
+	// retried, without a circuit break.
+	if ContainsAnyOf(lowerMsg, []string{"request failed"}) {
+		return AnalysisResult{
+			ShouldRetry:     true,
+			ShouldPenalize:  true,
+			PenaltySeverity: SeverityMajor,
+			Attribution:     AttrSupplier,
+			Confidence:      0.85,
+			Reason:          "supplier_request_failed",
+			Details:         "supplier request failed (code " + strconv.FormatInt(code, 10) + "): " + lowerMsg,
+		}
+	}
+
 	// A metered plan's quota, relayed: see quotaPatterns. Checked before the
 	// plain rate limit, whose wording it shares.
 	if ContainsAnyOf(lowerMsg, quotaLimitPatterns) && ContainsAnyOf(lowerMsg, quotaPatterns) {
