@@ -194,8 +194,8 @@ func TestSubscriptionRegistry_GradesNotifications(t *testing.T) {
 	// A frame still in flight when the client unsubscribed is the client's
 	// timing, not the supplier pushing something unasked.
 	r.TranslateClientFrame([]byte("unsub:s1"))
-	if n := grade("data:s1:block102"); n.Kind != NotificationNone {
-		t.Errorf("a notification after unsubscribe = %+v, want none (not judged)", n)
+	if n := grade("data:s1:block102"); n.Kind != NotificationUntracked {
+		t.Errorf("a notification after unsubscribe = %+v, want untracked (not judged)", n)
 	}
 }
 
@@ -221,7 +221,8 @@ func TestSubscriptionRegistry_DuplicateWindowResetsOnReplay(t *testing.T) {
 }
 
 // A subscription past the tracking cap is forwarded but unknown to the
-// registry; its notifications must not read as unsolicited.
+// registry; its notifications must not read as unsolicited, nor as anything
+// but a notification: a connection's notification budget counts them.
 func TestSubscriptionRegistry_UntrackedSubscriptionsAreNotUnsolicited(t *testing.T) {
 	r := NewSubscriptionRegistry(fakeClassifier{})
 	for i := 0; i <= maxTrackedSubscriptions; i++ {
@@ -230,8 +231,8 @@ func TestSubscriptionRegistry_UntrackedSubscriptionsAreNotUnsolicited(t *testing
 	if r.Dropped() == 0 {
 		t.Fatal("expected the pending table to overflow")
 	}
-	if _, _, n := r.TranslateEndpointFrame([]byte("data:untracked:x")); n.Kind != NotificationNone {
-		t.Errorf("notification on a connection past the cap = %+v, want none", n)
+	if _, _, n := r.TranslateEndpointFrame([]byte("data:untracked:x")); n.Kind != NotificationUntracked {
+		t.Errorf("notification on a connection past the cap = %+v, want untracked", n)
 	}
 }
 

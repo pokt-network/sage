@@ -100,6 +100,14 @@ const (
 	// refuses its subscribe or closes a connection holding one, per service
 	// as well as globally.
 	KnobWSDenyMessage = "websocket.deny_message"
+	// KnobWSMaxNotificationsPerSecond is how many supplier notifications a
+	// second one client WebSocket connection may draw, per service as well
+	// as globally; 0 is no budget.
+	KnobWSMaxNotificationsPerSecond = "websocket.max_notifications_per_second"
+	// KnobWSBudgetCooldown is how long a client closed over its notification
+	// budget is refused new connections to the service, per service as well
+	// as globally.
+	KnobWSBudgetCooldown = "websocket.budget_cooldown"
 	// KnobWSDuplicateMajorShare is the repeat share above which a WebSocket
 	// supplier's minute is charged major instead of minor.
 	KnobWSDuplicateMajorShare = "websocket.duplicate_major_share"
@@ -273,6 +281,24 @@ var Knobs = []Knob{
 		Min:         1,
 		Max:         100_000,
 		Unit:        "payloads",
+	},
+	{
+		Name: KnobWSMaxNotificationsPerSecond,
+		Kind: KindInt,
+		// Closing is the only lever: a supplier bills each push it sends, so
+		// a notification dropped here is already paid for.
+		Description: "Most supplier subscription notifications a second one client WebSocket connection may draw, averaged over 20s and kept across session rebinds. Over it the supplier leg is closed, then the client with 1008 (websocket.deny_message as the reason when set; sage_websocket_budget_closes_total), and the client address is refused new connections to the service for websocket.budget_cooldown on every replica. 0 is no budget.",
+		Min:         0,
+		Max:         1_000_000,
+		Unit:        "notifications/s",
+	},
+	{
+		Name:        KnobWSBudgetCooldown,
+		Kind:        KindDuration,
+		Description: "How long a client address closed over websocket.max_notifications_per_second is refused new WebSocket connections to the service, with HTTP 429 and Retry-After (sage_websocket_rejected_total, reason budget_cooldown). Shared through Redis when it is up; read only while the service has a budget. 0 is no cooldown: the client may reconnect at once, with a fresh budget.",
+		Min:         0,
+		Max:         86_400_000,
+		Unit:        "ms",
 	},
 	{
 		Name: KnobWSDenyMessage,

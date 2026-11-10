@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"cmp"
 	"strconv"
 	"time"
 
@@ -44,6 +45,7 @@ type WebSocketMetrics struct {
 	unresponsive *prometheus.CounterVec
 	rejected     *prometheus.CounterVec
 	denied       *prometheus.CounterVec
+	budgetClosed *prometheus.CounterVec
 	rebinds      *prometheus.CounterVec
 	stalls       *prometheus.CounterVec
 	clientTypes  *prometheus.CounterVec
@@ -81,7 +83,7 @@ const (
 // default registry. knownServices bounds the service_id label.
 func NewWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 	m := newWebSocketMetrics(knownServices)
-	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.denied, m.rebinds, m.stalls,
+	prometheus.MustRegister(m.connections, m.frames, m.bytes, m.closes, m.unresponsive, m.rejected, m.denied, m.budgetClosed, m.rebinds, m.stalls,
 		m.supplierFrames, m.supplierNotifications, m.supplierConnections, m.supplierTenure, m.duplicateGap, m.probes,
 		m.subscribeAcks, m.headLag, m.headDelay, m.headMismatch, m.shareCap, m.sessionEndActions, m.sessionEndBlocksPast, m.reissued, m.retyped, m.clientTypes, m.openPhases, m.answers)
 	return m
@@ -308,7 +310,7 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			prometheus.CounterOpts{
 				Namespace: "sage",
 				Name:      "websocket_rejected_total",
-				Help:      "WebSocket upgrades the gateway refused before opening a bridge, by service and reason (capacity: the max_concurrent_connections cap was reached; client_capacity: the client address already held websocket.max_connections_per_client).",
+				Help:      "WebSocket upgrades the gateway refused before opening a bridge, by service and reason (capacity: the max_concurrent_connections cap was reached; client_capacity: the client address already held websocket.max_connections_per_client; budget_cooldown: the client address was closed over websocket.max_notifications_per_second within websocket.budget_cooldown, on any replica).",
 			},
 			[]string{"service_id", "reason"},
 		),
@@ -320,7 +322,20 @@ func newWebSocketMetrics(knownServices []domain.ServiceID) *WebSocketMetrics {
 			},
 			[]string{"service_id", "topic"},
 		),
+		budgetClosed: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "websocket_budget_closes_total",
+				Help:      "WebSocket connections closed with 1008 for drawing more supplier notifications than websocket.max_notifications_per_second, by service and the topic that pushed the most in the window. The supplier leg is closed first; the client address is then refused for websocket.budget_cooldown.",
+			},
+			[]string{"service_id", "topic"},
+		),
 	}
+}
+
+// BudgetClosed counts a connection closed over its notification budget.
+func (m *WebSocketMetrics) BudgetClosed(serviceID domain.ServiceID, topic string) {
+	m.budgetClosed.WithLabelValues(m.services.serviceValue(serviceID), m.topics.value(cmp.Or(topic, unknownLabel))).Inc()
 }
 
 // SubscriptionDenied counts a subscribe the gateway answered itself.

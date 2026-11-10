@@ -524,6 +524,13 @@ type spyWSMetrics struct {
 	answers        []string // operator
 	phases         []string
 	denied         []string // service|topic
+	budgetClosed   []string // service|topic
+}
+
+func (s *spyWSMetrics) BudgetClosed(sid domain.ServiceID, topic string) {
+	s.mu.Lock()
+	s.budgetClosed = append(s.budgetClosed, string(sid)+"|"+topic)
+	s.mu.Unlock()
 }
 
 func (s *spyWSMetrics) SubscriptionDenied(sid domain.ServiceID, topic string) {

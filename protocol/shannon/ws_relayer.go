@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pokt-network/sage/cooldown"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/featureflag"
 	"github.com/pokt-network/sage/heuristic"
@@ -94,6 +95,19 @@ type WSRelayerDeps struct {
 	// the built-in wording.
 	DenyMessage func(domain.ServiceID) string
 
+	// NotificationBudget is a service's most supplier notifications a second
+	// one client connection may draw, averaged over wsBudgetWindow; over it
+	// the connection is closed with 1008 (ws_budget.go). Nil or 0 is none.
+	NotificationBudget func(domain.ServiceID) int
+
+	// BudgetCooldown is how long a client closed over its budget is refused
+	// new connections to the service. Nil or 0 is no cooldown.
+	BudgetCooldown func(domain.ServiceID) time.Duration
+
+	// Cooldowns holds those refusals across replicas. Nil holds them on this
+	// replica only.
+	Cooldowns *cooldown.Store
+
 	// Metrics receives bridge lifecycle events. Optional: nil records
 	// nothing, which is what the tests want and what production must never
 	// wire (see wire.go).
@@ -152,6 +166,7 @@ type WSMetrics interface {
 	SupplierAnswer(serviceID domain.ServiceID, operator string, took time.Duration)
 	OpenPhase(serviceID domain.ServiceID, phase string, took time.Duration)
 	SubscriptionDenied(serviceID domain.ServiceID, topic string)
+	BudgetClosed(serviceID domain.ServiceID, topic string)
 }
 
 // WSRelayer is the only public entry point for opening WebSocket bridges in
@@ -224,6 +239,9 @@ type WSRelayer struct {
 	// a different purpose — biasing selection away from hot endpoints, not
 	// refusing work.
 	connLimiter *websockets.ConnectionLimiter
+
+	// cooldowns holds the clients a budget close refuses (ws_budget.go).
+	cooldowns *cooldown.Store
 }
 
 // NewWSRelayer validates deps and returns a WSRelayer. Panics on missing
@@ -252,8 +270,12 @@ func NewWSRelayer(deps WSRelayerDeps) *WSRelayer {
 	if deps.CloseObservationSampleRate < 0 || deps.CloseObservationSampleRate > 1 {
 		deps.CloseObservationSampleRate = 1.0
 	}
+	if deps.Cooldowns == nil {
+		deps.Cooldowns = cooldown.New(nil, "")
+	}
 	return &WSRelayer{
 		deps:         deps,
+		cooldowns:    deps.Cooldowns,
 		chainHeight:  deps.Protocol.LatestBlockHeight,
 		expiryCheck:  wsExpiryCheckInterval,
 		stallTimeout: wsStallTimeout,
@@ -387,6 +409,10 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	// And one of the client's own, so that one address cannot take every slot
 	// above and leave every other client a 503.
 	clientIP := r.clientIP(req)
+	if r.refuseCooled(serviceID, clientIP, w) {
+		logger.Info("ws open: client in its notification budget cooldown, rejecting", "client_ip", clientIP)
+		return errors.New("ws open: client in its notification budget cooldown")
+	}
 	if !r.connLimiter.AcquireClient(clientIP, r.maxConnectionsPerClient(serviceID)) {
 		logger.Warn("ws open: client at its connection cap, rejecting", "client_ip", clientIP)
 		if r.deps.Metrics != nil {
@@ -457,6 +483,26 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 	// The bridge, once up: a processor asks it whether a rate-limited
 	// request can be reissued after a rebind.
 	var bridgeRef atomic.Pointer[websockets.Bridge]
+	// The connection's notification budget, one for every supplier it is
+	// carried to. Over it, the cooldown is held before the client can see
+	// the close, and the bridge is shut down off the bridge goroutine, which
+	// Shutdown waits on.
+	budget := &wsBudget{rate: func() int { return r.notificationBudget(serviceID) }, now: time.Now}
+	budget.onTrip = func(topic string) {
+		logger.Warn("ws budget: connection over its notification budget, closing", "client_ip", clientIP, "topic", topic)
+		if r.deps.Metrics != nil {
+			r.deps.Metrics.BudgetClosed(serviceID, topic)
+		}
+		safego.Go(logger, "websocket.budget.close", func() {
+			r.holdCooldown(serviceID, clientIP)
+			swapMu.Lock() // held from the bridge's start until bridgeRef is set
+			b := bridgeRef.Load()
+			swapMu.Unlock()
+			if b != nil {
+				b.Shutdown(websockets.PolicyViolation{Reason: r.budgetCloseReason(serviceID)})
+			}
+		})
+	}
 	newProcessor := func(t *wsTarget) *wsMessageProcessor {
 		addr := t.addr
 		p := newWSMessageProcessor(
@@ -468,7 +514,7 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 			t.app,
 			r.frameSink(serviceID, addr, frameCh),
 		)
-		p.subs, p.samples = subs, r.samples
+		p.subs, p.samples, p.budget = subs, r.samples, budget
 		p.staleness = r.staleness(serviceID, addr)
 		p.duplicates = r.duplicates(serviceID, addr)
 		p.canRebind = func() bool {
@@ -553,6 +599,10 @@ func (r *WSRelayer) Open(ctx context.Context, serviceID domain.ServiceID, req *h
 		// the subscribe it sends again on reconnect gets the JSON-RPC error.
 		if r.holdsDeniedSubscription(serviceID, subs) {
 			return nil, nil, nil, websockets.PolicyViolation{Reason: r.denyCloseReason(serviceID)}
+		}
+		// Nor is a connection over its notification budget, closing already.
+		if budget.exceeded() {
+			return nil, nil, nil, websockets.PolicyViolation{Reason: r.budgetCloseReason(serviceID)}
 		}
 
 		next, _, err := r.resolveEndpoint(ctx, serviceID, tried, live)

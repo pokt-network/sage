@@ -81,6 +81,10 @@ type wsMessageProcessor struct {
 	// it. Nil-safe; shared by every processor of one bridge.
 	subs *qos.SubscriptionRegistry
 
+	// budget meters the notifications the connection draws (ws_budget.go).
+	// Nil-safe; shared by every processor of one bridge.
+	budget *wsBudget
+
 	// canRebind reports whether the bridge would meet an endpoint loss with
 	// a rebind. Nil (a probe, or before the bridge is up) means no, and a
 	// rate limit then reaches the client; see reissue.
@@ -325,6 +329,17 @@ func (p *wsMessageProcessor) ProcessEndpointMessage(data []byte) ([]byte, error)
 	if p.metrics != nil {
 		p.metrics.SupplierFrame(serviceID, p.operator, p.owner, websockets.SourceEndpoint)
 		p.metrics.SupplierNotification(serviceID, p.operator, p.owner, note)
+	}
+	// Every push on the client's own subscriptions is billed: a repeat, so
+	// spent before the duplicate drop below, and one the registry could not
+	// track, or opening subscriptions past its cap would carry a feed past
+	// the budget. Not an unsolicited one: that is the supplier's padding,
+	// graded against it, and must not close the client.
+	switch note.Kind {
+	case qos.NotificationOK, qos.NotificationDuplicate, qos.NotificationUntracked:
+		if p.budget.spend(note.Topic) {
+			return nil, nil
+		}
 	}
 	if note.Kind == qos.NotificationOK || note.Kind == qos.NotificationDuplicate {
 		p.samples.observe(serviceID, p.operator, p.owner, note.Topic, payload)

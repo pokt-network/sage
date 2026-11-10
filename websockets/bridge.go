@@ -321,12 +321,15 @@ func (b *Bridge) shutdown(err error) {
 
 		deadline := time.Now().Add(time.Second)
 
+		// The supplier first: it bills every frame it pushes until its socket
+		// closes, and a client that stopped reading can hold the close frame
+		// written to it for the whole deadline.
 		for _, c := range []struct {
 			conn *Connection
 			msg  []byte
 		}{
-			{b.clientConn, clientMsg},
 			{b.endpointConn.Load(), endpointMsg},
+			{b.clientConn, clientMsg},
 		} {
 			if c.conn == nil {
 				continue

@@ -259,8 +259,7 @@ type NotificationKind int
 
 // The grades a notification can get.
 const (
-	// NotificationNone: not a notification, or one the registry cannot
-	// judge (no classifier, or subscriptions past the tracking cap).
+	// NotificationNone: not a notification, or no classifier to tell.
 	NotificationNone NotificationKind = iota
 	// NotificationOK is data for a subscription open on this connection.
 	NotificationOK
@@ -271,6 +270,10 @@ const (
 	// NotificationUnsolicited names a subscription this connection never
 	// opened with the current supplier.
 	NotificationUnsolicited
+	// NotificationUntracked is a notification the registry cannot judge
+	// but forwards: on a subscription past the tracking cap, or in flight
+	// past an unsubscribe. Not graded; still a frame the supplier bills.
+	NotificationUntracked
 )
 
 // Notification is TranslateEndpointFrame's grade for one frame.
@@ -561,7 +564,8 @@ func (r *SubscriptionRegistry) translateEndpointFrame(data []byte) (out []byte, 
 			return nil, false, note // A replay the client unsubscribed from mid-flight.
 		}
 		if _, late := r.closed[info.SubscriptionID]; late || r.dropped > 0 {
-			return data, true, note // In flight past an unsubscribe, or past the cap: not judged.
+			note.Kind = NotificationUntracked // In flight past an unsubscribe, or past the cap: not judged.
+			return data, true, note
 		}
 		note.Kind = NotificationUnsolicited
 	}

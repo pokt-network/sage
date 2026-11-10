@@ -20,6 +20,7 @@ import (
 	"github.com/pokt-network/sage/blocklist"
 	"github.com/pokt-network/sage/circuitbreaker"
 	"github.com/pokt-network/sage/config"
+	"github.com/pokt-network/sage/cooldown"
 	"github.com/pokt-network/sage/domain"
 	"github.com/pokt-network/sage/drain"
 	"github.com/pokt-network/sage/featureflag"
@@ -1197,6 +1198,13 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			DenyMessage: func(serviceID domain.ServiceID) string {
 				return tuningStore.String(tuning.KnobWSDenyMessage, serviceID, "")
 			},
+			NotificationBudget: func(serviceID domain.ServiceID) int {
+				return tuningStore.Int(tuning.KnobWSMaxNotificationsPerSecond, serviceID, 0)
+			},
+			BudgetCooldown: func(serviceID domain.ServiceID) time.Duration {
+				return tuningStore.Duration(tuning.KnobWSBudgetCooldown, serviceID, shannon.DefaultBudgetCooldown)
+			},
+			Cooldowns:      wsCooldowns(redisClient, cfg.Redis.Key("ws_cooldown:")),
 			Metrics:        metrics.NewWebSocketMetrics(serviceIDsFrom(cfg)),
 			QoS:            qosReg,
 			ClientIP:       middleware.RequestClientIP(trustedProxies),
@@ -1387,6 +1395,8 @@ func registerTuningBases(store *tuning.Store, cfg *config.Config) {
 	store.SetBase(tuning.KnobWSDuplicateWindow, qos.DefaultDuplicateWindow.String())
 	store.SetBase(tuning.KnobWSDuplicateBudget, strconv.Itoa(qos.DefaultDuplicateBudget))
 	store.SetBase(tuning.KnobWSMaxConnectionsPerClient, strconv.Itoa(shannon.DefaultMaxConnectionsPerClient))
+	store.SetBase(tuning.KnobWSMaxNotificationsPerSecond, "0")
+	store.SetBase(tuning.KnobWSBudgetCooldown, shannon.DefaultBudgetCooldown.String())
 	store.SetBase(tuning.KnobWSDuplicateMajorShare, strconv.FormatFloat(shannon.DuplicateMajorShare, 'f', -1, 64))
 	store.SetBase(tuning.KnobWSDuplicateShareFloor, strconv.FormatFloat(reputation.DefaultDuplicateShareFloor, 'f', -1, 64))
 	store.SetBase(tuning.KnobWSDuplicateShareFull, strconv.FormatFloat(reputation.DefaultDuplicateShareFull, 'f', -1, 64))
@@ -1404,6 +1414,16 @@ const redisStartupPing = 10 * time.Second
 
 // peerRedisClient opens a small read client on another instance's Redis
 // database, on this instance's Redis server (active_health_checks.peer_probe_stream).
+// wsCooldowns is the store a WebSocket budget close holds its cooldown in:
+// shared through client when there is one. A nil *redis.Client must not reach
+// the store as a non-nil interface.
+func wsCooldowns(client *redis.Client, prefix string) *cooldown.Store {
+	if client == nil {
+		return cooldown.New(nil, prefix)
+	}
+	return cooldown.New(client, prefix)
+}
+
 func peerRedisClient(cfg *config.Config, db int) *redis.Client {
 	return newRedisClient(cfg, db, 2)
 }

@@ -129,7 +129,12 @@ const maxCloseReason = 123
 // denied subscription gets, cut on a character boundary to what a close frame
 // holds.
 func (r *WSRelayer) denyCloseReason(serviceID domain.ServiceID) string {
-	reason := cmp.Or(r.denyMessage(serviceID), "subscription no longer served on this endpoint")
+	return cutCloseReason(cmp.Or(r.denyMessage(serviceID), "subscription no longer served on this endpoint"))
+}
+
+// cutCloseReason is reason cut on a character boundary to what a close frame
+// holds.
+func cutCloseReason(reason string) string {
 	if len(reason) <= maxCloseReason {
 		return reason
 	}
