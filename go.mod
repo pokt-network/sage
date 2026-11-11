@@ -1,6 +1,6 @@
 module github.com/pokt-network/sage
 
-go 1.27.3
+go 1.27.4
 
 require (
 	cosmossdk.io/depinject v1.2.1
