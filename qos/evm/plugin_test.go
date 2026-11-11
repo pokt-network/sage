@@ -1408,3 +1408,50 @@ func TestRetainingEndpoints(t *testing.T) {
 		t.Error("with archival_routing off the marks are not read")
 	}
 }
+
+// An empty log list is no proof a host keeps logs: it marks nothing, where
+// logs mark the host served. A check that expects a result and gets none
+// (RecordEmptyHistory) marks the host refusing that depth, which keeps deep
+// eth_getLogs off it and leaves shallow ones alone.
+func TestEmptyLogs_ProveNothing_UntilACheckExpectsSome(t *testing.T) {
+	p := newTestPlugin(5)
+	silent := domain.EndpointAddr("pokt1a-https://relay.silent.example")
+	full := domain.EndpointAddr("pokt1b-https://r001.full.example")
+	other := domain.EndpointAddr("pokt1c-https://r001.other.example")
+	all := domain.EndpointAddrList{silent, full, other}
+	for _, ep := range all {
+		p.UpdateBlockHeight(ep, 100_000)
+	}
+	logs := func(from uint64) domain.Payload {
+		return domain.NewPayload([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x%x","toBlock":"0x%x"}]}`, from, from)), domain.RPCTypeJSONRPC, "eth_getLogs")
+	}
+	p.RecordArchival(silent, logs(100_000-1_000), []byte(`{"jsonrpc":"2.0","id":1,"result":[]}`))
+	p.RecordArchival(full, logs(100_000-1_000), []byte(`{"jsonrpc":"2.0","id":1,"result":[{"address":"0x1"}]}`))
+	marks := p.ArchivalHosts()
+	if m := marks["relay.silent.example"]; m.LogsServedDepth != nil {
+		t.Errorf("an empty answer marked the host served at %d", *m.LogsServedDepth)
+	}
+	if m := marks["r001.full.example"]; m.LogsServedDepth == nil {
+		t.Error("logs did not mark the host served")
+	}
+
+	p.RecordEmptyHistory(silent, logs(100_000-1_000).Bytes())
+	pick := func(pl domain.Payload) domain.EndpointAddrList {
+		got, err := p.SelectEndpoints(all, []domain.Payload{pl})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := pick(logs(100_000 - 5_000)); slices.Contains(got, silent) || len(got) != 2 {
+		t.Errorf("deep eth_getLogs went to %v, want the two hosts that answered", got)
+	}
+	if got := pick(logs(100_000 - 500)); len(got) != 3 {
+		t.Errorf("shallow eth_getLogs went to %v, want all three", got)
+	}
+	// A request with no history in it marks nothing.
+	p.RecordEmptyHistory(other, []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"latest"}]}`))
+	if m := p.ArchivalHosts()["r001.other.example"]; m.LogsRefusedDepth != nil {
+		t.Errorf("a head eth_getLogs marked a refusal at %d", *m.LogsRefusedDepth)
+	}
+}

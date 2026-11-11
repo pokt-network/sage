@@ -451,7 +451,15 @@ func (p *Plugin) observeLogs(endpoint domain.EndpointAddr, request, response []b
 	if !ok {
 		return
 	}
-	switch classifyArchivalResponse(response) {
+	outcome := classifyArchivalResponse(response)
+	// No logs proves nothing about retention: a filter matching nothing
+	// answers [] on every host, and so does a host that dropped the range
+	// without saying so. Marked served, such a host was where a retry of a
+	// history refusal went (archival_retry).
+	if outcome == archivalServed && qos.EmptyResult(response) {
+		outcome = archivalInconclusive
+	}
+	switch outcome {
 	case archivalServed:
 		p.logs.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withServed(depth) })
 	case archivalMissing:
@@ -504,6 +512,30 @@ func (p *Plugin) RecordArchival(endpoint domain.EndpointAddr, payload domain.Pay
 		p.observeArchival(endpoint, m, payload.Bytes(), response)
 	}
 }
+
+// RecordEmptyHistory implements qos.EmptyHistoryRecorder: eth_getLogs from a
+// historical block, or a state call at one, answered with nothing by a check
+// that expects something marks the host refusing that depth.
+func (p *Plugin) RecordEmptyHistory(endpoint domain.EndpointAddr, request []byte) {
+	method := gjson.GetBytes(request, "method").String()
+	params := json.RawMessage(gjson.GetBytes(request, "params").Raw)
+	head := p.Consensus.PerceivedBlock()
+	memory, depth, ok := p.logs, uint64(0), false
+	switch {
+	case method == methodGetLogs:
+		depth, ok = logDepth(params, head)
+	case stateMethods[method]:
+		memory = p.archival
+		depth, ok = archivalDepth(method, params, head)
+	}
+	if !ok {
+		return
+	}
+	now := time.Now()
+	memory.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withRefused(depth, now) })
+}
+
+var _ qos.EmptyHistoryRecorder = (*Plugin)(nil)
 
 // ArchivalHosts implements qos.ArchivalLister.
 func (p *Plugin) ArchivalHosts() map[string]qos.ArchivalMark {

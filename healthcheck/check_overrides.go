@@ -75,6 +75,7 @@ type CheckSpec struct {
 	Body               string `json:"body,omitempty"`
 	ExpectedStatusCode int    `json:"expected_status_code,omitempty"`
 	ReputationSignal   string `json:"reputation_signal,omitempty"`
+	ExpectNonEmpty     bool   `json:"expect_nonempty_result,omitempty"`
 	Timeout            string `json:"timeout,omitempty"`
 }
 
@@ -317,6 +318,7 @@ func (s ServiceChecksSpec) block(serviceID domain.ServiceID) (config.ServiceHeal
 		hc := config.HealthCheck{
 			Name: cs.Name, Type: cs.Type, Method: cs.Method, Path: cs.Path, Body: cs.Body,
 			ExpectedStatusCode: cs.ExpectedStatusCode, ReputationSignal: cs.ReputationSignal,
+			ExpectNonEmptyResult: cs.ExpectNonEmpty,
 		}
 		if cs.Timeout != "" {
 			d, err := time.ParseDuration(cs.Timeout)
@@ -339,6 +341,7 @@ func specFromBlock(b config.ServiceHealthChecks) ServiceChecksSpec {
 		cs := CheckSpec{
 			Name: hc.Name, Type: hc.Type, Method: hc.Method, Path: hc.Path, Body: hc.Body,
 			ExpectedStatusCode: hc.ExpectedStatusCode, ReputationSignal: hc.ReputationSignal,
+			ExpectNonEmpty: hc.ExpectNonEmptyResult,
 		}
 		if hc.Timeout > 0 {
 			cs.Timeout = hc.Timeout.String()

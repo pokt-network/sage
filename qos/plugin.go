@@ -241,6 +241,15 @@ type ArchivalRecorder interface {
 	RecordArchival(endpoint domain.EndpointAddr, payload domain.Payload, response []byte)
 }
 
+// EmptyHistoryRecorder is implemented by plugins that keep archival marks:
+// a health check declared to expect a result (expect_nonempty_result) found
+// the host answering a request for history with none, which is marked as the
+// host refusing that depth. A host that drops old history without saying so
+// answers an empty result where an honest one answers an error.
+type EmptyHistoryRecorder interface {
+	RecordEmptyHistory(endpoint domain.EndpointAddr, request []byte)
+}
+
 // ArchivalMark is what one host has shown of its history, as depths behind
 // the head when it answered: the deepest it served and the shallowest it
 // refused. Nil is no evidence.

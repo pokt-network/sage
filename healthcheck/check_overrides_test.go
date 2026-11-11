@@ -93,3 +93,18 @@ func TestCheckOverrides_Refuses(t *testing.T) {
 		}
 	}
 }
+
+// expect_nonempty_result survives the admin API's spec both ways.
+func TestCheckSpec_ExpectNonEmptyRoundTrips(t *testing.T) {
+	spec := ServiceChecksSpec{Checks: []CheckSpec{{Name: "old_logs", Method: "eth_getLogs", ExpectNonEmpty: true}}}
+	b, err := spec.block("base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !b.Checks[0].ExpectNonEmptyResult {
+		t.Fatal("the spec's expect_nonempty_result did not reach the config block")
+	}
+	if back := specFromBlock(b); !back.Checks[0].ExpectNonEmpty {
+		t.Error("the config block's expect_nonempty_result did not reach the spec")
+	}
+}

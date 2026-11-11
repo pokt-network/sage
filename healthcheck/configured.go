@@ -33,6 +33,9 @@ type ConfiguredChecks struct {
 	// healthy, for checks that named one. Kept by name because a result can
 	// arrive from another replica's probe, carrying only the check's name.
 	expectedStatus map[string]int
+	// resultRequired names the checks declared expect_nonempty_result, by
+	// name for the same reason.
+	resultRequired map[string]bool
 }
 
 // BuildConfiguredChecks converts the config blocks into health checks. It
@@ -45,6 +48,7 @@ func BuildConfiguredChecks(cfg config.HealthCheckConfig) (*ConfiguredChecks, []s
 		intervals:      make(map[domain.ServiceID]time.Duration),
 		signals:        make(map[string]string),
 		expectedStatus: make(map[string]int),
+		resultRequired: make(map[string]bool),
 	}
 
 	var warnings []string
@@ -79,6 +83,9 @@ func BuildConfiguredChecks(cfg config.HealthCheckConfig) (*ConfiguredChecks, []s
 			}
 			if check.ExpectedStatusCode != 0 {
 				out.expectedStatus[built.Name] = check.ExpectedStatusCode
+			}
+			if check.ExpectNonEmptyResult {
+				out.resultRequired[built.Name] = true
 			}
 		}
 	}
@@ -176,6 +183,12 @@ func (c *ConfiguredChecks) StatusHealthy(checkName string, status int) bool {
 		}
 	}
 	return status >= 200 && status < 300
+}
+
+// ResultRequired reports whether the named check fails on an empty result
+// (expect_nonempty_result).
+func (c *ConfiguredChecks) ResultRequired(checkName string) bool {
+	return c != nil && c.resultRequired[checkName]
 }
 
 // SignalFor grades a failure of the named check according to its configured

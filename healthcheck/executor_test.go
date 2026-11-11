@@ -1673,3 +1673,111 @@ func TestRefreshWarmDenominator_LookupErrorKeepsTheServiceInTheDenominator(t *te
 		t.Error("nothing is covered, so the pod must not be warm")
 	}
 }
+
+// emptyHistoryPlugin records the hosts a check found answering history with
+// nothing (qos.EmptyHistoryRecorder).
+type emptyHistoryPlugin struct {
+	checkOnlyPlugin
+	mu     sync.Mutex
+	marked []domain.EndpointAddr
+}
+
+func (p *emptyHistoryPlugin) RecordEmptyHistory(ep domain.EndpointAddr, _ []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.marked = append(p.marked, ep)
+}
+
+// A check declared expect_nonempty_result fails with its reputation_signal
+// on an empty result and hands the host to the plugin's archival marks; a
+// result with something in it passes and marks nothing.
+func TestExecutor_ExpectNonEmptyResult(t *testing.T) {
+	for _, tc := range []struct {
+		body   string
+		failed bool
+	}{
+		{`{"jsonrpc":"2.0","id":1,"result":[]}`, true},
+		{`{"jsonrpc":"2.0","id":1,"result":[{"address":"0x1"}]}`, false},
+	} {
+		relayer := &stubRelayer{response: &domain.Response{HTTPStatusCode: 200, Body: []byte(tc.body)}}
+		eps := &stubEndpointProvider{endpoints: domain.EndpointAddrList{"supplierA-https://node.example.com"}}
+		sessions := &stubSessionManager{services: map[domain.ServiceID]struct{}{"eth": {}}}
+		plugin := &emptyHistoryPlugin{}
+		reg := qos.NewRegistry()
+		_ = reg.Register("eth", plugin)
+		configured, warnings := BuildConfiguredChecks(localConfig(config.ServiceHealthChecks{
+			ServiceID: "eth",
+			Enabled:   true,
+			Checks: []config.HealthCheck{{
+				Name: "old_logs", Method: "eth_getLogs", ReputationSignal: "major_error", ExpectNonEmptyResult: true,
+				Body: `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x10","toBlock":"0x10"}]}`,
+			}},
+		}))
+		require.Empty(t, warnings)
+
+		rep := &stubRepService{}
+		exec := newTestExecutor(relayer, eps, sessions, reg, rep)
+		exec.SetConfiguredChecks(configured)
+		exec.runOnce(context.Background())
+		time.Sleep(50 * time.Millisecond)
+
+		rep.mu.Lock()
+		signals := rep.signals
+		rep.mu.Unlock()
+		require.NotEmpty(t, signals, tc.body)
+		plugin.mu.Lock()
+		marked := plugin.marked
+		plugin.mu.Unlock()
+		if tc.failed {
+			assert.Equal(t, reputation.SignalMajorError, signals[0].signal.Type, tc.body)
+			assert.Equal(t, []domain.EndpointAddr{"supplierA-https://node.example.com"}, marked, tc.body)
+		} else {
+			assert.Equal(t, reputation.SignalSuccess, signals[0].signal.Type, tc.body)
+			assert.Empty(t, marked, tc.body)
+		}
+	}
+}
+
+// Client traffic never stands in for a check expecting a result: whether an
+// answer was empty is what traffic does not say. The same traffic still skips
+// an ordinary check.
+func TestSkipCoveredByTraffic_NeverSkipsACheckExpectingAResult(t *testing.T) {
+	e, _ := newSkipExecutor(t, 100, true, true)
+	configured, warnings := BuildConfiguredChecks(localConfig(config.ServiceHealthChecks{
+		ServiceID: "eth", Enabled: true,
+		Checks: []config.HealthCheck{{Name: "old_logs", Method: "eth_getLogs", ExpectNonEmptyResult: true}},
+	}))
+	require.Empty(t, warnings)
+	e.SetConfiguredChecks(configured)
+	const ep = domain.EndpointAddr("supA-https://node.example.com")
+	if e.skipCoveredByTraffic(context.Background(), "eth", ep, domain.EndpointAddrList{ep},
+		"https://node.example.com", configured.For("eth")[0], time.Minute, skipTestClock.Add(time.Minute)) {
+		t.Error("traffic skipped a check expecting a result")
+	}
+	if !askSkip(e) {
+		t.Error("the same traffic did not skip an ordinary check")
+	}
+}
+
+// A result another replica probed applies here as one probed here: the host
+// is handed to this replica's archival marks too.
+func TestApplyResult_StreamedEmptyResultMarks(t *testing.T) {
+	plugin := &emptyHistoryPlugin{}
+	reg := qos.NewRegistry()
+	_ = reg.Register("eth", plugin)
+	configured, _ := BuildConfiguredChecks(localConfig(config.ServiceHealthChecks{
+		ServiceID: "eth", Enabled: true,
+		Checks: []config.HealthCheck{{Name: "old_logs", Method: "eth_getLogs", ExpectNonEmptyResult: true}},
+	}))
+	exec := newTestExecutor(&stubRelayer{}, &stubEndpointProvider{}, &stubSessionManager{}, reg, &stubRepService{})
+	exec.SetConfiguredChecks(configured)
+	const ep = domain.EndpointAddr("supplierA-https://node.example.com")
+	exec.applyResult(context.Background(), ProbeResult{
+		ServiceID: "eth", Endpoint: ep, Siblings: domain.EndpointAddrList{ep}, Check: "eth:old_logs",
+		RPCType: domain.RPCTypeJSONRPC, Request: []byte(`{"method":"eth_getLogs"}`),
+		StatusCode: 200, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":[]}`), Source: ResultSourcePeer,
+	})
+	plugin.mu.Lock()
+	defer plugin.mu.Unlock()
+	assert.Equal(t, []domain.EndpointAddr{ep}, plugin.marked)
+}

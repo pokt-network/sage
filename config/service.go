@@ -957,6 +957,14 @@ type HealthCheck struct {
 	// ReputationSignal names the penalty on failure: "minor_error" (default),
 	// "major_error", "critical_error".
 	ReputationSignal string `yaml:"reputation_signal"`
+	// ExpectNonEmptyResult fails the check, with its reputation_signal, when
+	// the backend answers with an empty JSON-RPC result (null, [], {} or ""),
+	// for a request known to have one. When the request names a historical
+	// block (eth_getLogs from one, or a state call at one), the host is also
+	// kept off requests that deep for an hour, as if it had refused them. An
+	// error answer is graded as before. Traffic-informed probing never skips
+	// such a check: client traffic does not say whether a result was empty.
+	ExpectNonEmptyResult bool `yaml:"expect_nonempty_result"`
 	// Timeout bounds this check. It should be tighter than a relay timeout —
 	// a check is meant to notice a slow endpoint, not to wait one out.
 	Timeout time.Duration `yaml:"timeout"`

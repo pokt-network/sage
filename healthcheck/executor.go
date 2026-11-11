@@ -679,6 +679,11 @@ func (e *Executor) skipCoveredByTraffic(
 	if check.Essential && !e.heightIsFresh(serviceID, siblings, interval, now) {
 		return false
 	}
+	// A check expecting a result asks what traffic never answers: whether a
+	// result was empty (expect_nonempty_result).
+	if e.configured.Load().ResultRequired(check.Name) {
+		return false
+	}
 	if !e.flags.IsEnabled(ctx, featureflag.FlagTrafficInformedProbing, serviceID) {
 		return false
 	}
@@ -1062,6 +1067,10 @@ func (e *Executor) Warm() bool {
 // errProbeAnsweredNothing grades a 2xx that carried none of the facts an
 // Essential probe asked for.
 var errProbeAnsweredNothing = errors.New("probe answered without the fact it asked for")
+
+// errProbeAnsweredEmpty fails a check declared expect_nonempty_result that
+// was answered with an empty result.
+var errProbeAnsweredEmpty = errors.New("probe answered with an empty result")
 
 // pluginCheck returns the plugin's own check with the given name. Plugins
 // declare a handful of checks, each under a distinct name, so the scan is
@@ -1491,6 +1500,16 @@ func (e *Executor) applyResult(ctx context.Context, r ProbeResult) {
 					tracker.UpdateBlockHeight(sibling, *data.BlockHeight)
 				}
 			}
+		}
+	}
+
+	// A check declared to expect a result (expect_nonempty_result) fails on
+	// an empty one; one asking for history also marks the host as not
+	// keeping it (qos.EmptyHistoryRecorder).
+	if extractErr == nil && e.configured.Load().ResultRequired(r.Check) && qos.EmptyResult(r.Body) {
+		extractErr = errProbeAnsweredEmpty
+		if recorder, ok := plugin.(qos.EmptyHistoryRecorder); ok {
+			recorder.RecordEmptyHistory(r.Endpoint, r.Request)
 		}
 	}
 

@@ -176,6 +176,7 @@ gateway_config:
             expected_status_code: 200
             timeout: 5s
             reputation_signal: minor_error
+            expect_nonempty_result: true
 
   observation_pipeline:
     enabled: true

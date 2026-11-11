@@ -66,7 +66,8 @@ func (a *AdminAPI) handleGetHealthChecks(w http.ResponseWriter, req *http.Reques
 // Body: `{"check_interval": "60s", "checks": [{"name": "…", "type":
 // "json_rpc|rest|comet_bft", "method": "…", "path": "…", "body": "…",
 // "expected_status_code": 200, "reputation_signal": "minor_error",
-// "timeout": "5s"}]}`; only `name` is required. It replaces the file's block
+// "expect_nonempty_result": false, "timeout": "5s"}]}`; only `name` is
+// required. It replaces the file's block
 // for the service and is always enabled; an empty `checks` stops the
 // service's configured checks. The QoS plugin's own checks run regardless.
 // Written to the override store first, so every replica applies it and a

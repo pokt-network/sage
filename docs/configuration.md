@@ -404,6 +404,7 @@ service.
 | `type` | string | Names the RPC type to relay as ("json_rpc", "rest", "comet_bft"). Empty means json_rpc, which is what the overwhelming majority of checks are. |
 | `expected_status_code` | integer | The HTTP status treated as healthy. Zero means any 2xx, which is the sane default and keeps a check from failing because a backend answered 204 instead of 200. |
 | `reputation_signal` | string | Names the penalty on failure: "minor_error" (default), "major_error", "critical_error". |
+| `expect_nonempty_result` | boolean | Fails the check, with its reputation_signal, when the backend answers with an empty JSON-RPC result (null, [], {} or ""), for a request known to have one. When the request names a historical block (eth_getLogs from one, or a state call at one), the host is also kept off requests that deep for an hour, as if it had refused them. An error answer is graded as before. Traffic-informed probing never skips such a check: client traffic does not say whether a result was empty. |
 | `timeout` | duration | Bounds this check. It should be tighter than a relay timeout — a check is meant to notice a slow endpoint, not to wait one out. |
 
 ### `gateway_config.observation_pipeline`
