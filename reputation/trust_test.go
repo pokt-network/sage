@@ -3,6 +3,7 @@ package reputation
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -249,6 +250,19 @@ func TestSeedFromOperator(t *testing.T) {
 	}
 	if got, _ := s.scoreForSelector(ctx, "eth", "pokt1d-wss://r9.lag.example", domain.RPCTypeJSONRPC); got != 100 {
 		t.Errorf("another RPC type: %.0f, want 100", got)
+	}
+	// The gauge reports each seed below 100: the operators' and the owner's.
+	seeds := map[string]float64{}
+	for _, p := range s.PartySeeds() {
+		seeds[string(p.ServiceID)+"/"+p.Party+"/"+p.RPCType] = p.Score
+	}
+	want := map[string]float64{
+		"eth/lag.example/websocket":   70,
+		"eth/own-a.example/websocket": 50,
+		"eth/pokt1owner/websocket":    50,
+	}
+	if !maps.Equal(seeds, want) {
+		t.Errorf("PartySeeds = %v, want %v", seeds, want)
 	}
 	// The first signal starts from the seed too, not from 100.
 	charge("pokt1d-wss://r9.lag.example", 0)

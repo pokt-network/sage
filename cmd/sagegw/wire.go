@@ -487,6 +487,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			}
 		}
 	}))
+	prometheus.MustRegister(metrics.NewSeedCollector(func(yield func(domain.ServiceID, string, string, float64)) {
+		for _, p := range repSvc.PartySeeds() {
+			yield(p.ServiceID, p.Party, p.RPCType, p.Score)
+		}
+	}))
 	prometheus.MustRegister(metrics.NewDuplicateShareCollector(func(yield func(domain.ServiceID, string, float64, float64)) {
 		for _, p := range repSvc.PartyDuplicateShares() {
 			yield(p.ServiceID, p.Party, p.Share, p.Penalty)

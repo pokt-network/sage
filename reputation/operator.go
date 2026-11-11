@@ -146,6 +146,40 @@ func (v *chronicView) partyPenalties(svc domain.ServiceID, key string) (stale, t
 	return stale, trust
 }
 
+// PartySeed is where a key of one party with no history starts in a pool
+// under seed_from_operator: the median own score of the party's keys there.
+type PartySeed struct {
+	ServiceID domain.ServiceID
+	Party     string
+	RPCType   string
+	Score     float64
+}
+
+// PartySeeds reports every operator's and every owner's seed below the
+// initial score as the last refresh left them, whatever seed_from_operator
+// says, for the metrics collector: what the flag carries to a new URL before
+// it is turned on.
+func (s *serviceImpl) PartySeeds() []PartySeed {
+	v := s.chronic.Load()
+	if v == nil {
+		return nil
+	}
+	// One series per party: an id in both maps keeps the lower seed.
+	merged := make(map[opID]float64, len(v.opSeed)+len(v.partySeed))
+	for _, m := range []map[opID]float64{v.opSeed, v.partySeed} {
+		for id, seed := range m {
+			if cur, ok := merged[id]; !ok || seed < cur {
+				merged[id] = seed
+			}
+		}
+	}
+	out := make([]PartySeed, 0, len(merged))
+	for id, seed := range merged {
+		out = append(out, PartySeed{ServiceID: id.svc, Party: id.op, RPCType: id.rpc, Score: seed})
+	}
+	return out
+}
+
 // seedFor is where a key of op with no history starts on svc and rpc: the
 // lower of its operator's standing and its party's, when seeding is on there
 // and either has one. A party is an owner over every domain dedicated to it,

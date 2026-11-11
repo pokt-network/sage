@@ -445,6 +445,44 @@ func (c *PartyShareCollector) Collect(ch chan<- prometheus.Metric) {
 	})
 }
 
+// SeedCollector exposes where a reputation key with no history starts under
+// seed_from_operator (reputation.PartySeed), as the last refresh left it.
+type SeedCollector struct {
+	each    func(yield func(serviceID domain.ServiceID, party, rpcType string, score float64))
+	parties *labelPolicy
+	desc    *prometheus.Desc
+}
+
+// NewSeedCollector builds the seed collector over each, which yields every
+// party with a seed.
+func NewSeedCollector(each func(yield func(serviceID domain.ServiceID, party, rpcType string, score float64))) *SeedCollector {
+	return &SeedCollector{
+		each:    each,
+		parties: cappedLabel(maxOperatorLabels),
+		desc: prometheus.NewDesc(
+			"sage_party_seed_score",
+			"Score a reputation key with no history starts at under the seed_from_operator flag, by service, party and RPC type: the median own score of the party's keys there, for an operator (a URL's registrable domain) and for an owner over the domains dedicated to it. A new key starts at the lower of its operator's and its owner's, so a URL an operator or owner moves to keeps its standing. Only parties below the initial score; reported whatever the flag says.",
+			[]string{"service_id", "party", "rpc_type"}, nil,
+		),
+	}
+}
+
+// Describe implements prometheus.Collector.
+func (c *SeedCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.desc
+}
+
+// Collect implements prometheus.Collector.
+func (c *SeedCollector) Collect(ch chan<- prometheus.Metric) {
+	c.each(func(serviceID domain.ServiceID, party, rpcType string, score float64) {
+		p := c.parties.value(party)
+		if p == otherLabel {
+			return
+		}
+		ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, score, sanitizeLabel(string(serviceID)), p, sanitizeLabel(rpcType))
+	})
+}
+
 // ClassShareCollector exposes each party's failure share per method class and
 // the penalty class_share charges it there (reputation.PartyShare per class),
 // as the last refresh left them. A party good only on light calls shows as a
