@@ -47,6 +47,17 @@ const (
 	ArchivalLogs  = "logs"
 )
 
+// Empty-answer filter outcomes, the labels EmptyAnswerFilter counts.
+const (
+	// EmptyKeptOut: the selection left out at least one host that answers
+	// the request's history with nothing (a hedge with nothing else left is
+	// not sent).
+	EmptyKeptOut = "kept_out"
+	// EmptyFallback: every host left answers it with nothing, so the request
+	// went to them anyway rather than fail.
+	EmptyFallback = "fallback"
+)
+
 // ArchivalFilterReporter is implemented by plugins that keep historical
 // requests off hosts that refused the history they ask for. Wire sets the
 // recorder once per service, before traffic: one call per selection that

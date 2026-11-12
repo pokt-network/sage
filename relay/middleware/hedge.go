@@ -157,7 +157,8 @@ func Hedge(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 				if flags.IsEnabled(ctx.Ctx, featureflag.FlagOperatorAwareSelection, ctx.ServiceID) {
 					// Operator or owner: two brands of one owner are not
 					// an independent path either.
-					if narrowed := excluded.ExcludeAffiliates(domain.AffiliatesOf(*primary)); !narrowsIntoStale(ctx, narrowed, full) {
+					if narrowed := excluded.ExcludeAffiliates(domain.AffiliatesOf(*primary)); !narrowsIntoStale(ctx, narrowed, full) &&
+						!narrowsIntoEmpty(ctx, narrowed, excluded) {
 						hedgeCtx.Endpoints = narrowed
 					}
 				}

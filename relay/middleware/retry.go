@@ -286,9 +286,13 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 					// sat excluded. Same guard as MethodBlocks (anyVouched).
 					if operatorAware {
 						narrowed := available.ExcludeAffiliates(triedAffiliates)
-						// Nor into a chain head left behind: see qos.StaleChecker.
-						if (anyVouched(o.Reputation, ctx, narrowed) || !anyVouched(o.Reputation, ctx, available)) &&
-							!narrowsIntoStale(ctx, narrowed, available) {
+						// Nor into a chain head left behind (qos.StaleChecker),
+						// nor into hosts that answer the request empty
+						// (qos.EmptyAnswerFilter), which vouch for nobody:
+						// selection will not pick them.
+						if (anyVouched(o.Reputation, ctx, withoutEmptyAnswerers(ctx, narrowed)) ||
+							!anyVouched(o.Reputation, ctx, withoutEmptyAnswerers(ctx, available))) &&
+							!narrowsIntoStale(ctx, narrowed, available) && !narrowsIntoEmpty(ctx, narrowed, available) {
 							available = narrowed
 						}
 					}
@@ -304,7 +308,8 @@ func Retry(flags featureflag.FlagStore, configFn func(domain.ServiceID) config.R
 						other := filterEndpoints(available, func(ep domain.EndpointAddr) bool {
 							return !triedOperators[ep.Operator()]
 						})
-						if len(other) == 0 || !anyVouched(o.Reputation, ctx, other) || narrowsIntoStale(ctx, other, available) {
+						if len(other) == 0 || !anyVouched(o.Reputation, ctx, withoutEmptyAnswerers(ctx, other)) ||
+							narrowsIntoStale(ctx, other, available) {
 							retriedFor, limited = pendingCause, true
 							return lastErr
 						}

@@ -816,6 +816,12 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 				return flags.IsEnabled(context.Background(), featureflag.FlagArchivalRouting, id)
 			})
 		}
+		if filter, ok := qosReg.Get(id).(qos.EmptyAnswerFilter); ok {
+			filter.SetEmptyAnswerHooks(
+				func() bool { return flags.IsEnabled(context.Background(), featureflag.FlagArchivalEmptyKeepOut, id) },
+				func(outcome string) { recorder.RecordEmptyAnswerers(id, outcome) },
+			)
+		}
 	}
 	baseSampleRate := cfg.Gateway.ObservationPipeline.SampleRate
 	if baseSampleRate <= 0 || baseSampleRate > 1 {

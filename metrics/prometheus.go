@@ -77,6 +77,7 @@ type Recorder struct {
 	selectionTiers         *prometheus.CounterVec
 	archivalFilter         *prometheus.CounterVec
 	archivalRemoved        *prometheus.CounterVec
+	archivalEmpty          *prometheus.CounterVec
 	staleAnswers           *prometheus.CounterVec
 	invalidResults         *prometheus.CounterVec
 	answerHeadLag          *prometheus.HistogramVec
@@ -361,6 +362,14 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 			},
 			[]string{"service_id", "kind"},
 		),
+		archivalEmpty: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sage",
+				Name:      "archival_empty_answerers_total",
+				Help:      "Endpoint selections for a historical request that archival_empty_keep_out changed, by outcome: kept_out (it left out at least one host that a health check with expect_nonempty_result found answering that history with nothing; a hedge with only such hosts left is not sent and counts here too), fallback (only such hosts were left, so the request went to them anyway). One count per selection, so per relay attempt. The hosts and depths are the empty_depth and logs_empty_depth marks in GET /admin/chain-state/{serviceID}.",
+			},
+			[]string{"service_id", "outcome"},
+		),
 		staleAnswers: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: "sage",
@@ -642,6 +651,7 @@ func NewRecorder(knownServices []domain.ServiceID) *Recorder {
 		r.selectionTiers,
 		r.archivalFilter,
 		r.archivalRemoved,
+		r.archivalEmpty,
 		r.staleAnswers,
 		r.invalidResults,
 		r.answerHeadLag,
@@ -794,6 +804,12 @@ func (r *Recorder) RecordArchivalFilter(serviceID domain.ServiceID, kind, outcom
 	if removedParties > 0 {
 		r.archivalRemoved.WithLabelValues(sid, kind).Add(float64(removedParties))
 	}
+}
+
+// RecordEmptyAnswerers counts one historical selection the empty-answer
+// filter changed, by outcome (qos.EmptyKeptOut, qos.EmptyFallback).
+func (r *Recorder) RecordEmptyAnswerers(serviceID domain.ServiceID, outcome string) {
+	r.archivalEmpty.WithLabelValues(r.services.serviceValue(serviceID), outcome).Inc()
 }
 
 // RecordSelectionTier counts one endpoint selection by its height tier. Tiers

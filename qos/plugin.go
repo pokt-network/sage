@@ -250,6 +250,25 @@ type EmptyHistoryRecorder interface {
 	RecordEmptyHistory(endpoint domain.EndpointAddr, request []byte)
 }
 
+// EmptyAnswerFilter is implemented by plugins that keep archival marks: it
+// keeps a request off the hosts a check found answering the history it asks
+// for with nothing (EmptyHistoryRecorder). Unlike a refusal, which is retried
+// on another host, an empty answer is delivered to the client as its answer,
+// so selection's guards against leaving one party or only unvouched hosts must
+// not bring such a host back.
+type EmptyAnswerFilter interface {
+	// WithoutEmptyAnswerers is eps less those hosts, possibly empty; eps
+	// itself when the filter is off for the service, the request names no
+	// history, or no host in eps is marked. It counts nothing.
+	WithoutEmptyAnswerers(eps domain.EndpointAddrList, payloads []domain.Payload) domain.EndpointAddrList
+	// CountEmptyAnswerers counts one selection the filter changed, by
+	// outcome (EmptyKeptOut, EmptyFallback).
+	CountEmptyAnswerers(outcome string)
+	// SetEmptyAnswerHooks wires the gate that turns the filter on and the
+	// counter. Wire time only; nil enabled means off.
+	SetEmptyAnswerHooks(enabled func() bool, record func(outcome string))
+}
+
 // ArchivalMark is what one host has shown of its history, as depths behind
 // the head when it answered: the deepest it served and the shallowest it
 // refused. Nil is no evidence.
@@ -260,6 +279,12 @@ type ArchivalMark struct {
 	// whose retention a node keeps apart from its state.
 	LogsServedDepth  *uint64 `json:"logs_served_depth,omitempty"`
 	LogsRefusedDepth *uint64 `json:"logs_refused_depth,omitempty"`
+	// EmptyDepth and LogsEmptyDepth are the shallowest depth at which a
+	// check expecting a result got none (EmptyHistoryRecorder): requests
+	// this deep or deeper are kept off the host while the filter is on
+	// (EmptyAnswerFilter).
+	EmptyDepth     *uint64 `json:"empty_depth,omitempty"`
+	LogsEmptyDepth *uint64 `json:"logs_empty_depth,omitempty"`
 }
 
 // ArchivalLister is implemented by plugins that can list their live archival

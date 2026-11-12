@@ -405,6 +405,16 @@ const (
 	// guard against leaving one party is for first attempts, and the retry's
 	// alternative is another host that refuses too. Off by default.
 	FlagArchivalRetry = "archival_retry"
+	// FlagArchivalEmptyKeepOut keeps a request for history off every host a
+	// health check declared expect_nonempty_result found answering that
+	// history with nothing, on every selection path: the archival filter's
+	// one-party bypass, the guard against narrowing into unvouched hosts, the
+	// degraded fallbacks, and the retry and hedge operator preferences. A
+	// host that refuses with an error is unaffected: it is retried, while an
+	// empty answer is delivered. When only such hosts are left the request
+	// still goes to them; a hedge is not sent. The marks are written whatever
+	// the flag says. Off by default.
+	FlagArchivalEmptyKeepOut = "archival_empty_keep_out"
 	// FlagQuery5xxRetry retries a query_5xx (a REST query a node answered
 	// 500, graded the chain's answer) once on another node: one that lacks
 	// the height or the index asked for answers so while another serves it.
@@ -489,6 +499,7 @@ var DefaultFlags = map[string]bool{
 	FlagRehedge:                 false,
 	FlagFutureBlockAnswers:      false,
 	FlagArchivalRetry:           false,
+	FlagArchivalEmptyKeepOut:    false,
 	FlagQuery5xxRetry:           false,
 	FlagChainAnswersUnscored:    false,
 

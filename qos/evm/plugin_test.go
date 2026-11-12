@@ -1455,3 +1455,81 @@ func TestEmptyLogs_ProveNothing_UntilACheckExpectsSome(t *testing.T) {
 		t.Errorf("a head eth_getLogs marked a refusal at %d", *m.LogsRefusedDepth)
 	}
 }
+
+// A host a check found answering history with nothing is left out of the
+// list WithoutEmptyAnswerers returns, at that depth and deeper, once the gate
+// is on; a host that refuses the same history with an error stays, and so
+// does a request shallower than the mark. The archival filter alone lets
+// that host back in when it bypasses for leaving one party.
+func TestWithoutEmptyAnswerers(t *testing.T) {
+	p := newTestPlugin(5)
+	full := domain.EndpointAddr("pokt1a-https://r001.full.example")
+	refuser := domain.EndpointAddr("pokt1b-https://r001.refuser.example")
+	empty := domain.EndpointAddr("pokt1c-https://relay.empty.example")
+	all := domain.EndpointAddrList{full, refuser, empty}
+	for _, ep := range all {
+		p.UpdateBlockHeight(ep, 100_000)
+	}
+	logs := func(from uint64) domain.Payload {
+		return domain.NewPayload([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x%x","toBlock":"0x%x"}]}`, from, from)), domain.RPCTypeJSONRPC, "eth_getLogs")
+	}
+	balance := func(block uint64) domain.Payload {
+		return domain.NewPayload([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1","0x%x"]}`, block)), domain.RPCTypeJSONRPC, "eth_getBalance")
+	}
+	deep, shallow := logs(100_000-5_000), logs(100_000-500)
+	p.RecordArchival(full, logs(100_000-1_000), []byte(`{"jsonrpc":"2.0","id":1,"result":[{"address":"0x1"}]}`))
+	p.RecordArchival(refuser, logs(100_000-1_000), []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":4444,"message":"pruned history unavailable"}}`))
+	p.RecordEmptyHistory(empty, logs(100_000-1_000).Bytes())
+
+	without := func(pl domain.Payload) domain.EndpointAddrList {
+		return p.WithoutEmptyAnswerers(all, []domain.Payload{pl})
+	}
+	if got, err := p.SelectEndpoints(all, []domain.Payload{deep}); err != nil || !slices.Contains(got, empty) {
+		t.Fatalf("selection = %v, %v: one party left, so the filter bypasses and every host is eligible", got, err)
+	}
+	if got := without(deep); len(got) != 3 {
+		t.Fatalf("gate unset: %v, want all three", got)
+	}
+
+	var counted []string
+	on := true
+	p.SetEmptyAnswerHooks(func() bool { return on }, func(outcome string) { counted = append(counted, outcome) })
+	if got := without(deep); !slices.Equal(got, domain.EndpointAddrList{full, refuser}) {
+		t.Fatalf("deep eth_getLogs keeps %v, want the host that served and the one that refused", got)
+	}
+	if !slices.Equal(all, domain.EndpointAddrList{full, refuser, empty}) {
+		t.Fatalf("the input list was changed: %v", all)
+	}
+	if got := without(shallow); len(got) != 3 {
+		t.Fatalf("shallower than the mark: %v, want all three", got)
+	}
+	if got := without(balance(100_000 - 5_000)); len(got) != 3 {
+		t.Fatalf("a state read at the same depth: %v, want all three (the mark is for logs)", got)
+	}
+	p.CountEmptyAnswerers(qos.EmptyKeptOut)
+	if !slices.Equal(counted, []string{qos.EmptyKeptOut}) {
+		t.Fatalf("counted %v", counted)
+	}
+	on = false
+	if got := without(deep); len(got) != 3 {
+		t.Fatalf("gate off: %v, want all three", got)
+	}
+	on = true
+
+	marks := p.ArchivalHosts()
+	if m := marks["relay.empty.example"]; m.LogsEmptyDepth == nil || m.LogsRefusedDepth == nil || m.EmptyDepth != nil {
+		t.Fatalf("empty host marks = %+v, want logs refused and logs empty, no state mark", m)
+	}
+	if m := marks["r001.refuser.example"]; m.LogsEmptyDepth != nil {
+		t.Fatalf("an error refusal was marked empty at %d", *m.LogsEmptyDepth)
+	}
+
+	// The same for state: a check's empty answer to a historical state read.
+	p.RecordEmptyHistory(refuser, balance(100_000-1_000).Bytes())
+	if got := without(balance(100_000 - 5_000)); !slices.Equal(got, domain.EndpointAddrList{full, empty}) {
+		t.Fatalf("deep state read keeps %v, want the two hosts not marked for state", got)
+	}
+	if m := p.ArchivalHosts()["r001.refuser.example"]; m.EmptyDepth == nil {
+		t.Fatal("state empty depth not listed")
+	}
+}

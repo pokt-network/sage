@@ -29,14 +29,35 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 				ctx.Endpoints = eps
 			}
 
-			candidates := ctx.Endpoints
+			// A host a check found answering this request's history with
+			// nothing is out of everything below, the junk guard and the
+			// fallbacks included: a refusal is retried elsewhere, an empty
+			// answer reaches the client as its answer. Local, because Retry
+			// and Hedge read ctx.Endpoints as the pool.
+			pool := ctx.Endpoints
+			if f, ok := ctx.Plugin.(qos.EmptyAnswerFilter); ok {
+				switch honest := f.WithoutEmptyAnswerers(pool, ctx.Payloads); {
+				case len(honest) == len(pool):
+				case len(honest) > 0:
+					pool = honest
+					f.CountEmptyAnswerers(qos.EmptyKeptOut)
+				case ctx.AttemptKind == relay.AttemptHedge:
+					// No hedge then; the primary is still running.
+					f.CountEmptyAnswerers(qos.EmptyKeptOut)
+					return errHedgeRuledOut
+				default:
+					// Nothing else left: sent anyway rather than fail.
+					f.CountEmptyAnswerers(qos.EmptyFallback)
+				}
+			}
+			candidates := pool
 
 			// Apply chain-specific filtering via QoS plugin.
 			if ctx.Plugin != nil {
-				filtered, err := ctx.Plugin.SelectEndpoints(ctx.Endpoints, ctx.Payloads)
+				filtered, err := ctx.Plugin.SelectEndpoints(pool, ctx.Payloads)
 				switch {
-				case err == nil && len(filtered) > 0 && len(filtered) < len(ctx.Endpoints) &&
-					!anyVouched(repSvc, ctx, filtered) && anyVouched(repSvc, ctx, ctx.Endpoints):
+				case err == nil && len(filtered) > 0 && len(filtered) < len(pool) &&
+					!anyVouched(repSvc, ctx, filtered) && anyVouched(repSvc, ctx, pool):
 					// Never into junk: the plugin's filters (block height, the
 					// archival filter) left only endpoints reputation does not
 					// vouch for, while it removed ones it does. On mainnet base
@@ -57,7 +78,7 @@ func SelectEndpoint(repSvc reputation.Service, endpointProvider protocol.Endpoin
 			// If there are still no endpoints, degrade and use the original list.
 			if len(candidates) == 0 {
 				ctx.Degraded = true
-				candidates = ctx.Endpoints
+				candidates = pool
 			}
 			// Nothing at all to send to. Say so: selecting from an empty list
 			// used to hand SendRelay an empty address, which it reported as a
@@ -147,6 +168,25 @@ func allRuledOut(repSvc reputation.Service, ctx *relay.Context, eps domain.Endpo
 func narrowsIntoStale(ctx *relay.Context, narrowed, full domain.EndpointAddrList) bool {
 	c, ok := ctx.Plugin.(qos.StaleChecker)
 	return ok && c.AllStale(narrowed) && !c.AllStale(full)
+}
+
+// narrowsIntoEmpty reports whether narrowing full to narrowed leaves only
+// hosts known to answer the request's history with nothing while full still
+// held another (qos.EmptyAnswerFilter). Selection would then send to one of
+// them anyway, its fallback for a pool with nothing else.
+func narrowsIntoEmpty(ctx *relay.Context, narrowed, full domain.EndpointAddrList) bool {
+	return len(narrowed) > 0 && len(withoutEmptyAnswerers(ctx, narrowed)) == 0 &&
+		len(withoutEmptyAnswerers(ctx, full)) > 0
+}
+
+// withoutEmptyAnswerers is eps less the hosts known to answer the request's
+// history with nothing (qos.EmptyAnswerFilter): the ones selection will
+// actually choose from, so the ones whose vouching counts.
+func withoutEmptyAnswerers(ctx *relay.Context, eps domain.EndpointAddrList) domain.EndpointAddrList {
+	if f, ok := ctx.Plugin.(qos.EmptyAnswerFilter); ok {
+		return f.WithoutEmptyAnswerers(eps, ctx.Payloads)
+	}
+	return eps
 }
 
 // fillEndpoints fetches the service's endpoints onto ctx when nothing has yet.

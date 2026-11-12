@@ -53,6 +53,32 @@ type archivalMark struct {
 	hasServed bool
 	refused   uint64
 	refusedAt time.Time
+	// emptied is the same as refused for an empty answer to a check that
+	// expected a result (RecordEmptyHistory). Kept apart from refused: an
+	// honest refusal is retried, an empty answer is delivered.
+	emptied   uint64
+	emptiedAt time.Time
+}
+
+// withEmptied records the host answering a check at depth with nothing at
+// now: the shallowest live one stands, as for a refusal.
+func (m archivalMark) withEmptied(depth uint64, now time.Time) archivalMark {
+	if !m.emptying(now) || depth < m.emptied {
+		m.emptied = depth
+	}
+	m.emptiedAt = now
+	return m
+}
+
+// emptying reports whether the mark holds an empty answer still in force at now.
+func (m archivalMark) emptying(now time.Time) bool {
+	return !m.emptiedAt.IsZero() && now.Sub(m.emptiedAt) < archivalTTL
+}
+
+// answersEmpty reports whether the host is known at now to answer a request
+// depth behind the head with nothing.
+func (m archivalMark) answersEmpty(depth uint64, now time.Time) bool {
+	return m.emptying(now) && depth >= m.emptied
 }
 
 // withServed records the host answering at depth.
@@ -147,6 +173,11 @@ type Plugin struct {
 	// archivalRouting says whether selection reads the marks
 	// (qos.ArchivalRoutingGate); nil means yes. Set at wire time.
 	archivalRouting func() bool
+	// emptyAnswers says whether selection keeps requests off hosts marked
+	// answering them empty (qos.EmptyAnswerFilter); nil means no.
+	// recordEmpty counts what it did. Both set at wire time.
+	emptyAnswers func() bool
+	recordEmpty  func(outcome string)
 }
 
 // Config carries the per-service settings an EVM plugin needs.
@@ -532,10 +563,52 @@ func (p *Plugin) RecordEmptyHistory(endpoint domain.EndpointAddr, request []byte
 		return
 	}
 	now := time.Now()
-	memory.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark { return m.withRefused(depth, now) })
+	memory.Update(hostKey(endpoint), func(m archivalMark, _ bool) archivalMark {
+		return m.withRefused(depth, now).withEmptied(depth, now)
+	})
 }
 
 var _ qos.EmptyHistoryRecorder = (*Plugin)(nil)
+
+// WithoutEmptyAnswerers implements qos.EmptyAnswerFilter: eps less the hosts
+// marked answering the payloads' state or log history with nothing.
+func (p *Plugin) WithoutEmptyAnswerers(eps domain.EndpointAddrList, payloads []domain.Payload) domain.EndpointAddrList {
+	if p.emptyAnswers == nil || !p.emptyAnswers() {
+		return eps
+	}
+	depth, state := p.requestDepth(payloads)
+	logDepth, logs := p.requestLogDepth(payloads)
+	if !state && !logs {
+		return eps
+	}
+	now := time.Now()
+	empty := func(addr domain.EndpointAddr) bool {
+		key := hostKey(addr)
+		if m, known := p.archival.Get(key); state && known && m.answersEmpty(depth, now) {
+			return true
+		}
+		m, known := p.logs.Get(key)
+		return logs && known && m.answersEmpty(logDepth, now)
+	}
+	if !slices.ContainsFunc(eps, empty) {
+		return eps
+	}
+	return slices.DeleteFunc(slices.Clone(eps), empty)
+}
+
+// CountEmptyAnswerers implements qos.EmptyAnswerFilter.
+func (p *Plugin) CountEmptyAnswerers(outcome string) {
+	if p.recordEmpty != nil {
+		p.recordEmpty(outcome)
+	}
+}
+
+// SetEmptyAnswerHooks implements qos.EmptyAnswerFilter. Wire time only.
+func (p *Plugin) SetEmptyAnswerHooks(enabled func() bool, record func(outcome string)) {
+	p.emptyAnswers, p.recordEmpty = enabled, record
+}
+
+var _ qos.EmptyAnswerFilter = (*Plugin)(nil)
 
 // ArchivalHosts implements qos.ArchivalLister.
 func (p *Plugin) ArchivalHosts() map[string]qos.ArchivalMark {
@@ -549,6 +622,9 @@ func (p *Plugin) ArchivalHosts() map[string]qos.ArchivalMark {
 		if m.refusing(now) {
 			v.RefusedDepth = &m.refused
 		}
+		if m.emptying(now) {
+			v.EmptyDepth = &m.emptied
+		}
 		out[host] = v
 	}
 	for host, m := range p.logs.Snapshot() {
@@ -558,6 +634,9 @@ func (p *Plugin) ArchivalHosts() map[string]qos.ArchivalMark {
 		}
 		if m.refusing(now) {
 			v.LogsRefusedDepth = &m.refused
+		}
+		if m.emptying(now) {
+			v.LogsEmptyDepth = &m.emptied
 		}
 		out[host] = v
 	}
